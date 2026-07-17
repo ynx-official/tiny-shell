@@ -5,6 +5,7 @@ pub mod keybinding_recorder;
 pub mod resizable;
 pub mod search;
 pub mod sftp_editor;
+pub mod sftp_editor_window;
 pub mod ssh_key_import;
 pub mod startup;
 pub mod tab_drag;
@@ -476,13 +477,6 @@ pub(crate) struct Ashell {
     pub(crate) connection_progress: Option<ConnectionProgress>,
     pub(crate) pending_sftp_path_sync: Option<String>,
     pub(crate) sftp_context_menu: Option<SftpContextMenuState>,
-    /// 内置 SFTP 编辑器 overlay(多 tab)。双击文本文件时创建,关闭时设为 None。
-    pub(crate) sftp_editor: Option<Entity<sftp_editor::SftpEditor>>,
-    /// 待打开的编辑请求队列(下载内容后追加到 SftpEditor)。
-    /// drain_backend_events 在无 window 的异步泵中执行,无法直接构造
-    /// SftpEditor(其构造需要 &mut Window),因此先暂存,在 render 中创建/追加。
-    /// 支持多个文件:队列里每个元素是一个 (remote_path, content, sftp_handle)。
-    pub(crate) pending_edits: Vec<(String, String, crate::sftp::SftpHandle)>,
     pub(crate) tab_context_menu: Option<TabContextMenuState>,
     pub(crate) sftp_creating_folder: bool,
     pub(crate) sftp_new_folder_input: Entity<InputState>,
@@ -914,8 +908,6 @@ impl Ashell {
             connection_progress: None,
             pending_sftp_path_sync: Some("/".into()),
             sftp_context_menu: None,
-            sftp_editor: None,
-            pending_edits: Vec::new(),
             tab_context_menu: None,
             sftp_creating_folder: false,
             sftp_new_folder_input,
@@ -1192,33 +1184,21 @@ impl Ashell {
                     remote_path,
                     content,
                 } => {
-                    // 收到文件内容 → 入队,等 render 时(有 window)再创建/追加 SftpEditor
                     if let Some(handle) = self.sftp_handles.get(&tab_id).cloned() {
-                        self.pending_edits.push((remote_path, content, handle));
-                        cx.notify();
+                        sftp_editor_window::open_or_focus(tab_id, remote_path, content, handle, cx);
                     }
                 }
                 BackendEvent::SftpContentUploaded {
-                    tab_id: _,
+                    tab_id,
                     remote_path,
                 } => {
-                    // 上传完成 → 按 remote_path 标记对应 tab 已上传(成功才清 dirty)
-                    if let Some(editor) = &self.sftp_editor {
-                        editor.update(cx, |e, cx| {
-                            e.mark_uploaded(&remote_path, cx);
-                        });
-                    }
+                    sftp_editor_window::mark_uploaded(&tab_id, &remote_path, cx);
                 }
                 BackendEvent::SftpContentUploadFailed {
-                    tab_id: _,
+                    tab_id,
                     remote_path,
                 } => {
-                    // 上传失败 → 恢复 saving=false 且 dirty=true(内容其实未保存)
-                    if let Some(editor) = &self.sftp_editor {
-                        editor.update(cx, |e, cx| {
-                            e.mark_upload_failed(&remote_path, cx);
-                        });
-                    }
+                    sftp_editor_window::mark_upload_failed(&tab_id, &remote_path, cx);
                 }
                 BackendEvent::RemoteSystem { tab_id, snapshot } => {
                     self.remote_sample_in_flight = false;
@@ -1265,6 +1245,16 @@ impl Ashell {
                     }
                     let is_graceful_exit =
                         reason == "local shell closed" || reason == "ssh session closed";
+                    let editor_session = self
+                        .tab_groups
+                        .iter()
+                        .find(|group| group.pane_root.contains(&tab_id))
+                        .filter(|group| self.sftp_handles.contains_key(&group.id))
+                        .filter(|group| !is_graceful_exit || group.pane_root.total_panes() <= 1)
+                        .map(|group| group.id.clone());
+                    if let Some(session_id) = editor_session {
+                        sftp_editor_window::notify_connection_lost(&session_id, cx);
+                    }
                     if is_graceful_exit {
                         self.handle_tab_close(tab_id.clone());
                         self.status = reason.into();

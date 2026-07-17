@@ -50,20 +50,16 @@ impl Ashell {
             .and_then(|id| self.sftp_handles.get(id))
     }
 
-    /// 双击文本文件时调用:下载文件内容到内存,打开内置编辑器。
-    /// 若编辑器已打开该文件,则直接切换到对应 tab,不重复下载。
+    /// 双击文本文件时调用:下载文件内容到内存,打开独立编辑器窗口。
+    /// 若同一会话的编辑器已打开该文件,则直接激活窗口并切换 tab。
     pub(crate) fn open_file_in_editor(&mut self, remote_path: String, cx: &mut Context<Self>) {
-        // 已在编辑器中打开 → 切换到该 tab,无需重复下载
-        if let Some(editor) = &self.sftp_editor {
-            let already_open = editor.read(cx).has_path(&remote_path);
-            if already_open {
-                editor.update(cx, |e, cx| {
-                    e.focus_path(&remote_path, cx);
-                });
-                return;
-            }
+        let Some(session_id) = self.active_group.clone() else {
+            return;
+        };
+        if crate::app::sftp_editor_window::focus_path(&session_id, &remote_path, cx) {
+            return;
         }
-        if let Some(handle) = self.active_sftp_handle() {
+        if let Some(handle) = self.sftp_handles.get(&session_id) {
             tracing::info!("[sftp] opening in-memory editor: '{}'", remote_path);
             handle.download_file_content(remote_path);
             cx.notify();

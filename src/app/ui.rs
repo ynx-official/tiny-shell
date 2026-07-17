@@ -1,17 +1,15 @@
 use crate::app::resizable::{h_resizable, resizable_panel, v_resizable};
 use gpui::{
-    AppContext as _, Context, DispatchPhase, ElementId, Focusable as _, FontWeight, Hsla,
-    InteractiveElement as _, IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, ParentElement as _, PathBuilder, Pixels, Render, StatefulInteractiveElement as _,
-    Styled as _, Window, canvas, div, hsla, point, prelude::FluentBuilder as _, px, relative, rems,
-    uniform_list,
+    Context, DispatchPhase, ElementId, Focusable as _, FontWeight, Hsla, InteractiveElement as _,
+    IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement as _,
+    PathBuilder, Pixels, Render, StatefulInteractiveElement as _, Styled as _, Window, canvas, div,
+    hsla, point, prelude::FluentBuilder as _, px, relative, rems, uniform_list,
 };
 use gpui_component::{
     ActiveTheme, Disableable as _, ElementExt, Icon, IconName, InteractiveElementExt as _, Root,
-    Sizable as _, Size, WindowExt as _,
+    Sizable as _, Size,
     button::{Button, ButtonVariants as _},
     checkbox::Checkbox,
-    dialog::Dialog,
     h_flex,
     input::Input,
     menu::{ContextMenuExt as _, PopupMenuItem},
@@ -2830,129 +2828,6 @@ impl Ashell {
 
 impl Render for Ashell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // 检查 SftpEditor 是否请求关闭
-        if let Some(editor) = &self.sftp_editor {
-            if editor.read(cx).should_close {
-                self.sftp_editor = None;
-            }
-        }
-        // 处理待打开的编辑请求队列(此处有 window,可构造/追加 SftpEditor)
-        if !self.pending_edits.is_empty() {
-            let pending = std::mem::take(&mut self.pending_edits);
-            if let Some(editor) = &self.sftp_editor {
-                // 编辑器已存在 → 逐个 open_file(已开的会切换 tab 不重复打开)
-                editor.update(cx, |e, cx| {
-                    for (path, content, _handle) in pending {
-                        e.open_file(path, content, window, cx);
-                    }
-                });
-            } else {
-                // 无编辑器 → 用第一个请求创建,其余追加
-                let mut iter = pending.into_iter();
-                if let Some((path, content, handle)) = iter.next() {
-                    let editor = cx.new(|cx| {
-                        crate::app::sftp_editor::SftpEditor::new(
-                            path, content, handle, window, cx,
-                        )
-                    });
-                    editor.update(cx, |e, cx| {
-                        for (p, c, _handle) in iter {
-                            e.open_file(p, c, window, cx);
-                        }
-                    });
-                    self.sftp_editor = Some(editor);
-                }
-            }
-        }
-        // 处理编辑器的关闭确认请求(有未保存修改时弹框)
-        if let Some(editor) = &self.sftp_editor {
-            let (close_tab, close_all, filename) = {
-                let e = editor.read(cx);
-                (
-                    e.pending_close_tab,
-                    e.pending_close_all,
-                    e.pending_close_filename(),
-                )
-            };
-            if let Some(_idx) = close_tab {
-                // 立即清除请求,避免每帧重复弹框
-                editor.update(cx, |e, cx| {
-                    e.pending_close_tab = None;
-                    cx.notify();
-                });
-                let view = cx.entity();
-                let fname = filename.unwrap_or_default();
-                window.open_dialog(cx, move |dialog: Dialog, _window, _| {
-                    dialog
-                        .title(t!("editor_close_confirm_title").to_string())
-                        .w(px(440.))
-                        .keyboard(false)
-                        .on_ok({
-                            let view = view.clone();
-                            move |_, window, cx| {
-                                view.update(cx, |this, cx| {
-                                    if let Some(editor) = &this.sftp_editor {
-                                        editor.update(cx, |e, cx| {
-                                            e.confirm_close_tab(cx);
-                                        });
-                                    }
-                                });
-                                window.close_dialog(cx);
-                                true
-                            }
-                        })
-                        .content({
-                            let fname = fname.clone();
-                            move |content, _window, _cx| {
-                                content.child(
-                                    div()
-                                        .p_4()
-                                        .text_sm()
-                                        .child(t!(
-                                            "editor_close_confirm_desc",
-                                            name = fname.as_str()
-                                        )
-                                        .to_string()),
-                                )
-                            }
-                        })
-                });
-            } else if close_all {
-                editor.update(cx, |e, cx| {
-                    e.pending_close_all = false;
-                    cx.notify();
-                });
-                let view = cx.entity();
-                window.open_dialog(cx, move |dialog: Dialog, _window, _| {
-                    dialog
-                        .title(t!("editor_close_all_confirm_title").to_string())
-                        .w(px(440.))
-                        .keyboard(false)
-                        .on_ok({
-                            let view = view.clone();
-                            move |_, window, cx| {
-                                view.update(cx, |this, cx| {
-                                    if let Some(editor) = &this.sftp_editor {
-                                        editor.update(cx, |e, cx| {
-                                            e.confirm_close_all(cx);
-                                        });
-                                    }
-                                });
-                                window.close_dialog(cx);
-                                true
-                            }
-                        })
-                        .content(move |content, _window, _cx| {
-                            content.child(
-                                div()
-                                    .p_4()
-                                    .text_sm()
-                                    .child(t!("editor_close_all_confirm_desc").to_string()),
-                            )
-                        })
-                });
-            }
-        }
         if self
             .active_tab
             .as_ref()
@@ -3143,6 +3018,7 @@ impl Render for Ashell {
         v_flex()
             .id("ashell-root")
             .size_full()
+            .relative()
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
             .font_family(self.ui_font_family.clone())
@@ -3264,10 +3140,6 @@ impl Render for Ashell {
             )
             .children(Root::render_dialog_layer(window, cx))
             .children(Root::render_sheet_layer(window, cx))
-            // SFTP 内置编辑器 overlay
-            .when_some(self.sftp_editor.clone(), |this, editor| {
-                this.child(editor.clone())
-            })
             .when_some(self.sftp_context_menu.clone(), |this, menu| {
                 let label = if menu.is_dir {
                     t!("download_folder").to_string()

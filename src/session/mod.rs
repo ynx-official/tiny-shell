@@ -1225,6 +1225,25 @@ impl Ashell {
     }
 
     pub(crate) fn close_tab(&mut self, id: String, cx: &mut Context<Self>) {
+        let closing_sftp_group = self
+            .tab_groups
+            .iter()
+            .find(|group| group.pane_root.contains(&id))
+            .filter(|group| group.pane_root.total_panes() <= 1)
+            .filter(|group| self.sftp_handles.contains_key(&group.id))
+            .map(|group| group.id.clone());
+
+        if let Some(session_id) = closing_sftp_group
+            && !crate::app::sftp_editor_window::request_session_close(
+                &session_id,
+                id.clone(),
+                cx.entity(),
+                cx,
+            )
+        {
+            return;
+        }
+
         self.handle_tab_close(id);
         cx.notify();
     }
