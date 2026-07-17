@@ -10,7 +10,7 @@ use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AppContext, Entity, Focusable as _, InteractiveElement as _, IntoElement, KeyDownEvent,
     MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement as _, Pixels, Point, Render,
-    Styled, Window, px,
+    Styled, Window, px, relative,
 };
 use gpui_component::{
     ActiveTheme, Disableable as _, Root, Sizable, WindowExt as _,
@@ -61,7 +61,8 @@ fn base_name(path: &str) -> &str {
 }
 
 /// 单个文件对应的编辑器状态。
-struct EditorTab {
+#[derive(Clone)]
+pub(crate) struct EditorTab {
     remote_path: String,
     input: Entity<InputState>,
     /// 有未保存的修改。
@@ -72,7 +73,25 @@ struct EditorTab {
     text_at_save_start: Option<String>,
 }
 
+fn subscribe_input_changes(input: &Entity<InputState>, cx: &mut gpui::Context<SftpEditor>) {
+    cx.subscribe(input, |this, emitter, event: &InputEvent, cx| {
+        if let InputEvent::Change = event {
+            if let Some(tab) = this.tabs.iter_mut().find(|tab| tab.input == emitter) {
+                if !tab.dirty {
+                    tab.dirty = true;
+                    cx.notify();
+                }
+            }
+        }
+    })
+    .detach();
+}
+
 impl EditorTab {
+    pub(crate) fn remote_path(&self) -> &str {
+        &self.remote_path
+    }
+
     fn new(
         remote_path: String,
         content: String,
@@ -87,19 +106,7 @@ impl EditorTab {
                 .default_value(content)
         });
 
-        // 订阅该 tab 的内容变化 → 标记对应 tab dirty
-        cx.subscribe(&input, |this, emitter, event: &InputEvent, cx| {
-            if let InputEvent::Change = event {
-                // 通过 emitter 找到是哪个 tab 触发的
-                if let Some(tab) = this.tabs.iter_mut().find(|t| t.input == emitter) {
-                    if !tab.dirty {
-                        tab.dirty = true;
-                        cx.notify();
-                    }
-                }
-            }
-        })
-        .detach();
+        subscribe_input_changes(&input, cx);
 
         Self {
             remote_path,
@@ -237,15 +244,12 @@ impl SftpEditor {
 
     pub(crate) fn from_detached(
         session_id: String,
-        remote_path: String,
-        content: String,
-        dirty: bool,
+        tab: EditorTab,
         sftp: SftpHandle,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut gpui::Context<Self>,
     ) -> Self {
-        let mut tab = EditorTab::new(remote_path, content, window, cx);
-        tab.dirty = dirty;
+        subscribe_input_changes(&tab.input, cx);
         Self {
             session_id,
             sftp,
@@ -608,10 +612,7 @@ impl SftpEditor {
             return;
         }
 
-        let tab = &self.tabs[idx];
-        let remote_path = tab.remote_path.clone();
-        let content = tab.input.read(cx).text().to_string();
-        let dirty = tab.dirty;
+        let tab = self.tabs[idx].clone();
         let origin = match window.window_bounds() {
             gpui::WindowBounds::Fullscreen(bounds)
             | gpui::WindowBounds::Maximized(bounds)
@@ -621,9 +622,7 @@ impl SftpEditor {
 
         if crate::app::sftp_editor_window::open_detached(
             self.session_id.clone(),
-            remote_path,
-            content,
-            dirty,
+            tab,
             self.sftp.clone(),
             screen_position,
             cx,
@@ -662,6 +661,7 @@ impl SftpEditor {
             self.close_all(window, cx);
             cx.stop_propagation();
         }
+        cx.notify();
     }
 }
 
@@ -674,6 +674,14 @@ impl Render for SftpEditor {
         let lang_label = active
             .and_then(|t| language_for_path(&t.remote_path))
             .unwrap_or("text");
+        let cursor_position = active
+            .map(|tab| tab.input.read(cx).cursor_position())
+            .map(|position| (position.line + 1, position.character + 1))
+            .unwrap_or((1, 1));
+        let line_ending = active
+            .map(|tab| tab.input.read(cx).text().to_string())
+            .map(|text| if text.contains("\r\n") { "CRLF" } else { "LF" })
+            .unwrap_or("LF");
 
         let status_text = if !self.connected {
             t!("editor_connection_lost").to_string()
@@ -840,25 +848,7 @@ impl Render for SftpEditor {
                                     .text_color(theme.foreground)
                                     .child(filename.to_string()),
                             )
-                            .child(
-                                gpui::div()
-                                    .text_xs()
-                                    .text_color(theme.muted)
-                                    .child(format!("({})", lang_label)),
-                            )
                             .child(gpui::div().flex_1())
-                            .child(
-                                gpui::div()
-                                    .text_xs()
-                                    .text_color(if !connected || dirty {
-                                        theme.warning
-                                    } else if saving {
-                                        theme.muted
-                                    } else {
-                                        theme.success
-                                    })
-                                    .child(status_text),
-                            )
                             .when(!capacity_notice.is_empty(), |this| {
                                 this.child(
                                     gpui::div()
@@ -891,16 +881,53 @@ impl Render for SftpEditor {
                         gpui::div()
                             .flex_1()
                             .min_h_0()
-                            .when_some(self.active_tab(), |this, t| {
+                            .bg(theme.background)
+                            .when_some(self.active_tab(), |this, tab| {
                                 this.child(
-                                    Input::new(&t.input)
+                                    Input::new(&tab.input)
                                         .h_full()
                                         .bordered(false)
                                         .focus_bordered(false)
+                                        .font_family("Maple Mono NF CN")
+                                        .text_size(px(13.))
+                                        .line_height(relative(1.5))
                                         .px_1()
                                         .py_1(),
                                 )
                             }),
+                    )
+                    .child(
+                        h_flex()
+                            .w_full()
+                            .h(px(26.))
+                            .items_center()
+                            .gap_3()
+                            .px_3()
+                            .border_t_1()
+                            .border_color(theme.border.opacity(0.45))
+                            .bg(theme.muted.opacity(0.32))
+                            .text_xs()
+                            .text_color(theme.muted_foreground)
+                            .child(lang_label.to_uppercase())
+                            .child(t!(
+                                "editor_cursor_position",
+                                line = cursor_position.0,
+                                column = cursor_position.1
+                            ).to_string())
+                            .child("UTF-8")
+                            .child(line_ending)
+                            .child(gpui::div().flex_1())
+                            .child(
+                                gpui::div()
+                                    .text_color(if !connected || dirty {
+                                        theme.warning
+                                    } else if saving {
+                                        theme.muted_foreground
+                                    } else {
+                                        theme.success
+                                    })
+                                    .child(status_text),
+                            ),
                     ),
             )
             .when(show_detach_hint, |this| {

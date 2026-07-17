@@ -7,7 +7,10 @@ use gpui::{
 use gpui_component::Root;
 use rust_i18n::t;
 
-use crate::{app::sftp_editor::SftpEditor, sftp::SftpHandle};
+use crate::{
+    app::sftp_editor::{EditorTab, SftpEditor},
+    sftp::SftpHandle,
+};
 
 #[derive(Clone)]
 struct EditorWindowEntry {
@@ -174,16 +177,14 @@ pub(crate) fn open_or_focus(
 
 pub(crate) fn open_detached(
     session_id: String,
-    remote_path: String,
-    content: String,
-    dirty: bool,
+    tab: EditorTab,
     sftp: SftpHandle,
     position: Point<Pixels>,
     cx: &mut App,
 ) -> bool {
     let options = window_options(cx, Some(position));
     let session_id_for_window = session_id.clone();
-    let remote_path_for_title = remote_path.clone();
+    let remote_path_for_title = tab.remote_path().to_string();
     let opened = cx.open_window(options, move |window, cx| {
         window.set_window_title(&format!(
             "{} - {}",
@@ -193,15 +194,7 @@ pub(crate) fn open_detached(
         gpui_component::Theme::sync_system_appearance(Some(window), cx);
 
         let editor = cx.new(|cx| {
-            SftpEditor::from_detached(
-                session_id_for_window.clone(),
-                remote_path,
-                content,
-                dirty,
-                sftp,
-                window,
-                cx,
-            )
+            SftpEditor::from_detached(session_id_for_window.clone(), tab, sftp, window, cx)
         });
         let window_handle = window.window_handle();
         register(EditorWindowEntry {
