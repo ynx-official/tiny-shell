@@ -131,8 +131,6 @@ pub(crate) fn open_or_focus(
             remote_path_for_title,
             t!("editor_window_title")
         ));
-        gpui_component::Theme::sync_system_appearance(Some(window), cx);
-
         let editor = cx.new(|cx| {
             SftpEditor::new(
                 session_id_for_window.clone(),
@@ -194,8 +192,6 @@ pub(crate) fn open_detached(
             remote_path_for_title,
             t!("editor_window_title")
         ));
-        gpui_component::Theme::sync_system_appearance(Some(window), cx);
-
         let editor = cx.new(|cx| {
             SftpEditor::from_detached(session_id_for_window.clone(), tab, sftp, window, cx)
         });

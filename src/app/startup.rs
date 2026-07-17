@@ -414,7 +414,6 @@ fn open_window_with_initializer(
 ) -> Result<(), String> {
     cx.open_window(window_options, |window, cx| {
         window.set_window_title("ashell");
-        gpui_component::Theme::sync_system_appearance(Some(window), cx);
         let view = cx.new(|cx| Ashell::new(window, session_store.clone(), cx));
 
         crate::app::register_window(window.window_handle(), view.clone());

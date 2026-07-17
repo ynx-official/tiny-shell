@@ -519,7 +519,6 @@ pub(crate) struct Ashell {
     pub(crate) net_rx_history: Vec<f32>,
     pub(crate) net_tx_history: Vec<f32>,
     pub(crate) last_system_sample: Instant,
-    pub(crate) last_theme_sync: Instant,
 
     pub(crate) search_input: Entity<InputState>,
     pub(crate) search_active: bool,
@@ -792,7 +791,8 @@ impl Ashell {
         let system = system_sampler.lock().unwrap().sample().clone();
         let default_light_theme_name = ThemeRegistry::global(cx).default_light_theme().name.clone();
         let default_dark_theme_name = ThemeRegistry::global(cx).default_dark_theme().name.clone();
-        let follow_system_theme = config.follow_system_theme();
+        let follow_system_theme =
+            theme::initialize_process_theme_preference(config.follow_system_theme());
 
         let theme_mode = match config.theme_mode() {
             "light" => ThemeMode::Light,
@@ -955,7 +955,6 @@ impl Ashell {
             net_rx_history: Vec::with_capacity(20),
             net_tx_history: Vec::with_capacity(20),
             last_system_sample: Instant::now(),
-            last_theme_sync: Instant::now(),
 
             search_input,
             search_active: false,
@@ -1408,8 +1407,7 @@ impl Ashell {
     }
 
     pub(crate) fn sync_theme_if_due(&mut self, cx: &mut Context<Self>) {
-        if self.follow_system_theme && self.last_theme_sync.elapsed() >= Duration::from_secs(1) {
-            self.last_theme_sync = Instant::now();
+        if theme::claim_system_theme_sync(Duration::from_secs(1)) {
             Theme::sync_system_appearance(None, cx);
             cx.refresh_windows();
         }
