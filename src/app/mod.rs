@@ -1334,6 +1334,9 @@ impl Ashell {
                     if let Some(tab) = self.tabs.iter_mut().find(|t| t.id == tab_id) {
                         tab.dynamic_title = title;
                     }
+                    if self.active_tab.as_deref() == Some(tab_id.as_str()) {
+                        self.sync_sftp_to_terminal_tab(&tab_id, true);
+                    }
                 }
                 BackendEvent::SyncFinished(result) => {
                     self.sync_in_progress = false;
@@ -1577,51 +1580,77 @@ impl Ashell {
         self.active_group = None;
     }
 
-    pub(crate) fn sync_cwd_from_terminal(
+    pub(crate) fn toggle_follow_terminal_cwd(
         &mut self,
         _window: &mut gpui::Window,
-        _cx: &mut Context<Self>,
+        cx: &mut Context<Self>,
     ) {
-        let active_id = self.active_tab.clone();
-        let Some(active_id) = active_id else {
+        let Some(active_group) = self.active_group.clone() else {
             return;
         };
+        let enabled = self
+            .tab_groups
+            .iter_mut()
+            .find(|group| group.id == active_group)
+            .and_then(|group| group.sftp.as_mut())
+            .map(|sftp| {
+                sftp.follow_terminal_cwd = !sftp.follow_terminal_cwd;
+                sftp.follow_terminal_cwd
+            });
 
-        if let Some(tab) = self.tabs.iter().find(|t| t.id == active_id) {
-            let home_dir = if let Some(group) = self
-                .tab_groups
-                .iter()
-                .find(|g| g.pane_root.contains(&tab.id))
-            {
-                group
-                    .sftp
-                    .as_ref()
-                    .map(|s| s.home_dir.as_str())
-                    .unwrap_or("/")
-            } else {
-                "/"
-            };
-
-            let parsed = Self::parse_path_from_title(&tab.dynamic_title, home_dir);
-
-            if let Some(path) = parsed {
-                if let Some(group) = self
-                    .tab_groups
-                    .iter_mut()
-                    .find(|g| g.pane_root.contains(&active_id))
-                {
-                    if let Some(sftp) = group.sftp.as_mut() {
-                        sftp.current_path = path.clone();
-                        self.pending_sftp_path_sync = Some(path.clone());
-                        if let Some(handle) = self.sftp_handles.get(&group.id) {
-                            let _ = handle
-                                .commands
-                                .send(crate::sftp::SftpCommand::ListDir(path));
-                        }
-                    }
-                }
-            }
+        if enabled == Some(true)
+            && let Some(active_tab) = self.active_tab.clone()
+        {
+            self.sync_sftp_to_terminal_tab(&active_tab, false);
         }
+        cx.notify();
+    }
+
+    pub(crate) fn sync_sftp_to_terminal_tab(
+        &mut self,
+        tab_id: &str,
+        require_follow_enabled: bool,
+    ) -> bool {
+        let Some(tab) = self.tabs.iter().find(|tab| tab.id == tab_id) else {
+            return false;
+        };
+        if tab.kind != TabKind::Ssh {
+            return false;
+        }
+        let Some(group) = self
+            .tab_groups
+            .iter()
+            .find(|group| group.pane_root.contains(tab_id))
+        else {
+            return false;
+        };
+        let Some(sftp) = group.sftp.as_ref() else {
+            return false;
+        };
+        if require_follow_enabled && !sftp.follow_terminal_cwd {
+            return false;
+        }
+        let Some(path) = Self::parse_path_from_title(&tab.dynamic_title, &sftp.home_dir) else {
+            return false;
+        };
+        if sftp.current_path == path {
+            return false;
+        }
+
+        let group_id = group.id.clone();
+        if let Some(sftp) = self
+            .tab_groups
+            .iter_mut()
+            .find(|group| group.id == group_id)
+            .and_then(|group| group.sftp.as_mut())
+        {
+            sftp.current_path = path.clone();
+        }
+        self.pending_sftp_path_sync = Some(path.clone());
+        if let Some(handle) = self.sftp_handles.get(&group_id) {
+            handle.list_dir(path);
+        }
+        true
     }
 
     fn parse_path_from_title(title: &str, home_dir: &str) -> Option<String> {
@@ -1745,5 +1774,34 @@ impl Ashell {
                 size
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Ashell;
+
+    #[test]
+    fn parses_absolute_terminal_path() {
+        assert_eq!(
+            Ashell::parse_path_from_title("user@host:/srv/app", "/home/user"),
+            Some("/srv/app".to_string())
+        );
+    }
+
+    #[test]
+    fn expands_home_terminal_path() {
+        assert_eq!(
+            Ashell::parse_path_from_title("ASHELL_CWD:~/projects", "/home/user"),
+            Some("/home/user/projects".to_string())
+        );
+    }
+
+    #[test]
+    fn rejects_titles_without_a_remote_path() {
+        assert_eq!(
+            Ashell::parse_path_from_title("user@host", "/home/user"),
+            None
+        );
     }
 }

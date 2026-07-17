@@ -214,6 +214,7 @@ pub struct SftpUiState {
     pub preview: Option<PreviewData>,
     pub selected_entries: std::collections::HashSet<String>,
     pub home_dir: String,
+    pub follow_terminal_cwd: bool,
 }
 
 impl TerminalTab {

@@ -1037,6 +1037,7 @@ impl Ashell {
                 preview: None,
                 selected_entries: std::collections::HashSet::new(),
                 home_dir: "/".into(),
+                follow_terminal_cwd: false,
             }),
         });
         self.active_group = Some(group_id.clone());
@@ -1932,7 +1933,8 @@ impl Ashell {
         if find_path(&self.pane_root, &tab_id, &mut path) {
             let changed = self.active_tab.as_deref() != Some(tab_id.as_str());
             self.focused_pane_path = path;
-            self.active_tab = Some(tab_id);
+            self.active_tab = Some(tab_id.clone());
+            self.sync_sftp_to_terminal_tab(&tab_id, true);
             // Clear stale search state when switching to a different pane.
             // The user can press Enter to re-search in the new pane.
             if changed && self.search_active {

@@ -7,7 +7,7 @@ use gpui::{
 };
 use gpui_component::{
     ActiveTheme, Disableable as _, ElementExt, Icon, IconName, InteractiveElementExt as _, Root,
-    Sizable as _, Size,
+    Selectable as _, Sizable as _, Size,
     button::{Button, ButtonVariants as _},
     checkbox::Checkbox,
     h_flex,
@@ -201,11 +201,16 @@ impl Ashell {
                     Button::new("sftp-sync-cwd")
                         .ghost()
                         .small()
+                        .selected(sftp.follow_terminal_cwd)
                         .icon(IconName::SquareTerminal)
                         .label(t!("sync_cwd").to_string())
-                        .tooltip(t!("sync_cwd_tooltip").to_string())
+                        .tooltip(if sftp.follow_terminal_cwd {
+                            t!("sync_cwd_enabled_tooltip").to_string()
+                        } else {
+                            t!("sync_cwd_tooltip").to_string()
+                        })
                         .on_click(cx.listener(|this, _, window, cx| {
-                            this.sync_cwd_from_terminal(window, cx);
+                            this.toggle_follow_terminal_cwd(window, cx);
                         })),
                 )
                 .child(
