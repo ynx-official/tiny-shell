@@ -422,7 +422,12 @@ fn open_window_with_initializer(
         tracing::info!("[ui] application window opened");
         if should_activate {
             let focus_handle = view.read(cx).focus_handle.clone();
-            crate::app::activate_window_with_retry(window.window_handle(), focus_handle, cx);
+            // A newly created native window is already activated by Windows. Calling
+            // `activate_window` here makes GPUI synthesize a global Alt key press on
+            // Windows to obtain foreground permission, which can wake unrelated apps
+            // that own global shortcuts. Only establish GPUI's internal focus here;
+            // forced activation remains reserved for merging into an existing window.
+            window.focus(&focus_handle, cx);
         }
 
         let view_clone = view.clone();
