@@ -355,6 +355,7 @@ fn open_window_with_options(
     .expect("failed to open window");
 }
 
+#[allow(clippy::result_large_err)]
 pub(crate) fn open_new_window_with_group(
     transfer: GroupTransfer,
     source_owner_id: WindowOwnerId,

@@ -306,7 +306,7 @@ async fn connect_and_authenticate(
             let passphrase = session.passphrase.trim();
             let passphrase = (!passphrase.is_empty()).then_some(passphrase);
 
-            let success = if has_explicit_key {
+            if has_explicit_key {
                 let keypair = load_session_private_key(session)?;
                 let algorithm = format!("{:?}", keypair.algorithm());
                 let _ = events.send(BackendEvent::Status {
@@ -356,8 +356,7 @@ async fn connect_and_authenticate(
                     ));
                 }
                 success
-            };
-            success
+            }
         }
         AuthMethod::Config => {
             // SSH Config auth: try the identity file from config, or default keys

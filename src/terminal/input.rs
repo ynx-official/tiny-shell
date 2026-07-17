@@ -13,7 +13,7 @@ use crate::{
 };
 
 thread_local! {
-    static LAST_DRAG_SCROLL: std::cell::Cell<Option<std::time::Instant>> = std::cell::Cell::new(None);
+    static LAST_DRAG_SCROLL: std::cell::Cell<Option<std::time::Instant>> = const { std::cell::Cell::new(None) };
 }
 
 impl Ashell {
@@ -450,15 +450,11 @@ impl Ashell {
                 if should_scroll {
                     if row == 0 {
                         scroll_delta = 2;
-                    } else if row == 1 {
-                        scroll_delta = 1;
-                    } else if row == 2 {
+                    } else if row == 1 || row == 2 {
                         scroll_delta = 1;
                     } else if row == max_row {
                         scroll_delta = -2;
-                    } else if row == max_row.saturating_sub(1) {
-                        scroll_delta = -1;
-                    } else if row == max_row.saturating_sub(2) {
+                    } else if row == max_row.saturating_sub(1) || row == max_row.saturating_sub(2) {
                         scroll_delta = -1;
                     }
                 }
@@ -502,7 +498,7 @@ impl Ashell {
         let bounds = self.terminal_bounds.get(active_id)?;
         if !bounds.contains(&position) {
             // Try other pane bounds
-            for (_, b) in &self.terminal_bounds {
+            for b in self.terminal_bounds.values() {
                 if b.contains(&position) {
                     // Found a different pane - focus it
                     // (this path is for click-to-focus; handled via focus_terminal)
@@ -538,7 +534,7 @@ impl Ashell {
         // Platform modifier (Cmd on macOS, Ctrl on Windows/Linux) + scroll → zoom terminal font size
         if event.modifiers.platform {
             let delta = match event.delta {
-                ScrollDelta::Lines(point) => point.y as f32 * 20.0,
+                ScrollDelta::Lines(point) => point.y * 20.0,
                 ScrollDelta::Pixels(point) => point.y.as_f32(),
             };
             self.terminal_zoom_accumulator += delta;

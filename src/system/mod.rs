@@ -52,8 +52,8 @@ impl SystemSampler {
         sys.refresh_all();
         let nets = Networks::new_with_refreshed_list();
         let disks = Disks::new_with_refreshed_list();
-        let last_rx_total = nets.iter().map(|(_, d)| d.total_received()).sum();
-        let last_tx_total = nets.iter().map(|(_, d)| d.total_transmitted()).sum();
+        let last_rx_total = nets.values().map(|d| d.total_received()).sum();
+        let last_tx_total = nets.values().map(|d| d.total_transmitted()).sum();
 
         Self {
             sys,
@@ -81,8 +81,8 @@ impl SystemSampler {
         let swap_total = self.sys.total_swap();
         let swap_used = self.sys.used_swap();
 
-        let rx_total: u64 = self.nets.iter().map(|(_, d)| d.total_received()).sum();
-        let tx_total: u64 = self.nets.iter().map(|(_, d)| d.total_transmitted()).sum();
+        let rx_total: u64 = self.nets.values().map(|d| d.total_received()).sum();
+        let tx_total: u64 = self.nets.values().map(|d| d.total_transmitted()).sum();
         let now = Instant::now();
         let elapsed = now
             .duration_since(self.last_instant)

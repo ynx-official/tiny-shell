@@ -272,9 +272,7 @@ impl Ashell {
 
         let tab = tab.or_else(|| self.tabs.first());
 
-        let Some(tab) = tab else {
-            return None;
-        };
+        let tab = tab?;
         let snapshot = tab.render_snapshot(false);
         let display_offset = snapshot.display_offset as i32;
         let rows = snapshot.rows as i32;
@@ -362,7 +360,7 @@ impl Ashell {
             .top(px(8.))
             .right(px(24.))
             .on_prepaint(move |bounds, _window, cx| {
-                let _ = view.update(cx, |this, _| {
+                view.update(cx, |this, _| {
                     this.search_bar_bounds = Some(bounds);
                 });
             })

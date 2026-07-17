@@ -284,6 +284,7 @@ impl InputHandler for TerminalInputHandler {
 }
 
 impl TerminalElement {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         view: Entity<Ashell>,
         focus_handle: FocusHandle,
@@ -611,7 +612,7 @@ impl Element for TerminalElement {
         // This is 100% accurate because it is recorded during layout prepaint.
         let view = self.view.clone();
         let tab_id = self.tab_id.clone();
-        let _ = view.update(cx, |this, cx| {
+        view.update(cx, |this, cx| {
             let old_bounds = this.terminal_bounds.insert(tab_id.clone(), bounds);
 
             // Sync PTY size unconditionally on every prepaint layout pass to ensure

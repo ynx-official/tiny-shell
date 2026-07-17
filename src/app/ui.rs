@@ -195,7 +195,7 @@ impl Ashell {
                     .child(t!("remote_files")),
             )
             .child(div().flex_1())
-            .when_some(active_sftp.clone(), |this, sftp| {
+            .when_some(active_sftp, |this, sftp| {
                 let selected_entries = sftp.selected_entries.clone();
                 this.child(
                     Button::new("sftp-sync-cwd")
@@ -239,11 +239,7 @@ impl Ashell {
                         .label(if selected_entries.is_empty() {
                             t!("delete_selected").to_string()
                         } else {
-                            format!(
-                                "{} ({})",
-                                t!("delete_selected").to_string(),
-                                selected_entries.len()
-                            )
+                            format!("{} ({})", t!("delete_selected"), selected_entries.len())
                         })
                         .disabled(selected_entries.is_empty())
                         .on_click(cx.listener(|this, _, window, cx| {
@@ -573,9 +569,6 @@ impl Ashell {
                             let selected_path = selected_path.clone();
                             let view = view.clone();
                             let theme = cx.theme().clone();
-                            let icon_col_width = icon_col_width;
-                            let size_col_width = size_col_width;
-                            let modified_col_width = modified_col_width;
                             uniform_list(
                                 "sftp-entries-list",
                                 entries.len(),
@@ -2179,7 +2172,7 @@ impl Ashell {
                     .on_prepaint({
                         let view = view.clone();
                         move |bounds, _window, cx| {
-                            let _ = view.update(cx, |this, _| {
+                            view.update(cx, |this, _| {
                                 this.tab_bar_bounds = Some(bounds);
                             });
                         }
@@ -2225,7 +2218,7 @@ impl Ashell {
                                     let bounds_view = view.clone();
                                     Tab::new()
                                         .on_prepaint(move |bounds, _window, cx| {
-                                            let _ = bounds_view.update(cx, |this, _| {
+                                            bounds_view.update(cx, |this, _| {
                                                 this.tab_group_bounds
                                                     .insert(bounds_gid.clone(), bounds);
                                             });
@@ -2366,7 +2359,7 @@ impl Ashell {
                 div()
                     .size_full()
                     .on_prepaint(move |bounds, _window, cx| {
-                        let _ = view.update(cx, |this, cx| {
+                        view.update(cx, |this, cx| {
                             if this.terminal_panel_bounds != Some(bounds) {
                                 this.terminal_panel_bounds = Some(bounds);
                                 cx.notify();
@@ -2579,7 +2572,7 @@ impl Ashell {
                 let is_url_hovered = this
                     .hovered_url
                     .as_ref()
-                    .map_or(false, |hu| hu.tab_id == *tab_id);
+                    .is_some_and(|hu| hu.tab_id == *tab_id);
                 let mut el = div()
                     .size_full()
                     .overflow_hidden()
@@ -2841,14 +2834,14 @@ impl Render for Ashell {
         let move_view = view.clone();
         window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
             if phase == DispatchPhase::Capture {
-                let _ = move_view.update(cx, |this, cx| {
+                move_view.update(cx, |this, cx| {
                     this.on_tab_drag_mouse_move(event, window, cx);
                 });
             }
         });
         window.on_mouse_event(move |event: &MouseUpEvent, phase, window, cx| {
             if phase == DispatchPhase::Capture && event.button == MouseButton::Left {
-                let _ = view.update(cx, |this, cx| {
+                view.update(cx, |this, cx| {
                     this.on_tab_drag_mouse_up(event, window, cx);
                 });
             }
@@ -3401,7 +3394,7 @@ impl Render for Ashell {
                 move |_, window, cx| {
                     view.update(cx, |this, cx| {
                         let current_win_size = window.viewport_size();
-                        let size_changed = this.last_window_size.map_or(true, |prev| prev != current_win_size);
+                        let size_changed = this.last_window_size != Some(current_win_size);
                         this.last_window_size = Some(current_win_size);
 
                         let current_sizes = this.workspace_panels.read(cx).sizes().clone();

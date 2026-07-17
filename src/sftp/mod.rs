@@ -555,7 +555,16 @@ async fn run_sftp(
             }
             SftpCommand::EditFile { remote_path } => {
                 let id = uuid::Uuid::new_v4().to_string();
-                let config = crate::session::config::ConfigStore::load().unwrap();
+                let config = match crate::session::config::ConfigStore::load() {
+                    Ok(config) => config,
+                    Err(err) => {
+                        let _ = events.send(BackendEvent::SftpStatus {
+                            tab_id: tab_id.clone(),
+                            text: format!("failed to load configuration: {err:#}"),
+                        });
+                        continue;
+                    }
+                };
                 let tmp_dir = config.tmp_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
                 let base = base_name(&remote_path);
                 let local_path = tmp_dir.join(format!("{}-{}", id, base));
@@ -623,14 +632,16 @@ async fn run_sftp(
                         Err(_) => return,
                     };
 
-                    if let Err(_) = watcher.watch(&local_path, notify::RecursiveMode::NonRecursive)
+                    if watcher
+                        .watch(&local_path, notify::RecursiveMode::NonRecursive)
+                        .is_err()
                     {
                         return;
                     }
 
-                    while let Some(_) = rx.recv().await {
+                    while rx.recv().await.is_some() {
                         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                        while let Ok(_) = rx.try_recv() {} // drain pending
+                        while rx.try_recv().is_ok() {} // drain pending
 
                         if commands_tx_clone
                             .send(SftpCommand::UploadEditedFile {
@@ -982,7 +993,8 @@ async fn connect_and_authenticate(
             .context("password authentication failed")?,
         AuthMethod::Key => {
             let has_explicit_key = session_has_explicit_key(session);
-            let success = if has_explicit_key {
+
+            if has_explicit_key {
                 let keypair = load_session_private_key(session)?;
                 let keys = private_keys_with_algs(keypair).context("invalid private key")?;
                 let mut success = false;
@@ -1027,8 +1039,7 @@ async fn connect_and_authenticate(
                     ));
                 }
                 success
-            };
-            success
+            }
         }
         AuthMethod::Config => {
             // For Config auth, try the identity file from config entry, or default keys
@@ -1309,6 +1320,7 @@ async fn preview_impl(sftp: &SftpSession, path: &str) -> Result<PreviewData> {
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn download_path_impl(
     handle: &russh::client::Handle<SftpClientHandler>,
     sftp: &SftpSession,
@@ -1407,6 +1419,7 @@ async fn download_dir_recursive(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn download_remote_directory_archive(
     handle: &russh::client::Handle<SftpClientHandler>,
     sftp: &SftpSession,
@@ -1849,6 +1862,7 @@ async fn upload_paths_impl(
     Ok(summary)
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn upload_file_impl(
     sftp: &SftpSession,
     local_file: &Path,

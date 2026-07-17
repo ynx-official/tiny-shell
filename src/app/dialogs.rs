@@ -239,7 +239,8 @@ impl Ashell {
                                                     mk.fingerprint
                                                 )
                                             });
-                                        let this = if let Some(info) = info {
+
+                                        if let Some(info) = info {
                                             this.child(
                                                 div()
                                                     .px(px(8.))
@@ -260,8 +261,7 @@ impl Ashell {
                                                         t!("select_managed_key_hint").to_string(),
                                                     ),
                                             )
-                                        };
-                                        this
+                                        }
                                     } else {
                                         this.child(
                                             h_flex()

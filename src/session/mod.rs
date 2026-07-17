@@ -287,9 +287,9 @@ impl Ashell {
             .set_directory(start_dir)
             .pick_file();
 
-        cx.spawn_in(window, async move |this, mut cx| {
+        cx.spawn_in(window, async move |this, cx| {
             if let Some(file) = file_dialog.await {
-                let _ = gpui::AsyncWindowContext::update(&mut cx, |window, cx| {
+                let _ = gpui::AsyncWindowContext::update(cx, |window, cx| {
                     let _ = this.update(cx, |this, cx| {
                         Self::set_input_value(
                             &this.key_path_input,
@@ -423,7 +423,7 @@ impl Ashell {
             .set_directory(start_dir)
             .pick_file();
 
-        cx.spawn_in(window, async move |this, mut cx| {
+        cx.spawn_in(window, async move |this, cx| {
             if let Some(file) = file_dialog.await {
                 let path = file.path().to_path_buf();
                 let display_path = path.to_string_lossy().to_string();
@@ -433,7 +433,7 @@ impl Ashell {
                     .unwrap_or("imported-key")
                     .to_string();
 
-                let _ = gpui::AsyncWindowContext::update(&mut cx, |_, cx| {
+                let _ = gpui::AsyncWindowContext::update(cx, |_, cx| {
                     let _ = this.update(cx, |this, cx| {
                         this.key_import.begin_file_validation(display_path.clone());
                         cx.notify();
@@ -447,7 +447,7 @@ impl Ashell {
                 let read_result = result_rx.await.unwrap_or_else(|_| {
                     Err(std::io::Error::other("private key validation task stopped"))
                 });
-                let _ = gpui::AsyncWindowContext::update(&mut cx, |window, cx| {
+                let _ = gpui::AsyncWindowContext::update(cx, |window, cx| {
                     let _ = this.update(cx, |this, cx| {
                         if !this.key_import.open || this.key_import.path != display_path {
                             return;
@@ -560,7 +560,7 @@ impl Ashell {
             .set_directory(start_dir)
             .pick_file();
 
-        cx.spawn_in(window, async move |this, mut cx| {
+        cx.spawn_in(window, async move |this, cx| {
             if let Some(file) = file_dialog.await {
                 let path = file.path().to_path_buf();
                 let content = std::fs::read_to_string(&path).unwrap_or_default();
@@ -569,7 +569,7 @@ impl Ashell {
                     .and_then(|s| s.to_str())
                     .unwrap_or("imported-key")
                     .to_string();
-                let _ = gpui::AsyncWindowContext::update(&mut cx, |_window, cx| {
+                let _ = gpui::AsyncWindowContext::update(cx, |_window, cx| {
                     let _ = this.update(cx, |this, cx| {
                         this.finalize_key_import(content, file_name, cx);
                     });
@@ -1252,7 +1252,7 @@ impl Ashell {
         if self
             .connection_progress
             .as_ref()
-            .map_or(false, |p| p.tab_id == id)
+            .is_some_and(|p| p.tab_id == id)
         {
             self.connection_progress = None;
         }
@@ -1274,7 +1274,7 @@ impl Ashell {
         };
 
         let pane_ids = group.pane_root.tab_ids();
-        let pane_ids_str: Vec<&str> = pane_ids.iter().map(|s| *s).collect();
+        let pane_ids_str = pane_ids.to_vec();
         let is_group_close = pane_ids.len() <= 1;
         tracing::info!(
             "[handle_tab_close] id='{}' group_panes={:?} is_group_close={}",
@@ -1812,7 +1812,7 @@ impl Ashell {
         let is_current_valid = self
             .system_tab_id
             .as_ref()
-            .map_or(false, |id| group_ssh_tabs.contains(id));
+            .is_some_and(|id| group_ssh_tabs.contains(id));
 
         if !is_current_valid {
             let new_id = group_ssh_tabs.into_iter().next();
@@ -1891,7 +1891,7 @@ impl Ashell {
                 [first, rest @ ..],
             ) => children
                 .get(*first)
-                .map_or(false, |c| Self::is_layout_horizontal_at(c, rest)),
+                .is_some_and(|c| Self::is_layout_horizontal_at(c, rest)),
             _ => false,
         }
     }
@@ -2334,6 +2334,7 @@ impl Ashell {
         )
     }
 
+    #[allow(clippy::result_large_err)]
     fn commit_group_merge(
         &mut self,
         group_id: String,
@@ -2548,6 +2549,7 @@ impl Ashell {
     /// Receive an intact group from another window without recreating any
     /// terminal or SFTP backend. The group remains a separate top-level tab
     /// because `TabGroup` owns a single SFTP UI state.
+    #[allow(clippy::result_large_err)]
     pub(crate) fn receive_group_transfer(
         &mut self,
         transfer: GroupTransfer,

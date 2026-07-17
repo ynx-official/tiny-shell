@@ -86,7 +86,7 @@ fn subscribe_input_changes(input: &Entity<InputState>, cx: &mut gpui::Context<Sf
     cx.subscribe(input, |this, emitter, event: &InputEvent, cx| {
         if let InputEvent::Change = event {
             if let Some(tab) = this.tabs.iter_mut().find(|tab| tab.input == emitter) {
-                let dirty = tab.input.read(cx).text().to_string() != tab.saved_text;
+                let dirty = *tab.input.read(cx).text() != tab.saved_text;
                 if tab.dirty != dirty {
                     tab.dirty = dirty;
                     cx.notify();

@@ -1,4 +1,8 @@
-use std::{fs, path::PathBuf};
+use std::{
+    fs::{self, OpenOptions},
+    io::Write,
+    path::{Path, PathBuf},
+};
 
 use anyhow::{Context, Result};
 use argon2::Argon2;
@@ -838,20 +842,63 @@ impl ConfigStore {
         }
         let hardware_uuid = get_hardware_uuid();
         let encrypted_bytes = encrypt_config(&self.cache, &hardware_uuid)?;
-        fs::write(&self.path, encrypted_bytes)
-            .with_context(|| format!("failed to write {}", self.path.display()))?;
+        write_config_atomically(&self.path, &encrypted_bytes)
+    }
+}
+
+fn write_config_atomically(path: &Path, bytes: &[u8]) -> Result<()> {
+    let parent = path
+        .parent()
+        .context("configuration path has no parent directory")?;
+    fs::create_dir_all(parent)
+        .with_context(|| format!("failed to create config dir {}", parent.display()))?;
+
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .context("configuration path has an invalid file name")?;
+    let temp_path = parent.join(format!(".{file_name}.{}.tmp", Uuid::new_v4()));
+
+    let write_result = (|| -> Result<()> {
+        let mut file = OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&temp_path)
+            .with_context(|| format!("failed to create {}", temp_path.display()))?;
+        file.write_all(bytes)
+            .with_context(|| format!("failed to write {}", temp_path.display()))?;
+        file.sync_all()
+            .with_context(|| format!("failed to sync {}", temp_path.display()))?;
 
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            if let Ok(mut perms) = fs::metadata(&self.path).map(|m| m.permissions()) {
-                perms.set_mode(0o600);
-                let _ = fs::set_permissions(&self.path, perms);
-            }
+            fs::set_permissions(&temp_path, fs::Permissions::from_mode(0o600))
+                .with_context(|| format!("failed to secure {}", temp_path.display()))?;
         }
 
+        fs::rename(&temp_path, path).with_context(|| {
+            format!(
+                "failed to replace configuration {} with {}",
+                path.display(),
+                temp_path.display()
+            )
+        })?;
+
+        #[cfg(unix)]
+        OpenOptions::new()
+            .read(true)
+            .open(parent)
+            .and_then(|directory| directory.sync_all())
+            .with_context(|| format!("failed to sync config dir {}", parent.display()))?;
+
         Ok(())
+    })();
+
+    if write_result.is_err() {
+        let _ = fs::remove_file(&temp_path);
     }
+    write_result
 }
 
 pub trait ProxyStream:
@@ -1103,7 +1150,7 @@ fn get_hardware_uuid() -> String {
     #[cfg(target_os = "windows")]
     {
         if let Ok(output) = std::process::Command::new("reg")
-            .args(&[
+            .args([
                 "query",
                 "HKLM\\SOFTWARE\\Microsoft\\Cryptography",
                 "/v",
@@ -1124,7 +1171,7 @@ fn get_hardware_uuid() -> String {
             }
         }
         if let Ok(output) = std::process::Command::new("wmic")
-            .args(&["csproduct", "get", "uuid"])
+            .args(["csproduct", "get", "uuid"])
             .output()
         {
             let stdout = String::from_utf8_lossy(&output.stdout);
@@ -1230,5 +1277,29 @@ mod tests {
 
         // Decrypt with wrong password should fail
         assert!(decrypt_config(&encrypted, "wrong-password").is_err());
+    }
+
+    #[test]
+    fn config_save_replaces_existing_file_without_leaving_temp_files() {
+        let dir = std::env::temp_dir().join(format!("ashell-config-test-{}", Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("sessions.json");
+        fs::write(&path, b"old config").unwrap();
+
+        let store = ConfigStore {
+            path: path.clone(),
+            cache: ConfigFile::default(),
+        };
+        store.save().unwrap();
+
+        let encrypted = fs::read(&path).unwrap();
+        let decrypted = decrypt_config(&encrypted, &get_hardware_uuid()).unwrap();
+        assert_eq!(
+            decrypted.terminal_font_family,
+            store.cache.terminal_font_family
+        );
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
+
+        fs::remove_dir_all(dir).unwrap();
     }
 }
