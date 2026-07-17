@@ -1182,23 +1182,32 @@ impl Ashell {
                 BackendEvent::SftpFileContent {
                     tab_id,
                     remote_path,
-                    content,
+                    file,
                 } => {
                     if let Some(handle) = self.sftp_handles.get(&tab_id).cloned() {
-                        sftp_editor_window::open_or_focus(tab_id, remote_path, content, handle, cx);
+                        sftp_editor_window::open_or_focus(tab_id, remote_path, file, handle, cx);
                     }
                 }
                 BackendEvent::SftpContentUploaded {
                     tab_id,
                     remote_path,
+                    revision,
                 } => {
-                    sftp_editor_window::mark_uploaded(&tab_id, &remote_path, cx);
+                    sftp_editor_window::mark_uploaded(&tab_id, &remote_path, revision, cx);
+                }
+                BackendEvent::SftpContentConflict {
+                    tab_id,
+                    remote_path,
+                    remote_file,
+                } => {
+                    sftp_editor_window::mark_conflict(&tab_id, &remote_path, remote_file, cx);
                 }
                 BackendEvent::SftpContentUploadFailed {
                     tab_id,
                     remote_path,
+                    error,
                 } => {
-                    sftp_editor_window::mark_upload_failed(&tab_id, &remote_path, cx);
+                    sftp_editor_window::mark_upload_failed(&tab_id, &remote_path, error, cx);
                 }
                 BackendEvent::RemoteSystem { tab_id, snapshot } => {
                     self.remote_sample_in_flight = false;

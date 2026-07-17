@@ -9,7 +9,10 @@ use rust_i18n::t;
 
 use crate::{
     app::sftp_editor::{EditorTab, SftpEditor},
-    sftp::SftpHandle,
+    sftp::{
+        SftpHandle,
+        text_file::{RemoteFileRevision, RemoteTextFile},
+    },
 };
 
 #[derive(Clone)]
@@ -91,7 +94,7 @@ fn window_options(cx: &App, position_hint: Option<Point<Pixels>>) -> WindowOptio
 pub(crate) fn open_or_focus(
     session_id: String,
     remote_path: String,
-    content: String,
+    file: RemoteTextFile,
     sftp: SftpHandle,
     cx: &mut App,
 ) {
@@ -102,13 +105,13 @@ pub(crate) fn open_or_focus(
     for entry in entries_for(&session_id) {
         let editor = entry.editor.clone();
         let remote_path_for_existing = remote_path.clone();
-        let content_for_existing = content.clone();
+        let file_for_existing = file.clone();
         if entry
             .window
             .update(cx, move |_, window, cx| {
                 window.activate_window();
                 editor.update(cx, |editor, cx| {
-                    editor.open_file(remote_path_for_existing, content_for_existing, window, cx);
+                    editor.open_file(remote_path_for_existing, file_for_existing, window, cx);
                     editor.focus_active(window, cx);
                 });
             })
@@ -134,7 +137,7 @@ pub(crate) fn open_or_focus(
             SftpEditor::new(
                 session_id_for_window.clone(),
                 remote_path,
-                content,
+                file,
                 sftp,
                 window,
                 cx,
@@ -312,20 +315,42 @@ pub(crate) fn focus_path(session_id: &str, remote_path: &str, cx: &mut App) -> b
     false
 }
 
-pub(crate) fn mark_uploaded(session_id: &str, remote_path: &str, cx: &mut App) {
+pub(crate) fn mark_uploaded(
+    session_id: &str,
+    remote_path: &str,
+    revision: RemoteFileRevision,
+    cx: &mut App,
+) {
     for entry in entries_for(session_id) {
         let remote_path = remote_path.to_string();
-        entry
-            .editor
-            .update(cx, |editor, cx| editor.mark_uploaded(&remote_path, cx));
+        let revision = revision.clone();
+        entry.editor.update(cx, |editor, cx| {
+            editor.mark_uploaded(&remote_path, revision, cx)
+        });
     }
 }
 
-pub(crate) fn mark_upload_failed(session_id: &str, remote_path: &str, cx: &mut App) {
+pub(crate) fn mark_conflict(
+    session_id: &str,
+    remote_path: &str,
+    remote_file: RemoteTextFile,
+    cx: &mut App,
+) {
     for entry in entries_for(session_id) {
         let remote_path = remote_path.to_string();
-        entry
-            .editor
-            .update(cx, |editor, cx| editor.mark_upload_failed(&remote_path, cx));
+        let remote_file = remote_file.clone();
+        entry.editor.update(cx, |editor, cx| {
+            editor.mark_conflict(&remote_path, remote_file, cx)
+        });
+    }
+}
+
+pub(crate) fn mark_upload_failed(session_id: &str, remote_path: &str, error: String, cx: &mut App) {
+    for entry in entries_for(session_id) {
+        let remote_path = remote_path.to_string();
+        let error = error.clone();
+        entry.editor.update(cx, |editor, cx| {
+            editor.mark_upload_failed(&remote_path, error, cx)
+        });
     }
 }

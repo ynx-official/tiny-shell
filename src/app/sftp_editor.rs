@@ -17,12 +17,15 @@ use gpui_component::{
     button::{Button, ButtonVariant, ButtonVariants as _},
     dialog::DialogButtonProps,
     h_flex,
-    input::{Input, InputEvent, InputState},
+    input::{Input, InputEvent, InputState, Search},
     v_flex,
 };
 use rust_i18n::t;
 
-use crate::sftp::SftpHandle;
+use crate::sftp::{
+    SftpHandle,
+    text_file::{RemoteFileRevision, RemoteTextFile, RemoteTextFormat, RemoteTextSave},
+};
 
 /// 文件扩展名 → Tree Sitter 语言名映射。
 /// 返回 None 时回退到纯多行模式(无高亮)。
@@ -65,6 +68,12 @@ fn base_name(path: &str) -> &str {
 pub(crate) struct EditorTab {
     remote_path: String,
     input: Entity<InputState>,
+    revision: RemoteFileRevision,
+    format: RemoteTextFormat,
+    large_file: bool,
+    conflict: Option<RemoteTextFile>,
+    save_error: Option<String>,
+    saved_text: String,
     /// 有未保存的修改。
     dirty: bool,
     /// 正在上传中。
@@ -77,8 +86,9 @@ fn subscribe_input_changes(input: &Entity<InputState>, cx: &mut gpui::Context<Sf
     cx.subscribe(input, |this, emitter, event: &InputEvent, cx| {
         if let InputEvent::Change = event {
             if let Some(tab) = this.tabs.iter_mut().find(|tab| tab.input == emitter) {
-                if !tab.dirty {
-                    tab.dirty = true;
+                let dirty = tab.input.read(cx).text().to_string() != tab.saved_text;
+                if tab.dirty != dirty {
+                    tab.dirty = dirty;
                     cx.notify();
                 }
             }
@@ -94,10 +104,17 @@ impl EditorTab {
 
     fn new(
         remote_path: String,
-        content: String,
+        file: RemoteTextFile,
         window: &mut Window,
         cx: &mut gpui::Context<SftpEditor>,
     ) -> Self {
+        let RemoteTextFile {
+            content,
+            revision,
+            format,
+            large_file,
+        } = file;
+        let saved_text = content.clone();
         let lang = language_for_path(&remote_path).unwrap_or("text");
         let input = cx.new(|cx| {
             InputState::new(window, cx)
@@ -111,6 +128,12 @@ impl EditorTab {
         Self {
             remote_path,
             input,
+            revision,
+            format,
+            large_file,
+            conflict: None,
+            save_error: None,
+            saved_text,
             dirty: false,
             saving: false,
             text_at_save_start: None,
@@ -224,12 +247,12 @@ impl SftpEditor {
     pub fn new(
         session_id: String,
         remote_path: String,
-        content: String,
+        file: RemoteTextFile,
         sftp: SftpHandle,
         window: &mut Window,
         cx: &mut gpui::Context<Self>,
     ) -> Self {
-        let tab = EditorTab::new(remote_path, content, window, cx);
+        let tab = EditorTab::new(remote_path, file, window, cx);
         Self {
             session_id,
             sftp,
@@ -268,7 +291,7 @@ impl SftpEditor {
     pub fn open_file(
         &mut self,
         remote_path: String,
-        content: String,
+        file: RemoteTextFile,
         window: &mut Window,
         cx: &mut gpui::Context<Self>,
     ) -> Option<usize> {
@@ -285,7 +308,7 @@ impl SftpEditor {
             cx.notify();
             return None;
         }
-        let tab = EditorTab::new(remote_path, content, window, cx);
+        let tab = EditorTab::new(remote_path, file, window, cx);
         self.tabs.push(tab);
         self.active_idx = self.tabs.len() - 1;
         self.capacity_notice.clear();
@@ -331,10 +354,17 @@ impl SftpEditor {
         }
     }
 
-    /// Ctrl+S:保存当前激活 tab,读取其内容并上传。
-    /// 注意:此处不清 dirty,等上传成功事件回来再清(mark_uploaded)。
-    /// 失败时由 mark_upload_failed 恢复 dirty。避免上传失败却误标已保存。
+    fn open_search(&self, window: &mut Window, cx: &mut gpui::Context<Self>) {
+        self.focus_active(window, cx);
+        window.dispatch_action(Box::new(Search), cx);
+    }
+
+    /// Ctrl+S: 保存当前激活 tab。保存成功事件返回前不清除 dirty。
     pub fn save_active(&mut self, _window: &mut Window, cx: &mut gpui::Context<Self>) {
+        self.save_active_with_force(false, cx);
+    }
+
+    fn save_active_with_force(&mut self, force: bool, cx: &mut gpui::Context<Self>) {
         if !self.connected {
             return;
         }
@@ -344,35 +374,161 @@ impl SftpEditor {
         if tab.saving {
             return;
         }
+
         let content = tab.input.read(cx).text().to_string();
-        let path = tab.remote_path.clone();
         tab.saving = true;
+        tab.save_error = None;
         tab.text_at_save_start = Some(content.clone());
-        self.sftp.upload_file_content(path, content);
+        self.sftp.save_file_content(RemoteTextSave {
+            remote_path: tab.remote_path.clone(),
+            content,
+            expected_revision: tab.revision.clone(),
+            format: tab.format,
+            force,
+        });
         cx.notify();
     }
 
-    /// 收到上传完成事件后,按 remote_path 标记对应 tab 已上传(成功才清 dirty)。
-    pub fn mark_uploaded(&mut self, remote_path: &str, cx: &mut gpui::Context<Self>) {
+    pub fn force_save_active(&mut self, _window: &mut Window, cx: &mut gpui::Context<Self>) {
+        self.save_active_with_force(true, cx);
+    }
+
+    /// 收到上传完成事件后，更新远程基准版本；上传期间继续编辑的内容仍保持 dirty。
+    pub fn mark_uploaded(
+        &mut self,
+        remote_path: &str,
+        revision: RemoteFileRevision,
+        cx: &mut gpui::Context<Self>,
+    ) {
         for tab in &mut self.tabs {
             if tab.remote_path == remote_path {
                 let uploaded_text = tab.text_at_save_start.take();
                 let current_text = tab.input.read(cx).text().to_string();
+                if let Some(uploaded_text) = uploaded_text {
+                    tab.saved_text = uploaded_text.clone();
+                    tab.dirty = uploaded_text != current_text;
+                }
+                tab.revision = revision.clone();
                 tab.saving = false;
-                tab.dirty = uploaded_text.as_deref() != Some(current_text.as_str());
+                tab.conflict = None;
+                tab.save_error = None;
             }
         }
         cx.notify();
     }
 
-    /// 收到上传失败事件后,按 remote_path 恢复 tab 状态:
-    /// saving=false,dirty 恢复为保存发起时的值(内容其实未保存)。
-    pub fn mark_upload_failed(&mut self, remote_path: &str, cx: &mut gpui::Context<Self>) {
+    pub fn mark_conflict(
+        &mut self,
+        remote_path: &str,
+        remote_file: RemoteTextFile,
+        cx: &mut gpui::Context<Self>,
+    ) {
         for tab in &mut self.tabs {
             if tab.remote_path == remote_path {
                 tab.saving = false;
                 tab.text_at_save_start = None;
                 tab.dirty = true;
+                tab.conflict = Some(remote_file.clone());
+                tab.save_error = None;
+            }
+        }
+        cx.notify();
+    }
+
+    pub fn reload_active_conflict(&mut self, window: &mut Window, cx: &mut gpui::Context<Self>) {
+        let Some(tab) = self.tabs.get_mut(self.active_idx) else {
+            return;
+        };
+        let Some(remote_file) = tab.conflict.take() else {
+            return;
+        };
+        tab.revision = remote_file.revision;
+        tab.format = remote_file.format;
+        tab.large_file = remote_file.large_file;
+        tab.saved_text = remote_file.content.clone();
+        tab.saving = false;
+        tab.text_at_save_start = None;
+        tab.save_error = None;
+        tab.input.update(cx, |input, cx| {
+            input.set_value(remote_file.content, window, cx);
+        });
+        tab.dirty = false;
+        cx.notify();
+    }
+
+    fn confirm_force_save_active(&mut self, window: &mut Window, cx: &mut gpui::Context<Self>) {
+        let editor = cx.entity();
+        window.open_alert_dialog(cx, move |dialog, _window, _| {
+            dialog
+                .title(t!("editor_conflict_overwrite_title").to_string())
+                .description(t!("editor_conflict_overwrite_desc").to_string())
+                .width(px(460.))
+                .keyboard(false)
+                .button_props(
+                    DialogButtonProps::default()
+                        .cancel_text(t!("editor_close_cancel").to_string())
+                        .show_cancel(true)
+                        .ok_text(t!("editor_conflict_overwrite").to_string())
+                        .ok_variant(ButtonVariant::Danger),
+                )
+                .on_ok({
+                    let editor = editor.clone();
+                    move |_, window, cx| {
+                        window.close_dialog(cx);
+                        editor.update(cx, |editor, cx| {
+                            editor.force_save_active(window, cx);
+                        });
+                        false
+                    }
+                })
+        });
+    }
+
+    fn confirm_reload_active_conflict(
+        &mut self,
+        window: &mut Window,
+        cx: &mut gpui::Context<Self>,
+    ) {
+        let editor = cx.entity();
+        window.open_alert_dialog(cx, move |dialog, _window, _| {
+            dialog
+                .title(t!("editor_conflict_reload_title").to_string())
+                .description(t!("editor_conflict_reload_desc").to_string())
+                .width(px(460.))
+                .keyboard(false)
+                .button_props(
+                    DialogButtonProps::default()
+                        .cancel_text(t!("editor_close_cancel").to_string())
+                        .show_cancel(true)
+                        .ok_text(t!("editor_conflict_reload").to_string())
+                        .ok_variant(ButtonVariant::Danger),
+                )
+                .on_ok({
+                    let editor = editor.clone();
+                    move |_, window, cx| {
+                        window.close_dialog(cx);
+                        editor.update(cx, |editor, cx| {
+                            editor.reload_active_conflict(window, cx);
+                        });
+                        false
+                    }
+                })
+        });
+    }
+
+    /// 收到上传失败事件后恢复 dirty，并保留可见错误信息。
+    pub fn mark_upload_failed(
+        &mut self,
+        remote_path: &str,
+        error: String,
+        cx: &mut gpui::Context<Self>,
+    ) {
+        for tab in &mut self.tabs {
+            if tab.remote_path == remote_path {
+                tab.saving = false;
+                tab.text_at_save_start = None;
+                tab.dirty = true;
+                tab.save_error = Some(error.clone());
             }
         }
         cx.notify();
@@ -656,8 +812,12 @@ impl SftpEditor {
             self.close_active(window, cx);
             cx.stop_propagation();
         }
-        // Esc 关闭整个编辑器
-        if key_lower == "escape" {
+        // 仅当正文输入框持有焦点时，Esc 才关闭编辑器；搜索面板自行消费 Esc。
+        if key_lower == "escape"
+            && self
+                .active_tab()
+                .is_some_and(|tab| tab.input.read(cx).focus_handle(cx).is_focused(window))
+        {
             self.close_all(window, cx);
             cx.stop_propagation();
         }
@@ -678,16 +838,25 @@ impl Render for SftpEditor {
             .map(|tab| tab.input.read(cx).cursor_position())
             .map(|position| (position.line + 1, position.character + 1))
             .unwrap_or((1, 1));
+        let encoding = active
+            .map(|tab| tab.format.encoding.label())
+            .unwrap_or("UTF-8");
         let line_ending = active
-            .map(|tab| tab.input.read(cx).text().to_string())
-            .map(|text| if text.contains("\r\n") { "CRLF" } else { "LF" })
+            .map(|tab| tab.format.line_ending.label())
             .unwrap_or("LF");
+        let has_conflict = active.is_some_and(|tab| tab.conflict.is_some());
+        let large_file = active.is_some_and(|tab| tab.large_file);
+        let save_error = active.and_then(|tab| tab.save_error.clone());
 
         let status_text = if !self.connected {
             t!("editor_connection_lost").to_string()
         } else if let Some(t) = active {
             if t.saving {
                 t!("editor_saving").to_string()
+            } else if t.conflict.is_some() {
+                t!("editor_conflict_status").to_string()
+            } else if t.save_error.is_some() {
+                t!("editor_save_failed").to_string()
             } else if t.dirty {
                 t!("editor_unsaved").to_string()
             } else {
@@ -858,6 +1027,14 @@ impl Render for SftpEditor {
                                 )
                             })
                             .child(
+                                Button::new("search-btn")
+                                    .small()
+                                    .label(t!("editor_search"))
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.open_search(window, cx);
+                                    })),
+                            )
+                            .child(
                                 Button::new("save-btn")
                                     .primary()
                                     .small()
@@ -876,6 +1053,68 @@ impl Render for SftpEditor {
                                     })),
                             ),
                     )
+                    .when(has_conflict, |this| {
+                        this.child(
+                            h_flex()
+                                .w_full()
+                                .items_center()
+                                .gap_3()
+                                .px_4()
+                                .py_2()
+                                .border_b_1()
+                                .border_color(theme.warning.opacity(0.55))
+                                .bg(theme.warning.opacity(0.12))
+                                .text_sm()
+                                .text_color(theme.foreground)
+                                .child(t!("editor_conflict_message").to_string())
+                                .child(gpui::div().flex_1())
+                                .child(
+                                    Button::new("conflict-reload-btn")
+                                        .small()
+                                        .label(t!("editor_conflict_reload"))
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.confirm_reload_active_conflict(window, cx);
+                                        })),
+                                )
+                                .child(
+                                    Button::new("conflict-overwrite-btn")
+                                        .small()
+                                        .danger()
+                                        .label(t!("editor_conflict_overwrite"))
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.confirm_force_save_active(window, cx);
+                                        })),
+                                ),
+                        )
+                    })
+                    .when(large_file && !has_conflict, |this| {
+                        this.child(
+                            gpui::div()
+                                .w_full()
+                                .px_4()
+                                .py_2()
+                                .border_b_1()
+                                .border_color(theme.warning.opacity(0.4))
+                                .bg(theme.warning.opacity(0.08))
+                                .text_sm()
+                                .text_color(theme.warning)
+                                .child(t!("editor_large_file_warning").to_string()),
+                        )
+                    })
+                    .when_some(save_error, |this, error| {
+                        this.child(
+                            gpui::div()
+                                .w_full()
+                                .px_4()
+                                .py_2()
+                                .border_b_1()
+                                .border_color(theme.danger.opacity(0.4))
+                                .bg(theme.danger.opacity(0.08))
+                                .text_sm()
+                                .text_color(theme.danger)
+                                .child(format!("{}: {error}", t!("editor_save_failed"))),
+                        )
+                    })
                     // 编辑器区域(渲染当前激活 tab 的 input)
                     .child(
                         gpui::div()
@@ -914,7 +1153,7 @@ impl Render for SftpEditor {
                                 line = cursor_position.0,
                                 column = cursor_position.1
                             ).to_string())
-                            .child("UTF-8")
+                            .child(encoding)
                             .child(line_ending)
                             .child(gpui::div().flex_1())
                             .child(

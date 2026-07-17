@@ -16,7 +16,10 @@ use alacritty_terminal::{
 use gpui::Keystroke;
 
 use crate::session::config::Session;
-use crate::sftp::{PreviewData, RemoteEntry};
+use crate::sftp::{
+    PreviewData, RemoteEntry,
+    text_file::{RemoteFileRevision, RemoteTextFile},
+};
 use crate::system::SystemSnapshot;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -59,21 +62,29 @@ pub enum BackendEvent {
         tab_id: String,
         text: String,
     },
-    /// 文件内容已下载到内存,供内置编辑器使用。
+    /// 文件内容与远程版本信息已下载，供内置编辑器使用。
     SftpFileContent {
         tab_id: String,
         remote_path: String,
-        content: String,
+        file: RemoteTextFile,
     },
-    /// 内存中的文件内容已上传完成。
+    /// 文件已通过版本校验并原子替换完成。
     SftpContentUploaded {
         tab_id: String,
         remote_path: String,
+        revision: RemoteFileRevision,
     },
-    /// 内存中的文件内容上传失败(供内置编辑器恢复 saving/dirty 状态)。
+    /// 保存前检测到远程内容已发生变化。
+    SftpContentConflict {
+        tab_id: String,
+        remote_path: String,
+        remote_file: RemoteTextFile,
+    },
+    /// 内存中的文件内容上传失败。
     SftpContentUploadFailed {
         tab_id: String,
         remote_path: String,
+        error: String,
     },
     RemoteSystem {
         tab_id: String,
