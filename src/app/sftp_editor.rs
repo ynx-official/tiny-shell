@@ -9,12 +9,13 @@
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AppContext, Entity, Focusable as _, InteractiveElement as _, IntoElement, KeyDownEvent,
-    ParentElement as _, Render, Styled, Window, px,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement as _, Pixels, Point, Render,
+    Styled, Window, px,
 };
 use gpui_component::{
     ActiveTheme, Disableable as _, Root, Sizable, WindowExt as _,
-    button::{Button, ButtonVariants as _},
-    dialog::Dialog,
+    button::{Button, ButtonVariant, ButtonVariants as _},
+    dialog::DialogButtonProps,
     h_flex,
     input::{Input, InputEvent, InputState},
     v_flex,
@@ -110,6 +111,75 @@ impl EditorTab {
     }
 }
 
+#[derive(Default)]
+struct EditorTabDrag {
+    pending_idx: Option<usize>,
+    start: Option<Point<Pixels>>,
+    dragging_idx: Option<usize>,
+    detach_target: bool,
+}
+
+impl EditorTabDrag {
+    fn begin(&mut self, idx: usize, position: Point<Pixels>) {
+        self.pending_idx = Some(idx);
+        self.start = Some(position);
+        self.dragging_idx = None;
+        self.detach_target = false;
+    }
+
+    fn update(
+        &mut self,
+        position: Point<Pixels>,
+        viewport: gpui::Size<Pixels>,
+        tab_count: usize,
+    ) -> bool {
+        let mut changed = false;
+        if self.dragging_idx.is_none() {
+            let (Some(start), Some(idx)) = (self.start, self.pending_idx) else {
+                return false;
+            };
+            let dx: f32 = (position.x - start.x).into();
+            let dy: f32 = (position.y - start.y).into();
+            if (dx * dx + dy * dy).sqrt() > 5.0 {
+                self.dragging_idx = Some(idx);
+                self.pending_idx = None;
+                changed = true;
+            }
+        }
+
+        if self.dragging_idx.is_some() {
+            let detach_target = tab_count > 1
+                && (position.x < px(0.)
+                    || position.y < px(0.)
+                    || position.x >= viewport.width
+                    || position.y >= viewport.height
+                    || position.y > px(40.));
+            if self.detach_target != detach_target {
+                self.detach_target = detach_target;
+                changed = true;
+            }
+        }
+        changed
+    }
+
+    fn finish(&mut self) -> Option<usize> {
+        let result = if self.detach_target {
+            self.dragging_idx
+        } else {
+            None
+        };
+        self.cancel();
+        result
+    }
+
+    fn cancel(&mut self) {
+        self.pending_idx = None;
+        self.start = None;
+        self.dragging_idx = None;
+        self.detach_target = false;
+    }
+}
+
 pub struct SftpEditor {
     session_id: String,
     sftp: SftpHandle,
@@ -122,6 +192,7 @@ pub struct SftpEditor {
     connected: bool,
     /// tab 数量达到上限时的提示文本(空字符串表示无提示)。
     pub capacity_notice: String,
+    tab_drag: EditorTabDrag,
 }
 
 /// 单个编辑器窗口最多同时打开的 tab 数量,防止内存爆炸。
@@ -160,6 +231,30 @@ impl SftpEditor {
             force_close: false,
             connected: true,
             capacity_notice: String::new(),
+            tab_drag: EditorTabDrag::default(),
+        }
+    }
+
+    pub(crate) fn from_detached(
+        session_id: String,
+        remote_path: String,
+        content: String,
+        dirty: bool,
+        sftp: SftpHandle,
+        window: &mut Window,
+        cx: &mut gpui::Context<Self>,
+    ) -> Self {
+        let mut tab = EditorTab::new(remote_path, content, window, cx);
+        tab.dirty = dirty;
+        Self {
+            session_id,
+            sftp,
+            tabs: vec![tab],
+            active_idx: 0,
+            force_close: false,
+            connected: true,
+            capacity_notice: String::new(),
+            tab_drag: EditorTabDrag::default(),
         }
     }
 
@@ -197,6 +292,14 @@ impl SftpEditor {
 
     pub fn session_id(&self) -> &str {
         &self.session_id
+    }
+
+    pub(crate) fn has_dirty_tabs(&self) -> bool {
+        self.tabs.iter().any(|tab| tab.dirty)
+    }
+
+    pub(crate) fn force_close_window(&mut self, window: &mut Window, cx: &mut gpui::Context<Self>) {
+        self.close_window(window, cx);
     }
 
     /// 切换到指定路径的 tab,成功返回 true。
@@ -296,12 +399,20 @@ impl SftpEditor {
 
         let filename = base_name(&tab.remote_path).to_string();
         let editor = cx.entity();
-        window.open_dialog(cx, move |dialog: Dialog, _window, _| {
+        window.open_alert_dialog(cx, move |dialog, _window, _| {
             let filename = filename.clone();
             dialog
                 .title(t!("editor_close_confirm_title").to_string())
-                .w(px(440.))
+                .description(t!("editor_close_confirm_desc", name = filename.as_str()).to_string())
+                .width(px(440.))
                 .keyboard(false)
+                .button_props(
+                    DialogButtonProps::default()
+                        .cancel_text(t!("editor_close_cancel").to_string())
+                        .show_cancel(true)
+                        .ok_text(t!("editor_close_discard").to_string())
+                        .ok_variant(ButtonVariant::Danger),
+                )
                 .on_ok({
                     let editor = editor.clone();
                     move |_, window, cx| {
@@ -309,13 +420,8 @@ impl SftpEditor {
                         editor.update(cx, |editor, cx| {
                             editor.do_close_tab(idx, window, cx);
                         });
-                        true
+                        false
                     }
-                })
-                .content(move |content, _window, _cx| {
-                    content.child(gpui::div().p_4().text_sm().child(
-                        t!("editor_close_confirm_desc", name = filename.as_str()).to_string(),
-                    ))
                 })
         });
     }
@@ -346,11 +452,19 @@ impl SftpEditor {
 
     fn open_close_all_dialog(&mut self, window: &mut Window, cx: &mut gpui::Context<Self>) {
         let editor = cx.entity();
-        window.open_dialog(cx, move |dialog: Dialog, _window, _| {
+        window.open_alert_dialog(cx, move |dialog, _window, _| {
             dialog
                 .title(t!("editor_close_all_confirm_title").to_string())
-                .w(px(440.))
+                .description(t!("editor_close_all_confirm_desc").to_string())
+                .width(px(440.))
                 .keyboard(false)
+                .button_props(
+                    DialogButtonProps::default()
+                        .cancel_text(t!("editor_close_cancel").to_string())
+                        .show_cancel(true)
+                        .ok_text(t!("editor_close_discard").to_string())
+                        .ok_variant(ButtonVariant::Danger),
+                )
                 .on_ok({
                     let editor = editor.clone();
                     move |_, window, cx| {
@@ -358,16 +472,8 @@ impl SftpEditor {
                         editor.update(cx, |editor, cx| {
                             editor.close_window(window, cx);
                         });
-                        true
+                        false
                     }
-                })
-                .content(move |content, _window, _cx| {
-                    content.child(
-                        gpui::div()
-                            .p_4()
-                            .text_sm()
-                            .child(t!("editor_close_all_confirm_desc").to_string()),
-                    )
                 })
         });
     }
@@ -409,33 +515,39 @@ impl SftpEditor {
             return true;
         }
 
-        let editor = cx.entity();
-        window.open_dialog(cx, move |dialog: Dialog, _window, _| {
+        let session_id = self.session_id.clone();
+        window.open_alert_dialog(cx, move |dialog, _window, _| {
             let owner = owner.clone();
             let tab_id = tab_id.clone();
+            let session_id = session_id.clone();
             dialog
                 .title(t!("editor_close_all_confirm_title").to_string())
-                .w(px(440.))
+                .description(t!("editor_close_all_confirm_desc").to_string())
+                .width(px(440.))
                 .keyboard(false)
-                .on_ok({
-                    let editor = editor.clone();
-                    move |_, window, cx| {
-                        window.close_dialog(cx);
-                        editor.update(cx, |editor, cx| editor.close_window(window, cx));
+                .button_props(
+                    DialogButtonProps::default()
+                        .cancel_text(t!("editor_close_cancel").to_string())
+                        .show_cancel(true)
+                        .ok_text(t!("editor_close_discard").to_string())
+                        .ok_variant(ButtonVariant::Danger),
+                )
+                .on_ok(move |_, window, cx| {
+                    window.close_dialog(cx);
+                    let session_id = session_id.clone();
+                    let owner = owner.clone();
+                    let tab_id = tab_id.clone();
+                    window.defer(cx, move |_window, cx| {
+                        crate::app::sftp_editor_window::force_close_session_windows(
+                            &session_id,
+                            cx,
+                        );
                         owner.update(cx, |owner, cx| {
-                            owner.handle_tab_close(tab_id.clone());
+                            owner.handle_tab_close(tab_id);
                             cx.notify();
                         });
-                        true
-                    }
-                })
-                .content(move |content, _window, _cx| {
-                    content.child(
-                        gpui::div()
-                            .p_4()
-                            .text_sm()
-                            .child(t!("editor_close_all_confirm_desc").to_string()),
-                    )
+                    });
+                    false
                 })
         });
         false
@@ -460,6 +572,71 @@ impl SftpEditor {
             self.active_idx = idx;
             cx.notify();
         }
+    }
+
+    fn begin_tab_drag(&mut self, idx: usize, event: &MouseDownEvent, cx: &mut gpui::Context<Self>) {
+        self.switch_tab(idx, cx);
+        self.tab_drag.begin(idx, event.position);
+    }
+
+    fn update_tab_drag(
+        &mut self,
+        event: &MouseMoveEvent,
+        window: &mut Window,
+        cx: &mut gpui::Context<Self>,
+    ) {
+        if self
+            .tab_drag
+            .update(event.position, window.viewport_size(), self.tabs.len())
+        {
+            cx.notify();
+        }
+    }
+
+    fn finish_tab_drag(
+        &mut self,
+        event: &MouseUpEvent,
+        window: &mut Window,
+        cx: &mut gpui::Context<Self>,
+    ) {
+        let Some(idx) = self.tab_drag.finish() else {
+            cx.notify();
+            return;
+        };
+        if idx >= self.tabs.len() || self.tabs.len() <= 1 {
+            cx.notify();
+            return;
+        }
+
+        let tab = &self.tabs[idx];
+        let remote_path = tab.remote_path.clone();
+        let content = tab.input.read(cx).text().to_string();
+        let dirty = tab.dirty;
+        let origin = match window.window_bounds() {
+            gpui::WindowBounds::Fullscreen(bounds)
+            | gpui::WindowBounds::Maximized(bounds)
+            | gpui::WindowBounds::Windowed(bounds) => bounds.origin,
+        };
+        let screen_position = Point::new(origin.x + event.position.x, origin.y + event.position.y);
+
+        if crate::app::sftp_editor_window::open_detached(
+            self.session_id.clone(),
+            remote_path,
+            content,
+            dirty,
+            self.sftp.clone(),
+            screen_position,
+            cx,
+        ) {
+            self.tabs.remove(idx);
+            if self.active_idx >= self.tabs.len() {
+                self.active_idx = self.tabs.len() - 1;
+            } else if idx < self.active_idx {
+                self.active_idx -= 1;
+            }
+            self.focus_active(window, cx);
+        }
+        cx.notify();
     }
 
     fn handle_key_down(
@@ -518,6 +695,8 @@ impl Render for SftpEditor {
         let active_idx = self.active_idx;
         let tab_count = self.tabs.len();
         let capacity_notice = self.capacity_notice.clone();
+        let dragging_idx = self.tab_drag.dragging_idx;
+        let show_detach_hint = self.tab_drag.detach_target;
 
         // tab 栏数据快照
         let tab_snapshots: Vec<(String, bool, bool)> = self
@@ -527,9 +706,12 @@ impl Render for SftpEditor {
             .collect();
 
         gpui::div()
+            .relative()
             .size_full()
             .bg(theme.background)
             .on_key_down(cx.listener(Self::handle_key_down))
+            .on_mouse_move(cx.listener(Self::update_tab_drag))
+            .on_mouse_up(gpui::MouseButton::Left, cx.listener(Self::finish_tab_drag))
             .child(
                 v_flex()
                     .size_full()
@@ -559,19 +741,38 @@ impl Render for SftpEditor {
                                                 .min_w(px(120.))
                                                 .max_w(px(220.))
                                                 .cursor_pointer()
+                                                .relative()
+                                                .when(dragging_idx == Some(idx), |this| {
+                                                    this.opacity(0.62)
+                                                })
                                                 .border_r_1()
                                                 .border_color(theme.border.opacity(0.3))
                                                 .bg(if is_active {
-                                                    theme.background
+                                                    theme.secondary
                                                 } else {
-                                                    gpui::transparent_black()
+                                                    theme.muted.opacity(0.28)
                                                 })
                                                 .text_color(if is_active {
                                                     theme.foreground
                                                 } else {
-                                                    theme.muted
+                                                    theme.muted_foreground
+                                                })
+                                                .hover(|this| {
+                                                    this.bg(theme.secondary.opacity(0.72))
+                                                        .text_color(theme.foreground)
                                                 })
                                                 .text_sm()
+                                                .when(is_active, |this| {
+                                                    this.child(
+                                                        gpui::div()
+                                                            .absolute()
+                                                            .bottom_0()
+                                                            .left_0()
+                                                            .right_0()
+                                                            .h(px(2.))
+                                                            .bg(theme.primary),
+                                                    )
+                                                })
                                                 .when(*dirty, |this| {
                                                     this.child(
                                                         gpui::div()
@@ -602,6 +803,7 @@ impl Render for SftpEditor {
                                                             gpui::MouseButton::Left,
                                                             cx.listener(
                                                                 move |this, _ev, window, cx| {
+                                                                    cx.stop_propagation();
                                                                     this.close_tab(idx, window, cx);
                                                                 },
                                                             ),
@@ -609,9 +811,11 @@ impl Render for SftpEditor {
                                                 )
                                                 .on_mouse_down(
                                                     gpui::MouseButton::Left,
-                                                    cx.listener(move |this, _ev, _window, cx| {
-                                                        this.switch_tab(idx, cx);
-                                                    }),
+                                                    cx.listener(
+                                                        move |this, event: &MouseDownEvent, _window, cx| {
+                                                            this.begin_tab_drag(idx, event, cx);
+                                                        },
+                                                    ),
                                                 )
                                         })
                                         .collect::<Vec<_>>(),
@@ -688,10 +892,40 @@ impl Render for SftpEditor {
                             .flex_1()
                             .min_h_0()
                             .when_some(self.active_tab(), |this, t| {
-                                this.child(Input::new(&t.input).h_full())
+                                this.child(
+                                    Input::new(&t.input)
+                                        .h_full()
+                                        .bordered(false)
+                                        .focus_bordered(false)
+                                        .px_1()
+                                        .py_1(),
+                                )
                             }),
                     ),
             )
+            .when(show_detach_hint, |this| {
+                this.child(
+                    gpui::div()
+                        .absolute()
+                        .left_0()
+                        .right_0()
+                        .bottom_8()
+                        .flex()
+                        .justify_center()
+                        .child(
+                            gpui::div()
+                                .rounded_lg()
+                                .border_1()
+                                .border_color(theme.primary.opacity(0.5))
+                                .bg(theme.background.opacity(0.94))
+                                .px_4()
+                                .py_2()
+                                .text_sm()
+                                .text_color(theme.foreground)
+                                .child(t!("editor_drag_detach_hint").to_string()),
+                        ),
+                )
+            })
             .children(Root::render_dialog_layer(window, cx))
             .children(Root::render_sheet_layer(window, cx))
     }
@@ -699,7 +933,9 @@ impl Render for SftpEditor {
 
 #[cfg(test)]
 mod tests {
-    use super::{CloseDisposition, close_disposition};
+    use gpui::{point, px, size};
+
+    use super::{CloseDisposition, EditorTabDrag, close_disposition};
 
     #[test]
     fn clean_editor_closes_without_confirmation() {
@@ -709,5 +945,27 @@ mod tests {
     #[test]
     fn dirty_editor_requires_confirmation() {
         assert_eq!(close_disposition(true), CloseDisposition::Confirm);
+    }
+
+    #[test]
+    fn tab_drag_requires_threshold_and_detach_area() {
+        let mut drag = EditorTabDrag::default();
+        drag.begin(1, point(px(20.), px(20.)));
+
+        assert!(!drag.update(point(px(23.), px(23.)), size(px(800.), px(600.)), 2));
+        assert!(drag.update(point(px(30.), px(22.)), size(px(800.), px(600.)), 2));
+        assert_eq!(drag.finish(), None);
+    }
+
+    #[test]
+    fn tab_drag_detaches_only_when_another_tab_remains() {
+        let mut drag = EditorTabDrag::default();
+        drag.begin(1, point(px(20.), px(20.)));
+        drag.update(point(px(40.), px(100.)), size(px(800.), px(600.)), 2);
+        assert_eq!(drag.finish(), Some(1));
+
+        drag.begin(0, point(px(20.), px(20.)));
+        drag.update(point(px(40.), px(100.)), size(px(800.), px(600.)), 1);
+        assert_eq!(drag.finish(), None);
     }
 }
