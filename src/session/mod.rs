@@ -1928,6 +1928,9 @@ impl Ashell {
                         .and_then(|tab_id| self.remote_system_snapshots.get(tab_id))
                         .cloned()
                         .unwrap_or_default();
+                    self.animated_cpu_percent = self.system.cpu_percent;
+                    self.animated_mem_percent = self.system.mem_percent;
+                    self.animated_swap_percent = self.system.swap_percent;
                 }
                 self.request_active_system_snapshot();
             }

@@ -571,6 +571,9 @@ pub(crate) struct Ashell {
     /// Whether workspace keybindings are currently suspended (during settings)
     pub(crate) keybinds_suspended: bool,
     pub(crate) system: SystemSnapshot,
+    pub(crate) animated_cpu_percent: f32,
+    pub(crate) animated_mem_percent: f32,
+    pub(crate) animated_swap_percent: f32,
     pub(crate) process_view: ProcessView,
     /// Remote monitoring data is isolated per SSH terminal. It must never be
     /// replaced with a snapshot from the machine running Ashell.
@@ -1034,6 +1037,9 @@ impl Ashell {
             active_dialog: None,
             keybind_error: None,
             keybinds_suspended: false,
+            animated_cpu_percent: system.cpu_percent,
+            animated_mem_percent: system.mem_percent,
+            animated_swap_percent: system.swap_percent,
             system,
             process_view: ProcessView::default(),
             remote_system_snapshots: HashMap::new(),
@@ -1190,6 +1196,7 @@ impl Ashell {
                     .update(cx, |this, cx| {
                         let changed = this.drain_backend_events(cx);
                         let system_sampled = this.sample_system_if_due();
+                        let metrics_animated = this.animate_resource_metrics();
                         this.sync_theme_if_due(cx);
                         let is_blinking = matches!(
                             this.cursor_style,
@@ -1200,7 +1207,7 @@ impl Ashell {
                         let blink_due = is_blinking
                             && now.duration_since(last_blink_time)
                                 >= std::time::Duration::from_millis(600);
-                        if changed || system_sampled || blink_due {
+                        if changed || system_sampled || metrics_animated || blink_due {
                             cx.notify();
                             idle_frames = 0;
                             if blink_due {
@@ -1221,6 +1228,26 @@ impl Ashell {
             }
         })
         .detach();
+    }
+
+    fn animate_resource_metrics(&mut self) -> bool {
+        fn advance(current: &mut f32, target: f32) -> bool {
+            let difference = target - *current;
+            if difference.abs() < 0.0005 {
+                if *current != target {
+                    *current = target;
+                    return true;
+                }
+                return false;
+            }
+            *current += difference * 0.12;
+            true
+        }
+
+        let mut changed = advance(&mut self.animated_cpu_percent, self.system.cpu_percent);
+        changed |= advance(&mut self.animated_mem_percent, self.system.mem_percent);
+        changed |= advance(&mut self.animated_swap_percent, self.system.swap_percent);
+        changed
     }
 
     pub(crate) fn show_ip_popover(&mut self, cx: &mut Context<Self>) {

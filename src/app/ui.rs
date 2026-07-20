@@ -3336,13 +3336,60 @@ impl Ashell {
     }
 
     fn render_sidebar_monitoring_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let cpu_pct = self.system.cpu_percent;
-        let mem_pct = self.system.mem_percent;
-        let swap_pct = self.system.swap_percent;
-
-        let cpu_color = cx.theme().chart_1;
-        let mem_color = cx.theme().chart_2;
-        let swap_color = cx.theme().chart_3;
+        let cpu_pct = self.system.cpu_percent.clamp(0.0, 1.0);
+        let mem_pct = self.system.mem_percent.clamp(0.0, 1.0);
+        let swap_pct = self.system.swap_percent.clamp(0.0, 1.0);
+        let cpu_progress_pct = self.animated_cpu_percent.clamp(0.0, 1.0);
+        let mem_progress_pct = self.animated_mem_percent.clamp(0.0, 1.0);
+        let swap_progress_pct = self.animated_swap_percent.clamp(0.0, 1.0);
+        let cpu_value_pct = self.system.cpu_percent.clamp(0.0, 1.0);
+        let mem_value_pct = self.system.mem_percent.clamp(0.0, 1.0);
+        let swap_value_pct = self.system.swap_percent.clamp(0.0, 1.0);
+        let metric_color = |value: f32| {
+            if value >= 0.75 {
+                Hsla::from(gpui::rgb(0xE5484D))
+            } else if value >= 0.65 {
+                Hsla::from(gpui::rgb(0xE7A008))
+            } else {
+                Hsla::from(gpui::rgb(0x1586F5))
+            }
+        };
+        let metric_track_color = if cx.theme().background.l > 0.5 {
+            hsla(0.0, 0.0, 0.0, 0.1)
+        } else {
+            hsla(0.0, 0.0, 1.0, 0.14)
+        };
+        let metric_bar = |id: &'static str, value: f32, color: Hsla| {
+            div()
+                .id(id)
+                .relative()
+                .w_full()
+                .h(px(5.))
+                .overflow_hidden()
+                .rounded(px(999.))
+                .bg(metric_track_color)
+                .child(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .h_full()
+                        .w(relative(value.clamp(0.0, 1.0)))
+                        .rounded(px(999.))
+                        .bg(color),
+                )
+                .into_any_element()
+        };
+        let cpu_color = metric_color(cpu_pct);
+        let mem_color = metric_color(mem_pct);
+        let swap_color = metric_color(swap_pct);
+        let mem_value_detail =
+            format!("{} · {:.0}%", self.system.mem_detail, mem_value_pct * 100.0);
+        let swap_value_detail = format!(
+            "{} · {:.0}%",
+            self.system.swap_detail,
+            swap_value_pct * 100.0
+        );
         let net_color = Hsla::from(gpui::rgb(0x1586F5));
         let net_tx_color = cx.theme().danger;
         let net_grid_color = cx.theme().border.opacity(0.18);
@@ -3465,18 +3512,19 @@ impl Ashell {
                                             .child(
                                                 div()
                                                     .text_color(muted_fg)
+                                                    .font_weight(FontWeight::MEDIUM)
                                                     .child(format!(
                                                         "{:.1}%",
-                                                        cpu_pct * 100.0
+                                                        cpu_value_pct * 100.0
                                                     )),
                                             ),
                                     )
                                     .child(
-                                        Progress::new("sidebar-cpu")
-                                            .value(cpu_pct * 100.0)
-                                            .color(cpu_color)
-                                            .with_size(px(4.))
-                                            .w_full(),
+                                        metric_bar(
+                                            "sidebar-cpu",
+                                            cpu_progress_pct,
+                                            cpu_color,
+                                        ),
                                     ),
                             )
                             .child(
@@ -3494,15 +3542,16 @@ impl Ashell {
                                             .child(
                                                 div()
                                                     .text_color(muted_fg)
-                                                    .child(self.system.mem_detail.clone()),
+                                                    .font_weight(FontWeight::MEDIUM)
+                                                    .child(mem_value_detail),
                                             ),
                                     )
                                     .child(
-                                        Progress::new("sidebar-mem")
-                                            .value(mem_pct * 100.0)
-                                            .color(mem_color)
-                                            .with_size(px(4.))
-                                            .w_full(),
+                                        metric_bar(
+                                            "sidebar-mem",
+                                            mem_progress_pct,
+                                            mem_color,
+                                        ),
                                     ),
                             )
                             .child(
@@ -3520,15 +3569,16 @@ impl Ashell {
                                             .child(
                                                 div()
                                                     .text_color(muted_fg)
-                                                    .child(self.system.swap_detail.clone()),
+                                                    .font_weight(FontWeight::MEDIUM)
+                                                    .child(swap_value_detail),
                                             ),
                                     )
                                     .child(
-                                        Progress::new("sidebar-swap")
-                                            .value(swap_pct * 100.0)
-                                            .color(swap_color)
-                                            .with_size(px(4.))
-                                            .w_full(),
+                                        metric_bar(
+                                            "sidebar-swap",
+                                            swap_progress_pct,
+                                            swap_color,
+                                        ),
                                     ),
                             ),
                     ),
