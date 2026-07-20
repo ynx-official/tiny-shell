@@ -3,8 +3,8 @@ use std::path::PathBuf;
 use anyhow::Context;
 use serde::Deserialize;
 
-const REPO_OWNER: &str = "rust-kotlin";
-const REPO_NAME: &str = "ashell";
+const REPO_OWNER: &str = "ynx-official";
+const REPO_NAME: &str = "tiny-shell";
 const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Maps the cargo target triple to the release asset naming convention used in
@@ -33,9 +33,9 @@ fn archive_extension() -> &'static str {
 
 fn bin_name() -> &'static str {
     if cfg!(target_os = "windows") {
-        "ashell.exe"
+        "tiny-shell.exe"
     } else {
-        "ashell"
+        "tiny-shell"
     }
 }
 
@@ -383,7 +383,7 @@ fn install_windows(
     // On Windows, the running .exe is locked. We write a batch script to a temp
     // location that waits for the current process to exit, then copies the new
     // binary over the old one and re-launches.
-    let script_path = std::env::temp_dir().join("ashell-update.bat");
+    let script_path = std::env::temp_dir().join("tiny-shell-update.bat");
 
     let script = format!(
         "@echo off\r\n\

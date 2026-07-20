@@ -666,7 +666,7 @@ impl SftpEditor {
     pub fn request_session_close(
         &mut self,
         tab_id: String,
-        owner: Entity<crate::Ashell>,
+        owner: Entity<crate::TinyShell>,
         window: &mut Window,
         cx: &mut gpui::Context<Self>,
     ) -> bool {

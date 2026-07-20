@@ -18,11 +18,11 @@ use gpui_component::{
 use rust_i18n::t;
 
 use crate::{
-    Ashell, app::ssh_key_import::KeyImportValidation, session::config::AuthMethod,
+    TinyShell, app::ssh_key_import::KeyImportValidation, session::config::AuthMethod,
     system::format_bytes,
 };
 
-impl Ashell {
+impl TinyShell {
     pub(crate) fn confirm_connection_group_dialog(
         &mut self,
         window: &mut Window,
@@ -3593,7 +3593,7 @@ impl Ashell {
                                                         v_flex()
                                                             .gap_2()
                                                             .items_center()
-                                                            .child(div().text_size(rems(1.5)).font_weight(FontWeight::BOLD).child("Ashell"))
+                                                            .child(div().text_size(rems(1.5)).font_weight(FontWeight::BOLD).child("tiny-shell"))
                                                             .child(div().text_size(rems(0.9)).child(format!("Version {}", version)))
                                                             .child(
                                                                 div()
@@ -3609,10 +3609,10 @@ impl Ashell {
                                                             )
                                                             .child(
                                                                 Button::new("github-link")
-                                                                    .label("https://github.com/rust-kotlin/ashell")
+                                                                    .label("https://github.com/ynx-official/tiny-shell")
                                                                     .ghost()
                                                                     .on_click(|_, _window, _cx| {
-                                                                        let _ = open::that("https://github.com/rust-kotlin/ashell");
+                                                                        let _ = open::that("https://github.com/ynx-official/tiny-shell");
                                                                     }),
                                                             )
                                                             .child(

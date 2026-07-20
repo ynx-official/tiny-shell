@@ -1,9 +1,9 @@
 [package]
-name = "ashell"
-version = "0.4.11"
+name = "tiny-shell"
+version = "1.0.2"
 edition = "2024"
-authors = ["ashell contributors"]
-description = "A GPUI Component based SSH and local terminal client"
+authors = ["tiny-shell contributors"]
+description = "A modern, fast, GPUI Component-based desktop terminal client"
 license = "GPL-3.0-or-later"
 rust-version = "1.85.0"
 
@@ -56,15 +56,15 @@ semver = "1"
 sha2 = "0.10"
 
 [package.metadata.deb]
-maintainer = "ashell contributors"
+maintainer = "tiny-shell contributors"
 license-file = ["LICENSE"]
-extended-description = "A GPUI Component based SSH and local terminal client"
+extended-description = "A modern, fast, GPUI Component-based desktop terminal client"
 section = "terminal"
 priority = "optional"
 assets = [
-    ["target/release/ashell", "usr/bin/", "755"],
-    ["assets/ashell.desktop", "usr/share/applications/", "644"],
-    ["assets/icons/ashell.png", "usr/share/icons/hicolor/256x256/apps/", "644"],
+    ["target/release/tiny-shell", "usr/bin/", "755"],
+    ["assets/tiny-shell.desktop", "usr/share/applications/", "644"],
+    ["assets/icons/tiny-shell.png", "usr/share/icons/hicolor/256x256/apps/", "644"],
 ]
 
 [profile.release]

@@ -48,7 +48,7 @@ use crate::{
 
 /// Returns a process-wide shared tokio runtime.
 ///
-/// Previously each window (`Ashell`) owned its own `Runtime::new()`, which meant
+/// Previously each window (`TinyShell`) owned its own `Runtime::new()`, which meant
 /// every additional window spawned another full set of worker threads
 /// (one per CPU core by default). Sharing a single `Arc<Runtime>` across all
 /// windows keeps the thread count flat regardless of how many windows are open.
@@ -73,14 +73,14 @@ pub(crate) fn shared_system_sampler() -> Arc<std::sync::Mutex<SharedSystemSample
 }
 
 // ─── Cross-window registry ────────────────────────────────────────
-// Each open ashell window registers its `WindowHandle` + `Entity<Ashell>`
+// Each open tiny-shell window registers its `WindowHandle` + `Entity<TinyShell>`
 // + current screen-space bounds here. This lets a tab being dragged in
 // one window find another window to merge into by hit-testing the
 // cursor's screen position against every other window's bounds.
 
 pub(crate) struct WindowEntry {
     pub window_handle: AnyWindowHandle,
-    pub entity: Entity<Ashell>,
+    pub entity: Entity<TinyShell>,
     pub screen_bounds: Bounds<Pixels>,
     pub activation_seq: u64,
 }
@@ -88,7 +88,7 @@ pub(crate) struct WindowEntry {
 #[derive(Clone)]
 pub(crate) struct IncomingTabDrag {
     pub(crate) source_window: AnyWindowHandle,
-    pub(crate) source: Entity<Ashell>,
+    pub(crate) source: Entity<TinyShell>,
     pub(crate) group_id: String,
 }
 
@@ -103,7 +103,7 @@ pub(crate) fn window_registry() -> Arc<Mutex<Vec<WindowEntry>>> {
 }
 
 /// Register a window when it opens.
-pub(crate) fn register_window(window_handle: AnyWindowHandle, entity: Entity<Ashell>) {
+pub(crate) fn register_window(window_handle: AnyWindowHandle, entity: Entity<TinyShell>) {
     let registry = window_registry();
     let mut guard = registry.lock().unwrap();
     if let Some(entry) = guard.iter_mut().find(|e| e.window_handle == window_handle) {
@@ -214,7 +214,7 @@ pub(crate) fn update_window_bounds(window_handle: AnyWindowHandle, bounds: Bound
 pub(crate) fn find_window_at_screen_pos(
     exclude: &AnyWindowHandle,
     screen_pos: Point<Pixels>,
-) -> Option<(AnyWindowHandle, Entity<Ashell>, Bounds<Pixels>)> {
+) -> Option<(AnyWindowHandle, Entity<TinyShell>, Bounds<Pixels>)> {
     let registry = window_registry();
     let guard = registry.lock().unwrap();
     guard
@@ -434,7 +434,7 @@ pub(crate) struct NetworkHistory {
     pub(crate) transmit: Vec<f32>,
 }
 
-pub(crate) struct Ashell {
+pub(crate) struct TinyShell {
     pub(crate) focus_handle: FocusHandle,
     pub(crate) selector_focus_handle: FocusHandle,
     pub(crate) host_input: Entity<InputState>,
@@ -554,7 +554,7 @@ pub(crate) struct Ashell {
     pub(crate) dragging_splitter: Option<(Vec<usize>, usize)>, // (parent_path, child_index)
     pub(crate) drag_split_origin: Option<gpui::Point<Pixels>>,
     // Tab drag state
-    pub(crate) tab_drag: tab_drag::TabDragState<AnyWindowHandle, (AnyWindowHandle, Entity<Ashell>)>,
+    pub(crate) tab_drag: tab_drag::TabDragState<AnyWindowHandle, (AnyWindowHandle, Entity<TinyShell>)>,
     /// Source drag currently hovering over this window.
     pub(crate) incoming_tab_drag: Option<IncomingTabDrag>,
     pub(crate) terminal_marked_text: Option<String>,
@@ -580,7 +580,7 @@ pub(crate) struct Ashell {
     pub(crate) animated_swap_percent: f32,
     pub(crate) process_view: ProcessView,
     /// Remote monitoring data is isolated per SSH terminal. It must never be
-    /// replaced with a snapshot from the machine running Ashell.
+    /// replaced with a snapshot from the machine running TinyShell.
     pub(crate) remote_system_snapshots: HashMap<String, SystemSnapshot>,
     pub(crate) cpu_history: Vec<f32>,
     pub(crate) net_rx_history: Vec<f32>,
@@ -649,7 +649,7 @@ pub(crate) struct TabContextMenuState {
     pub(crate) position: Point<Pixels>,
 }
 
-impl Ashell {
+impl TinyShell {
     pub(crate) fn backend_events_sender(
         &self,
         cx: &mut Context<Self>,
@@ -772,7 +772,7 @@ impl Ashell {
         });
         let sync_endpoint_input = cx.new(|cx| {
             InputState::new(window, cx)
-                .placeholder("https://dav.example.com/ashell/")
+                .placeholder("https://dav.example.com/tiny-shell/")
                 .default_value(config.sync_endpoint())
         });
         let sync_username_input = cx.new(|cx| {
@@ -802,7 +802,7 @@ impl Ashell {
         });
         let sync_s3_object_key_input = cx.new(|cx| {
             InputState::new(window, cx)
-                .placeholder("ashell-sync.json")
+                .placeholder("tiny-shell-sync.json")
                 .default_value(config.sync_s3_object_key())
         });
         let sync_s3_access_key_input = cx.new(|cx| {
@@ -1883,7 +1883,7 @@ impl Ashell {
     }
 
     fn parse_path_from_title(title: &str, home_dir: &str) -> Option<String> {
-        let title = title.strip_prefix("ASHELL_CWD:").unwrap_or(title);
+        let title = title.strip_prefix("TINY_SHELL_CWD:").unwrap_or(title);
         let path_part = if let Some(pos) = title.find(':') {
             title[pos + 1..].trim()
         } else {
@@ -2008,12 +2008,12 @@ impl Ashell {
 
 #[cfg(test)]
 mod tests {
-    use super::Ashell;
+    use super::TinyShell;
 
     #[test]
     fn parses_absolute_terminal_path() {
         assert_eq!(
-            Ashell::parse_path_from_title("user@host:/srv/app", "/home/user"),
+            TinyShell::parse_path_from_title("user@host:/srv/app", "/home/user"),
             Some("/srv/app".to_string())
         );
     }
@@ -2021,7 +2021,7 @@ mod tests {
     #[test]
     fn expands_home_terminal_path() {
         assert_eq!(
-            Ashell::parse_path_from_title("ASHELL_CWD:~/projects", "/home/user"),
+            TinyShell::parse_path_from_title("TINY_SHELL_CWD:~/projects", "/home/user"),
             Some("/home/user/projects".to_string())
         );
     }
@@ -2029,7 +2029,7 @@ mod tests {
     #[test]
     fn rejects_titles_without_a_remote_path() {
         assert_eq!(
-            Ashell::parse_path_from_title("user@host", "/home/user"),
+            TinyShell::parse_path_from_title("user@host", "/home/user"),
             None
         );
     }

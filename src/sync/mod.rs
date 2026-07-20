@@ -14,7 +14,7 @@ use uuid::Uuid;
 
 use crate::session::config::Session;
 
-const SYNC_FILE_NAME: &str = "ashell-sync.json";
+const SYNC_FILE_NAME: &str = "tiny-shell-sync.json";
 const FORMAT_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -544,7 +544,7 @@ mod tests {
     fn endpoint_can_be_a_collection_or_file() {
         assert_eq!(
             sync_url("https://example.test/dav/"),
-            "https://example.test/dav/ashell-sync.json"
+            "https://example.test/dav/tiny-shell-sync.json"
         );
         assert_eq!(
             sync_url("https://example.test/config.json"),

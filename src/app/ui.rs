@@ -22,7 +22,7 @@ use rust_i18n::t;
 use std::collections::{HashMap, HashSet};
 
 use crate::{
-    Ashell, PaneLayout,
+    TinyShell, PaneLayout,
     app::constants::{COLLAPSED_SIDEBAR_WIDTH, SIDEBAR_WIDTH, TERMINAL_KEY_CONTEXT},
     app::{HomePage, ProcessView, TabContextMenuState},
     sftp::format_mtime,
@@ -96,7 +96,7 @@ fn format_network_axis(bytes_per_second: f32) -> String {
     }
 }
 
-impl Ashell {
+impl TinyShell {
     fn render_system_info_page(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let source_tab_id = self.active_system_info_tab.as_ref().and_then(|info_id| {
             self.system_info_tabs
@@ -1861,7 +1861,7 @@ impl Ashell {
                             .font_weight(FontWeight::BOLD)
                             .text_size(rems(1.5))
                             .text_color(cx.theme().primary)
-                            .child("Ashell"),
+                            .child("tiny-shell"),
                     )
                     .child(
                         div()
@@ -2100,14 +2100,14 @@ impl Ashell {
 
             cx.on_next_frame(
                 window,
-                move |_this: &mut crate::app::Ashell,
+                move |_this: &mut crate::app::TinyShell,
                       window: &mut gpui::Window,
-                      cx: &mut gpui::Context<crate::app::Ashell>| {
+                      cx: &mut gpui::Context<crate::app::TinyShell>| {
                     cx.on_next_frame(
                         window,
-                        move |this: &mut crate::app::Ashell,
+                        move |this: &mut crate::app::TinyShell,
                               window: &mut gpui::Window,
-                              cx: &mut gpui::Context<crate::app::Ashell>| {
+                              cx: &mut gpui::Context<crate::app::TinyShell>| {
                             this.body_panels.update(cx, |state, cx| {
                                 let sizes = state.sizes();
                                 let c_size_f32: f32 = sizes.iter().map(|s| s.as_f32()).sum();
@@ -4195,7 +4195,7 @@ impl Ashell {
                             .text_center()
                             .font_weight(FontWeight::BOLD)
                             .text_size(rems(1.25))
-                            .child("Ashell"),
+                            .child("tiny-shell"),
                     )
                     .child(
                         Button::new("sidebar-collapse-toggle")
@@ -5010,7 +5010,7 @@ impl Ashell {
                                 this.home_page = HomePage::Overview;
                                 cx.notify();
                             }));
-                        TabBar::new("ashell-tab-bar")
+                        TabBar::new("tiny-shell-tab-bar")
                             .track_scroll(&self.tabs_scroll_handle)
                             .children(groups_data.iter().enumerate().map(
                                 |(ix, (group_id, ordinal, title, pane_ids))| {
@@ -5557,10 +5557,10 @@ impl Ashell {
     }
 
     fn render_pane_tree(
-        this: &mut Ashell,
+        this: &mut TinyShell,
         layout: &PaneLayout,
         path: &[usize],
-        cx: &mut Context<Ashell>,
+        cx: &mut Context<TinyShell>,
     ) -> impl IntoElement {
         match layout {
             PaneLayout::Single(tab_id) => {
@@ -5924,7 +5924,7 @@ impl Ashell {
     }
 }
 
-impl Render for Ashell {
+impl Render for TinyShell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if self
             .active_tab
@@ -6007,7 +6007,7 @@ impl Render for Ashell {
                     .unwrap_or(default_panel_height))
             };
 
-            v_resizable("ashell-body")
+            v_resizable("tiny-shell-body")
                 .lock(self.config.lock_layout())
                 .with_state(&self.body_panels)
                 .child(resizable_panel().child(self.render_terminal_panel(window, cx)))
@@ -6109,7 +6109,7 @@ impl Render for Ashell {
                     .child(main_content),
             );
 
-            h_resizable("ashell-workspace")
+            h_resizable("tiny-shell-workspace")
                 .lock(self.config.lock_layout())
                 .with_state(&self.workspace_panels)
                 .child(sidebar_area)
@@ -6118,7 +6118,7 @@ impl Render for Ashell {
         };
 
         v_flex()
-            .id("ashell-root")
+            .id("tiny-shell-root")
             .size_full()
             .relative()
             .bg(cx.theme().background)

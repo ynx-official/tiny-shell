@@ -16,7 +16,7 @@ use uuid::Uuid;
 use self::config::{AuthMethod, ManagedKey, Session};
 
 use crate::{
-    Ashell, PaneLayout, SelectorEntry, TabGroup,
+    TinyShell, PaneLayout, SelectorEntry, TabGroup,
     app::{
         IncomingTabDrag, SystemInfoTab,
         constants::{DEFAULT_COLS, DEFAULT_ROWS},
@@ -39,7 +39,7 @@ pub(crate) struct GroupTransfer {
     was_active_group: bool,
 }
 
-impl Ashell {
+impl TinyShell {
     pub(crate) fn open_system_info_tab(&mut self, cx: &mut Context<Self>) {
         let Some(source_tab_id) = self.system_tab_id.clone().or_else(|| {
             self.active_tab.as_ref().and_then(|active_id| {
@@ -2293,7 +2293,7 @@ impl Ashell {
     fn update_tab_drag_merge_target(
         &mut self,
         source_handle: AnyWindowHandle,
-        source_entity: Entity<Ashell>,
+        source_entity: Entity<TinyShell>,
         screen_pos: Point<Pixels>,
         allow_target: bool,
         cx: &mut Context<Self>,
@@ -2508,7 +2508,7 @@ impl Ashell {
         group_id: String,
         source_window: AnyWindowHandle,
         target_window: AnyWindowHandle,
-        target: Entity<Ashell>,
+        target: Entity<TinyShell>,
         cx: &mut Context<Self>,
     ) -> bool {
         let intent = self.tab_drag.finish();
@@ -2541,7 +2541,7 @@ impl Ashell {
         &mut self,
         group_id: String,
         target_window: AnyWindowHandle,
-        target: Entity<Ashell>,
+        target: Entity<TinyShell>,
         cx: &mut Context<Self>,
     ) -> bool {
         target.update(cx, |target, cx| {

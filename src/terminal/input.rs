@@ -8,7 +8,7 @@ use gpui::{
 };
 
 use crate::{
-    Ashell, TerminalBacktabKey, TerminalTabKey,
+    TinyShell, TerminalBacktabKey, TerminalTabKey,
     terminal::{BackendCommand, encode_key},
 };
 
@@ -16,7 +16,7 @@ thread_local! {
     static LAST_DRAG_SCROLL: std::cell::Cell<Option<std::time::Instant>> = const { std::cell::Cell::new(None) };
 }
 
-impl Ashell {
+impl TinyShell {
     pub(crate) fn on_terminal_key_down(
         &mut self,
         event: &KeyDownEvent,

@@ -84,7 +84,7 @@ fn window_options(cx: &App, position_hint: Option<Point<Pixels>>) -> WindowOptio
     }
 
     #[cfg(not(target_os = "macos"))]
-    if let Ok(image) = image::load_from_memory(include_bytes!("../../assets/icons/ashell.png")) {
+    if let Ok(image) = image::load_from_memory(include_bytes!("../../assets/icons/tiny-shell.png")) {
         options.icon = Some(std::sync::Arc::new(image.into_rgba8()));
     }
 
@@ -261,7 +261,7 @@ pub(crate) fn force_close_session_windows(session_id: &str, cx: &mut App) {
 pub(crate) fn request_session_close(
     session_id: &str,
     tab_id: String,
-    owner: Entity<crate::Ashell>,
+    owner: Entity<crate::TinyShell>,
     cx: &mut App,
 ) -> bool {
     let entries = entries_for(session_id);

@@ -12,9 +12,9 @@ use gpui_component::{
 };
 use rust_i18n::t;
 
-use crate::Ashell;
+use crate::TinyShell;
 
-impl Ashell {
+impl TinyShell {
     pub(crate) fn toggle_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.search_active {
             self.close_search(window, cx);

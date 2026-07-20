@@ -10,7 +10,7 @@ use gpui::{
 };
 use gpui_component::ActiveTheme as _;
 
-use crate::Ashell;
+use crate::TinyShell;
 use crate::terminal::custom_blocks::{is_custom_block_supported, paint_custom_block};
 use crate::terminal::{RenderSnapshot, ViewportSelection};
 
@@ -144,7 +144,7 @@ struct CursorLayout {
 }
 
 pub struct TerminalElement {
-    view: Entity<Ashell>,
+    view: Entity<TinyShell>,
     focus_handle: FocusHandle,
     snapshot: RenderSnapshot,
     marked_text: Option<String>,
@@ -176,7 +176,7 @@ struct LayoutCustomBlock {
 }
 
 struct TerminalInputHandler {
-    view: Entity<Ashell>,
+    view: Entity<TinyShell>,
     element_bounds: Bounds<Pixels>,
     cell_width: f32,
     line_height: f32,
@@ -286,7 +286,7 @@ impl InputHandler for TerminalInputHandler {
 impl TerminalElement {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        view: Entity<Ashell>,
+        view: Entity<TinyShell>,
         focus_handle: FocusHandle,
         snapshot: RenderSnapshot,
         marked_text: Option<String>,

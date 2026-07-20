@@ -1352,7 +1352,7 @@ async fn download_path_impl(
 
     if is_dir {
         let local_archive = local_dir.join(format!(
-            ".ashell-{}-{}.tar.gz",
+            ".tiny-shell-{}-{}.tar.gz",
             base_name(remote),
             Uuid::new_v4()
         ));
@@ -1431,7 +1431,7 @@ async fn download_remote_directory_archive(
     id: &str,
 ) -> Result<PathBuf> {
     let remote_archive = format!(
-        "/tmp/ashell-{}-{}.tar.gz",
+        "/tmp/tiny-shell-{}-{}.tar.gz",
         base_name(remote_dir),
         Uuid::new_v4()
     );
@@ -1610,8 +1610,8 @@ async fn save_remote_text_file(
     }
 
     let suffix = Uuid::new_v4();
-    let temp = format!("{}.ashell-save-{suffix}.tmp", save.remote_path);
-    let backup = format!("{}.ashell-save-{suffix}.bak", save.remote_path);
+    let temp = format!("{}.tiny-shell-save-{suffix}.tmp", save.remote_path);
+    let backup = format!("{}.tiny-shell-save-{suffix}.bak", save.remote_path);
     if let Err(error) =
         write_remote_temp_file(sftp, &temp, &bytes, current.revision.permissions).await
     {

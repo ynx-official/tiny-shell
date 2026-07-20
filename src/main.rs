@@ -13,7 +13,7 @@ mod terminal;
 
 rust_i18n::i18n!("locales", fallback = "en");
 
-gpui::actions!(ashell_terminal, [TerminalTabKey, TerminalBacktabKey]);
+gpui::actions!(tiny_shell_terminal, [TerminalTabKey, TerminalBacktabKey]);
 
 pub(crate) use app::keybinding_recorder::{
     ClosePane, Copy, DetachTabToWindow, FocusPaneDown, FocusPaneLeft, FocusPaneRight, FocusPaneUp,
@@ -21,7 +21,7 @@ pub(crate) use app::keybinding_recorder::{
     SplitPaneLeft, SplitPaneRight, SplitPaneUp, ToggleSftpZoom, ToggleSidebar,
 };
 
-pub(crate) use app::{Ashell, PaneLayout, SelectorEntry, SftpContextMenuState, TabGroup};
+pub(crate) use app::{TinyShell, PaneLayout, SelectorEntry, SftpContextMenuState, TabGroup};
 
 fn main() {
     app::startup::sync_macos_launch_environment();

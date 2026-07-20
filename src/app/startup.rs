@@ -3,7 +3,7 @@ use std::{cell::RefCell, rc::Rc};
 use gpui::{App, AppContext as _, Bounds, Entity, WindowOptions, point, px, size};
 use gpui_component::Root;
 
-use crate::Ashell;
+use crate::TinyShell;
 use crate::session::{
     GroupTransfer,
     config::{ConfigStore, Session},
@@ -91,12 +91,12 @@ pub(crate) fn init_logging() {
     use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
     let log_dir = directories::BaseDirs::new()
-        .map(|dirs| dirs.home_dir().join(".config").join("ashell").join("log"))
+        .map(|dirs| dirs.home_dir().join(".config").join("tiny-shell").join("log"))
         .unwrap_or_else(|| std::path::PathBuf::from("."));
 
     std::fs::create_dir_all(&log_dir).ok();
 
-    let roller = LocalMinutelyRoller::new(log_dir.clone(), "ashell".to_string());
+    let roller = LocalMinutelyRoller::new(log_dir.clone(), "tiny-shell".to_string());
 
     let (non_blocking, _guard) = tracing_appender::non_blocking(roller);
     // Leak the guard so it lives for the entire duration of the app since GPUI's run might not return
@@ -276,7 +276,7 @@ fn build_window_options(
     }
 
     #[cfg(not(target_os = "macos"))]
-    if let Ok(img) = image::load_from_memory(include_bytes!("../../assets/icons/ashell.png")) {
+    if let Ok(img) = image::load_from_memory(include_bytes!("../../assets/icons/tiny-shell.png")) {
         window_options.icon = Some(std::sync::Arc::new(img.into_rgba8()));
     }
 
@@ -409,12 +409,12 @@ pub(crate) fn open_new_window_with_group(
 fn open_window_with_initializer(
     window_options: WindowOptions,
     session_store: Entity<SessionStore>,
-    initialize: impl FnOnce(Entity<Ashell>, &mut App) -> bool + 'static,
+    initialize: impl FnOnce(Entity<TinyShell>, &mut App) -> bool + 'static,
     cx: &mut App,
 ) -> Result<(), String> {
     cx.open_window(window_options, |window, cx| {
-        window.set_window_title("ashell");
-        let view = cx.new(|cx| Ashell::new(window, session_store.clone(), cx));
+        window.set_window_title("tiny-shell");
+        let view = cx.new(|cx| TinyShell::new(window, session_store.clone(), cx));
 
         crate::app::register_window(window.window_handle(), view.clone());
         let should_activate = initialize(view.clone(), cx);

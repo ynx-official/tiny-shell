@@ -314,59 +314,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ashell"
-version = "0.4.11"
-dependencies = [
- "alacritty_terminal",
- "anyhow",
- "argon2",
- "async-trait",
- "base64",
- "chacha20poly1305",
- "chrono",
- "directories",
- "flate2",
- "futures",
- "gpui",
- "gpui-component",
- "gpui-component-assets",
- "gpui_platform",
- "hex",
- "hmac",
- "image",
- "menu",
- "notify 6.1.1",
- "open",
- "portable-pty",
- "rand 0.8.6",
- "reqwest",
- "rfd",
- "russh",
- "russh-keys",
- "russh-sftp",
- "rust-i18n 3.1.5",
- "semver",
- "serde",
- "serde_json",
- "sha2",
- "ssh-key",
- "sys-locale",
- "sysinfo 0.33.1",
- "tar",
- "thiserror 1.0.69",
- "time",
- "tokio",
- "tokio-socks",
- "tracing",
- "tracing-appender",
- "tracing-subscriber",
- "uuid",
- "walkdir",
- "winres",
- "zip",
-]
-
-[[package]]
 name = "ashpd"
 version = "0.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7706,6 +7653,59 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2c9d3793400a45f954c52e73d068316d76b6f4e36977e3fcebb13a2721e80237"
 dependencies = [
  "crunchy",
+]
+
+[[package]]
+name = "tiny-shell"
+version = "1.0.1"
+dependencies = [
+ "alacritty_terminal",
+ "anyhow",
+ "argon2",
+ "async-trait",
+ "base64",
+ "chacha20poly1305",
+ "chrono",
+ "directories",
+ "flate2",
+ "futures",
+ "gpui",
+ "gpui-component",
+ "gpui-component-assets",
+ "gpui_platform",
+ "hex",
+ "hmac",
+ "image",
+ "menu",
+ "notify 6.1.1",
+ "open",
+ "portable-pty",
+ "rand 0.8.6",
+ "reqwest",
+ "rfd",
+ "russh",
+ "russh-keys",
+ "russh-sftp",
+ "rust-i18n 3.1.5",
+ "semver",
+ "serde",
+ "serde_json",
+ "sha2",
+ "ssh-key",
+ "sys-locale",
+ "sysinfo 0.33.1",
+ "tar",
+ "thiserror 1.0.69",
+ "time",
+ "tokio",
+ "tokio-socks",
+ "tracing",
+ "tracing-appender",
+ "tracing-subscriber",
+ "uuid",
+ "walkdir",
+ "winres",
+ "zip",
 ]
 
 [[package]]

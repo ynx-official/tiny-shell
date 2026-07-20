@@ -585,8 +585,8 @@ EOF
   echo "SWAP_USED=$(( ${swap_total:-0} - ${swap_free:-0} ))"
   echo "NET_RX=$(( ${net_rx_2:-0} - ${net_rx_1:-0} ))"
   echo "NET_TX=$(( ${net_tx_2:-0} - ${net_tx_1:-0} ))"
-  printf "%s\n__ASHELL_SPLIT__\n%s\n" "$net_snapshot_1" "$net_snapshot_2" | awk -F"[: ]+" '"'"'
-    $0 == "__ASHELL_SPLIT__" { second=1; next }
+  printf "%s\n__TINY_SHELL_SPLIT__\n%s\n" "$net_snapshot_1" "$net_snapshot_2" | awk -F"[: ]+" '"'"'
+    $0 == "__TINY_SHELL_SPLIT__" { second=1; next }
     /:/ && $2 != "Inter" && $2 != "face" {
       name=$2
       if (!second) { rx1[name]=$3; tx1[name]=$11 }
@@ -652,8 +652,8 @@ EOF
   echo "SWAP_USED=${swap_used:-0}"
   echo "NET_RX=$(( ${net_rx_2:-0} - ${net_rx_1:-0} ))"
   echo "NET_TX=$(( ${net_tx_2:-0} - ${net_tx_1:-0} ))"
-  printf "%s\n__ASHELL_SPLIT__\n%s\n" "$net_snapshot_1" "$net_snapshot_2" | awk '"'"'
-    $0 == "__ASHELL_SPLIT__" { second=1; next }
+  printf "%s\n__TINY_SHELL_SPLIT__\n%s\n" "$net_snapshot_1" "$net_snapshot_2" | awk '"'"'
+    $0 == "__TINY_SHELL_SPLIT__" { second=1; next }
     NR > 1 && $7 ~ /^[0-9]+$/ && $10 ~ /^[0-9]+$/ {
       if (!second) { rx1[$1]+=$7; tx1[$1]+=$10 }
       else { rx2[$1]+=$7; tx2[$1]+=$10 }

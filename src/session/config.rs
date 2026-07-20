@@ -24,7 +24,7 @@ pub enum AuthMethod {
     Config,
 }
 
-/// A user-imported SSH private key managed by ashell.
+/// A user-imported SSH private key managed by tiny-shell.
 ///
 /// The key file content is copied into `inline_content` at import time,
 /// so deleting the original file does not affect connections that use
@@ -293,7 +293,7 @@ fn default_s3_region() -> String {
 }
 
 fn default_s3_object_key() -> String {
-    "ashell-sync.json".to_string()
+    "tiny-shell-sync.json".to_string()
 }
 
 fn default_follow_system_theme() -> bool {
@@ -454,7 +454,7 @@ impl ConfigStore {
         Ok(dirs
             .home_dir()
             .join(".config")
-            .join("ashell")
+            .join("tiny-shell")
             .join("sessions.json"))
     }
 
@@ -647,7 +647,7 @@ impl ConfigStore {
 
     pub fn sync_s3_object_key(&self) -> &str {
         if self.cache.sync_s3_object_key.is_empty() {
-            "ashell-sync.json"
+            "tiny-shell-sync.json"
         } else {
             &self.cache.sync_s3_object_key
         }
@@ -1326,7 +1326,7 @@ fn get_hardware_uuid() -> String {
         }
     }
 
-    "ashell-default-hardware-uuid-fallback".to_string()
+    "tiny-shell-default-hardware-uuid-fallback".to_string()
 }
 
 fn encrypt_config(config: &ConfigFile, password: &str) -> Result<Vec<u8>> {
@@ -1422,7 +1422,7 @@ mod tests {
 
     #[test]
     fn config_save_replaces_existing_file_without_leaving_temp_files() {
-        let dir = std::env::temp_dir().join(format!("ashell-config-test-{}", Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("tiny-shell-config-test-{}", Uuid::new_v4()));
         fs::create_dir_all(&dir).unwrap();
         let path = dir.join("sessions.json");
         fs::write(&path, b"old config").unwrap();
