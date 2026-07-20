@@ -3634,7 +3634,14 @@ impl TinyShell {
                                                         |cx: &mut gpui::AsyncApp| {
                                                             let cx = cx.clone();
                                                             async move {
-                                                                let result = crate::app::updater::check_for_update().await;
+                                                                let (tx, rx) = futures::channel::oneshot::channel();
+                                                                crate::app::shared_runtime().spawn(async move {
+                                                                    let result = crate::app::updater::check_for_update().await;
+                                                                    let _ = tx.send(result);
+                                                                });
+                                                                let result = rx.await.unwrap_or_else(|_| {
+                                                                    Err(anyhow::anyhow!("update check cancelled"))
+                                                                });
                                                                 cx.update(|cx| {
                                                                     match result {
                                                                         Ok(Some(info)) => {
@@ -3684,7 +3691,15 @@ impl TinyShell {
                                                                                             |cx: &mut gpui::AsyncApp| {
                                                                                                 let cx = cx.clone();
                                                                                                 async move {
-                                                                                                    let result = crate::app::updater::perform_update(&info).await;
+                                                                                                    let (tx, rx) = futures::channel::oneshot::channel();
+                                                                                                    let info = info.clone();
+                                                                                                    crate::app::shared_runtime().spawn(async move {
+                                                                                                        let result = crate::app::updater::perform_update(&info).await;
+                                                                                                        let _ = tx.send(result);
+                                                                                                    });
+                                                                                                    let result = rx.await.unwrap_or_else(|_| {
+                                                                                                        Err(anyhow::anyhow!("update download cancelled"))
+                                                                                                    });
                                                                                                     cx.update(|cx| {
                                                                                                         match result {
                                                                                                             Ok(()) => {
