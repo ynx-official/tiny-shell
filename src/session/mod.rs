@@ -1298,6 +1298,7 @@ impl Ashell {
                 self.tabs[ix].send_backend(BackendCommand::Close);
                 self.tabs.remove(ix);
             }
+            self.remote_system_snapshots.remove(&id);
             return;
         };
 
@@ -1357,6 +1358,7 @@ impl Ashell {
                     self.tabs[ix].send_backend(BackendCommand::Close);
                     self.tabs.retain(|t| t.id != *tab_id);
                 }
+                self.remote_system_snapshots.remove(tab_id);
             }
             if let Some(handle) = self.sftp_handles.remove(&group.id) {
                 handle.close();
@@ -1369,6 +1371,7 @@ impl Ashell {
                 self.tabs[ix].send_backend(BackendCommand::Close);
                 self.tabs.retain(|t| t.id != id);
             }
+            self.remote_system_snapshots.remove(&id);
             if let Some(g) = self
                 .tab_groups
                 .iter_mut()
@@ -1392,6 +1395,7 @@ impl Ashell {
             self.net_rx_history.clear();
             self.net_tx_history.clear();
             self.system_status = None;
+            self.remote_system_snapshots.clear();
             for (_, handle) in self.sftp_handles.drain() {
                 handle.close();
             }
@@ -1515,33 +1519,12 @@ impl Ashell {
             .map(|tab| tab.kind)
     }
 
-    pub(crate) fn active_title(&self) -> String {
-        self.active_tab
-            .as_ref()
-            .and_then(|id| self.tabs.iter().find(|t| &t.id == id))
-            .map(|t| t.title.clone())
-            .unwrap_or_else(|| t!("idle_no_session").into())
-    }
-
-    pub(crate) fn active_ssh_session(&self) -> Option<(String, Session)> {
-        let active_id = self.active_tab.as_ref()?;
-        let tab = self.tabs.iter().find(|tab| &tab.id == active_id)?;
-        if !tab.connected {
-            return None;
-        }
-        Some((tab.id.clone(), tab.session.clone()?))
-    }
-
     pub(crate) fn active_session_id(&self) -> Option<&str> {
         self.active_tab
             .as_ref()
             .and_then(|id| self.tabs.iter().find(|tab| &tab.id == id))
             .and_then(|tab| tab.session.as_ref())
             .map(|session| session.id.as_str())
-    }
-
-    pub(crate) fn session_detail(&self, session: &Session) -> String {
-        format!("{}@{}:{}", session.user, session.host, session.port)
     }
 
     pub(crate) fn split_current_pane(&mut self, direction: &str, cx: &mut Context<Self>) {
@@ -1830,7 +1813,7 @@ impl Ashell {
                 let ids = group.pane_root.tab_ids();
                 for id in ids {
                     if let Some(tab) = self.tabs.iter().find(|t| t.id == *id) {
-                        if tab.kind == TabKind::Ssh && tab.connected {
+                        if tab.kind == TabKind::Ssh {
                             group_ssh_tabs.push(tab.id.clone());
                         }
                     }
@@ -1856,6 +1839,12 @@ impl Ashell {
                     self.system_status = Some("monitored session closed".to_string().into());
                 } else {
                     self.system_status = None;
+                    self.system = self
+                        .system_tab_id
+                        .as_ref()
+                        .and_then(|tab_id| self.remote_system_snapshots.get(tab_id))
+                        .cloned()
+                        .unwrap_or_default();
                 }
                 self.request_active_system_snapshot();
             }

@@ -566,6 +566,7 @@ EOF
   echo "SWAP_USED=$(( ${swap_total:-0} - ${swap_free:-0} ))"
   echo "NET_RX=$(( ${net_rx_2:-0} - ${net_rx_1:-0} ))"
   echo "NET_TX=$(( ${net_tx_2:-0} - ${net_tx_1:-0} ))"
+  ps -eo rss=,pcpu=,comm= --sort=-rss 2>/dev/null | head -n 4 | awk '"'"'{ mem=$1*1024; cpu=$2; $1=""; $2=""; sub(/^[[:space:]]+/, ""); printf "PROCESS=%s\t%s\t%s\n", mem, cpu, $0 }'"'"'
   df -kP 2>/dev/null | awk "NR > 1 && \$1 !~ /^(tmpfs|devtmpfs|ramfs|overlay|aufs)\$/ { printf \"DISK=%s\t%s\t%s\n\", \$6, \$4 * 1024, \$2 * 1024 }" | head -n 6
   exit 0
 fi
@@ -605,6 +606,7 @@ EOF
   echo "SWAP_USED=${swap_used:-0}"
   echo "NET_RX=$(( ${net_rx_2:-0} - ${net_rx_1:-0} ))"
   echo "NET_TX=$(( ${net_tx_2:-0} - ${net_tx_1:-0} ))"
+  ps -axo rss=,pcpu=,comm= 2>/dev/null | sort -nr | head -n 4 | awk '"'"'{ mem=$1*1024; cpu=$2; $1=""; $2=""; sub(/^[[:space:]]+/, ""); printf "PROCESS=%s\t%s\t%s\n", mem, cpu, $0 }'"'"'
   df -kP 2>/dev/null | awk "NR > 1 && \$1 !~ /^(devfs|tmpfs|devtmpfs|ramfs|overlay|aufs)\$/ { printf \"DISK=%s\t%s\t%s\n\", \$6, \$4 * 1024, \$2 * 1024 }" | head -n 6
   exit 0
 fi

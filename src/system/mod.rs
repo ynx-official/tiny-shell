@@ -5,7 +5,7 @@ use std::{
 };
 
 use anyhow::{Result, anyhow};
-use sysinfo::{Disks, Networks, System};
+use sysinfo::{Disks, Networks, ProcessesToUpdate, System};
 
 /// Known virtual/ram filesystems to exclude from disk monitoring.
 fn is_real_filesystem(fs: &OsStr) -> bool {
@@ -23,6 +23,13 @@ pub struct DiskSample {
 }
 
 #[derive(Debug, Clone, Default)]
+pub struct ProcessSample {
+    pub memory_bytes: u64,
+    pub cpu_percent: f32,
+    pub command: String,
+}
+
+#[derive(Debug, Clone, Default)]
 pub struct SystemSnapshot {
     pub cpu_percent: f32,
     pub mem_percent: f32,
@@ -34,6 +41,7 @@ pub struct SystemSnapshot {
     pub net_rx_rate: u64,
     pub net_tx_rate: u64,
     pub disks: Vec<DiskSample>,
+    pub processes: Vec<ProcessSample>,
     pub total_swap: u64,
 }
 
@@ -72,6 +80,7 @@ impl SystemSampler {
     pub fn sample(&mut self) -> SystemSnapshot {
         self.sys.refresh_cpu_usage();
         self.sys.refresh_memory();
+        self.sys.refresh_processes(ProcessesToUpdate::All, true);
         self.nets.refresh(true);
         self.disks.refresh(true);
 
@@ -114,6 +123,20 @@ impl SystemSampler {
             a.mount.cmp(&b.mount)
         });
 
+        let mut processes = self
+            .sys
+            .processes()
+            .values()
+            .filter(|process| process.memory() > 0)
+            .map(|process| ProcessSample {
+                memory_bytes: process.memory(),
+                cpu_percent: process.cpu_usage(),
+                command: process.name().to_string_lossy().into_owned(),
+            })
+            .collect::<Vec<_>>();
+        processes.sort_by(|left, right| right.memory_bytes.cmp(&left.memory_bytes));
+        processes.truncate(4);
+
         SystemSnapshot {
             cpu_percent,
             mem_percent: ratio(mem_used, mem_total),
@@ -125,6 +148,7 @@ impl SystemSampler {
             net_rx_rate: rx_rate,
             net_tx_rate: tx_rate,
             disks,
+            processes,
             total_swap: swap_total,
         }
     }
@@ -192,6 +216,7 @@ pub fn format_bytes(bytes: u64) -> String {
 pub fn remote_snapshot_from_kv(raw: &str) -> Result<SystemSnapshot> {
     let mut kv = BTreeMap::new();
     let mut disks = Vec::new();
+    let mut processes = Vec::new();
 
     for line in raw.lines().map(str::trim).filter(|line| !line.is_empty()) {
         if let Some(rest) = line.strip_prefix("DISK=") {
@@ -211,6 +236,16 @@ pub fn remote_snapshot_from_kv(raw: &str) -> Result<SystemSnapshot> {
                 mount,
                 available_bytes,
                 total_bytes,
+            });
+            continue;
+        }
+
+        if let Some(rest) = line.strip_prefix("PROCESS=") {
+            let mut parts = rest.splitn(3, '\t');
+            processes.push(ProcessSample {
+                memory_bytes: parts.next().unwrap_or("0").parse().unwrap_or_default(),
+                cpu_percent: parts.next().unwrap_or("0").parse().unwrap_or_default(),
+                command: parts.next().unwrap_or_default().to_string(),
             });
             continue;
         }
@@ -260,6 +295,7 @@ pub fn remote_snapshot_from_kv(raw: &str) -> Result<SystemSnapshot> {
         net_rx_rate: rx_rate,
         net_tx_rate: tx_rate,
         disks,
+        processes,
         total_swap: swap_total,
     })
 }

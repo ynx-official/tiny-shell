@@ -545,6 +545,9 @@ pub(crate) struct Ashell {
     /// Whether workspace keybindings are currently suspended (during settings)
     pub(crate) keybinds_suspended: bool,
     pub(crate) system: SystemSnapshot,
+    /// Remote monitoring data is isolated per SSH terminal. It must never be
+    /// replaced with a snapshot from the machine running Ashell.
+    pub(crate) remote_system_snapshots: HashMap<String, SystemSnapshot>,
     pub(crate) cpu_history: Vec<f32>,
     pub(crate) net_rx_history: Vec<f32>,
     pub(crate) net_tx_history: Vec<f32>,
@@ -998,6 +1001,7 @@ impl Ashell {
             keybind_error: None,
             keybinds_suspended: false,
             system,
+            remote_system_snapshots: HashMap::new(),
             cpu_history: Vec::with_capacity(20),
             net_rx_history: Vec::with_capacity(20),
             net_tx_history: Vec::with_capacity(20),
@@ -1297,6 +1301,8 @@ impl Ashell {
                 }
                 BackendEvent::RemoteSystem { tab_id, snapshot } => {
                     self.remote_sample_in_flight = false;
+                    self.remote_system_snapshots
+                        .insert(tab_id.clone(), snapshot.clone());
                     if self.system_tab_id.as_deref() == Some(tab_id.as_str()) {
                         self.system_status = None;
                         self.system = snapshot.clone();
@@ -1461,15 +1467,16 @@ impl Ashell {
     pub(crate) fn sample_system_if_due(&mut self) -> bool {
         if self.last_system_sample.elapsed() >= SystemSampler::interval() {
             self.last_system_sample = Instant::now();
-            // Use system_tab_id (not active_tab) to decide remote vs local sampling
+            // An SSH workspace must never fall back to sampling the local
+            // machine, including while connecting, disconnected, or after a
+            // transient remote probe failure.
             if let Some(ref tab_id) = self.system_tab_id.clone() {
-                if self
-                    .tabs
-                    .iter()
-                    .any(|t| t.id == *tab_id && t.kind == TabKind::Ssh && t.connected)
-                    && self.system_status.is_none()
+                if let Some(tab) = self.tabs.iter().find(|tab| tab.id == *tab_id)
+                    && tab.kind == TabKind::Ssh
                 {
-                    self.request_active_system_snapshot();
+                    if tab.connected {
+                        self.request_active_system_snapshot();
+                    }
                     return false;
                 }
             }
