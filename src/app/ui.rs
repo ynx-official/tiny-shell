@@ -3514,92 +3514,6 @@ impl Ashell {
                     .child(
                         h_flex()
                             .justify_between()
-                            .items_center()
-                            .child(
-                                div()
-                                    .text_size(rems(0.85))
-                                    .text_color(disk_color)
-                                    .child(t!("disk").to_string()),
-                            )
-                            .children(if self.system.disks.len() > 3 {
-                                Some(
-                                    div()
-                                        .text_size(rems(0.65))
-                                        .text_color(muted_fg)
-                                        .child(t!("scroll").to_string()),
-                                )
-                            } else {
-                                None
-                            }),
-                    )
-                    .child(
-                        div()
-                            .relative()
-                            .w_full()
-                            .child(
-                                v_flex()
-                                    .id("sidebar-disk-scroll")
-                                    .track_scroll(&self.disk_scroll_handle)
-                                    .overflow_y_scroll()
-                                    .max_h(px(220.))
-                                    .gap_2()
-                                    .children(self.system.disks.iter().map(|disk| {
-                                        let pct = if disk.total_bytes > 0 {
-                                            (disk.total_bytes - disk.available_bytes) as f64
-                                                / disk.total_bytes as f64
-                                                * 100.0
-                                        } else {
-                                            0.0
-                                        };
-                                        let mount_short = disk.mount.clone();
-                                        let mount_id = format!("sidebar-disk-{}", mount_short);
-                                        v_flex()
-                                            .gap_0p5()
-                                            .child(
-                                                h_flex()
-                                                    .justify_between()
-                                                    .child(
-                                                        div()
-                                                            .text_size(rems(0.75))
-                                                            .text_color(muted_fg)
-                                                            .child(mount_short),
-                                                    )
-                                                    .child(
-                                                        div()
-                                                            .text_size(rems(0.75))
-                                                            .text_color(muted_fg)
-                                                            .child(format!("{:.1}%", pct)),
-                                                    ),
-                                            )
-                                            .child(
-                                                Progress::new(mount_id)
-                                                    .value(pct as f32)
-                                                    .color(disk_color)
-                                                    .with_size(px(4.))
-                                                    .w_full(),
-                                            )
-                                    })),
-                            )
-                            .child(
-                                div()
-                                    .absolute()
-                                    .top_0()
-                                    .right_0()
-                                    .bottom_0()
-                                    .w(px(8.))
-                                    .child(
-                                        Scrollbar::vertical(&self.disk_scroll_handle)
-                                            .scrollbar_show(ScrollbarShow::Scrolling),
-                                    ),
-                            ),
-                    ),
-            )
-            .child(
-                v_flex()
-                    .gap_1()
-                    .child(
-                        h_flex()
-                            .justify_between()
                             .child(
                                 div()
                                     .text_size(rems(0.85))
@@ -3650,6 +3564,134 @@ impl Ashell {
                                         div()
                                             .text_size(rems(0.75))
                                             .child(self.system.net_tx.clone()),
+                                    ),
+                            ),
+                    ),
+            )
+            .child(
+                v_flex()
+                    .gap_2()
+                    .child(
+                        h_flex()
+                            .justify_between()
+                            .items_center()
+                            .child(
+                                div()
+                                    .text_size(rems(0.85))
+                                    .text_color(disk_color)
+                                    .child(t!("disk").to_string()),
+                            )
+                            .children(if self.system.filesystems.len() > 3 {
+                                Some(
+                                    div()
+                                        .text_size(rems(0.65))
+                                        .text_color(muted_fg)
+                                        .child(t!("scroll").to_string()),
+                                )
+                            } else {
+                                None
+                            }),
+                    )
+                    .child(
+                        v_flex()
+                            .w_full()
+                            .rounded_lg()
+                            .border_1()
+                            .border_color(cx.theme().border)
+                            .overflow_hidden()
+                            .child(
+                                h_flex()
+                                    .h(px(38.))
+                                    .flex_none()
+                                    .items_center()
+                                    .px_4()
+                                    .bg(cx.theme().muted)
+                                    .text_size(rems(0.82))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child(div().flex_1().min_w(px(0.)).child(t!("disk_path")))
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_w(px(0.))
+                                            .text_center()
+                                            .child(t!("available_size")),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .relative()
+                                    .w_full()
+                                    .child(
+                                        v_flex()
+                                            .id("sidebar-disk-scroll")
+                                            .track_scroll(&self.disk_scroll_handle)
+                                            .overflow_y_scroll()
+                                            .max_h(px(244.))
+                                            .gap_1()
+                                            .p_1()
+                                            .children(self.system.filesystems.iter().enumerate().map(
+                                                |(index, disk)| {
+                                                    let mount = disk.mount.clone();
+                                                    h_flex()
+                                                        .h(px(48.))
+                                                        .items_center()
+                                                        .px_3()
+                                                        .rounded_sm()
+                                                        .when(index % 2 == 1, |this| {
+                                                            this.bg(cx.theme().muted.opacity(0.45))
+                                                        })
+                                                        .when(index % 2 == 0, |this| {
+                                                            this.bg(cx.theme().background)
+                                                        })
+                                                        .child(
+                                                            div()
+                                                                .id(("sidebar-disk-mount", index))
+                                                                .flex_1()
+                                                                .min_w(px(0.))
+                                                                .overflow_hidden()
+                                                                .whitespace_nowrap()
+                                                                .text_ellipsis()
+                                                                .text_size(rems(0.8))
+                                                                .font_weight(FontWeight::MEDIUM)
+                                                                .tooltip({
+                                                                    let mount = mount.clone();
+                                                                    move |window, cx| {
+                                                                        gpui_component::tooltip::Tooltip::new(
+                                                                            mount.clone(),
+                                                                        )
+                                                                        .build(window, cx)
+                                                                    }
+                                                                })
+                                                                .child(mount),
+                                                        )
+                                                        .child(
+                                                            div()
+                                                                .flex_1()
+                                                                .min_w(px(0.))
+                                                                .text_center()
+                                                                .whitespace_nowrap()
+                                                                .text_size(rems(0.76))
+                                                                .text_color(muted_fg)
+                                                                .child(format!(
+                                                                    "{}/{}",
+                                                                    format_bytes(disk.available_bytes),
+                                                                    format_bytes(disk.total_bytes)
+                                                                )),
+                                                        )
+                                                },
+                                            )),
+                                    )
+                                    .child(
+                                        div()
+                                            .absolute()
+                                            .top_0()
+                                            .right_0()
+                                            .bottom_0()
+                                            .w(px(8.))
+                                            .child(
+                                                Scrollbar::vertical(&self.disk_scroll_handle)
+                                                    .scrollbar_show(ScrollbarShow::Scrolling),
+                                            ),
                                     ),
                             ),
                     ),
@@ -3765,11 +3807,12 @@ impl Ashell {
                 div().w_full().px_1().child(
                     h_flex()
                         .id("sidebar-system-information")
+                        .relative()
                         .w_full()
                         .h(px(26.))
                         .px_2()
                         .items_center()
-                        .justify_between()
+                        .justify_center()
                         .rounded_md()
                         .border_1()
                         .border_color(cx.theme().border)
@@ -3779,7 +3822,14 @@ impl Ashell {
                         .font_weight(FontWeight::MEDIUM)
                         .hover(|this| this.bg(cx.theme().secondary.opacity(0.7)))
                         .child(t!("server_information"))
-                        .child(Icon::new(IconName::ExternalLink).with_size(Size::Small))
+                        .child(
+                            div()
+                                .absolute()
+                                .right(px(8.))
+                                .flex()
+                                .items_center()
+                                .child(Icon::new(IconName::ExternalLink).with_size(Size::Small)),
+                        )
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.open_system_info_tab(cx);
                         })),
