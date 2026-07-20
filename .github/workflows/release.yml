@@ -30,19 +30,19 @@ jobs:
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             name: windows-x86_64
-            bin: ashell.exe
+            bin: tiny-shell.exe
           - os: ubuntu-22.04 # build on the oldest supported runner for broader glibc compatibility
             target: x86_64-unknown-linux-gnu
             name: linux-x86_64
-            bin: ashell
+            bin: tiny-shell
           - os: macos-14 # Apple Silicon
             target: aarch64-apple-darwin
             name: macos-aarch64
-            bin: ashell
+            bin: tiny-shell
           - os: macos-14 # Intel (cross-compiled from Apple Silicon to avoid queue delays)
             target: x86_64-apple-darwin
             name: macos-x86_64
-            bin: ashell
+            bin: tiny-shell
 
     steps:
       - uses: actions/checkout@v4
@@ -79,7 +79,7 @@ jobs:
         run: |
           set -eu
           VERSION="${GITHUB_REF_NAME:-dev}"
-          STAGE="ashell-${VERSION}-${{ matrix.name }}"
+          STAGE="tiny-shell-${VERSION}-${{ matrix.name }}"
 
           if [ "${{ runner.os }}" = "macOS" ]; then
             # ── Build a proper .app bundle ────────────────────────────────────
@@ -87,12 +87,12 @@ jobs:
             # scripts/package-macos-app.sh, because that script runs `cargo build`
             # without respecting the `--target` flag from the matrix.
 
-            APP="ashell.app"
+            APP="tiny-shell.app"
             CONTENTS="$APP/Contents"
             mkdir -p "$CONTENTS/MacOS" "$CONTENTS/Resources"
 
-            cp "target/${{ matrix.target }}/release/ashell" "$CONTENTS/MacOS/"
-            cp "assets/icons/ashell.icns" "$CONTENTS/Resources/ashell.icns"
+            cp "target/${{ matrix.target }}/release/tiny-shell" "$CONTENTS/MacOS/"
+            cp "assets/icons/tiny-shell.icns" "$CONTENTS/Resources/tiny-shell.icns"
 
             VERSION_NUM="${VERSION#v}"
             cat > "$CONTENTS/Info.plist" <<EOF
@@ -104,15 +104,15 @@ jobs:
             <key>CFBundleDevelopmentRegion</key>
             <string>en</string>
             <key>CFBundleExecutable</key>
-            <string>ashell</string>
+            <string>tiny-shell</string>
             <key>CFBundleIconFile</key>
-            <string>ashell.icns</string>
+            <string>tiny-shell.icns</string>
             <key>CFBundleIdentifier</key>
-            <string>dev.ashell.app</string>
+            <string>dev.tiny-shell.app</string>
             <key>CFBundleInfoDictionaryVersion</key>
             <string>6.0</string>
             <key>CFBundleName</key>
-            <string>ashell</string>
+            <string>tiny-shell</string>
             <key>CFBundlePackageType</key>
             <string>APPL</string>
             <key>CFBundleShortVersionString</key>
@@ -184,7 +184,7 @@ jobs:
       - name: Checkout Homebrew Tap
         uses: actions/checkout@v4
         with:
-          repository: rust-kotlin/homebrew-taps
+          repository: ynx-official/homebrew-taps
           token: ${{ secrets.TAP_GITHUB_TOKEN }}
           path: tap
 
@@ -201,40 +201,40 @@ jobs:
           SHA_INTEL=$(sha256sum dist/macos-x86_64/*.zip | cut -d' ' -f1)
 
           mkdir -p tap/Casks
-          CASK_FILE="tap/Casks/ashell.rb"
+          CASK_FILE="tap/Casks/tiny-shell.rb"
 
           cat > "$CASK_FILE" <<EOF
-          cask "ashell" do
+          cask "tiny-shell" do
             version "${VERSION}"
 
             on_arm do
               sha256 "${SHA_ARM}"
-              url "https://github.com/rust-kotlin/ashell/releases/download/v#{version}/ashell-v#{version}-macos-aarch64.zip"
+              url "https://github.com/ynx-official/tiny-shell/releases/download/v#{version}/tiny-shell-v#{version}-macos-aarch64.zip"
             end
             on_intel do
               sha256 "${SHA_INTEL}"
-              url "https://github.com/rust-kotlin/ashell/releases/download/v#{version}/ashell-v#{version}-macos-x86_64.zip"
+              url "https://github.com/ynx-official/tiny-shell/releases/download/v#{version}/tiny-shell-v#{version}-macos-x86_64.zip"
             end
 
-            name "ashell"
-            desc "ashell is a modern, fast, GPUI Component-based desktop terminal client written in Rust."
-            homepage "https://github.com/rust-kotlin/ashell"
+            name "tiny-shell"
+            desc "tiny-shell is a modern, fast, GPUI Component-based desktop terminal client written in Rust."
+            homepage "https://github.com/ynx-official/tiny-shell"
 
-            app "ashell.app"
+            app "tiny-shell.app"
 
             postflight do
-              puts "Removing quarantine flag from ashell.app..."
+              puts "Removing quarantine flag from tiny-shell.app..."
               system_command "/usr/bin/xattr",
-                             args: ["-rd", "com.apple.quarantine", "#{appdir}/ashell.app"],
+                             args: ["-rd", "com.apple.quarantine", "#{appdir}/tiny-shell.app"],
                              sudo: true
             end
 
             caveats <<~EOS
-              ashell uses ad-hoc signing. The installation includes a postflight script
+              tiny-shell uses ad-hoc signing. The installation includes a postflight script
               that removes the 'com.apple.quarantine' attribute from the application
               to allow it to run. This will require your administrator password.
 
-              ashell 采用本地签名。安装程序包含一个后置脚本，用于移除应用程序的
+              tiny-shell 采用本地签名。安装程序包含一个后置脚本，用于移除应用程序的
               'com.apple.quarantine' 属性以允许其运行。这需要您的管理员密码。
             EOS
           end
@@ -249,8 +249,8 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           if [[ -n $(git status -s) ]]; then
-            git add Casks/ashell.rb
-            git commit -m "chore: bump ashell to v${VERSION}"
+            git add Casks/tiny-shell.rb
+            git commit -m "chore: bump tiny-shell to v${VERSION}"
             git push
           else
             echo "No changes to commit"
