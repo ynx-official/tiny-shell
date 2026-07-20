@@ -1561,7 +1561,7 @@ impl Ashell {
 
     /// Render a stable tree: group creation order defines sibling order while
     /// descendants remain directly below their parent.
-    fn connection_group_tree_order(groups: Vec<String>) -> Vec<String> {
+    pub(crate) fn connection_group_tree_order(groups: Vec<String>) -> Vec<String> {
         let present = groups.iter().cloned().collect::<HashSet<_>>();
         let mut children: HashMap<Option<String>, Vec<String>> = HashMap::new();
         for group in groups {
@@ -4908,6 +4908,27 @@ impl Ashell {
             .h_full()
             .items_center()
             .gap_2()
+            .child(
+                div()
+                    .h_full()
+                    .flex_none()
+                    .px_1()
+                    .flex()
+                    .items_center()
+                    .border_r_1()
+                    .border_color(cx.theme().border.opacity(0.8))
+                    .child(
+                        Button::new("tab-quick-connections")
+                            .ghost()
+                            .small()
+                            .rounded(px(6.))
+                            .icon(IconName::FolderOpen)
+                            .tooltip(t!("overview_connections").to_string())
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.show_quick_connection_manager_dialog(window, cx);
+                            })),
+                    ),
+            )
             .child(
                 div()
                     .flex_1()

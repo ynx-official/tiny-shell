@@ -14,6 +14,11 @@ on:
 permissions:
   contents: write # needed to create / update the GitHub Release
 
+# Prevent two manually triggered runs for the same ref from publishing at once.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   build:
     name: ${{ matrix.name }}
@@ -63,10 +68,11 @@ jobs:
       - name: Cache cargo build
         uses: Swatinem/rust-cache@v2
         with:
-          key: ${{ matrix.target }}
+          # Matches CI so a recent release build can warm the tag build.
+          shared-key: ${{ matrix.name }}
 
       - name: Build (release)
-        run: cargo build --release --target ${{ matrix.target }}
+        run: cargo build --locked --release --target ${{ matrix.target }}
 
       - name: Package
         shell: bash

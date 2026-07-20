@@ -400,6 +400,7 @@ impl ScrollbarHandle for TerminalScrollbarHandle {
 pub(crate) enum DialogKind {
     Settings,
     SessionSelector,
+    QuickConnectionManager,
     Transfers,
     NewSsh,
     ManagedKeySelector,
@@ -527,6 +528,7 @@ pub(crate) struct Ashell {
     pub(crate) disk_scroll_handle: gpui::ScrollHandle,
     pub(crate) tabs_scroll_handle: gpui::ScrollHandle,
     pub(crate) selector_scroll_handle: gpui::ScrollHandle,
+    pub(crate) quick_connection_scroll_handle: gpui::ScrollHandle,
     pub(crate) saved_scroll_handle: gpui::ScrollHandle,
     pub(crate) connection_scroll_handle: gpui::ScrollHandle,
     pub(crate) group_picker_scroll_handle: gpui::ScrollHandle,
@@ -587,6 +589,7 @@ pub(crate) struct Ashell {
     pub(crate) last_system_sample: Instant,
 
     pub(crate) search_input: Entity<InputState>,
+    pub(crate) quick_connection_search_input: Entity<InputState>,
     pub(crate) search_active: bool,
     pub(crate) search_query: String,
     pub(crate) search_matches: Vec<(i32, i32)>,
@@ -733,6 +736,8 @@ impl Ashell {
             cx.new(|cx| InputState::new(window, cx).placeholder(t!("new_folder").to_string()));
         let search_input =
             cx.new(|cx| InputState::new(window, cx).placeholder(t!("search").to_string()));
+        let quick_connection_search_input =
+            cx.new(|cx| InputState::new(window, cx).placeholder(t!("search").to_string()));
         let config = ConfigStore::load().unwrap_or_else(|err| {
             tracing::warn!("failed to load config: {err:#}");
             ConfigStore::in_memory()
@@ -836,6 +841,11 @@ impl Ashell {
             cx.subscribe_in(&sftp_path_input, window, Self::on_input_event),
             cx.subscribe_in(&sftp_new_folder_input, window, Self::on_input_event),
             cx.subscribe_in(&search_input, window, Self::on_input_event),
+            cx.subscribe_in(
+                &quick_connection_search_input,
+                window,
+                Self::on_input_event,
+            ),
             cx.subscribe_in(&sync_endpoint_input, window, Self::on_input_event),
             cx.subscribe_in(&sync_username_input, window, Self::on_input_event),
             cx.subscribe_in(&sync_webdav_password_input, window, Self::on_input_event),
@@ -989,6 +999,7 @@ impl Ashell {
             disk_scroll_handle: gpui::ScrollHandle::new(),
             tabs_scroll_handle: gpui::ScrollHandle::new(),
             selector_scroll_handle: gpui::ScrollHandle::new(),
+            quick_connection_scroll_handle: gpui::ScrollHandle::new(),
             saved_scroll_handle: gpui::ScrollHandle::new(),
             connection_scroll_handle: gpui::ScrollHandle::new(),
             group_picker_scroll_handle: gpui::ScrollHandle::new(),
@@ -1051,6 +1062,7 @@ impl Ashell {
             last_system_sample: Instant::now(),
 
             search_input,
+            quick_connection_search_input,
             search_active: false,
             search_query: String::new(),
             search_matches: Vec::new(),
