@@ -397,6 +397,13 @@ pub(crate) enum DialogKind {
     ManagedKeyImport,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum HomePage {
+    #[default]
+    Overview,
+    KeyManager,
+}
+
 pub(crate) struct Ashell {
     pub(crate) focus_handle: FocusHandle,
     pub(crate) selector_focus_handle: FocusHandle,
@@ -463,6 +470,7 @@ pub(crate) struct Ashell {
     pub(crate) active_tab: Option<String>,
     pub(crate) tab_groups: Vec<TabGroup>,
     pub(crate) active_group: Option<String>,
+    pub(crate) home_page: HomePage,
     pub(crate) selector_selection: usize,
     pub(crate) workspace_panels: Entity<ResizableState>,
     pub(crate) body_panels: Entity<ResizableState>,
@@ -891,6 +899,7 @@ impl Ashell {
             active_tab: None,
             tab_groups: Vec::new(),
             active_group: None,
+            home_page: HomePage::default(),
             pane_root: PaneLayout::Single(String::new()),
             focused_pane_path: Vec::new(),
             terminal_panel_bounds: None,

@@ -72,5 +72,10 @@ lto = "thin"
 codegen-units = 1
 strip = true
 
+
+[profile.dev]
+opt-level = 1
+incremental = true
+
 [build-dependencies]
 winres = "0.1.12"

@@ -1,9 +1,9 @@
 use crate::app::resizable::{h_resizable, resizable_panel, v_resizable};
 use gpui::{
-    Context, DispatchPhase, ElementId, Focusable as _, FontWeight, Hsla, InteractiveElement as _,
-    IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement as _,
-    PathBuilder, Pixels, Render, StatefulInteractiveElement as _, Styled as _, Window, canvas, div,
-    hsla, point, prelude::FluentBuilder as _, px, relative, rems, uniform_list,
+    Context, ElementId, Focusable as _, FontWeight, Hsla, InteractiveElement as _, IntoElement,
+    MouseButton, MouseDownEvent, ParentElement as _, PathBuilder, Pixels, Render,
+    StatefulInteractiveElement as _, Styled as _, Window, canvas, div, hsla, point,
+    prelude::FluentBuilder as _, px, relative, rems, uniform_list,
 };
 use gpui_component::{
     ActiveTheme, Disableable as _, ElementExt, Icon, IconName, InteractiveElementExt as _, Root,
@@ -22,8 +22,8 @@ use rust_i18n::t;
 
 use crate::{
     Ashell, PaneLayout,
-    app::TabContextMenuState,
     app::constants::{COLLAPSED_SIDEBAR_WIDTH, SIDEBAR_WIDTH, TERMINAL_KEY_CONTEXT},
+    app::{HomePage, TabContextMenuState},
     sftp::format_mtime,
     sftp::ops::is_editable_text_file,
     system::format_bytes,
@@ -32,40 +32,667 @@ use crate::{
 
 impl Ashell {
     fn render_home_page(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let sessions = self.config.sessions().to_vec();
+        let total_connections = sessions.len();
+        let recent_sessions: Vec<_> = sessions
+            .iter()
+            .filter(|session| session.last_used.is_some())
+            .take(3)
+            .collect();
+        let has_recent_sessions = !recent_sessions.is_empty();
+
         v_flex()
             .w_full()
             .h_full()
-            .items_center()
-            .justify_center()
-            .gap_4()
+            .p_8()
+            .gap_7()
             .child(
-                div()
-                    .text_size(rems(2.333))
-                    .font_weight(FontWeight::BOLD)
-                    .child("Ashell"),
-            )
-            .child(
-                div()
-                    .text_size(rems(1.083))
-                    .text_color(cx.theme().muted_foreground)
-                    .child(t!("open_local_or_ssh")),
+                v_flex()
+                    .w_full()
+                    .items_center()
+                    .pt_6()
+                    .gap_3()
+                    .child(
+                        div()
+                            .text_size(rems(2.5))
+                            .font_weight(FontWeight::BOLD)
+                            .child(t!("overview_welcome")),
+                    )
+                    .child(
+                        div()
+                            .text_size(rems(1.0))
+                            .text_color(cx.theme().muted_foreground)
+                            .child(t!("overview_subtitle")),
+                    )
+                    .child(
+                        h_flex()
+                            .gap_3()
+                            .pt_2()
+                            .child(
+                                Button::new("overview-new-connection")
+                                    .primary()
+                                    .icon(IconName::Plus)
+                                    .label(t!("overview_new_connection").to_string())
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.open_new_ssh_dialog(window, cx)
+                                    })),
+                            )
+                            .child(
+                                Button::new("overview-open-sessions")
+                                    .secondary()
+                                    .icon(IconName::Network)
+                                    .label(t!("overview_connections").to_string())
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.show_selector_dialog(window, cx)
+                                    })),
+                            ),
+                    ),
             )
             .child(
                 h_flex()
+                    .w_full()
                     .gap_3()
                     .child(
-                        Button::new("home-open-local")
-                            .primary()
-                            .label(t!("local_terminal").to_string())
-                            .on_click(cx.listener(|this, _, _, cx| this.open_local(cx))),
+                        v_flex()
+                            .flex_1()
+                            .gap_2()
+                            .p_4()
+                            .rounded_md()
+                            .border_1()
+                            .border_color(cx.theme().border)
+                            .bg(cx.theme().muted)
+                            .child(
+                                Icon::new(IconName::Network)
+                                    .with_size(Size::Medium)
+                                    .text_color(cx.theme().primary),
+                            )
+                            .child(
+                                div()
+                                    .text_size(rems(1.75))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child(total_connections.to_string()),
+                            )
+                            .child(
+                                div()
+                                    .text_size(rems(0.875))
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(t!("overview_total_connections")),
+                            ),
                     )
                     .child(
-                        Button::new("home-open-session")
+                        v_flex()
+                            .flex_1()
+                            .gap_2()
+                            .p_4()
+                            .rounded_md()
+                            .border_1()
+                            .border_color(cx.theme().border)
+                            .bg(cx.theme().muted)
+                            .child(
+                                Icon::new(IconName::SquareTerminal)
+                                    .with_size(Size::Medium)
+                                    .text_color(cx.theme().chart_2),
+                            )
+                            .child(
+                                div()
+                                    .text_size(rems(1.75))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child(total_connections.to_string()),
+                            )
+                            .child(
+                                div()
+                                    .text_size(rems(0.875))
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(t!("overview_ssh_connections")),
+                            ),
+                    )
+                    .child(
+                        v_flex()
+                            .flex_1()
+                            .gap_2()
+                            .p_4()
+                            .rounded_md()
+                            .border_1()
+                            .border_color(cx.theme().border)
+                            .bg(cx.theme().muted)
+                            .child(
+                                Icon::new(IconName::Folder)
+                                    .with_size(Size::Medium)
+                                    .text_color(cx.theme().chart_3),
+                            )
+                            .child(
+                                div()
+                                    .text_size(rems(1.75))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child("0"),
+                            )
+                            .child(
+                                div()
+                                    .text_size(rems(0.875))
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(t!("overview_sftp_connections")),
+                            ),
+                    ),
+            )
+            .child(
+                v_flex()
+                    .w_full()
+                    .gap_3()
+                    .child(
+                        div()
+                            .text_size(rems(1.25))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child(t!("overview_recent")),
+                    )
+                    .child(
+                        v_flex().w_full().gap_2().children(
+                            recent_sessions
+                                .into_iter()
+                                .enumerate()
+                                .map(|(ix, session)| {
+                                    let session_to_open = session.clone();
+                                    let title = session.name.clone();
+                                    let detail = format!(
+                                        "{}@{}:{}",
+                                        session.user, session.host, session.port
+                                    );
+                                    div()
+                                        .id(("overview-recent", ix))
+                                        .w_full()
+                                        .p_3()
+                                        .rounded_md()
+                                        .border_1()
+                                        .border_color(cx.theme().border)
+                                        .bg(cx.theme().muted)
+                                        .cursor_pointer()
+                                        .hover(|this| this.bg(cx.theme().secondary))
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.open_ssh_session(session_to_open.clone(), cx);
+                                        }))
+                                        .child(
+                                            h_flex()
+                                                .items_center()
+                                                .gap_3()
+                                                .child(
+                                                    Icon::new(IconName::Network)
+                                                        .with_size(Size::Medium)
+                                                        .text_color(cx.theme().primary),
+                                                )
+                                                .child(
+                                                    v_flex()
+                                                        .gap_1()
+                                                        .child(
+                                                            div()
+                                                                .font_weight(FontWeight::MEDIUM)
+                                                                .child(title),
+                                                        )
+                                                        .child(
+                                                            div()
+                                                                .text_size(rems(0.833))
+                                                                .text_color(
+                                                                    cx.theme().muted_foreground,
+                                                                )
+                                                                .child(detail),
+                                                        ),
+                                                )
+                                                .child(div().flex_1())
+                                                .child(
+                                                    Icon::new(IconName::ArrowRight)
+                                                        .with_size(Size::Small)
+                                                        .text_color(cx.theme().muted_foreground),
+                                                ),
+                                        )
+                                }),
+                        ),
+                    )
+                    .when(!has_recent_sessions, |this| {
+                        this.child(
+                            div()
+                                .p_4()
+                                .rounded_md()
+                                .border_1()
+                                .border_color(cx.theme().border)
+                                .text_color(cx.theme().muted_foreground)
+                                .child(t!("overview_no_recent")),
+                        )
+                    }),
+            )
+            .child(
+                v_flex()
+                    .w_full()
+                    .gap_3()
+                    .child(
+                        div()
+                            .text_size(rems(1.25))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child(t!("overview_quick_actions")),
+                    )
+                    .child(
+                        h_flex()
+                            .gap_3()
+                            .child(
+                                Button::new("overview-open-key-manager")
+                                    .secondary()
+                                    .icon(IconName::Folder)
+                                    .label(t!("overview_key_manager").to_string())
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.home_page = HomePage::KeyManager;
+                                        cx.notify();
+                                    })),
+                            )
+                            .child(
+                                Button::new("overview-settings")
+                                    .ghost()
+                                    .icon(IconName::Settings)
+                                    .label(t!("settings").to_string())
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.show_settings_dialog(window, cx)
+                                    })),
+                            ),
+                    ),
+            )
+    }
+
+    fn render_key_manager_page(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let keys = self.managed_keys.clone();
+        let has_keys = !keys.is_empty();
+        let rename_input = self.key_inline_input.clone();
+
+        v_flex()
+            .size_full()
+            .p_6()
+            .gap_5()
+            .child(
+                h_flex()
+                    .items_center()
+                    .child(
+                        v_flex()
+                            .gap_1()
+                            .child(
+                                div()
+                                    .text_size(rems(2.0))
+                                    .font_weight(FontWeight::BOLD)
+                                    .child(t!("overview_key_manager")),
+                            )
+                            .child(
+                                div()
+                                    .text_size(rems(0.917))
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(t!("key_management_desc")),
+                            ),
+                    )
+                    .child(div().flex_1())
+                    .child(
+                        Button::new("key-manager-import")
+                            .primary()
+                            .icon(IconName::Plus)
+                            .label(t!("import_key").to_string())
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.import_managed_key(window, cx)
+                            })),
+                    ),
+            )
+            .child(
+                v_flex()
+                    .flex_1()
+                    .min_h(px(0.))
+                    .rounded_md()
+                    .border_1()
+                    .border_color(cx.theme().border)
+                    .overflow_hidden()
+                    .child(
+                        h_flex()
+                            .flex_none()
+                            .items_center()
+                            .h(px(38.))
+                            .px_4()
+                            .gap_3()
+                            .bg(cx.theme().muted)
+                            .border_b_1()
+                            .border_color(cx.theme().border)
+                            .child(div().flex_1().text_size(rems(0.833)).child(t!("key_name")))
+                            .child(
+                                div()
+                                    .w(px(110.))
+                                    .text_size(rems(0.833))
+                                    .child(t!("key_type")),
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .text_size(rems(0.833))
+                                    .child(t!("key_fingerprint")),
+                            )
+                            .child(
+                                div()
+                                    .w(px(140.))
+                                    .text_size(rems(0.833))
+                                    .child(t!("settings")),
+                            ),
+                    )
+                    .child(
+                        v_flex()
+                            .flex_1()
+                            .min_h(px(0.))
+                            .overflow_y_scrollbar()
+                            .children(keys.into_iter().enumerate().map(|(ix, key)| {
+                                let key_id = key.id.clone();
+                                let key_name = key.name.clone();
+                                let key_type = if key.key_type.is_empty() {
+                                    "unknown".to_string()
+                                } else {
+                                    key.key_type.clone()
+                                };
+                                let fingerprint = if key.fingerprint.len() > 34 {
+                                    format!("{}…", &key.fingerprint[..34])
+                                } else {
+                                    key.fingerprint.clone()
+                                };
+                                let is_editing =
+                                    self.editing_managed_key_id.as_deref() == Some(key_id.as_str());
+                                let rename_input = rename_input.clone();
+
+                                h_flex()
+                                    .id(("key-manager-row", ix))
+                                    .flex_none()
+                                    .items_center()
+                                    .min_h(px(52.))
+                                    .px_4()
+                                    .gap_3()
+                                    .border_b_1()
+                                    .border_color(cx.theme().border)
+                                    .hover(|this| this.bg(cx.theme().muted))
+                                    .child(if is_editing {
+                                        div()
+                                            .flex_1()
+                                            .child(Input::new(&rename_input).small())
+                                            .into_any_element()
+                                    } else {
+                                        h_flex()
+                                            .flex_1()
+                                            .items_center()
+                                            .gap_2()
+                                            .child(
+                                                Icon::new(IconName::Folder).with_size(Size::Small),
+                                            )
+                                            .child(
+                                                div()
+                                                    .font_weight(FontWeight::MEDIUM)
+                                                    .child(key_name.clone()),
+                                            )
+                                            .into_any_element()
+                                    })
+                                    .child(div().w(px(110.)).text_size(rems(0.833)).child(key_type))
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .text_size(rems(0.833))
+                                            .text_color(cx.theme().muted_foreground)
+                                            .child(fingerprint),
+                                    )
+                                    .child(
+                                        h_flex()
+                                            .w(px(140.))
+                                            .justify_end()
+                                            .gap_1()
+                                            .child(if is_editing {
+                                                Button::new(format!("key-manager-save-{key_id}"))
+                                                    .ghost()
+                                                    .small()
+                                                    .icon(IconName::Check)
+                                                    .on_click({
+                                                        let key_id = key_id.clone();
+                                                        let rename_input = rename_input.clone();
+                                                        cx.listener(move |this, _, _, cx| {
+                                                            let new_name = rename_input
+                                                                .read(cx)
+                                                                .value()
+                                                                .trim()
+                                                                .to_string();
+                                                            if !new_name.is_empty() {
+                                                                this.rename_managed_key(
+                                                                    key_id.clone(),
+                                                                    new_name,
+                                                                    cx,
+                                                                );
+                                                            }
+                                                        })
+                                                    })
+                                            } else {
+                                                Button::new(format!("key-manager-rename-{key_id}"))
+                                                    .ghost()
+                                                    .small()
+                                                    .label(t!("key_rename").to_string())
+                                                    .on_click({
+                                                        let key_id = key_id.clone();
+                                                        let key_name = key_name.clone();
+                                                        cx.listener(move |this, _, window, cx| {
+                                                            this.editing_managed_key_id =
+                                                                Some(key_id.clone());
+                                                            Self::set_input_value(
+                                                                &this.key_inline_input,
+                                                                key_name.clone(),
+                                                                window,
+                                                                cx,
+                                                            );
+                                                            cx.notify();
+                                                        })
+                                                    })
+                                            })
+                                            .child(
+                                                Button::new(format!("key-manager-delete-{key_id}"))
+                                                    .ghost()
+                                                    .small()
+                                                    .icon(IconName::Delete)
+                                                    .on_click({
+                                                        let key_id = key_id.clone();
+                                                        cx.listener(move |this, _, _, cx| {
+                                                            this.delete_managed_key(
+                                                                key_id.clone(),
+                                                                cx,
+                                                            )
+                                                        })
+                                                    }),
+                                            ),
+                                    )
+                            }))
+                            .when(!has_keys, |this| {
+                                this.child(
+                                    v_flex()
+                                        .size_full()
+                                        .items_center()
+                                        .justify_center()
+                                        .gap_3()
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child(Icon::new(IconName::Folder).with_size(Size::Large))
+                                        .child(t!("no_managed_keys")),
+                                )
+                            }),
+                    ),
+            )
+    }
+
+    fn render_overview_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let is_overview = self.home_page == HomePage::Overview;
+        let is_key_manager = self.home_page == HomePage::KeyManager;
+        v_flex()
+            .w_full()
+            .h_full()
+            .min_w(px(0.))
+            .p_4()
+            .gap_5()
+            .border_r_1()
+            .border_color(cx.theme().sidebar_border)
+            .bg(cx.theme().sidebar)
+            .child(
+                h_flex()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        div()
+                            .font_weight(FontWeight::BOLD)
+                            .text_size(rems(1.5))
+                            .text_color(cx.theme().primary)
+                            .child("Ashell"),
+                    )
+                    .child(
+                        div()
+                            .text_size(rems(0.75))
+                            .text_color(cx.theme().muted_foreground)
+                            .child("WORKSPACE"),
+                    )
+                    .child(div().flex_1())
+                    .child(
+                        Button::new("overview-sidebar-settings")
                             .ghost()
-                            .label(t!("open_session").to_string())
+                            .icon(IconName::Settings)
+                            .tooltip(t!("settings_open_settings").to_string())
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.show_settings_dialog(window, cx)
+                            })),
+                    ),
+            )
+            .child(
+                v_flex()
+                    .gap_1()
+                    .child(
+                        div()
+                            .id("overview-sidebar-overview")
+                            .w_full()
+                            .cursor_pointer()
+                            .hover(|this| this.bg(cx.theme().secondary))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.home_page = HomePage::Overview;
+                                cx.notify();
+                            }))
+                            .child(
+                                h_flex()
+                                    .items_center()
+                                    .gap_3()
+                                    .p_3()
+                                    .rounded_md()
+                                    .bg(if is_overview {
+                                        cx.theme().tab_active
+                                    } else {
+                                        cx.theme().sidebar
+                                    })
+                                    .text_color(if is_overview {
+                                        cx.theme().primary
+                                    } else {
+                                        cx.theme().foreground
+                                    })
+                                    .child(
+                                        Icon::new(IconName::SquareTerminal).with_size(Size::Small),
+                                    )
+                                    .child(
+                                        div().font_weight(FontWeight::MEDIUM).child(t!("overview")),
+                                    ),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .id("overview-sidebar-connections")
+                            .w_full()
+                            .cursor_pointer()
+                            .rounded_md()
+                            .hover(|this| this.bg(cx.theme().secondary))
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.show_selector_dialog(window, cx)
+                            }))
+                            .child(
+                                h_flex()
+                                    .items_center()
+                                    .gap_3()
+                                    .p_3()
+                                    .child(Icon::new(IconName::Network).with_size(Size::Small))
+                                    .child(
+                                        div()
+                                            .font_weight(FontWeight::MEDIUM)
+                                            .child(t!("overview_connections")),
+                                    ),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .id("overview-sidebar-key-management")
+                            .w_full()
+                            .cursor_pointer()
+                            .rounded_md()
+                            .hover(|this| this.bg(cx.theme().secondary))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.home_page = HomePage::KeyManager;
+                                cx.notify();
+                            }))
+                            .child(
+                                h_flex()
+                                    .items_center()
+                                    .gap_3()
+                                    .p_3()
+                                    .bg(if is_key_manager {
+                                        cx.theme().tab_active
+                                    } else {
+                                        cx.theme().sidebar
+                                    })
+                                    .text_color(if is_key_manager {
+                                        cx.theme().primary
+                                    } else {
+                                        cx.theme().foreground
+                                    })
+                                    .child(Icon::new(IconName::Folder).with_size(Size::Small))
+                                    .child(
+                                        div()
+                                            .font_weight(FontWeight::MEDIUM)
+                                            .child(t!("overview_key_manager")),
+                                    ),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .id("overview-sidebar-settings-link")
+                            .w_full()
+                            .cursor_pointer()
+                            .rounded_md()
+                            .hover(|this| this.bg(cx.theme().secondary))
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.show_settings_dialog(window, cx)
+                            }))
+                            .child(
+                                h_flex()
+                                    .items_center()
+                                    .gap_3()
+                                    .p_3()
+                                    .child(Icon::new(IconName::Settings).with_size(Size::Small))
+                                    .child(
+                                        div().font_weight(FontWeight::MEDIUM).child(t!("settings")),
+                                    ),
+                            ),
+                    ),
+            )
+            .child(div().flex_1())
+            .child(
+                v_flex()
+                    .gap_2()
+                    .pt_4()
+                    .border_t_1()
+                    .border_color(cx.theme().border)
+                    .child(
+                        Button::new("overview-sidebar-new-ssh")
+                            .primary()
+                            .icon(IconName::Plus)
+                            .label(t!("overview_new_connection").to_string())
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.open_new_ssh_dialog(window, cx)
                             })),
+                    )
+                    .child(
+                        div()
+                            .text_size(rems(0.75))
+                            .text_color(cx.theme().muted_foreground)
+                            .child(format!(
+                                "{} {}",
+                                self.config.sessions().len(),
+                                t!("overview_saved_count")
+                            )),
                     ),
             )
     }
@@ -2835,23 +3462,6 @@ impl Render for Ashell {
         }
         self.sync_sftp_path_input(window, cx);
 
-        let view = cx.entity();
-        let move_view = view.clone();
-        window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
-            if phase == DispatchPhase::Capture {
-                move_view.update(cx, |this, cx| {
-                    this.on_tab_drag_mouse_move(event, window, cx);
-                });
-            }
-        });
-        window.on_mouse_event(move |event: &MouseUpEvent, phase, window, cx| {
-            if phase == DispatchPhase::Capture && event.button == MouseButton::Left {
-                view.update(cx, |this, cx| {
-                    this.on_tab_drag_mouse_up(event, window, cx);
-                });
-            }
-        });
-
         // Refresh this window's screen-space bounds in the cross-window
         // registry so other windows can hit-test against it during a
         // cross-window tab drag.
@@ -2896,43 +3506,53 @@ impl Render for Ashell {
             }
         }
 
-        let monitoring_contents = v_flex()
-            .size_full()
-            .when(self.config.monitoring_position() == "Bottom", |this| {
-                this.child(self.render_monitoring_panel(window.viewport_size().width, cx))
-            })
-            .child(self.render_sftp_panel(window, cx));
+        // The file-transfer panel belongs to an active terminal session. Keeping it
+        // out of the home workspace avoids showing an empty "remote files" area on
+        // Overview and Key Manager pages.
+        let main_content = if self.active_tab.is_some() {
+            let monitoring_contents = v_flex()
+                .size_full()
+                .when(self.config.monitoring_position() == "Bottom", |this| {
+                    this.child(self.render_monitoring_panel(window.viewport_size().width, cx))
+                })
+                .child(self.render_sftp_panel(window, cx));
 
-        let is_monitor_bottom = self.config.monitoring_position() == "Bottom";
-        let minimized_height = if is_monitor_bottom { 104. } else { 24. };
-        let min_panel_height = if is_monitor_bottom { 260. } else { 180. };
-        let default_panel_height = if is_monitor_bottom { 328. } else { 248. };
+            let is_monitor_bottom = self.config.monitoring_position() == "Bottom";
+            let minimized_height = if is_monitor_bottom { 104. } else { 24. };
+            let min_panel_height = if is_monitor_bottom { 260. } else { 180. };
+            let default_panel_height = if is_monitor_bottom { 328. } else { 248. };
 
-        let sftp_size = if self.sftp_panel_minimized {
-            px(minimized_height)
+            let sftp_size = if self.sftp_panel_minimized {
+                px(minimized_height)
+            } else {
+                px(self
+                    .config
+                    .body_panels()
+                    .and_then(|s| s.get(1).copied())
+                    .unwrap_or(default_panel_height))
+            };
+
+            v_resizable("ashell-body")
+                .lock(self.config.lock_layout())
+                .with_state(&self.body_panels)
+                .child(resizable_panel().child(self.render_terminal_panel(window, cx)))
+                .child(
+                    resizable_panel()
+                        .size(sftp_size)
+                        .size_range(if self.sftp_panel_minimized {
+                            px(minimized_height)..px(minimized_height)
+                        } else {
+                            px(min_panel_height)..px(1200.)
+                        })
+                        .child(monitoring_contents),
+                )
+                .into_any_element()
         } else {
-            px(self
-                .config
-                .body_panels()
-                .and_then(|s| s.get(1).copied())
-                .unwrap_or(default_panel_height))
+            match self.home_page {
+                HomePage::Overview => self.render_home_page(cx).into_any_element(),
+                HomePage::KeyManager => self.render_key_manager_page(cx).into_any_element(),
+            }
         };
-
-        let body_panel = v_resizable("ashell-body")
-            .lock(self.config.lock_layout())
-            .with_state(&self.body_panels)
-            .child(resizable_panel().child(self.render_terminal_panel(window, cx)))
-            .child(
-                resizable_panel()
-                    .size(sftp_size)
-                    .size_range(if self.sftp_panel_minimized {
-                        px(minimized_height)..px(minimized_height)
-                    } else {
-                        px(min_panel_height)..px(1200.)
-                    })
-                    .child(monitoring_contents),
-            )
-            .into_any_element();
 
         let workspace = if self.sidebar_collapsed {
             h_flex()
@@ -2966,11 +3586,17 @@ impl Render for Ashell {
                                     )
                                 },
                             )
-                            .child(body_panel),
+                            .child(main_content),
                     ),
                 )
                 .into_any_element()
         } else {
+            let sidebar_content = if self.active_tab.is_some() {
+                self.sidebar(cx).into_any_element()
+            } else {
+                self.render_overview_sidebar(cx).into_any_element()
+            };
+
             let sidebar_area = resizable_panel()
                 .size(px(self
                     .config
@@ -2979,7 +3605,7 @@ impl Render for Ashell {
                     .unwrap_or(SIDEBAR_WIDTH)))
                 .size_range(px(240.)..px(520.))
                 .flex_none()
-                .child(self.sidebar(cx));
+                .child(sidebar_content);
 
             let main_area = resizable_panel().child(
                 v_flex()
@@ -3002,7 +3628,7 @@ impl Render for Ashell {
                             )
                         },
                     )
-                    .child(body_panel),
+                    .child(main_content),
             );
 
             h_resizable("ashell-workspace")
@@ -3020,8 +3646,13 @@ impl Render for Ashell {
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
             .font_family(self.ui_font_family.clone())
-            // Tab dragging is tracked by window-level capture listeners so
-            // movement continues after the cursor leaves the source element.
+            // Keep tab-drag tracking on the root element. Registering a window
+            // listener from Render is invalid during GPUI's layout phase.
+            .on_mouse_move(cx.listener(Self::on_tab_drag_mouse_move))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(Self::on_tab_drag_mouse_up),
+            )
             .on_action(cx.listener(|this, _: &crate::OpenSettings, window, cx| this.show_settings_dialog(window, cx)))
             .on_action(cx.listener(|this, _: &crate::OpenSession, window, cx| this.show_selector_dialog(window, cx)))
             .on_action(cx.listener(|this, _: &crate::OpenTransfers, window, cx| this.show_transfers_dialog(window, cx)))
