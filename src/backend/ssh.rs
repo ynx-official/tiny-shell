@@ -572,6 +572,7 @@ EOF
   echo "HOSTNAME=$(hostname 2>/dev/null)"
   echo "IP_ADDRESS=$(printf "%s\n" "$ip_addresses" | awk '"'"'{print $1}'"'"')"
   echo "IP_ADDRESSES=$ip_addresses"
+  ip -o addr show scope global 2>/dev/null | awk '"'"'{ address=$4; sub(/\/.*/, "", address); printf "IP_ENTRY=%s\t%s\n", $2, address }'"'"'
   echo "UPTIME_SECONDS=$(cut -d. -f1 /proc/uptime 2>/dev/null)"
   echo "LOAD_AVERAGE=$(cut -d" " -f1-3 /proc/loadavg 2>/dev/null)"
   echo "CPU_MODEL=${cpu_model:-unknown}"
@@ -635,6 +636,10 @@ EOF
   echo "HOSTNAME=$(hostname 2>/dev/null)"
   echo "IP_ADDRESS=$(printf "%s\n" "$ip_addresses" | awk '"'"'{print $1}'"'"')"
   echo "IP_ADDRESSES=$ip_addresses"
+  ifconfig 2>/dev/null | awk '"'"'
+    /^[[:alnum:]][^[:space:]]*:/ { interface=$1; sub(/:$/, "", interface) }
+    /inet / && $2 != "127.0.0.1" { printf "IP_ENTRY=%s\t%s\n", interface, $2 }
+    /inet6 / && $2 !~ /^fe80:/ && $2 != "::1" { address=$2; sub(/%.*/, "", address); printf "IP_ENTRY=%s\t%s\n", interface, address }'"'"'
   echo "UPTIME_SECONDS=$(sysctl -n kern.boottime 2>/dev/null | awk -F"[=,]" '"'"'{ gsub(/ /, "", $2); print systime()-$2 }'"'"')"
   echo "LOAD_AVERAGE=$(sysctl -n vm.loadavg 2>/dev/null | tr -d "{}")"
   echo "CPU_MODEL=$(sysctl -n machdep.cpu.brand_string 2>/dev/null)"

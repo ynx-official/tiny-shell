@@ -2,7 +2,7 @@ use crate::app::resizable::{h_resizable, resizable_panel, v_resizable};
 use gpui::{
     Anchor, Context, ElementId, Focusable as _, FontWeight, Hsla, InteractiveElement as _,
     IntoElement, MouseButton, MouseDownEvent, ParentElement as _, PathBuilder, Pixels, Render,
-    StatefulInteractiveElement as _, Styled as _, Window, canvas, div, hsla, point,
+    StatefulInteractiveElement as _, Styled as _, Window, canvas, deferred, div, hsla, point,
     prelude::FluentBuilder as _, px, relative, rems, uniform_list,
 };
 use gpui_component::{
@@ -4112,16 +4112,17 @@ impl Ashell {
         let connection_text = active_session
             .map(|session| format!("{}@{}:{}", session.user, session.host, session.port))
             .unwrap_or_else(|| t!("local_terminal").to_string());
-        let mut ip_addresses = self.system.ip_addresses.clone();
-        if ip_addresses.is_empty() && !host_text.is_empty() {
-            ip_addresses.push(host_text.clone());
+        let mut ip_address_entries = self.system.ip_address_entries.clone();
+        if ip_address_entries.is_empty() && !host_text.is_empty() {
+            ip_address_entries.push(crate::system::IpAddressSample {
+                interface: "-".to_string(),
+                address: host_text.clone(),
+            });
         }
-        let primary_ip = ip_addresses
+        let primary_ip = ip_address_entries
             .first()
-            .cloned()
+            .map(|entry| entry.address.clone())
             .unwrap_or_else(|| "-".to_string());
-        let additional_ip_count = ip_addresses.len().saturating_sub(1);
-        let ip_tooltip = ip_addresses.join("\n");
 
         v_flex()
             .gap_2()
@@ -4173,6 +4174,7 @@ impl Ashell {
             .child(
                 v_flex()
                     .gap_2()
+                    .px_2()
                     .py_2()
                     .border_b_1()
                     .border_color(cx.theme().border)
@@ -4194,13 +4196,14 @@ impl Ashell {
                                     .min_w(px(0.))
                                     .items_center()
                                     .gap_1()
-                                    .tooltip({
-                                        let tooltip = ip_tooltip.clone();
-                                        move |window, cx| {
-                                            gpui_component::tooltip::Tooltip::new(tooltip.clone())
-                                                .build(window, cx)
+                                    .relative()
+                                    .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                                        if *hovered {
+                                            this.show_ip_popover(cx);
+                                        } else {
+                                            this.schedule_ip_popover_hide(cx);
                                         }
-                                    })
+                                    }))
                                     .child(
                                         div()
                                             .id("sidebar-primary-ip")
@@ -4221,37 +4224,163 @@ impl Ashell {
                                             })
                                             .child(primary_ip),
                                     )
-                                    .when(additional_ip_count > 0, |this| {
-                                        this.child(
-                                            Button::new("sidebar-more-ips")
-                                                .ghost()
-                                                .xsmall()
-                                                .label(format!("+{additional_ip_count}"))
-                                                .dropdown_menu_with_anchor(Anchor::BottomLeft, {
-                                                    let view = cx.entity();
-                                                    move |mut menu, window, _cx| {
-                                                        for ip in ip_addresses.clone() {
-                                                            let copied_ip = ip.clone();
-                                                            menu = menu.item(
-                                                                PopupMenuItem::new(ip).on_click(
-                                                                    window.listener_for(
-                                                                        &view,
-                                                                        move |_this, _, _, cx| {
-                                                                            cx.write_to_clipboard(
-                                                                                gpui::ClipboardItem::new_string(
-                                                                                    copied_ip.clone(),
-                                                                                ),
-                                                                            );
-                                                                        },
+                                    .when(
+                                        self.ip_popover_visible && ip_address_entries.len() > 1,
+                                        |this| {
+                                            this.child(
+                                                deferred(
+                                                    v_flex()
+                                                    .id("sidebar-ip-popover")
+                                                    .absolute()
+                                                    .top(px(22.))
+                                                    .left(px(-56.))
+                                                    .right_0()
+                                                    .p_2()
+                                                    .gap_1()
+                                                    .rounded_lg()
+                                                    .border_1()
+                                                    .border_color(cx.theme().border)
+                                                    .bg(cx.theme().background)
+                                                    .shadow_lg()
+                                                    .occlude()
+                                                    .on_hover(cx.listener(
+                                                        |this, hovered: &bool, _, cx| {
+                                                            if *hovered {
+                                                                this.show_ip_popover(cx);
+                                                            } else {
+                                                                this.schedule_ip_popover_hide(cx);
+                                                            }
+                                                        },
+                                                    ))
+                                                    .child(
+                                                        h_flex()
+                                                            .px_1()
+                                                            .pb_1()
+                                                            .items_center()
+                                                            .justify_between()
+                                                            .child(
+                                                                div()
+                                                                    .text_size(rems(0.72))
+                                                                    .font_weight(
+                                                                        FontWeight::SEMIBOLD,
+                                                                    )
+                                                                    .child(t!("ip_address")),
+                                                            )
+                                                            .child(
+                                                                div()
+                                                                    .text_size(rems(0.62))
+                                                                    .text_color(
+                                                                        cx.theme()
+                                                                            .muted_foreground,
+                                                                    )
+                                                                    .child(t!("click_to_copy")),
+                                                            ),
+                                                    )
+                                                    .child(
+                                                        v_flex()
+                                                            .rounded_md()
+                                                            .border_1()
+                                                            .border_color(cx.theme().border)
+                                                            .overflow_hidden()
+                                                            .child(
+                                                                h_flex()
+                                                                    .h(px(26.))
+                                                                    .px_2()
+                                                                    .items_center()
+                                                                    .bg(cx.theme().muted)
+                                                                    .text_size(rems(0.64))
+                                                                    .text_color(
+                                                                        cx.theme()
+                                                                            .muted_foreground,
+                                                                    )
+                                                                    .child(
+                                                                        div()
+                                                                            .w(px(68.))
+                                                                            .flex_none()
+                                                                            .child(t!(
+                                                                                "network_interface"
+                                                                            )),
+                                                                    )
+                                                                    .child(
+                                                                        div()
+                                                                            .flex_1()
+                                                                            .child(t!("ip_address")),
                                                                     ),
-                                                                ),
-                                                            );
-                                                        }
-                                                        menu
-                                                    }
-                                                }),
-                                        )
-                                    }),
+                                                            )
+                                                            .children(
+                                                                ip_address_entries
+                                                                    .clone()
+                                                                    .into_iter()
+                                                                    .enumerate()
+                                                                    .map(|(index, entry)| {
+                                                                        let copied_ip =
+                                                                            entry.address.clone();
+                                                                        let tooltip = format!(
+                                                                            "{}\n{}",
+                                                                            entry.interface,
+                                                                            entry.address
+                                                                        );
+                                                                        h_flex()
+                                                                            .id((
+                                                                                "sidebar-copy-ip",
+                                                                                index,
+                                                                            ))
+                                                                            .h(px(30.))
+                                                                            .px_2()
+                                                                            .items_center()
+                                                                            .cursor_pointer()
+                                                                            .text_size(rems(0.68))
+                                                                            .border_t_1()
+                                                                            .border_color(
+                                                                                cx.theme()
+                                                                                    .border
+                                                                                    .opacity(0.5),
+                                                                            )
+                                                                            .hover(|this| {
+                                                                                this.bg(cx.theme().muted)
+                                                                            })
+                                                                            .tooltip(move |window, cx| {
+                                                                                gpui_component::tooltip::Tooltip::new(
+                                                                                    tooltip.clone(),
+                                                                                )
+                                                                                .build(window, cx)
+                                                                            })
+                                                                            .on_click(cx.listener(
+                                                                                move |_this, _, _, cx| {
+                                                                                    cx.write_to_clipboard(
+                                                                                        gpui::ClipboardItem::new_string(
+                                                                                            copied_ip.clone(),
+                                                                                        ),
+                                                                                    );
+                                                                                },
+                                                                            ))
+                                                                            .child(
+                                                                                div()
+                                                                                    .w(px(68.))
+                                                                                    .flex_none()
+                                                                                    .min_w(px(0.))
+                                                                                    .overflow_hidden()
+                                                                                    .whitespace_nowrap()
+                                                                                    .text_ellipsis()
+                                                                                    .child(entry.interface),
+                                                                            )
+                                                                            .child(
+                                                                                div()
+                                                                                    .flex_1()
+                                                                                    .min_w(px(0.))
+                                                                                    .overflow_hidden()
+                                                                                    .whitespace_nowrap()
+                                                                                    .text_ellipsis()
+                                                                                    .child(entry.address),
+                                                                            )
+                                                                    }),
+                                                            ),
+                                                    ),
+                                                )
+                                                .priority(10),
+                                            )
+                                        },
+                                    ),
                             ),
                     )
                     .child(
@@ -5127,9 +5256,16 @@ impl Ashell {
         v_flex()
             .size_full()
             .relative()
+            .p_2()
+            .gap_2()
+            .bg(cx.theme().muted.opacity(0.18))
             .child(
                 div()
-                    .size_full()
+                    .flex_1()
+                    .w_full()
+                    .min_h(px(0.))
+                    .rounded_lg()
+                    .bg(cx.theme().background)
                     .on_prepaint(move |bounds, _window, cx| {
                         view.update(cx, |this, cx| {
                             if this.terminal_panel_bounds != Some(bounds) {
@@ -5165,13 +5301,12 @@ impl Ashell {
                 this.child(
                     h_flex()
                         .flex_none()
-                        .h(px(32.))
-                        .px_2()
+                        .h(px(34.))
+                        .px_3()
                         .items_center()
                         .gap_1()
-                        .border_t_1()
-                        .border_color(cx.theme().border)
-                        .bg(cx.theme().tab_bar)
+                        .rounded_lg()
+                        .bg(cx.theme().background)
                         .child(
                             div()
                                 .flex_1()

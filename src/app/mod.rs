@@ -516,6 +516,8 @@ pub(crate) struct Ashell {
     pub(crate) pending_connection_group_drag: Option<(String, Point<Pixels>)>,
     pub(crate) dragging_connection_group: Option<String>,
     pub(crate) connection_group_drop_before: Option<String>,
+    pub(crate) ip_popover_visible: bool,
+    pub(crate) ip_popover_hide_generation: u64,
     pub(crate) selector_selection: usize,
     pub(crate) workspace_panels: Entity<ResizableState>,
     pub(crate) body_panels: Entity<ResizableState>,
@@ -970,6 +972,8 @@ impl Ashell {
             pending_connection_group_drag: None,
             dragging_connection_group: None,
             connection_group_drop_before: None,
+            ip_popover_visible: false,
+            ip_popover_hide_generation: 0,
             pane_root: PaneLayout::Single(String::new()),
             focused_pane_path: Vec::new(),
             terminal_panel_bounds: None,
@@ -1215,6 +1219,31 @@ impl Ashell {
                     break;
                 }
             }
+        })
+        .detach();
+    }
+
+    pub(crate) fn show_ip_popover(&mut self, cx: &mut Context<Self>) {
+        self.ip_popover_hide_generation = self.ip_popover_hide_generation.wrapping_add(1);
+        if !self.ip_popover_visible {
+            self.ip_popover_visible = true;
+            cx.notify();
+        }
+    }
+
+    pub(crate) fn schedule_ip_popover_hide(&mut self, cx: &mut Context<Self>) {
+        self.ip_popover_hide_generation = self.ip_popover_hide_generation.wrapping_add(1);
+        let generation = self.ip_popover_hide_generation;
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(Duration::from_millis(350))
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                if this.ip_popover_hide_generation == generation && this.ip_popover_visible {
+                    this.ip_popover_visible = false;
+                    cx.notify();
+                }
+            });
         })
         .detach();
     }

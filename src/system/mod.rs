@@ -39,6 +39,12 @@ pub struct NetworkSample {
 }
 
 #[derive(Debug, Clone, Default)]
+pub struct IpAddressSample {
+    pub interface: String,
+    pub address: String,
+}
+
+#[derive(Debug, Clone, Default)]
 pub struct SystemSnapshot {
     pub os_name: String,
     pub kernel_name: String,
@@ -46,7 +52,7 @@ pub struct SystemSnapshot {
     pub architecture: String,
     pub hostname: String,
     pub ip_address: String,
-    pub ip_addresses: Vec<String>,
+    pub ip_address_entries: Vec<IpAddressSample>,
     pub uptime_seconds: u64,
     pub load_average: String,
     pub cpu_model: String,
@@ -197,7 +203,7 @@ impl SystemSampler {
             architecture: std::env::consts::ARCH.to_string(),
             hostname: System::host_name().unwrap_or_default(),
             ip_address: String::new(),
-            ip_addresses: Vec::new(),
+            ip_address_entries: Vec::new(),
             uptime_seconds: System::uptime(),
             load_average: {
                 let load = System::load_average();
@@ -305,6 +311,7 @@ pub fn remote_snapshot_from_kv(raw: &str) -> Result<SystemSnapshot> {
     let mut disks = Vec::new();
     let mut filesystems = Vec::new();
     let mut network_interfaces = Vec::new();
+    let mut ip_address_entries = Vec::new();
     let mut processes = Vec::new();
 
     for line in raw.lines().map(str::trim).filter(|line| !line.is_empty()) {
@@ -347,6 +354,15 @@ pub fn remote_snapshot_from_kv(raw: &str) -> Result<SystemSnapshot> {
                 transmitted_bytes: parts.next().unwrap_or("0").parse().unwrap_or_default(),
                 receive_rate: parts.next().unwrap_or("0").parse().unwrap_or_default(),
                 transmit_rate: parts.next().unwrap_or("0").parse().unwrap_or_default(),
+            });
+            continue;
+        }
+
+        if let Some(rest) = line.strip_prefix("IP_ENTRY=") {
+            let mut parts = rest.splitn(2, '\t');
+            ip_address_entries.push(IpAddressSample {
+                interface: parts.next().unwrap_or_default().to_string(),
+                address: parts.next().unwrap_or_default().to_string(),
             });
             continue;
         }
@@ -425,10 +441,26 @@ pub fn remote_snapshot_from_kv(raw: &str) -> Result<SystemSnapshot> {
     {
         ip_addresses.push(primary.clone());
     }
-    let mut unique_ip_addresses = Vec::new();
+    ip_address_entries.retain(|entry| !entry.address.is_empty());
+    let mut unique_entries = Vec::new();
+    for entry in ip_address_entries {
+        if !unique_entries.iter().any(|existing: &IpAddressSample| {
+            existing.interface == entry.interface && existing.address == entry.address
+        }) {
+            unique_entries.push(entry);
+        }
+    }
+    let mut unique_ip_addresses = unique_entries
+        .iter()
+        .map(|entry| entry.address.clone())
+        .collect::<Vec<_>>();
     for address in ip_addresses {
         if !unique_ip_addresses.contains(&address) {
-            unique_ip_addresses.push(address);
+            unique_ip_addresses.push(address.clone());
+            unique_entries.push(IpAddressSample {
+                interface: "-".to_string(),
+                address,
+            });
         }
     }
     let primary_ip = unique_ip_addresses.first().cloned().unwrap_or_default();
@@ -440,7 +472,7 @@ pub fn remote_snapshot_from_kv(raw: &str) -> Result<SystemSnapshot> {
         architecture: kv.get("ARCHITECTURE").cloned().unwrap_or_default(),
         hostname: kv.get("HOSTNAME").cloned().unwrap_or_default(),
         ip_address: primary_ip,
-        ip_addresses: unique_ip_addresses,
+        ip_address_entries: unique_entries,
         uptime_seconds: parse_u64(&kv, "UPTIME_SECONDS"),
         load_average: kv.get("LOAD_AVERAGE").cloned().unwrap_or_default(),
         cpu_model: kv.get("CPU_MODEL").cloned().unwrap_or_default(),
@@ -487,6 +519,8 @@ mod tests {
              HOSTNAME=server-01\n\
              IP_ADDRESS=10.0.0.8\n\
              IP_ADDRESSES=10.0.0.8 172.17.0.1\n\
+             IP_ENTRY=eth0\t10.0.0.8\n\
+             IP_ENTRY=docker0\t172.17.0.1\n\
              UPTIME_SECONDS=90061\n\
              LOAD_AVERAGE=0.10 0.20 0.30\n\
              CPU_MODEL=Example CPU\n\
@@ -510,7 +544,8 @@ mod tests {
         assert_eq!(snapshot.os_name, "Example Linux");
         assert_eq!(snapshot.kernel_name, "Linux");
         assert_eq!(snapshot.hostname, "server-01");
-        assert_eq!(snapshot.ip_addresses, ["10.0.0.8", "172.17.0.1"]);
+        assert_eq!(snapshot.ip_address_entries[0].interface, "eth0");
+        assert_eq!(snapshot.ip_address_entries[1].interface, "docker0");
         assert_eq!(snapshot.uptime_seconds, 90061);
         assert_eq!(snapshot.cpu_cores, 8);
         assert_eq!(snapshot.mem_available, 10000);
