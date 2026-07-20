@@ -3648,6 +3648,7 @@ impl Ashell {
             .collect();
         let is_integrated =
             self.active_title_bar_style == crate::session::config::TitleBarStyle::Integrated;
+        let selected_tab_color = Hsla::from(gpui::rgb(0x1586F5));
 
         h_flex()
             .flex_1()
@@ -3675,6 +3676,17 @@ impl Ashell {
                     .child({
                         let home_tab = Tab::new()
                             .min_w(px(92.))
+                            .when(home_page_selected, |this| {
+                                this.prefix(
+                                    div()
+                                        .absolute()
+                                        .top_0()
+                                        .left_0()
+                                        .right_0()
+                                        .h(px(3.))
+                                        .bg(selected_tab_color),
+                                )
+                            })
                             .child(
                                 h_flex()
                                     .relative()
@@ -3682,16 +3694,7 @@ impl Ashell {
                                     .items_center()
                                     .px_3()
                                     .when(home_page_selected, |this| {
-                                        this.child(
-                                            div()
-                                                .absolute()
-                                                .top_0()
-                                                .left_0()
-                                                .right_0()
-                                                .h(px(2.))
-                                                .bg(cx.theme().primary),
-                                        )
-                                        .font_weight(FontWeight::BOLD)
+                                        this.font_weight(FontWeight::BOLD)
                                     })
                                     .child(t!("new_tab")),
                             )
@@ -3716,7 +3719,6 @@ impl Ashell {
                             }));
                         TabBar::new("ashell-tab-bar")
                             .track_scroll(&self.tabs_scroll_handle)
-                            .selected_index(selected)
                             .children(groups_data.iter().enumerate().map(
                                 |(ix, (group_id, ordinal, title, pane_ids))| {
                                     let gid = group_id.clone();
@@ -3732,6 +3734,7 @@ impl Ashell {
                                     } else {
                                         pane_ids.first().cloned().unwrap_or_default()
                                     };
+                                    let tab_selected = ix == selected;
 
                                     // Status is independent of selection: grey means the
                                     // backend is still connecting, green is ready, and red
@@ -3761,6 +3764,17 @@ impl Ashell {
                                             });
                                         })
                                         .min_w(px(112.))
+                                        .when(tab_selected, |this| {
+                                            this.prefix(
+                                                div()
+                                                    .absolute()
+                                                    .top_0()
+                                                    .left_0()
+                                                    .right_0()
+                                                    .h(px(3.))
+                                                    .bg(selected_tab_color),
+                                            )
+                                        })
                                         .child(
                                             h_flex()
                                                 .relative()
@@ -3774,17 +3788,8 @@ impl Ashell {
                                                         this.tab_drag.begin(drag_gid.clone(), event.position);
                                                     }),
                                                 )
-                                                .when(ix == selected, |this| {
-                                                    this.child(
-                                                        div()
-                                                            .absolute()
-                                                            .top_0()
-                                                            .left_0()
-                                                            .right_0()
-                                                            .h(px(2.))
-                                                            .bg(cx.theme().primary),
-                                                    )
-                                                    .font_weight(FontWeight::BOLD)
+                                                .when(tab_selected, |this| {
+                                                    this.font_weight(FontWeight::BOLD)
                                                 })
                                                 .child(
                                                     div()
