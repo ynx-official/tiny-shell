@@ -4915,8 +4915,6 @@ impl Ashell {
                     .px_1()
                     .flex()
                     .items_center()
-                    .border_r_1()
-                    .border_color(cx.theme().border.opacity(0.8))
                     .child(
                         Button::new("tab-quick-connections")
                             .ghost()

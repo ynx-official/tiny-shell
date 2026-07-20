@@ -1,10 +1,10 @@
 use gpui::{
-    Anchor, Context, Focusable as _, FontWeight, InteractiveElement as _, MouseButton,
+    Anchor, Context, Focusable as _, FontWeight, InteractiveElement as _, IntoElement, MouseButton,
     ParentElement as _, SharedString, StatefulInteractiveElement as _, Styled as _, Window, div,
     prelude::FluentBuilder as _, px, rems,
 };
 use gpui_component::{
-    ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, WindowExt as _,
+    ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, Size, WindowExt as _,
     button::{Button, ButtonVariants as _},
     dialog::Dialog,
     h_flex,
@@ -1536,6 +1536,358 @@ impl Ashell {
             window.focus(&deferred_selector_focus_handle, cx);
         });
     }
+    fn quick_connection_row(
+        session: crate::session::config::Session,
+        index: usize,
+        depth: usize,
+        view: &gpui::Entity<Self>,
+        window: &mut Window,
+        cx: &mut gpui::App,
+    ) -> gpui::AnyElement {
+        let connect_id = session.id.clone();
+        h_flex()
+            .id(("quick-connection-row", index))
+            .min_h(px(34.))
+            .pl(px(14. + depth as f32 * 16.))
+            .pr_3()
+            .items_center()
+            .gap_2()
+            .cursor_pointer()
+            .border_t_1()
+            .border_color(cx.theme().border.opacity(0.45))
+            .hover(|this| this.bg(cx.theme().secondary.opacity(0.65)))
+            .on_mouse_down(
+                MouseButton::Left,
+                window.listener_for(view, move |this, _, window, cx| {
+                    this.active_dialog = None;
+                    this.connect_saved_session(connect_id.clone(), cx);
+                    window.close_dialog(cx);
+                    cx.notify();
+                }),
+            )
+            .child(Icon::new(IconName::SquareTerminal).with_size(Size::Small))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(px(0.))
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .text_ellipsis()
+                    .text_size(rems(0.74))
+                    .font_weight(FontWeight::MEDIUM)
+                    .child(session.name),
+            )
+            .child(
+                div()
+                    .w(px(190.))
+                    .flex_none()
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .text_ellipsis()
+                    .text_size(rems(0.7))
+                    .child(session.host),
+            )
+            .child(
+                div()
+                    .w(px(64.))
+                    .flex_none()
+                    .text_center()
+                    .text_size(rems(0.7))
+                    .child(session.port.to_string()),
+            )
+            .child(
+                div()
+                    .w(px(100.))
+                    .flex_none()
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .text_ellipsis()
+                    .text_size(rems(0.7))
+                    .child(session.user),
+            )
+            .into_any_element()
+    }
+
+    pub(crate) fn show_quick_connection_manager_dialog(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.active_dialog.is_some() {
+            return;
+        }
+        self.active_dialog = Some(crate::app::DialogKind::QuickConnectionManager);
+        self.quick_connection_search_input
+            .update(cx, |input, cx| input.set_value("", window, cx));
+
+        let view = cx.entity();
+        let search_input = self.quick_connection_search_input.clone();
+        let deferred_search_input = search_input.clone();
+        let scroll_handle = self.quick_connection_scroll_handle.clone();
+
+        window.open_dialog(cx, move |dialog: Dialog, _window, _cx| {
+            dialog
+                .title(t!("quick_connection_title").to_string())
+                .w(px(760.))
+                .h(px(540.))
+                .overlay_closable(true)
+                .on_close({
+                    let view = view.clone();
+                    move |_, _, cx| {
+                        view.update(cx, |this, cx| {
+                            this.active_dialog = None;
+                            cx.notify();
+                        });
+                    }
+                })
+                .content({
+                    let view = view.clone();
+                    let search_input = search_input.clone();
+                    let scroll_handle = scroll_handle.clone();
+                    move |content, window, cx| {
+                        let query = search_input.read(cx).value().trim().to_lowercase();
+                        let (mut sessions, mut groups) = {
+                            let state = view.read(cx);
+                            (
+                                state.config.sessions().to_vec(),
+                                state.config.connection_groups().to_vec(),
+                            )
+                        };
+                        for session in &sessions {
+                            if let Some(group) = &session.group
+                                && !groups.contains(group)
+                            {
+                                groups.push(group.clone());
+                            }
+                        }
+                        groups = Self::connection_group_tree_order(groups);
+
+                        let session_matches = |session: &crate::session::config::Session| {
+                            query.is_empty()
+                                || session.name.to_lowercase().contains(&query)
+                                || session.host.to_lowercase().contains(&query)
+                                || session.user.to_lowercase().contains(&query)
+                                || session
+                                    .group
+                                    .as_deref()
+                                    .is_some_and(|group| group.to_lowercase().contains(&query))
+                        };
+                        sessions.retain(session_matches);
+
+                        if !query.is_empty() {
+                            groups.retain(|group| {
+                                group.to_lowercase().contains(&query)
+                                    || sessions.iter().any(|session| {
+                                        session.group.as_deref().is_some_and(|session_group| {
+                                            session_group == group
+                                                || session_group.starts_with(&format!("{group}/"))
+                                                || group.starts_with(&format!("{session_group}/"))
+                                        })
+                                    })
+                            });
+                        }
+
+                        let mut rows = Vec::new();
+                        let mut row_index = 0usize;
+                        for group in &groups {
+                            let depth = group.matches('/').count();
+                            let group_name = group.rsplit('/').next().unwrap_or(group).to_string();
+                            rows.push(
+                                h_flex()
+                                    .min_h(px(32.))
+                                    .pl(px(10. + depth as f32 * 16.))
+                                    .pr_3()
+                                    .items_center()
+                                    .gap_2()
+                                    .bg(cx.theme().muted.opacity(0.38))
+                                    .border_t_1()
+                                    .border_color(cx.theme().border.opacity(0.45))
+                                    .child(Icon::new(IconName::Folder).with_size(Size::Small))
+                                    .child(
+                                        div()
+                                            .text_size(rems(0.72))
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .child(group_name),
+                                    )
+                                    .into_any_element(),
+                            );
+                            for session in sessions
+                                .iter()
+                                .filter(|session| session.group.as_deref() == Some(group.as_str()))
+                            {
+                                rows.push(Self::quick_connection_row(
+                                    session.clone(),
+                                    row_index,
+                                    depth + 1,
+                                    &view,
+                                    window,
+                                    cx,
+                                ));
+                                row_index += 1;
+                            }
+                        }
+
+                        let ungrouped: Vec<_> = sessions
+                            .iter()
+                            .filter(|session| session.group.as_deref().is_none_or(str::is_empty))
+                            .cloned()
+                            .collect();
+                        if !ungrouped.is_empty() {
+                            rows.push(
+                                h_flex()
+                                    .min_h(px(32.))
+                                    .px_3()
+                                    .items_center()
+                                    .gap_2()
+                                    .bg(cx.theme().muted.opacity(0.38))
+                                    .border_t_1()
+                                    .border_color(cx.theme().border.opacity(0.45))
+                                    .child(Icon::new(IconName::Folder).with_size(Size::Small))
+                                    .child(
+                                        div()
+                                            .text_size(rems(0.72))
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .child(t!("quick_connection_ungrouped").to_string()),
+                                    )
+                                    .into_any_element(),
+                            );
+                            for session in ungrouped {
+                                rows.push(Self::quick_connection_row(
+                                    session,
+                                    row_index,
+                                    1,
+                                    &view,
+                                    window,
+                                    cx,
+                                ));
+                                row_index += 1;
+                            }
+                        }
+
+                        let has_rows = !rows.is_empty();
+                        content.child(
+                            v_flex()
+                                .size_full()
+                                .gap_3()
+                                .child(
+                                    h_flex()
+                                        .flex_none()
+                                        .gap_2()
+                                        .child(
+                                            div()
+                                                .flex_1()
+                                                .min_w(px(0.))
+                                                .child(Input::new(&search_input).small()),
+                                        )
+                                        .child(
+                                            Button::new("quick-connection-new")
+                                                .primary()
+                                                .small()
+                                                .icon(IconName::Plus)
+                                                .label(t!("overview_new_connection").to_string())
+                                                .on_click(window.listener_for(
+                                                    &view,
+                                                    |this, _, window, cx| {
+                                                        this.active_dialog = None;
+                                                        window.close_dialog(cx);
+                                                        this.open_new_ssh_dialog(window, cx);
+                                                    },
+                                                )),
+                                        ),
+                                )
+                                .child(
+                                    v_flex()
+                                        .flex_1()
+                                        .min_h(px(0.))
+                                        .overflow_hidden()
+                                        .rounded_md()
+                                        .border_1()
+                                        .border_color(cx.theme().border)
+                                        .child(
+                                            h_flex()
+                                                .flex_none()
+                                                .h(px(32.))
+                                                .px_3()
+                                                .items_center()
+                                                .bg(cx.theme().tab_bar)
+                                                .text_size(rems(0.68))
+                                                .font_weight(FontWeight::SEMIBOLD)
+                                                .text_color(cx.theme().muted_foreground)
+                                                .child(div().flex_1().child(t!("name").to_string()))
+                                                .child(
+                                                    div()
+                                                        .w(px(190.))
+                                                        .flex_none()
+                                                        .child(t!("host").to_string()),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .w(px(64.))
+                                                        .flex_none()
+                                                        .text_center()
+                                                        .child(t!("port").to_string()),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .w(px(100.))
+                                                        .flex_none()
+                                                        .child(t!("user").to_string()),
+                                                ),
+                                        )
+                                        .child(
+                                            div()
+                                                .relative()
+                                                .flex_1()
+                                                .min_h(px(0.))
+                                                .child(
+                                                    v_flex()
+                                                        .id("quick-connection-scroll-view")
+                                                        .size_full()
+                                                        .track_scroll(&scroll_handle)
+                                                        .overflow_y_scroll()
+                                                        .children(rows)
+                                                        .when(!has_rows, |this| {
+                                                            this.items_center()
+                                                                .justify_center()
+                                                                .text_color(
+                                                                    cx.theme().muted_foreground,
+                                                                )
+                                                                .child(
+                                                                    t!("quick_connection_empty")
+                                                                        .to_string(),
+                                                                )
+                                                        }),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .absolute()
+                                                        .top_0()
+                                                        .bottom_0()
+                                                        .left_0()
+                                                        .right_0()
+                                                        .child(
+                                                            Scrollbar::new(&scroll_handle)
+                                                                .id("quick-connection-scrollbar")
+                                                                .axis(
+                                                                    gpui_component::scroll::ScrollbarAxis::Vertical,
+                                                                )
+                                                                .scrollbar_show(
+                                                                    ScrollbarShow::Scrolling,
+                                                                ),
+                                                        ),
+                                                ),
+                                        ),
+                                ),
+                        )
+                    }
+                })
+        });
+
+        window.defer(cx, move |window, cx| {
+            window.focus(&deferred_search_input.read(cx).focus_handle(cx), cx);
+        });
+    }
+
     pub(crate) fn show_transfers_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.active_dialog.is_some() {
             return;
