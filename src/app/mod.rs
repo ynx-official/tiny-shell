@@ -241,6 +241,8 @@ pub(crate) enum PaneLayout {
 #[derive(Clone)]
 pub(crate) struct TabGroup {
     pub(crate) id: String,
+    /// Monotonic per-window label used to distinguish similarly named hosts.
+    pub(crate) ordinal: u64,
     pub(crate) title: String,
     pub(crate) pane_root: PaneLayout,
     pub(crate) sftp: Option<crate::terminal::SftpUiState>,
@@ -479,7 +481,10 @@ pub(crate) struct Ashell {
     pub(crate) tabs: Vec<TerminalTab>,
     pub(crate) active_tab: Option<String>,
     pub(crate) tab_groups: Vec<TabGroup>,
+    pub(crate) next_tab_group_ordinal: u64,
     pub(crate) active_group: Option<String>,
+    /// The Home workspace is a first-class tab alongside terminal groups.
+    pub(crate) home_page_open: bool,
     pub(crate) home_page: HomePage,
     pub(crate) connection_group_filter: Option<String>,
     /// Bounds of the visible group rows, used to calculate a drop position.
@@ -923,7 +928,9 @@ impl Ashell {
             tabs: Vec::new(),
             active_tab: None,
             tab_groups: Vec::new(),
+            next_tab_group_ordinal: 1,
             active_group: None,
+            home_page_open: true,
             home_page: HomePage::default(),
             connection_group_filter: None,
             connection_group_bounds: HashMap::new(),

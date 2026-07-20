@@ -3622,8 +3622,18 @@ impl Ashell {
             .active_group
             .as_ref()
             .and_then(|gid| self.tab_groups.iter().position(|g| g.id == *gid));
-        let selected = active_group_index.unwrap_or(active_tab_index.unwrap_or(0));
-        let groups_data: Vec<(String, String, Vec<String>)> = self
+        // Home is the default tab, but it is not kept open after the user
+        // enters a terminal workspace. The trailing plus creates it again.
+        let show_home_tab = self.home_page_open || self.active_tab.is_none();
+        let home_page_selected =
+            (show_home_tab && self.home_page_open) || self.active_tab.is_none();
+        let home_tab_index = self.tab_groups.len();
+        let selected = if home_page_selected {
+            home_tab_index
+        } else {
+            active_group_index.or(active_tab_index).unwrap_or(0)
+        };
+        let groups_data: Vec<(String, u64, String, Vec<String>)> = self
             .tab_groups
             .iter()
             .map(|g| {
@@ -3633,7 +3643,7 @@ impl Ashell {
                     .iter()
                     .map(|s| s.to_string())
                     .collect();
-                (g.id.clone(), g.title.clone(), pane_ids)
+                (g.id.clone(), g.ordinal, g.title.clone(), pane_ids)
             })
             .collect();
         let is_integrated =
@@ -3663,16 +3673,40 @@ impl Ashell {
                     })
                     .overflow_x_hidden()
                     .child({
+                        let home_tab = Tab::new()
+                            .min_w(px(92.))
+                            .child(
+                                div()
+                                    .when(home_page_selected, |this| {
+                                        this.font_weight(FontWeight::BOLD)
+                                            .text_color(cx.theme().primary)
+                                            .text_base()
+                                    })
+                                    .child(t!("new_tab")),
+                            )
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.home_page_open = true;
+                                this.home_page = HomePage::Overview;
+                                cx.notify();
+                            }));
+                        let plus_tab = Tab::new()
+                            .min_w(px(42.))
+                            .child(Icon::new(IconName::Plus).with_size(Size::Small))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.home_page_open = true;
+                                this.home_page = HomePage::Overview;
+                                cx.notify();
+                            }));
                         TabBar::new("ashell-tab-bar")
                             .track_scroll(&self.tabs_scroll_handle)
                             .selected_index(selected)
                             .children(groups_data.iter().enumerate().map(
-                                |(ix, (group_id, title, pane_ids))| {
+                                |(ix, (group_id, ordinal, title, pane_ids))| {
                                     let gid = group_id.clone();
                                     let label = if pane_ids.len() > 1 {
-                                        format!("{} ({})", title, pane_ids.len())
+                                        format!("{} {} ({})", ordinal, title, pane_ids.len())
                                     } else {
-                                        title.clone()
+                                        format!("{} {}", ordinal, title)
                                     };
                                     let close_id = if self.active_group.as_ref() == Some(&gid) {
                                         self.active_tab.clone().unwrap_or_else(|| {
@@ -3760,8 +3794,8 @@ impl Ashell {
                                             }),
                                         )
                                 },
-                            ))
-                            .last_empty_space(div().w_3())
+                            ).chain(show_home_tab.then_some(home_tab)).chain(std::iter::once(plus_tab)))
+                            .last_empty_space(div().flex_1())
                             .w_full()
                             .h_full()
                     }),
@@ -3772,17 +3806,6 @@ impl Ashell {
                     .items_center()
                     .gap_1()
                     .pr(px(6.))
-                    .child(
-                        Button::new("open-selector")
-                            .secondary()
-                            .small()
-                            .rounded(px(999.))
-                            .icon(IconName::Plus)
-                            .tooltip(t!("settings_open_session").to_string())
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.show_selector_dialog(window, cx)
-                            })),
-                    )
                     .child(
                         Button::new("split-horizontal")
                             .secondary()
@@ -4401,7 +4424,7 @@ impl Render for Ashell {
         // The file-transfer panel belongs to an active terminal session. Keeping it
         // out of the home workspace avoids showing an empty "remote files" area on
         // Overview and Key Manager pages.
-        let main_content = if self.active_tab.is_some() {
+        let main_content = if self.active_tab.is_some() && !self.home_page_open {
             let monitoring_contents = v_flex()
                 .size_full()
                 .when(self.config.monitoring_position() == "Bottom", |this| {
@@ -4486,7 +4509,7 @@ impl Render for Ashell {
                 )
                 .into_any_element()
         } else {
-            let sidebar_content = if self.active_tab.is_some() {
+            let sidebar_content = if self.active_tab.is_some() && !self.home_page_open {
                 self.sidebar(cx).into_any_element()
             } else {
                 self.render_overview_sidebar(cx).into_any_element()

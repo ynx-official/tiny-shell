@@ -41,6 +41,9 @@ pub(crate) struct GroupTransfer {
 
 impl Ashell {
     pub(crate) fn open_local(&mut self, cx: &mut Context<Self>) {
+        self.home_page_open = false;
+        let ordinal = self.next_tab_group_ordinal;
+        self.next_tab_group_ordinal += 1;
         let id = Uuid::new_v4().to_string();
         let events = self.backend_events_sender(cx);
         match local::spawn_local_terminal(id.clone(), DEFAULT_COLS, DEFAULT_ROWS, events.clone()) {
@@ -56,6 +59,7 @@ impl Ashell {
                 let group_id = Uuid::new_v4().to_string();
                 self.tab_groups.push(TabGroup {
                     id: group_id.clone(),
+                    ordinal,
                     title: "Local".to_string(),
                     pane_root: PaneLayout::Single(id),
                     sftp: None,
@@ -981,6 +985,9 @@ impl Ashell {
     }
 
     pub(crate) fn open_ssh_session(&mut self, mut session: Session, cx: &mut Context<Self>) {
+        self.home_page_open = false;
+        let ordinal = self.next_tab_group_ordinal;
+        self.next_tab_group_ordinal += 1;
         tracing::info!(
             "[session] opening ssh tab for session '{}' ({}@{})",
             session.name,
@@ -1046,6 +1053,7 @@ impl Ashell {
         let group_id = Uuid::new_v4().to_string();
         self.tab_groups.push(TabGroup {
             id: group_id.clone(),
+            ordinal,
             title: session.name.clone(),
             pane_root: PaneLayout::Single(id.clone()),
             sftp: Some(crate::terminal::SftpUiState {
@@ -1387,6 +1395,7 @@ impl Ashell {
             for (_, handle) in self.sftp_handles.drain() {
                 handle.close();
             }
+            self.home_page_open = true;
             return;
         }
 
@@ -1780,6 +1789,7 @@ impl Ashell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.home_page_open = false;
         // Save current group state
         if let Some(current_group_id) = self.active_group.clone() {
             if let Some(group) = self
@@ -2512,6 +2522,7 @@ impl Ashell {
         let group = self.tab_groups.remove(current_index);
         let target_index = index.min(self.tab_groups.len());
         let group_id = group.id.clone();
+        self.next_tab_group_ordinal = self.next_tab_group_ordinal.max(group.ordinal + 1);
         self.tab_groups.insert(target_index, group);
         self.activate_group(group_id, window, cx);
         self.tabs_scroll_handle.scroll_to_item(target_index);
@@ -2605,6 +2616,7 @@ impl Ashell {
             self.focused_pane_path.clear();
             self.active_tab = None;
             self.active_group = None;
+            self.home_page_open = true;
             self.sync_system_tab_to_active_group();
             return;
         }
@@ -2738,6 +2750,7 @@ impl Ashell {
             ..
         } = transfer;
         let group_id = group.id.clone();
+        self.next_tab_group_ordinal = self.next_tab_group_ordinal.max(group.ordinal + 1);
         let group_layout = group.pane_root.clone();
         let fallback_tab = group_layout.tab_ids().first().copied().map(str::to_string);
         self.tabs.extend(tabs.into_iter().map(|(_, tab)| tab));
