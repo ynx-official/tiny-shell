@@ -248,6 +248,13 @@ pub(crate) struct TabGroup {
     pub(crate) sftp: Option<crate::terminal::SftpUiState>,
 }
 
+#[derive(Clone)]
+pub(crate) struct SystemInfoTab {
+    pub(crate) id: String,
+    pub(crate) source_tab_id: String,
+    pub(crate) title: String,
+}
+
 impl PaneLayout {
     pub fn tab_ids(&self) -> Vec<&str> {
         match self {
@@ -491,6 +498,9 @@ pub(crate) struct Ashell {
     pub(crate) tab_groups: Vec<TabGroup>,
     pub(crate) next_tab_group_ordinal: u64,
     pub(crate) active_group: Option<String>,
+    /// Read-only system information pages bound to their originating SSH tab.
+    pub(crate) system_info_tabs: Vec<SystemInfoTab>,
+    pub(crate) active_system_info_tab: Option<String>,
     /// The Home workspace is a first-class tab alongside terminal groups.
     pub(crate) home_page_open: bool,
     pub(crate) home_page: HomePage,
@@ -942,6 +952,8 @@ impl Ashell {
             tab_groups: Vec::new(),
             next_tab_group_ordinal: 1,
             active_group: None,
+            system_info_tabs: Vec::new(),
+            active_system_info_tab: None,
             home_page_open: true,
             home_page: HomePage::default(),
             connection_group_filter: None,
@@ -1678,6 +1690,8 @@ impl Ashell {
 
         self.tabs.clear();
         self.tab_groups.clear();
+        self.system_info_tabs.clear();
+        self.active_system_info_tab = None;
         self.active_tab = None;
         self.active_group = None;
     }

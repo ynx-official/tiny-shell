@@ -558,7 +558,21 @@ EOF
   mem_available=$(awk '"'"'/^MemAvailable:/ {print $2 * 1024}'"'"' /proc/meminfo 2>/dev/null)
   swap_total=$(awk '"'"'/^SwapTotal:/ {print $2 * 1024}'"'"' /proc/meminfo 2>/dev/null)
   swap_free=$(awk '"'"'/^SwapFree:/ {print $2 * 1024}'"'"' /proc/meminfo 2>/dev/null)
+  os_name=$(awk -F= '"'"'/^PRETTY_NAME=/ { value=$2; gsub(/^"|"$/, "", value); print value; exit }'"'"' /etc/os-release 2>/dev/null)
+  cpu_model=$(awk -F: '"'"'/^(model name|Hardware)/ { value=$2; sub(/^[[:space:]]+/, "", value); print value; exit }'"'"' /proc/cpuinfo 2>/dev/null)
+  cpu_frequency=$(awk -F: '"'"'/^cpu MHz/ { value=$2; sub(/^[[:space:]]+/, "", value); printf "%.0f", value; exit }'"'"' /proc/cpuinfo 2>/dev/null)
 
+  echo "OS_NAME=${os_name:-Linux}"
+  echo "KERNEL_NAME=$(uname -s 2>/dev/null)"
+  echo "KERNEL_VERSION=$(uname -r 2>/dev/null)"
+  echo "ARCHITECTURE=$(uname -m 2>/dev/null)"
+  echo "HOSTNAME=$(hostname 2>/dev/null)"
+  echo "IP_ADDRESS=$(hostname -I 2>/dev/null | awk '"'"'{print $1}'"'"')"
+  echo "UPTIME_SECONDS=$(cut -d. -f1 /proc/uptime 2>/dev/null)"
+  echo "LOAD_AVERAGE=$(cut -d" " -f1-3 /proc/loadavg 2>/dev/null)"
+  echo "CPU_MODEL=${cpu_model:-unknown}"
+  echo "CPU_CORES=$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 0)"
+  echo "CPU_FREQUENCY_MHZ=${cpu_frequency:-0}"
   echo "CPU_PERCENT=${cpu_percent:-0.00}"
   echo "MEM_TOTAL=${mem_total:-0}"
   echo "MEM_USED=$(( ${mem_total:-0} - ${mem_available:-0} ))"
@@ -599,6 +613,17 @@ EOF
     function mult(unit) { return unit=="K"?1024:(unit=="M"?1048576:(unit=="G"?1073741824:(unit=="T"?1099511627776:1))) }
     /used/ && /free/ { used=$4; free=$8; unit1=substr(used, length(used), 1); unit2=substr(free, length(free), 1); sub(/[A-Za-z]+$/, "", used); sub(/[A-Za-z]+$/, "", free); printf "%.0f", (used * mult(unit1)) + (free * mult(unit2)) }'"'"')
 
+  echo "OS_NAME=$(sw_vers -productName 2>/dev/null) $(sw_vers -productVersion 2>/dev/null)"
+  echo "KERNEL_NAME=$(uname -s 2>/dev/null)"
+  echo "KERNEL_VERSION=$(uname -r 2>/dev/null)"
+  echo "ARCHITECTURE=$(uname -m 2>/dev/null)"
+  echo "HOSTNAME=$(hostname 2>/dev/null)"
+  echo "IP_ADDRESS=$(ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr en1 2>/dev/null)"
+  echo "UPTIME_SECONDS=$(sysctl -n kern.boottime 2>/dev/null | awk -F"[=,]" '"'"'{ gsub(/ /, "", $2); print systime()-$2 }'"'"')"
+  echo "LOAD_AVERAGE=$(sysctl -n vm.loadavg 2>/dev/null | tr -d "{}")"
+  echo "CPU_MODEL=$(sysctl -n machdep.cpu.brand_string 2>/dev/null)"
+  echo "CPU_CORES=$(sysctl -n hw.logicalcpu 2>/dev/null || echo 0)"
+  echo "CPU_FREQUENCY_MHZ=$(($(sysctl -n hw.cpufrequency 2>/dev/null || echo 0) / 1000000))"
   echo "CPU_PERCENT=${cpu_percent:-0.00}"
   echo "MEM_TOTAL=${mem_total:-0}"
   echo "MEM_USED=${mem_used:-0}"
@@ -612,6 +637,17 @@ EOF
 fi
 
 echo "CPU_PERCENT=0.00"
+echo "OS_NAME=${os:-unknown}"
+echo "KERNEL_NAME=$(uname -s 2>/dev/null)"
+echo "KERNEL_VERSION=$(uname -r 2>/dev/null)"
+echo "ARCHITECTURE=$(uname -m 2>/dev/null)"
+echo "HOSTNAME=$(hostname 2>/dev/null)"
+echo "IP_ADDRESS="
+echo "UPTIME_SECONDS=0"
+echo "LOAD_AVERAGE="
+echo "CPU_MODEL="
+echo "CPU_CORES=0"
+echo "CPU_FREQUENCY_MHZ=0"
 echo "MEM_TOTAL=0"
 echo "MEM_USED=0"
 echo "SWAP_TOTAL=0"

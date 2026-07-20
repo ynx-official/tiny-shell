@@ -18,7 +18,7 @@ use self::config::{AuthMethod, ManagedKey, Session};
 use crate::{
     Ashell, PaneLayout, SelectorEntry, TabGroup,
     app::{
-        IncomingTabDrag,
+        IncomingTabDrag, SystemInfoTab,
         constants::{DEFAULT_COLS, DEFAULT_ROWS},
         tab_drag::{
             DragTarget, DropIntent, TargetUpdate, cursor_inside_viewport, reorder_index_at_x,
@@ -40,7 +40,59 @@ pub(crate) struct GroupTransfer {
 }
 
 impl Ashell {
+    pub(crate) fn open_system_info_tab(&mut self, cx: &mut Context<Self>) {
+        let Some(source_tab_id) = self.system_tab_id.clone().or_else(|| {
+            self.active_tab.as_ref().and_then(|active_id| {
+                self.tabs
+                    .iter()
+                    .find(|tab| tab.id == *active_id && tab.kind == TabKind::Ssh)
+                    .map(|tab| tab.id.clone())
+            })
+        }) else {
+            return;
+        };
+
+        let info_id = if let Some(existing) = self
+            .system_info_tabs
+            .iter()
+            .find(|tab| tab.source_tab_id == source_tab_id)
+        {
+            existing.id.clone()
+        } else {
+            let host_title = self
+                .tabs
+                .iter()
+                .find(|tab| tab.id == source_tab_id)
+                .map(|tab| tab.title.clone())
+                .unwrap_or_else(|| t!("system_information").to_string());
+            let id = Uuid::new_v4().to_string();
+            self.system_info_tabs.push(SystemInfoTab {
+                id: id.clone(),
+                source_tab_id: source_tab_id.clone(),
+                title: format!("{} · {}", host_title, t!("system_information")),
+            });
+            id
+        };
+
+        self.active_tab = Some(source_tab_id.clone());
+        self.system_tab_id = Some(source_tab_id);
+        self.active_system_info_tab = Some(info_id);
+        self.home_page_open = false;
+        self.request_active_system_snapshot();
+        cx.notify();
+    }
+
+    pub(crate) fn close_system_info_tab(&mut self, id: String, cx: &mut Context<Self>) {
+        let was_active = self.active_system_info_tab.as_deref() == Some(id.as_str());
+        self.system_info_tabs.retain(|tab| tab.id != id);
+        if was_active {
+            self.active_system_info_tab = None;
+        }
+        cx.notify();
+    }
+
     pub(crate) fn open_local(&mut self, cx: &mut Context<Self>) {
+        self.active_system_info_tab = None;
         self.home_page_open = false;
         let ordinal = self.next_tab_group_ordinal;
         self.next_tab_group_ordinal += 1;
@@ -985,6 +1037,7 @@ impl Ashell {
     }
 
     pub(crate) fn open_ssh_session(&mut self, mut session: Session, cx: &mut Context<Self>) {
+        self.active_system_info_tab = None;
         self.home_page_open = false;
         let ordinal = self.next_tab_group_ordinal;
         self.next_tab_group_ordinal += 1;
@@ -1277,6 +1330,14 @@ impl Ashell {
     }
 
     pub(crate) fn handle_tab_close(&mut self, id: String) {
+        let removed_active_info = self.system_info_tabs.iter().any(|tab| {
+            tab.source_tab_id == id
+                && self.active_system_info_tab.as_deref() == Some(tab.id.as_str())
+        });
+        self.system_info_tabs.retain(|tab| tab.source_tab_id != id);
+        if removed_active_info {
+            self.active_system_info_tab = None;
+        }
         if self
             .connection_progress
             .as_ref()
@@ -1383,11 +1444,28 @@ impl Ashell {
             self.sync_pane_root_to_group();
         }
 
+        self.system_info_tabs
+            .retain(|info| self.tabs.iter().any(|tab| tab.id == info.source_tab_id));
+        if self
+            .active_system_info_tab
+            .as_ref()
+            .is_some_and(|active_id| {
+                !self
+                    .system_info_tabs
+                    .iter()
+                    .any(|info| &info.id == active_id)
+            })
+        {
+            self.active_system_info_tab = None;
+        }
+
         if self.tabs.is_empty() || self.tab_groups.is_empty() {
             self.pane_root = PaneLayout::Single(String::new());
             self.focused_pane_path = vec![];
             self.active_tab = None;
             self.active_group = None;
+            self.system_info_tabs.clear();
+            self.active_system_info_tab = None;
             self.tab_groups.clear();
             self.tabs.clear();
             self.system_tab_id = None;
@@ -1773,6 +1851,7 @@ impl Ashell {
         cx: &mut Context<Self>,
     ) {
         self.home_page_open = false;
+        self.active_system_info_tab = None;
         // Save current group state
         if let Some(current_group_id) = self.active_group.clone() {
             if let Some(group) = self

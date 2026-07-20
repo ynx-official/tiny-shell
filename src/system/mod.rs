@@ -31,9 +31,24 @@ pub struct ProcessSample {
 
 #[derive(Debug, Clone, Default)]
 pub struct SystemSnapshot {
+    pub os_name: String,
+    pub kernel_name: String,
+    pub kernel_version: String,
+    pub architecture: String,
+    pub hostname: String,
+    pub ip_address: String,
+    pub uptime_seconds: u64,
+    pub load_average: String,
+    pub cpu_model: String,
+    pub cpu_cores: usize,
+    pub cpu_frequency_mhz: u64,
     pub cpu_percent: f32,
     pub mem_percent: f32,
     pub swap_percent: f32,
+    pub mem_used: u64,
+    pub mem_total: u64,
+    pub mem_available: u64,
+    pub swap_used: u64,
     pub mem_detail: String,
     pub swap_detail: String,
     pub net_rx: String,
@@ -138,9 +153,40 @@ impl SystemSampler {
         processes.truncate(64);
 
         SystemSnapshot {
+            os_name: System::long_os_version().unwrap_or_default(),
+            kernel_name: System::name().unwrap_or_default(),
+            kernel_version: System::kernel_version().unwrap_or_default(),
+            architecture: std::env::consts::ARCH.to_string(),
+            hostname: System::host_name().unwrap_or_default(),
+            ip_address: String::new(),
+            uptime_seconds: System::uptime(),
+            load_average: {
+                let load = System::load_average();
+                format!("{:.2}, {:.2}, {:.2}", load.one, load.five, load.fifteen)
+            },
+            cpu_model: self
+                .sys
+                .cpus()
+                .first()
+                .map(|cpu| cpu.brand().to_string())
+                .unwrap_or_default(),
+            cpu_cores: self
+                .sys
+                .physical_core_count()
+                .unwrap_or_else(|| self.sys.cpus().len()),
+            cpu_frequency_mhz: self
+                .sys
+                .cpus()
+                .first()
+                .map(|cpu| cpu.frequency())
+                .unwrap_or_default(),
             cpu_percent,
             mem_percent: ratio(mem_used, mem_total),
             swap_percent: ratio(swap_used, swap_total),
+            mem_used,
+            mem_total,
+            mem_available: mem_total.saturating_sub(mem_used),
+            swap_used,
             mem_detail: format!("{}/{}", format_bytes(mem_used), format_bytes(mem_total)),
             swap_detail: format!("{}/{}", format_bytes(swap_used), format_bytes(swap_total)),
             net_rx: format!("{}/s", format_bytes(rx_rate)),
@@ -286,9 +332,24 @@ pub fn remote_snapshot_from_kv(raw: &str) -> Result<SystemSnapshot> {
     });
 
     Ok(SystemSnapshot {
+        os_name: kv.get("OS_NAME").cloned().unwrap_or_default(),
+        kernel_name: kv.get("KERNEL_NAME").cloned().unwrap_or_default(),
+        kernel_version: kv.get("KERNEL_VERSION").cloned().unwrap_or_default(),
+        architecture: kv.get("ARCHITECTURE").cloned().unwrap_or_default(),
+        hostname: kv.get("HOSTNAME").cloned().unwrap_or_default(),
+        ip_address: kv.get("IP_ADDRESS").cloned().unwrap_or_default(),
+        uptime_seconds: parse_u64(&kv, "UPTIME_SECONDS"),
+        load_average: kv.get("LOAD_AVERAGE").cloned().unwrap_or_default(),
+        cpu_model: kv.get("CPU_MODEL").cloned().unwrap_or_default(),
+        cpu_cores: parse_u64(&kv, "CPU_CORES") as usize,
+        cpu_frequency_mhz: parse_u64(&kv, "CPU_FREQUENCY_MHZ"),
         cpu_percent: cpu_percent.clamp(0.0, 1.0),
         mem_percent: ratio(mem_used, mem_total),
         swap_percent: ratio(swap_used, swap_total),
+        mem_used,
+        mem_total,
+        mem_available: mem_total.saturating_sub(mem_used),
+        swap_used,
         mem_detail: format!("{}/{}", format_bytes(mem_used), format_bytes(mem_total)),
         swap_detail: format!("{}/{}", format_bytes(swap_used), format_bytes(swap_total)),
         net_rx: format!("{}/s", format_bytes(rx_rate)),
@@ -305,4 +366,45 @@ fn parse_u64(kv: &BTreeMap<String, String>, key: &str) -> u64 {
     kv.get(key)
         .and_then(|value| value.parse::<u64>().ok())
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_remote_system_details_and_processes() {
+        let snapshot = remote_snapshot_from_kv(
+            "OS_NAME=Example Linux\n\
+             KERNEL_NAME=Linux\n\
+             KERNEL_VERSION=6.8.0\n\
+             ARCHITECTURE=x86_64\n\
+             HOSTNAME=server-01\n\
+             IP_ADDRESS=10.0.0.8\n\
+             UPTIME_SECONDS=90061\n\
+             LOAD_AVERAGE=0.10 0.20 0.30\n\
+             CPU_MODEL=Example CPU\n\
+             CPU_CORES=8\n\
+             CPU_FREQUENCY_MHZ=3200\n\
+             CPU_PERCENT=25.5\n\
+             MEM_TOTAL=16000\n\
+             MEM_USED=6000\n\
+             SWAP_TOTAL=4000\n\
+             SWAP_USED=1000\n\
+             NET_RX=128\n\
+             NET_TX=64\n\
+             PROCESS=42\t2048\t12.5\tsshd\n\
+             DISK=/\t3000000000\t10000000000",
+        )
+        .expect("remote snapshot should parse");
+
+        assert_eq!(snapshot.os_name, "Example Linux");
+        assert_eq!(snapshot.kernel_name, "Linux");
+        assert_eq!(snapshot.hostname, "server-01");
+        assert_eq!(snapshot.uptime_seconds, 90061);
+        assert_eq!(snapshot.cpu_cores, 8);
+        assert_eq!(snapshot.mem_available, 10000);
+        assert_eq!(snapshot.processes[0].command, "sshd");
+        assert_eq!(snapshot.disks[0].mount, "/");
+    }
 }

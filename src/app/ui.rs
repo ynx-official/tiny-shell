@@ -31,7 +31,398 @@ use crate::{
     terminal::{self, TabKind},
 };
 
+fn format_uptime(seconds: u64) -> String {
+    if seconds == 0 {
+        return "-".to_string();
+    }
+    let days = seconds / 86_400;
+    let hours = (seconds % 86_400) / 3_600;
+    let minutes = (seconds % 3_600) / 60;
+    if days > 0 {
+        format!("{}{} {}{}", days, t!("days"), hours, t!("hours"))
+    } else if hours > 0 {
+        format!("{}{} {}{}", hours, t!("hours"), minutes, t!("minutes"))
+    } else {
+        format!("{}{}", minutes, t!("minutes"))
+    }
+}
+
 impl Ashell {
+    fn render_system_info_page(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let source_tab_id = self.active_system_info_tab.as_ref().and_then(|info_id| {
+            self.system_info_tabs
+                .iter()
+                .find(|tab| &tab.id == info_id)
+                .map(|tab| tab.source_tab_id.clone())
+        });
+        let source_tab = source_tab_id
+            .as_ref()
+            .and_then(|id| self.tabs.iter().find(|tab| &tab.id == id));
+        let snapshot = source_tab_id
+            .as_ref()
+            .and_then(|id| self.remote_system_snapshots.get(id))
+            .cloned()
+            .unwrap_or_default();
+        let connection = source_tab
+            .and_then(|tab| tab.session.as_ref())
+            .map(|session| format!("{}@{}:{}", session.user, session.host, session.port))
+            .unwrap_or_default();
+        let display = |value: String| {
+            if value.trim().is_empty() {
+                "-".to_string()
+            } else {
+                value
+            }
+        };
+        let info_row = |label: String, value: String| {
+            h_flex()
+                .min_h(px(30.))
+                .items_center()
+                .gap_3()
+                .child(
+                    div()
+                        .w(px(112.))
+                        .flex_none()
+                        .text_size(rems(0.76))
+                        .text_color(cx.theme().muted_foreground)
+                        .child(label),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.))
+                        .text_size(rems(0.78))
+                        .child(display(value)),
+                )
+                .into_any_element()
+        };
+        let card_title = |title: String| {
+            div()
+                .h(px(38.))
+                .px_4()
+                .flex()
+                .items_center()
+                .border_b_1()
+                .border_color(cx.theme().border)
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_size(rems(0.86))
+                .child(title)
+        };
+
+        let mut processes = snapshot.processes.clone();
+        processes.sort_by(|left, right| {
+            right
+                .cpu_percent
+                .partial_cmp(&left.cpu_percent)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        processes.truncate(12);
+
+        v_flex()
+            .size_full()
+            .overflow_y_scrollbar()
+            .bg(cx.theme().muted.opacity(0.32))
+            .p_5()
+            .gap_4()
+            .child(
+                v_flex()
+                    .gap_1()
+                    .child(
+                        div()
+                            .font_weight(FontWeight::BOLD)
+                            .text_size(rems(1.35))
+                            .child(t!("system_information")),
+                    )
+                    .child(
+                        div()
+                            .text_size(rems(0.78))
+                            .text_color(cx.theme().muted_foreground)
+                            .child(t!("system_information_desc")),
+                    ),
+            )
+            .child(
+                v_flex()
+                    .rounded_lg()
+                    .border_1()
+                    .border_color(cx.theme().border)
+                    .bg(cx.theme().background)
+                    .overflow_hidden()
+                    .child(card_title(t!("system_overview").to_string()))
+                    .child(
+                        h_flex()
+                            .items_start()
+                            .gap_6()
+                            .p_4()
+                            .child(v_flex().flex_1().min_w(px(0.)).children(vec![
+                                info_row(
+                                    t!("operating_system").to_string(),
+                                    snapshot.os_name.clone(),
+                                ),
+                                info_row(
+                                    t!("kernel_version").to_string(),
+                                    snapshot.kernel_version.clone(),
+                                ),
+                                info_row(t!("host_name").to_string(), snapshot.hostname.clone()),
+                                info_row(t!("ip_address").to_string(), snapshot.ip_address.clone()),
+                                info_row(
+                                    t!("system_load").to_string(),
+                                    snapshot.load_average.clone(),
+                                ),
+                            ]))
+                            .child(v_flex().flex_1().min_w(px(0.)).children(vec![
+                                info_row(t!("kernel").to_string(), snapshot.kernel_name.clone()),
+                                info_row(
+                                    t!("architecture").to_string(),
+                                    snapshot.architecture.clone(),
+                                ),
+                                info_row(t!("connection_address").to_string(), connection),
+                                info_row(
+                                    t!("uptime").to_string(),
+                                    format_uptime(snapshot.uptime_seconds),
+                                ),
+                                info_row(
+                                    t!("cpu_usage").to_string(),
+                                    format!("{:.1}%", snapshot.cpu_percent * 100.0),
+                                ),
+                            ])),
+                    ),
+            )
+            .child(
+                v_flex()
+                    .rounded_lg()
+                    .border_1()
+                    .border_color(cx.theme().border)
+                    .bg(cx.theme().background)
+                    .overflow_hidden()
+                    .child(card_title(t!("cpu").to_string()))
+                    .child(
+                        h_flex()
+                            .min_h(px(42.))
+                            .items_center()
+                            .px_4()
+                            .gap_4()
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .text_size(rems(0.76))
+                                    .child(display(snapshot.cpu_model.clone())),
+                            )
+                            .child(
+                                div()
+                                    .w(px(120.))
+                                    .text_center()
+                                    .text_size(rems(0.76))
+                                    .child(format!("{} {}", snapshot.cpu_cores, t!("cpu_cores"))),
+                            )
+                            .child(div().w(px(140.)).text_center().text_size(rems(0.76)).child(
+                                if snapshot.cpu_frequency_mhz == 0 {
+                                    "-".to_string()
+                                } else {
+                                    format!("{} MHz", snapshot.cpu_frequency_mhz)
+                                },
+                            ))
+                            .child(
+                                div()
+                                    .w(px(100.))
+                                    .text_center()
+                                    .text_size(rems(0.76))
+                                    .child(format!("{:.1}%", snapshot.cpu_percent * 100.0)),
+                            ),
+                    ),
+            )
+            .child(
+                h_flex()
+                    .items_start()
+                    .gap_4()
+                    .child(
+                        v_flex()
+                            .flex_1()
+                            .rounded_lg()
+                            .border_1()
+                            .border_color(cx.theme().border)
+                            .bg(cx.theme().background)
+                            .overflow_hidden()
+                            .child(card_title(t!("memory").to_string()))
+                            .child(v_flex().p_4().children(vec![
+                                info_row(t!("total").to_string(), format_bytes(snapshot.mem_total)),
+                                info_row(t!("used").to_string(), format_bytes(snapshot.mem_used)),
+                                info_row(
+                                    t!("available").to_string(),
+                                    format_bytes(snapshot.mem_available),
+                                ),
+                                info_row(
+                                    t!("usage").to_string(),
+                                    format!("{:.1}%", snapshot.mem_percent * 100.0),
+                                ),
+                            ])),
+                    )
+                    .child(
+                        v_flex()
+                            .flex_1()
+                            .rounded_lg()
+                            .border_1()
+                            .border_color(cx.theme().border)
+                            .bg(cx.theme().background)
+                            .overflow_hidden()
+                            .child(card_title(t!("swap").to_string()))
+                            .child(v_flex().p_4().children(vec![
+                                info_row(
+                                    t!("total").to_string(),
+                                    format_bytes(snapshot.total_swap),
+                                ),
+                                info_row(t!("used").to_string(), format_bytes(snapshot.swap_used)),
+                                info_row(
+                                    t!("available").to_string(),
+                                    format_bytes(
+                                        snapshot.total_swap.saturating_sub(snapshot.swap_used),
+                                    ),
+                                ),
+                                info_row(
+                                    t!("usage").to_string(),
+                                    format!("{:.1}%", snapshot.swap_percent * 100.0),
+                                ),
+                            ])),
+                    ),
+            )
+            .child(
+                v_flex()
+                    .rounded_lg()
+                    .border_1()
+                    .border_color(cx.theme().border)
+                    .bg(cx.theme().background)
+                    .overflow_hidden()
+                    .child(card_title(t!("processes").to_string()))
+                    .child(
+                        h_flex()
+                            .h(px(32.))
+                            .items_center()
+                            .px_4()
+                            .bg(cx.theme().muted)
+                            .text_size(rems(0.72))
+                            .text_color(cx.theme().muted_foreground)
+                            .child(div().flex_1().child(t!("process_command")))
+                            .child(div().w(px(120.)).text_center().child(t!("process_memory")))
+                            .child(div().w(px(100.)).text_center().child(t!("cpu"))),
+                    )
+                    .children(processes.into_iter().enumerate().map(|(index, process)| {
+                        h_flex()
+                            .min_h(px(32.))
+                            .items_center()
+                            .px_4()
+                            .when(index % 2 == 1, |this| {
+                                this.bg(cx.theme().muted.opacity(0.35))
+                            })
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w(px(0.))
+                                    .overflow_hidden()
+                                    .whitespace_nowrap()
+                                    .text_ellipsis()
+                                    .text_size(rems(0.74))
+                                    .child(process.command),
+                            )
+                            .child(
+                                div()
+                                    .w(px(120.))
+                                    .text_center()
+                                    .text_size(rems(0.74))
+                                    .child(format_bytes(process.memory_bytes)),
+                            )
+                            .child(
+                                div()
+                                    .w(px(100.))
+                                    .text_center()
+                                    .text_size(rems(0.74))
+                                    .child(format!("{:.1}%", process.cpu_percent)),
+                            )
+                    })),
+            )
+            .child(
+                v_flex()
+                    .rounded_lg()
+                    .border_1()
+                    .border_color(cx.theme().border)
+                    .bg(cx.theme().background)
+                    .overflow_hidden()
+                    .child(card_title(t!("network").to_string()))
+                    .child(
+                        h_flex()
+                            .min_h(px(46.))
+                            .items_center()
+                            .px_4()
+                            .child(info_row(
+                                t!("receive_rate").to_string(),
+                                snapshot.net_rx.clone(),
+                            ))
+                            .child(info_row(
+                                t!("send_rate").to_string(),
+                                snapshot.net_tx.clone(),
+                            )),
+                    ),
+            )
+            .child(
+                v_flex()
+                    .rounded_lg()
+                    .border_1()
+                    .border_color(cx.theme().border)
+                    .bg(cx.theme().background)
+                    .overflow_hidden()
+                    .child(card_title(t!("file_system").to_string()))
+                    .child(
+                        h_flex()
+                            .h(px(32.))
+                            .items_center()
+                            .px_4()
+                            .bg(cx.theme().muted)
+                            .text_size(rems(0.72))
+                            .text_color(cx.theme().muted_foreground)
+                            .child(div().flex_1().child(t!("mount_point")))
+                            .child(div().w(px(130.)).text_center().child(t!("total")))
+                            .child(div().w(px(130.)).text_center().child(t!("used")))
+                            .child(div().w(px(130.)).text_center().child(t!("available"))),
+                    )
+                    .children(snapshot.disks.into_iter().enumerate().map(|(index, disk)| {
+                        let used = disk.total_bytes.saturating_sub(disk.available_bytes);
+                        h_flex()
+                            .min_h(px(32.))
+                            .items_center()
+                            .px_4()
+                            .when(index % 2 == 1, |this| {
+                                this.bg(cx.theme().muted.opacity(0.35))
+                            })
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w(px(0.))
+                                    .text_size(rems(0.74))
+                                    .child(disk.mount),
+                            )
+                            .child(
+                                div()
+                                    .w(px(130.))
+                                    .text_center()
+                                    .text_size(rems(0.74))
+                                    .child(format_bytes(disk.total_bytes)),
+                            )
+                            .child(
+                                div()
+                                    .w(px(130.))
+                                    .text_center()
+                                    .text_size(rems(0.74))
+                                    .child(format_bytes(used)),
+                            )
+                            .child(
+                                div()
+                                    .w(px(130.))
+                                    .text_center()
+                                    .text_size(rems(0.74))
+                                    .child(format_bytes(disk.available_bytes)),
+                            )
+                    })),
+            )
+    }
+
     fn render_home_page(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let sessions = self.config.sessions().to_vec();
         let total_connections = sessions.len();
@@ -3237,22 +3628,6 @@ impl Ashell {
             .as_ref()
             .and_then(|active_id| self.tabs.iter().find(|tab| &tab.id == active_id));
         let active_session = active_tab.and_then(|tab| tab.session.as_ref());
-        let connection_failed = active_tab.is_some_and(|tab| tab.disconnected_reason.is_some());
-        let connection_ready = active_tab.is_some_and(|tab| tab.connected);
-        let status_color = if connection_failed {
-            cx.theme().danger
-        } else if connection_ready {
-            cx.theme().success
-        } else {
-            cx.theme().muted_foreground
-        };
-        let status_text = if connection_failed {
-            t!("connection_failed").to_string()
-        } else if connection_ready {
-            t!("connected_status").to_string()
-        } else {
-            t!("connecting").to_string()
-        };
         let host_text = active_session
             .map(|session| session.host.clone())
             .unwrap_or_else(|| t!("local_host").to_string());
@@ -3349,38 +3724,29 @@ impl Ashell {
                                     .min_w(px(0.))
                                     .text_size(rems(0.75))
                                     .child(connection_text),
-                            )
-                            .child(
-                                div()
-                                    .id("sidebar-connection-status")
-                                    .size(px(7.))
-                                    .flex_none()
-                                    .rounded_full()
-                                    .bg(status_color)
-                                    .tooltip({
-                                        let status_text = status_text.clone();
-                                        move |window, cx| {
-                                            gpui_component::tooltip::Tooltip::new(
-                                                status_text.clone(),
-                                            )
-                                            .build(window, cx)
-                                        }
-                                    }),
                             ),
                     ),
             )
             .child(
                 h_flex()
+                    .id("sidebar-system-information")
                     .h(px(28.))
                     .items_center()
                     .justify_center()
+                    .gap_1()
                     .rounded_md()
                     .border_1()
                     .border_color(cx.theme().border)
                     .bg(cx.theme().background)
+                    .cursor_pointer()
                     .text_size(rems(0.8))
                     .font_weight(FontWeight::MEDIUM)
-                    .child(t!("server_information")),
+                    .hover(|this| this.bg(cx.theme().secondary.opacity(0.7)))
+                    .child(t!("server_information"))
+                    .child(Icon::new(IconName::ExternalLink).with_size(Size::Small))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.open_system_info_tab(cx);
+                    })),
             )
             .when(
                 self.active_kind() == Some(TabKind::Ssh)
@@ -3739,11 +4105,10 @@ impl Ashell {
         // Home is the default tab, but it is not kept open after the user
         // enters a terminal workspace. The trailing plus creates it again.
         let show_home_tab = self.home_page_open || self.active_tab.is_none();
-        let home_page_selected =
-            (show_home_tab && self.home_page_open) || self.active_tab.is_none();
-        let home_tab_index = self.tab_groups.len();
-        let selected = if home_page_selected {
-            home_tab_index
+        let home_page_selected = self.active_system_info_tab.is_none()
+            && ((show_home_tab && self.home_page_open) || self.active_tab.is_none());
+        let selected = if home_page_selected || self.active_system_info_tab.is_some() {
+            usize::MAX
         } else {
             active_group_index.or(active_tab_index).unwrap_or(0)
         };
@@ -3758,6 +4123,23 @@ impl Ashell {
                     .map(|s| s.to_string())
                     .collect();
                 (g.id.clone(), g.ordinal, g.title.clone(), pane_ids)
+            })
+            .collect();
+        let system_info_tabs_data: Vec<(String, String, String, Option<String>)> = self
+            .system_info_tabs
+            .iter()
+            .map(|tab| {
+                let group_id = self
+                    .tab_groups
+                    .iter()
+                    .find(|group| group.pane_root.contains(&tab.source_tab_id))
+                    .map(|group| group.id.clone());
+                (
+                    tab.id.clone(),
+                    tab.source_tab_id.clone(),
+                    tab.title.clone(),
+                    group_id,
+                )
             })
             .collect();
         let is_integrated =
@@ -3824,6 +4206,7 @@ impl Ashell {
                                     .child(t!("new_tab")),
                             )
                             .on_click(cx.listener(|this, _, _, cx| {
+                                this.active_system_info_tab = None;
                                 this.home_page_open = true;
                                 this.home_page = HomePage::Overview;
                                 cx.notify();
@@ -3847,6 +4230,7 @@ impl Ashell {
                                     .child(Icon::new(IconName::Plus).with_size(Size::Small)),
                             )
                             .on_click(cx.listener(|this, _, _, cx| {
+                                this.active_system_info_tab = None;
                                 this.home_page_open = true;
                                 this.home_page = HomePage::Overview;
                                 cx.notify();
@@ -4002,7 +4386,106 @@ impl Ashell {
                                             }),
                                         )
                                 },
-                            ).chain(show_home_tab.then_some(home_tab)).chain(std::iter::once(plus_tab)))
+                            )
+                            .chain(system_info_tabs_data.iter().enumerate().map(
+                                |(ix, (info_id, source_tab_id, title, group_id))| {
+                                    let selected_info = self.active_system_info_tab.as_ref() == Some(info_id);
+                                    let click_info_id = info_id.clone();
+                                    let click_source_id = source_tab_id.clone();
+                                    let click_group_id = group_id.clone();
+                                    let close_info_id = info_id.clone();
+                                    Tab::new()
+                                        .min_w(px(150.))
+                                        .when(selected_info, |this| {
+                                            this.prefix(
+                                                div()
+                                                    .absolute()
+                                                    .top_0()
+                                                    .left_0()
+                                                    .right_0()
+                                                    .bottom_0()
+                                                    .rounded_tl(px(8.))
+                                                    .rounded_tr(px(8.))
+                                                    .bg(cx.theme().background)
+                                                    .child(
+                                                        div()
+                                                            .absolute()
+                                                            .top_0()
+                                                            .left_0()
+                                                            .right_0()
+                                                            .h(px(3.))
+                                                            .bg(selected_tab_color),
+                                                    ),
+                                            )
+                                        })
+                                        .prefix(
+                                            div()
+                                                .absolute()
+                                                .left_0()
+                                                .top(px(8.))
+                                                .bottom(px(8.))
+                                                .w(px(1.))
+                                                .bg(cx.theme().border.opacity(0.8)),
+                                        )
+                                        .child(
+                                            h_flex()
+                                                .relative()
+                                                .h_full()
+                                                .items_center()
+                                                .gap_2()
+                                                .px_2()
+                                                .when(!selected_info, |this| {
+                                                    this.hover(|this| {
+                                                        this.bg(cx.theme().secondary.opacity(0.55))
+                                                    })
+                                                })
+                                                .when(selected_info, |this| {
+                                                    this.font_weight(FontWeight::BOLD)
+                                                })
+                                                .child(Icon::new(IconName::Info).with_size(Size::Small))
+                                                .child(
+                                                    div()
+                                                        .min_w(px(0.))
+                                                        .overflow_hidden()
+                                                        .whitespace_nowrap()
+                                                        .text_ellipsis()
+                                                        .child(title.clone()),
+                                                ),
+                                        )
+                                        .on_click(cx.listener(move |this, _, window, cx| {
+                                            if let Some(group_id) = click_group_id.clone() {
+                                                this.activate_group(group_id, window, cx);
+                                            }
+                                            this.active_tab = Some(click_source_id.clone());
+                                            this.system_tab_id = Some(click_source_id.clone());
+                                            this.active_system_info_tab = Some(click_info_id.clone());
+                                            this.home_page_open = false;
+                                            this.request_active_system_snapshot();
+                                            cx.notify();
+                                        }))
+                                        .suffix(
+                                            Button::new(("system-info-tab-close", ix))
+                                                .ghost()
+                                                .xsmall()
+                                                .icon(IconName::Close)
+                                                .mr(px(4.))
+                                                .on_mouse_down(
+                                                    MouseButton::Left,
+                                                    |_, window, cx| {
+                                                        window.prevent_default();
+                                                        cx.stop_propagation();
+                                                    },
+                                                )
+                                                .on_click(cx.listener(move |this, _, window, cx| {
+                                                    window.prevent_default();
+                                                    cx.stop_propagation();
+                                                    this.close_system_info_tab(close_info_id.clone(), cx);
+                                                })),
+                                        )
+                                },
+                            ))
+                            .chain(show_home_tab.then_some(home_tab))
+                            .chain(std::iter::once(plus_tab)))
                             .last_empty_space(div().flex_1())
                             .w_full()
                             .h_full()
@@ -4718,7 +5201,9 @@ impl Render for Ashell {
         // The file-transfer panel belongs to an active terminal session. Keeping it
         // out of the home workspace avoids showing an empty "remote files" area on
         // Overview and Key Manager pages.
-        let main_content = if self.active_tab.is_some() && !self.home_page_open {
+        let main_content = if self.active_system_info_tab.is_some() {
+            self.render_system_info_page(cx).into_any_element()
+        } else if self.active_tab.is_some() && !self.home_page_open {
             let monitoring_contents = v_flex()
                 .size_full()
                 .when(self.config.monitoring_position() == "Bottom", |this| {
