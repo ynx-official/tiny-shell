@@ -11,6 +11,7 @@ pub mod startup;
 pub mod tab_drag;
 pub mod theme;
 pub mod ui;
+pub mod updater;
 
 use std::{
     cell::{Cell, RefCell},
@@ -568,6 +569,7 @@ pub(crate) struct Ashell {
     pub(crate) system_sampler: Arc<std::sync::Mutex<SharedSystemSampler>>,
     pub(crate) recording_action: Option<String>,
     pub(crate) active_dialog: Option<DialogKind>,
+    pub(crate) updater_status: Option<updater::UpdateStatus>,
     /// Error message when a recorded keybinding conflicts with another
     pub(crate) keybind_error: Option<(String, String)>, // (action_id, error_message)
     /// Whether workspace keybindings are currently suspended (during settings)
@@ -1046,6 +1048,7 @@ impl Ashell {
             system_sampler,
             recording_action: None,
             active_dialog: None,
+            updater_status: None,
             keybind_error: None,
             keybinds_suspended: false,
             animated_cpu_percent: system.cpu_percent,

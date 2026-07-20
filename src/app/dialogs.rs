@@ -3555,32 +3555,169 @@ impl Ashell {
                                         .icon(IconName::Info)
                                         .group(
                                             SettingGroup::new()
-                                                .item(SettingItem::render(move |_, _window, cx| {
-                                                    v_flex()
-                                                        .gap_2()
-                                                        .items_center()
-                                                        .child(div().text_size(rems(1.5)).font_weight(FontWeight::BOLD).child("Ashell"))
-                                                        .child(div().text_size(rems(0.9)).child(format!("Version {}", version)))
-                                                        .child(
-                                                            div()
-                                                                .text_size(rems(0.9))
-                                                                .text_color(cx.theme().muted_foreground)
-                                                                .child("A GPUI Component based SSH and local terminal client"),
-                                                        )
-                                                        .child(
-                                                            div()
-                                                                .text_size(rems(0.9))
-                                                                .text_color(cx.theme().muted_foreground)
-                                                                .child(t!("about_feedback_hint")),
-                                                        )
-                                                        .child(
-                                                            Button::new("github-link")
-                                                                .label("https://github.com/rust-kotlin/ashell")
-                                                                .ghost()
-                                                                .on_click(|_, _window, _cx| {
-                                                                    let _ = open::that("https://github.com/rust-kotlin/ashell");
-                                                                }),
-                                                        )
+                                                .item(SettingItem::render({
+                                                    let view = view.clone();
+                                                    move |_, _window, cx| {
+                                                        let status_text = {
+                                                            let state = view.read(cx);
+                                                            match &state.updater_status {
+                                                                Some(crate::app::updater::UpdateStatus::Checking) => {
+                                                                    Some(t!("checking_update").to_string())
+                                                                }
+                                                                Some(crate::app::updater::UpdateStatus::UpToDate) => {
+                                                                    Some(t!("update_latest").to_string())
+                                                                }
+                                                                Some(crate::app::updater::UpdateStatus::UpdateAvailable(info)) => {
+                                                                    Some(t!("update_available", version = info.version.clone()).to_string())
+                                                                }
+                                                                Some(crate::app::updater::UpdateStatus::Downloading) => {
+                                                                    Some(t!("update_downloading").to_string())
+                                                                }
+                                                                Some(crate::app::updater::UpdateStatus::Installing) => {
+                                                                    Some(t!("update_installing").to_string())
+                                                                }
+                                                                Some(crate::app::updater::UpdateStatus::InstallComplete) => {
+                                                                    Some(t!("update_install_complete").to_string())
+                                                                }
+                                                                Some(crate::app::updater::UpdateStatus::Error(msg)) => {
+                                                                    Some(t!("update_error", error = msg.clone()).to_string())
+                                                                }
+                                                                None => None,
+                                                            }
+                                                        };
+                                                        let has_update = matches!(
+                                                            view.read(cx).updater_status,
+                                                            Some(crate::app::updater::UpdateStatus::UpdateAvailable(_))
+                                                        );
+
+                                                        v_flex()
+                                                            .gap_2()
+                                                            .items_center()
+                                                            .child(div().text_size(rems(1.5)).font_weight(FontWeight::BOLD).child("Ashell"))
+                                                            .child(div().text_size(rems(0.9)).child(format!("Version {}", version)))
+                                                            .child(
+                                                                div()
+                                                                    .text_size(rems(0.9))
+                                                                    .text_color(cx.theme().muted_foreground)
+                                                                    .child("A GPUI Component based SSH and local terminal client"),
+                                                            )
+                                                            .child(
+                                                                div()
+                                                                    .text_size(rems(0.9))
+                                                                    .text_color(cx.theme().muted_foreground)
+                                                                    .child(t!("about_feedback_hint")),
+                                                            )
+                                                            .child(
+                                                                Button::new("github-link")
+                                                                    .label("https://github.com/rust-kotlin/ashell")
+                                                                    .ghost()
+                                                                    .on_click(|_, _window, _cx| {
+                                                                        let _ = open::that("https://github.com/rust-kotlin/ashell");
+                                                                    }),
+                                                            )
+                                                            .child(
+                                                                h_flex()
+                                                                    .gap_2()
+                                                                    .items_center()
+                                                                    .child(
+                                        Button::new("check-update")
+                                            .label(t!("check_update").to_string())
+                                            .on_click({
+                                                let view = view.clone();
+                                                move |_, _window, cx| {
+                                                    view.update(cx, |this, cx| {
+                                                        this.updater_status = Some(crate::app::updater::UpdateStatus::Checking);
+                                                        cx.notify();
+                                                    });
+                                                    cx.spawn({
+                                                        let view = view.clone();
+                                                        |cx: &mut gpui::AsyncApp| {
+                                                            let cx = cx.clone();
+                                                            async move {
+                                                                let result = crate::app::updater::check_for_update().await;
+                                                                cx.update(|cx| {
+                                                                    match result {
+                                                                        Ok(Some(info)) => {
+                                                                            view.update(cx, |this, cx| {
+                                                                                this.updater_status = Some(crate::app::updater::UpdateStatus::UpdateAvailable(info));
+                                                                                cx.notify();
+                                                                            });
+                                                                        }
+                                                                        Ok(None) => {
+                                                                            view.update(cx, |this, cx| {
+                                                                                this.updater_status = Some(crate::app::updater::UpdateStatus::UpToDate);
+                                                                                cx.notify();
+                                                                            });
+                                                                        }
+                                                                        Err(err) => {
+                                                                            view.update(cx, |this, cx| {
+                                                                                this.updater_status = Some(crate::app::updater::UpdateStatus::Error(format!("{err:#}")));
+                                                                                cx.notify();
+                                                                            });
+                                                                        }
+                                                                    }
+                                                                });
+                                                            }
+                                                        }
+                                                    }).detach();
+                                                }
+                                            }),
+                                    )
+                                                                    .when(has_update, |this| {
+                                                                        this.child(
+                                                                            Button::new("download-update")
+                                                                                .primary()
+                                                                                .label(t!("update_download").to_string())
+                                                                                .on_click({
+                                                                                    let view = view.clone();
+                                                                                    move |_, _window, cx| {
+                                                                                        let info = match view.read(cx).updater_status.clone() {
+                                                                                            Some(crate::app::updater::UpdateStatus::UpdateAvailable(info)) => info,
+                                                                                            _ => return,
+                                                                                        };
+                                                                                        view.update(cx, |this, cx| {
+                                                                                            this.updater_status = Some(crate::app::updater::UpdateStatus::Downloading);
+                                                                                            cx.notify();
+                                                                                        });
+                                                                                        cx.spawn({
+                                                                                            let view = view.clone();
+                                                                                            |cx: &mut gpui::AsyncApp| {
+                                                                                                let cx = cx.clone();
+                                                                                                async move {
+                                                                                                    let result = crate::app::updater::perform_update(&info).await;
+                                                                                                    cx.update(|cx| {
+                                                                                                        match result {
+                                                                                                            Ok(()) => {
+                                                                                                                view.update(cx, |this, cx| {
+                                                                                                                    this.updater_status = Some(crate::app::updater::UpdateStatus::InstallComplete);
+                                                                                                                    cx.notify();
+                                                                                                                });
+                                                                                                            }
+                                                                                                            Err(err) => {
+                                                                                                                view.update(cx, |this, cx| {
+                                                                                                                    this.updater_status = Some(crate::app::updater::UpdateStatus::Error(format!("{err:#}")));
+                                                                                                                    cx.notify();
+                                                                                                                });
+                                                                                                            }
+                                                                                                        }
+                                                                                                    });
+                                                                                                }
+                                                                                            }
+                                                                                        }).detach();
+                                                                                    }
+                                                                                }),
+                                                                        )
+                                                                    })
+                                                                    .when_some(status_text, |this, text| {
+                                                                        this.child(
+                                                                            div()
+                                                                                .text_size(rems(0.85))
+                                                                                .text_color(cx.theme().muted_foreground)
+                                                                                .child(text),
+                                                                        )
+                                                                    }),
+                                                            )
+                                                    }
                                                 }))
                                         )
                                 )
