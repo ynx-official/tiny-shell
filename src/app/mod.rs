@@ -404,7 +404,9 @@ pub(crate) enum HomePage {
     #[default]
     Overview,
     Connections,
+    Commands,
     KeyManager,
+    Settings,
 }
 
 pub(crate) struct Ashell {

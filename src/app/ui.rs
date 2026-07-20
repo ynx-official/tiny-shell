@@ -35,6 +35,10 @@ impl Ashell {
     fn render_home_page(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let sessions = self.config.sessions().to_vec();
         let total_connections = sessions.len();
+        // All persisted profiles are SSH. SFTP is a runtime handle attached to
+        // an active SSH workspace.
+        let ssh_connections = sessions.len();
+        let sftp_connections = self.sftp_handles.len();
         let mut recent_sessions: Vec<_> = sessions.iter().collect();
         recent_sessions.sort_by(|left, right| right.last_used.cmp(&left.last_used));
         recent_sessions.truncate(3);
@@ -137,7 +141,7 @@ impl Ashell {
                                 div()
                                     .text_size(rems(1.75))
                                     .font_weight(FontWeight::SEMIBOLD)
-                                    .child(total_connections.to_string()),
+                                    .child(ssh_connections.to_string()),
                             )
                             .child(
                                 div()
@@ -164,7 +168,7 @@ impl Ashell {
                                 div()
                                     .text_size(rems(1.75))
                                     .font_weight(FontWeight::SEMIBOLD)
-                                    .child("0"),
+                                    .child(sftp_connections.to_string()),
                             )
                             .child(
                                 div()
@@ -274,6 +278,16 @@ impl Ashell {
                         h_flex()
                             .gap_3()
                             .child(
+                                Button::new("overview-open-commands")
+                                    .secondary()
+                                    .icon(IconName::SquareTerminal)
+                                    .label(t!("command_manager").to_string())
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.home_page = HomePage::Commands;
+                                        cx.notify();
+                                    })),
+                            )
+                            .child(
                                 Button::new("overview-open-key-manager")
                                     .secondary()
                                     .icon(IconName::Folder)
@@ -282,6 +296,26 @@ impl Ashell {
                                         this.home_page = HomePage::KeyManager;
                                         cx.notify();
                                     })),
+                            )
+                            .child(
+                                Button::new("overview-open-documentation")
+                                    .ghost()
+                                    .icon(IconName::Folder)
+                                    .label(t!("documentation").to_string())
+                                    .on_click(|_, _, _| {
+                                        #[cfg(target_os = "windows")]
+                                        let _ = std::process::Command::new("explorer")
+                                            .arg("README.md")
+                                            .spawn();
+                                        #[cfg(target_os = "macos")]
+                                        let _ = std::process::Command::new("open")
+                                            .arg("README.md")
+                                            .spawn();
+                                        #[cfg(target_os = "linux")]
+                                        let _ = std::process::Command::new("xdg-open")
+                                            .arg("README.md")
+                                            .spawn();
+                                    }),
                             )
                             .child(
                                 Button::new("overview-settings")
@@ -293,6 +327,154 @@ impl Ashell {
                                     })),
                             ),
                     ),
+            )
+    }
+
+    fn render_command_manager_page(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        v_flex()
+            .size_full()
+            .p_6()
+            .gap_5()
+            .child(
+                v_flex()
+                    .gap_1()
+                    .child(
+                        div()
+                            .text_size(rems(2.0))
+                            .font_weight(FontWeight::BOLD)
+                            .child(t!("command_manager")),
+                    )
+                    .child(
+                        div()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(t!("command_manager_desc")),
+                    ),
+            )
+            .child(
+                v_flex()
+                    .max_w(px(680.))
+                    .gap_3()
+                    .p_5()
+                    .rounded_md()
+                    .border_1()
+                    .border_color(cx.theme().border)
+                    .bg(cx.theme().muted)
+                    .child(Icon::new(IconName::SquareTerminal).with_size(Size::Large))
+                    .child(
+                        div()
+                            .text_size(rems(1.167))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child(t!("command_manager_empty_title")),
+                    )
+                    .child(
+                        div()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(t!("command_manager_empty_desc")),
+                    )
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .pt_2()
+                            .child(
+                                Button::new("commands-open-connections")
+                                    .primary()
+                                    .icon(IconName::Network)
+                                    .label(t!("overview_connections").to_string())
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.home_page = HomePage::Connections;
+                                        cx.notify();
+                                    })),
+                            )
+                            .child(
+                                Button::new("commands-new-connection")
+                                    .secondary()
+                                    .icon(IconName::Plus)
+                                    .label(t!("overview_new_connection").to_string())
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.open_new_ssh_dialog(window, cx);
+                                    })),
+                            ),
+                    ),
+            )
+    }
+
+    fn render_settings_page(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        v_flex()
+            .size_full()
+            .p_6()
+            .gap_5()
+            .child(
+                v_flex()
+                    .gap_1()
+                    .child(
+                        div()
+                            .text_size(rems(2.0))
+                            .font_weight(FontWeight::BOLD)
+                            .child(t!("settings")),
+                    )
+                    .child(
+                        div()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(t!("settings_page_desc")),
+                    ),
+            )
+            .child(
+                h_flex()
+                    .max_w(px(760.))
+                    .gap_3()
+                    .child(
+                        v_flex()
+                            .flex_1()
+                            .gap_2()
+                            .p_4()
+                            .rounded_md()
+                            .border_1()
+                            .border_color(cx.theme().border)
+                            .bg(cx.theme().muted)
+                            .child(Icon::new(IconName::Settings).with_size(Size::Medium))
+                            .child(
+                                div()
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child(t!("settings_general")),
+                            )
+                            .child(
+                                div()
+                                    .text_size(rems(0.875))
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(t!("settings_page_appearance")),
+                            ),
+                    )
+                    .child(
+                        v_flex()
+                            .flex_1()
+                            .gap_2()
+                            .p_4()
+                            .rounded_md()
+                            .border_1()
+                            .border_color(cx.theme().border)
+                            .bg(cx.theme().muted)
+                            .child(Icon::new(IconName::SquareTerminal).with_size(Size::Medium))
+                            .child(
+                                div()
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child(t!("settings_terminal")),
+                            )
+                            .child(
+                                div()
+                                    .text_size(rems(0.875))
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(t!("settings_page_terminal")),
+                            ),
+                    ),
+            )
+            .child(
+                Button::new("settings-page-open-editor")
+                    .primary()
+                    .icon(IconName::Settings)
+                    .label(t!("settings_open_editor").to_string())
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.show_settings_dialog(window, cx);
+                    })),
             )
     }
 
@@ -1115,7 +1297,9 @@ impl Ashell {
     fn render_overview_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let is_overview = self.home_page == HomePage::Overview;
         let is_connections = self.home_page == HomePage::Connections;
+        let is_commands = self.home_page == HomePage::Commands;
         let is_key_manager = self.home_page == HomePage::KeyManager;
+        let is_settings = self.home_page == HomePage::Settings;
         v_flex()
             .w_full()
             .h_full()
@@ -1148,8 +1332,9 @@ impl Ashell {
                             .ghost()
                             .icon(IconName::Settings)
                             .tooltip(t!("settings_open_settings").to_string())
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.show_settings_dialog(window, cx)
+                            .on_click(cx.listener(|this, _, _window, cx| {
+                                this.home_page = HomePage::Settings;
+                                cx.notify();
                             })),
                     ),
             )
@@ -1226,6 +1411,42 @@ impl Ashell {
                     )
                     .child(
                         div()
+                            .id("overview-sidebar-commands")
+                            .w_full()
+                            .cursor_pointer()
+                            .rounded_md()
+                            .hover(|this| this.bg(cx.theme().secondary))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.home_page = HomePage::Commands;
+                                cx.notify();
+                            }))
+                            .child(
+                                h_flex()
+                                    .items_center()
+                                    .gap_3()
+                                    .p_3()
+                                    .bg(if is_commands {
+                                        cx.theme().tab_active
+                                    } else {
+                                        cx.theme().sidebar
+                                    })
+                                    .text_color(if is_commands {
+                                        cx.theme().primary
+                                    } else {
+                                        cx.theme().foreground
+                                    })
+                                    .child(
+                                        Icon::new(IconName::SquareTerminal).with_size(Size::Small),
+                                    )
+                                    .child(
+                                        div()
+                                            .font_weight(FontWeight::MEDIUM)
+                                            .child(t!("command_manager")),
+                                    ),
+                            ),
+                    )
+                    .child(
+                        div()
                             .id("overview-sidebar-key-management")
                             .w_full()
                             .cursor_pointer()
@@ -1265,14 +1486,25 @@ impl Ashell {
                             .cursor_pointer()
                             .rounded_md()
                             .hover(|this| this.bg(cx.theme().secondary))
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.show_settings_dialog(window, cx)
+                            .on_click(cx.listener(|this, _, _window, cx| {
+                                this.home_page = HomePage::Settings;
+                                cx.notify();
                             }))
                             .child(
                                 h_flex()
                                     .items_center()
                                     .gap_3()
                                     .p_3()
+                                    .text_color(if is_settings {
+                                        cx.theme().primary
+                                    } else {
+                                        cx.theme().foreground
+                                    })
+                                    .bg(if is_settings {
+                                        cx.theme().tab_active
+                                    } else {
+                                        cx.theme().sidebar
+                                    })
                                     .child(Icon::new(IconName::Settings).with_size(Size::Small))
                                     .child(
                                         div().font_weight(FontWeight::MEDIUM).child(t!("settings")),
@@ -3601,7 +3833,7 @@ impl Ashell {
         let pane_tree = self.pane_root.clone();
         let view = cx.entity();
 
-        div()
+        v_flex()
             .size_full()
             .relative()
             .child(
@@ -3635,6 +3867,49 @@ impl Ashell {
                         self.render_home_page(cx).into_any_element()
                     }),
             )
+            // Keep terminal input in the terminal itself, while making the
+            // high-frequency workspace actions consistently available at its
+            // lower edge without changing terminal or split-pane behavior.
+            .when(has_active, |this| {
+                this.child(
+                    h_flex()
+                        .flex_none()
+                        .h(px(32.))
+                        .px_2()
+                        .items_center()
+                        .gap_1()
+                        .border_t_1()
+                        .border_color(cx.theme().border)
+                        .bg(cx.theme().tab_bar)
+                        .child(
+                            div()
+                                .flex_1()
+                                .text_size(rems(0.75))
+                                .text_color(cx.theme().muted_foreground)
+                                .child(t!("terminal_quick_actions")),
+                        )
+                        .child(
+                            Button::new("workspace-quick-search")
+                                .ghost()
+                                .small()
+                                .icon(IconName::Search)
+                                .label(t!("search").to_string())
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.toggle_search(window, cx);
+                                })),
+                        )
+                        .child(
+                            Button::new("workspace-quick-split")
+                                .ghost()
+                                .small()
+                                .icon(IconName::PanelBottom)
+                                .label(t!("workspace_split").to_string())
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.split_current_pane("down", cx);
+                                })),
+                        ),
+                )
+            })
             // Search bar overlay — only when search is active.
             .when(self.search_active, |el| {
                 el.child(self.render_search_bar(window, cx))
@@ -4168,7 +4443,9 @@ impl Render for Ashell {
             match self.home_page {
                 HomePage::Overview => self.render_home_page(cx).into_any_element(),
                 HomePage::Connections => self.render_connection_manager_page(cx).into_any_element(),
+                HomePage::Commands => self.render_command_manager_page(cx).into_any_element(),
                 HomePage::KeyManager => self.render_key_manager_page(cx).into_any_element(),
+                HomePage::Settings => self.render_settings_page(cx).into_any_element(),
             }
         };
 
@@ -4221,7 +4498,7 @@ impl Render for Ashell {
                     .workspace_panels()
                     .and_then(|s| s.first().copied())
                     .unwrap_or(SIDEBAR_WIDTH)))
-                .size_range(px(240.)..px(520.))
+                .size_range(px(190.)..px(360.))
                 .flex_none()
                 .child(sidebar_content);
 
