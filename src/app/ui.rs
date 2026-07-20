@@ -24,7 +24,7 @@ use std::collections::{HashMap, HashSet};
 use crate::{
     Ashell, PaneLayout,
     app::constants::{COLLAPSED_SIDEBAR_WIDTH, SIDEBAR_WIDTH, TERMINAL_KEY_CONTEXT},
-    app::{HomePage, TabContextMenuState},
+    app::{HomePage, ProcessView, TabContextMenuState},
     sftp::format_mtime,
     sftp::ops::is_editable_text_file,
     system::format_bytes,
@@ -2803,6 +2803,36 @@ impl Ashell {
         let disk_color = cx.theme().chart_5;
         let net_color = cx.theme().chart_4;
         let muted_fg = cx.theme().muted_foreground;
+        let process_view = self.process_view;
+        let mut displayed_processes = self.system.processes.clone();
+        match process_view {
+            ProcessView::Memory => displayed_processes
+                .sort_by(|left, right| right.memory_bytes.cmp(&left.memory_bytes)),
+            ProcessView::Cpu => displayed_processes.sort_by(|left, right| {
+                right
+                    .cpu_percent
+                    .partial_cmp(&left.cpu_percent)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            }),
+            ProcessView::Activity => {
+                let max_memory = displayed_processes
+                    .iter()
+                    .map(|process| process.memory_bytes)
+                    .max()
+                    .unwrap_or(1) as f32;
+                displayed_processes.sort_by(|left, right| {
+                    let left_score =
+                        left.cpu_percent * 10.0 + left.memory_bytes as f32 / max_memory * 100.0;
+                    let right_score =
+                        right.cpu_percent * 10.0 + right.memory_bytes as f32 / max_memory * 100.0;
+                    right_score
+                        .partial_cmp(&left_score)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                });
+            }
+        }
+        displayed_processes.truncate(4);
+        let no_processes = displayed_processes.is_empty();
 
         v_flex()
             .gap_3()
@@ -2899,69 +2929,148 @@ impl Ashell {
                         h_flex()
                             .h(px(26.))
                             .items_center()
+                            .p(px(2.))
+                            .gap_1()
                             .bg(cx.theme().muted)
                             .child(
                                 div()
-                                    .w(px(66.))
+                                    .id("process-view-memory")
+                                    .flex_1()
+                                    .h_full()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .cursor_pointer()
+                                    .rounded_sm()
+                                    .bg(if process_view == ProcessView::Memory {
+                                        cx.theme().background
+                                    } else {
+                                        cx.theme().muted
+                                    })
+                                    .text_color(if process_view == ProcessView::Memory {
+                                        cx.theme().foreground
+                                    } else {
+                                        muted_fg
+                                    })
                                     .text_center()
                                     .text_size(rems(0.72))
-                                    .font_weight(FontWeight::MEDIUM)
+                                    .font_weight(if process_view == ProcessView::Memory {
+                                        FontWeight::SEMIBOLD
+                                    } else {
+                                        FontWeight::MEDIUM
+                                    })
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.process_view = ProcessView::Memory;
+                                        cx.notify();
+                                    }))
                                     .child(t!("process_memory")),
                             )
                             .child(
                                 div()
-                                    .w(px(46.))
+                                    .id("process-view-cpu")
+                                    .flex_1()
+                                    .h_full()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .cursor_pointer()
+                                    .rounded_sm()
+                                    .bg(if process_view == ProcessView::Cpu {
+                                        cx.theme().background
+                                    } else {
+                                        cx.theme().muted
+                                    })
+                                    .text_color(if process_view == ProcessView::Cpu {
+                                        cx.theme().foreground
+                                    } else {
+                                        muted_fg
+                                    })
                                     .text_center()
                                     .text_size(rems(0.72))
-                                    .font_weight(FontWeight::MEDIUM)
+                                    .font_weight(if process_view == ProcessView::Cpu {
+                                        FontWeight::SEMIBOLD
+                                    } else {
+                                        FontWeight::MEDIUM
+                                    })
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.process_view = ProcessView::Cpu;
+                                        cx.notify();
+                                    }))
                                     .child(t!("cpu")),
                             )
                             .child(
                                 div()
+                                    .id("process-view-activity")
                                     .flex_1()
+                                    .h_full()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .cursor_pointer()
+                                    .rounded_sm()
+                                    .bg(if process_view == ProcessView::Activity {
+                                        cx.theme().background
+                                    } else {
+                                        cx.theme().muted
+                                    })
+                                    .text_color(if process_view == ProcessView::Activity {
+                                        cx.theme().foreground
+                                    } else {
+                                        muted_fg
+                                    })
                                     .text_center()
                                     .text_size(rems(0.72))
-                                    .font_weight(FontWeight::MEDIUM)
+                                    .font_weight(if process_view == ProcessView::Activity {
+                                        FontWeight::SEMIBOLD
+                                    } else {
+                                        FontWeight::MEDIUM
+                                    })
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.process_view = ProcessView::Activity;
+                                        cx.notify();
+                                    }))
                                     .child(t!("process_command")),
                             ),
                     )
-                    .children(
-                        self.system
-                            .processes
-                            .iter()
-                            .enumerate()
-                            .map(|(index, process)| {
-                                h_flex()
-                                    .h(px(25.))
-                                    .items_center()
-                                    .when(index % 2 == 1, |this| {
-                                        this.bg(cx.theme().muted.opacity(0.45))
-                                    })
-                                    .child(
-                                        div()
-                                            .w(px(66.))
-                                            .text_center()
-                                            .text_size(rems(0.7))
-                                            .child(format_bytes(process.memory_bytes)),
-                                    )
-                                    .child(
-                                        div()
-                                            .w(px(46.))
-                                            .text_center()
-                                            .text_size(rems(0.7))
-                                            .child(format!("{:.1}", process.cpu_percent)),
-                                    )
-                                    .child(
-                                        div()
-                                            .flex_1()
-                                            .min_w(px(0.))
-                                            .px_1()
-                                            .text_size(rems(0.7))
-                                            .child(process.command.clone()),
-                                    )
-                            }),
-                    )
-                    .when(self.system.processes.is_empty(), |this| {
+                    .children(displayed_processes.into_iter().enumerate().map(
+                        |(index, process)| {
+                            h_flex()
+                                .h(px(25.))
+                                .items_center()
+                                .when(index % 2 == 1, |this| {
+                                    this.bg(cx.theme().muted.opacity(0.45))
+                                })
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w(px(0.))
+                                        .text_center()
+                                        .text_size(rems(0.7))
+                                        .child(format_bytes(process.memory_bytes)),
+                                )
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w(px(0.))
+                                        .text_center()
+                                        .text_size(rems(0.7))
+                                        .child(format!("{:.1}", process.cpu_percent)),
+                                )
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w(px(0.))
+                                        .px_1()
+                                        .overflow_hidden()
+                                        .whitespace_nowrap()
+                                        .text_ellipsis()
+                                        .text_center()
+                                        .text_size(rems(0.7))
+                                        .child(process.command),
+                                )
+                        },
+                    ))
+                    .when(no_processes, |this| {
                         this.child(
                             div()
                                 .h(px(30.))

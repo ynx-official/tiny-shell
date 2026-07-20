@@ -411,6 +411,14 @@ pub(crate) enum HomePage {
     Settings,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum ProcessView {
+    #[default]
+    Memory,
+    Cpu,
+    Activity,
+}
+
 pub(crate) struct Ashell {
     pub(crate) focus_handle: FocusHandle,
     pub(crate) selector_focus_handle: FocusHandle,
@@ -545,6 +553,7 @@ pub(crate) struct Ashell {
     /// Whether workspace keybindings are currently suspended (during settings)
     pub(crate) keybinds_suspended: bool,
     pub(crate) system: SystemSnapshot,
+    pub(crate) process_view: ProcessView,
     /// Remote monitoring data is isolated per SSH terminal. It must never be
     /// replaced with a snapshot from the machine running Ashell.
     pub(crate) remote_system_snapshots: HashMap<String, SystemSnapshot>,
@@ -1001,6 +1010,7 @@ impl Ashell {
             keybind_error: None,
             keybinds_suspended: false,
             system,
+            process_view: ProcessView::default(),
             remote_system_snapshots: HashMap::new(),
             cpu_history: Vec::with_capacity(20),
             net_rx_history: Vec::with_capacity(20),

@@ -135,7 +135,7 @@ impl SystemSampler {
             })
             .collect::<Vec<_>>();
         processes.sort_by(|left, right| right.memory_bytes.cmp(&left.memory_bytes));
-        processes.truncate(4);
+        processes.truncate(64);
 
         SystemSnapshot {
             cpu_percent,
@@ -241,7 +241,8 @@ pub fn remote_snapshot_from_kv(raw: &str) -> Result<SystemSnapshot> {
         }
 
         if let Some(rest) = line.strip_prefix("PROCESS=") {
-            let mut parts = rest.splitn(3, '\t');
+            let mut parts = rest.splitn(4, '\t');
+            let _pid = parts.next();
             processes.push(ProcessSample {
                 memory_bytes: parts.next().unwrap_or("0").parse().unwrap_or_default(),
                 cpu_percent: parts.next().unwrap_or("0").parse().unwrap_or_default(),
