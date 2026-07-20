@@ -395,6 +395,8 @@ pub(crate) enum DialogKind {
     NewSsh,
     ManagedKeySelector,
     ManagedKeyImport,
+    ConnectionGroup,
+    ConnectionGroupMove,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -410,6 +412,7 @@ pub(crate) struct Ashell {
     pub(crate) selector_focus_handle: FocusHandle,
     pub(crate) host_input: Entity<InputState>,
     pub(crate) session_name_input: Entity<InputState>,
+    pub(crate) connection_group_input: Entity<InputState>,
     pub(crate) port_input: Entity<InputState>,
     pub(crate) user_input: Entity<InputState>,
     pub(crate) password_input: Entity<InputState>,
@@ -448,6 +451,10 @@ pub(crate) struct Ashell {
     pub(crate) ssh_config_entries: Vec<SshConfigEntry>,
     pub(crate) ssh_config_selected: Option<usize>,
     pub(crate) editing_session_id: Option<String>,
+    pub(crate) editing_connection_group: Option<String>,
+    pub(crate) connection_group_parent: Option<String>,
+    pub(crate) moving_connection_group: Option<String>,
+    pub(crate) session_group_selection: Option<String>,
     /// Managed SSH keys cache (mirrors ConfigStore for UI rendering).
     pub(crate) managed_keys: Vec<ManagedKey>,
     /// Selected managed key id in the SSH connection form.
@@ -472,6 +479,7 @@ pub(crate) struct Ashell {
     pub(crate) tab_groups: Vec<TabGroup>,
     pub(crate) active_group: Option<String>,
     pub(crate) home_page: HomePage,
+    pub(crate) connection_group_filter: Option<String>,
     pub(crate) selector_selection: usize,
     pub(crate) workspace_panels: Entity<ResizableState>,
     pub(crate) body_panels: Entity<ResizableState>,
@@ -483,6 +491,7 @@ pub(crate) struct Ashell {
     pub(crate) selector_scroll_handle: gpui::ScrollHandle,
     pub(crate) saved_scroll_handle: gpui::ScrollHandle,
     pub(crate) connection_scroll_handle: gpui::ScrollHandle,
+    pub(crate) group_picker_scroll_handle: gpui::ScrollHandle,
     pub(crate) connection_progress: Option<ConnectionProgress>,
     pub(crate) pending_sftp_path_sync: Option<String>,
     pub(crate) sftp_context_menu: Option<SftpContextMenuState>,
@@ -630,6 +639,8 @@ impl Ashell {
         let host_input = cx.new(|cx| InputState::new(window, cx).placeholder(t!("host")));
         let session_name_input =
             cx.new(|cx| InputState::new(window, cx).placeholder("name (optional)"));
+        let connection_group_input =
+            cx.new(|cx| InputState::new(window, cx).placeholder(t!("connection_group_name")));
         let port_input = cx.new(|cx| InputState::new(window, cx).default_value("22"));
         let user_input = cx.new(|cx| InputState::new(window, cx).default_value("root"));
         let password_input = cx.new(|cx| {
@@ -761,6 +772,7 @@ impl Ashell {
         let _subscriptions = vec![
             cx.subscribe_in(&host_input, window, Self::on_input_event),
             cx.subscribe_in(&session_name_input, window, Self::on_input_event),
+            cx.subscribe_in(&connection_group_input, window, Self::on_input_event),
             cx.subscribe_in(&port_input, window, Self::on_input_event),
             cx.subscribe_in(&user_input, window, Self::on_input_event),
             cx.subscribe_in(&password_input, window, Self::on_input_event),
@@ -842,6 +854,7 @@ impl Ashell {
             selector_focus_handle: cx.focus_handle(),
             host_input,
             session_name_input,
+            connection_group_input,
             port_input,
             user_input,
             password_input,
@@ -880,6 +893,10 @@ impl Ashell {
             ssh_config_entries: crate::session::ssh_config::parse_ssh_config().unwrap_or_default(),
             ssh_config_selected: None,
             editing_session_id: None,
+            editing_connection_group: None,
+            connection_group_parent: None,
+            moving_connection_group: None,
+            session_group_selection: None,
             managed_keys: config.managed_keys().to_vec(),
             managed_key_selected: None,
             using_custom_key_path: false,
@@ -901,6 +918,7 @@ impl Ashell {
             tab_groups: Vec::new(),
             active_group: None,
             home_page: HomePage::default(),
+            connection_group_filter: None,
             pane_root: PaneLayout::Single(String::new()),
             focused_pane_path: Vec::new(),
             terminal_panel_bounds: None,
@@ -915,6 +933,7 @@ impl Ashell {
             selector_scroll_handle: gpui::ScrollHandle::new(),
             saved_scroll_handle: gpui::ScrollHandle::new(),
             connection_scroll_handle: gpui::ScrollHandle::new(),
+            group_picker_scroll_handle: gpui::ScrollHandle::new(),
             connection_progress: None,
             pending_sftp_path_sync: Some("/".into()),
             sftp_context_menu: None,

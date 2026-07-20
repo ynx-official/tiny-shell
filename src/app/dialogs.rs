@@ -4,7 +4,7 @@ use gpui::{
     prelude::FluentBuilder as _, px, rems,
 };
 use gpui_component::{
-    ActiveTheme as _, Disableable as _, IconName, Sizable as _, WindowExt as _,
+    ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, WindowExt as _,
     button::{Button, ButtonVariants as _},
     dialog::Dialog,
     h_flex,
@@ -23,6 +23,278 @@ use crate::{
 };
 
 impl Ashell {
+    pub(crate) fn show_move_connection_group_dialog(
+        &mut self,
+        group: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.active_dialog.is_some() {
+            return;
+        }
+        self.moving_connection_group = Some(group.clone());
+        self.active_dialog = Some(crate::app::DialogKind::ConnectionGroupMove);
+        let candidates: Vec<String> = self
+            .config
+            .connection_groups()
+            .iter()
+            .filter(|candidate| {
+                candidate.as_str() != group && !candidate.starts_with(&format!("{group}/"))
+            })
+            .cloned()
+            .collect();
+        let view = cx.entity();
+        let scroll_handle = self.group_picker_scroll_handle.clone();
+        window.open_dialog(cx, move |dialog: Dialog, _window, _| {
+            dialog
+                .title(t!("connection_group_move_dialog_title").to_string())
+                .w(px(440.))
+                .h(px(500.))
+                .overlay_closable(true)
+                .on_close({
+                    let view = view.clone();
+                    move |_, _, cx| {
+                        view.update(cx, |this, cx| {
+                            this.active_dialog = None;
+                            this.moving_connection_group = None;
+                            cx.notify();
+                        });
+                    }
+                })
+                .content({
+                    let view = view.clone();
+                    let scroll_handle = scroll_handle.clone();
+                    let group = group.clone();
+                    let candidates = candidates.clone();
+                    move |content, window, cx| {
+                        let group = group.clone();
+                        let candidates = candidates.clone();
+                        let source_label = group.rsplit('/').next().unwrap_or(&group).to_string();
+                        content.child(
+                            v_flex()
+                                .size_full()
+                                .gap_3()
+                                .child(
+                                    div()
+                                        .text_size(rems(0.917))
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child(format!("{}: {}", t!("connection_group_move_source"), source_label)),
+                                )
+                                .child(
+                                    div()
+                                        .relative()
+                                        .flex_1()
+                                        .min_h(px(0.))
+                                        .rounded_md()
+                                        .border_1()
+                                        .border_color(cx.theme().border)
+                                        .child(
+                                            v_flex()
+                                                .id("connection-group-picker-scroll")
+                                                .size_full()
+                                                .track_scroll(&scroll_handle)
+                                                .overflow_y_scroll()
+                                                .p_2()
+                                                .gap_1()
+                                                .child(
+                                                    div()
+                                                        .id("connection-group-picker-root")
+                                                        .w_full()
+                                                        .cursor_pointer()
+                                                        .rounded_md()
+                                                        .hover(|this| this.bg(cx.theme().secondary))
+                                                        .on_click(window.listener_for(&view, {
+                                                            let group = group.clone();
+                                                            move |this, _, window, cx| {
+                                                                this.config.move_connection_group(&group, None);
+                                                                let _ = this.config.save();
+                                                                this.active_dialog = None;
+                                                                this.moving_connection_group = None;
+                                                                window.close_dialog(cx);
+                                                                cx.notify();
+                                                            }
+                                                        }))
+                                                        .child(
+                                                            h_flex()
+                                                                .items_center()
+                                                                .gap_2()
+                                                                .p_2()
+                                                                .child(Icon::new(IconName::Folder).with_size(gpui_component::Size::Small))
+                                                                .child(t!("connection_group_move_root")),
+                                                        ),
+                                                )
+                                                .children(candidates.iter().enumerate().map(|(ix, candidate)| {
+                                                    let target = candidate.clone();
+                                                    let source = group.clone();
+                                                    let depth = candidate.matches('/').count();
+                                                    let label = candidate.rsplit('/').next().unwrap_or(candidate).to_string();
+                                                    div()
+                                                        .id(("connection-group-picker", ix))
+                                                        .w_full()
+                                                        .cursor_pointer()
+                                                        .rounded_md()
+                                                        .hover(|this| this.bg(cx.theme().secondary))
+                                                        .on_click(window.listener_for(&view, move |this, _, window, cx| {
+                                                            this.config.move_connection_group(&source, Some(&target));
+                                                            let _ = this.config.save();
+                                                            this.active_dialog = None;
+                                                            this.moving_connection_group = None;
+                                                            window.close_dialog(cx);
+                                                            cx.notify();
+                                                        }))
+                                                        .child(
+                                                            h_flex()
+                                                                .items_center()
+                                                                .gap_2()
+                                                                .p_2()
+                                                                .pl(px(8. + depth as f32 * 16.))
+                                                                .child(Icon::new(IconName::Folder).with_size(gpui_component::Size::Small))
+                                                                .child(label),
+                                                        )
+                                                })),
+                                        )
+                                        .child(
+                                            div()
+                                                .absolute()
+                                                .top_0()
+                                                .right_0()
+                                                .bottom_0()
+                                                .w(px(8.))
+                                                .child(
+                                                    Scrollbar::vertical(&scroll_handle)
+                                                        .scrollbar_show(ScrollbarShow::Scrolling),
+                                                ),
+                                        ),
+                                ),
+                        )
+                    }
+                })
+        });
+    }
+
+    pub(crate) fn show_connection_group_dialog(
+        &mut self,
+        group: Option<String>,
+        parent: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.active_dialog.is_some() {
+            return;
+        }
+        self.editing_connection_group = group.clone();
+        self.connection_group_parent = group
+            .as_deref()
+            .and_then(|path| path.rsplit_once('/').map(|(parent, _)| parent.to_string()))
+            .or(parent);
+        Self::set_input_value(
+            &self.connection_group_input,
+            group
+                .as_deref()
+                .and_then(|path| path.rsplit('/').next())
+                .unwrap_or_default(),
+            window,
+            cx,
+        );
+        self.active_dialog = Some(crate::app::DialogKind::ConnectionGroup);
+
+        let view = cx.entity();
+        let group_input = self.connection_group_input.clone();
+        window.open_dialog(cx, move |dialog: Dialog, _window, _| {
+            dialog
+                .title(t!("connection_group_dialog_title").to_string())
+                .w(px(380.))
+                .h(px(180.))
+                .overlay_closable(true)
+                .on_close({
+                    let view = view.clone();
+                    move |_, _, cx| {
+                        view.update(cx, |this, cx| {
+                            this.active_dialog = None;
+                            this.editing_connection_group = None;
+                            this.connection_group_parent = None;
+                            cx.notify();
+                        });
+                    }
+                })
+                .content({
+                    let view = view.clone();
+                    let group_input = group_input.clone();
+                    move |content, window, cx| {
+                        content.child(
+                            v_flex()
+                                .gap_3()
+                                .child(
+                                    div()
+                                        .text_size(rems(0.917))
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child(t!("connection_group_name")),
+                                )
+                                .child(Input::new(&group_input).w_full())
+                                .child(
+                                    h_flex()
+                                        .justify_end()
+                                        .gap_2()
+                                        .child(
+                                            Button::new("connection-group-cancel")
+                                                .secondary()
+                                                .label(t!("cancel").to_string())
+                                                .on_click(window.listener_for(&view, |this, _, window, cx| {
+                                                    this.active_dialog = None;
+                                                    this.editing_connection_group = None;
+                                                    this.connection_group_parent = None;
+                                                    window.close_dialog(cx);
+                                                    cx.notify();
+                                                })),
+                                        )
+                                        .child(
+                                            Button::new("connection-group-save")
+                                                .primary()
+                                                .label(t!("save").to_string())
+                                                .on_click(window.listener_for(&view, {
+                                                    let group_input = group_input.clone();
+                                                    move |this, _, window, cx| {
+                                                        let name = group_input.read(cx).value().trim().to_string();
+                                                        if name.is_empty() {
+                                                            return;
+                                                        }
+                                                        if let Some(old_name) = this.editing_connection_group.clone() {
+                                                            let full_name = this
+                                                                .connection_group_parent
+                                                                .as_deref()
+                                                                .map(|parent| format!("{parent}/{name}"))
+                                                                .unwrap_or(name.clone());
+                                                            this.config.rename_connection_group(&old_name, full_name.clone());
+                                                            if this.connection_group_filter.as_deref() == Some(old_name.as_str()) {
+                                                                this.connection_group_filter = Some(full_name);
+                                                            }
+                                                        } else {
+                                                            let full_name = this
+                                                                .connection_group_parent
+                                                                .as_deref()
+                                                                .map(|parent| format!("{parent}/{name}"))
+                                                                .unwrap_or(name.clone());
+                                                            this.config.add_connection_group(full_name.clone());
+                                                            this.connection_group_filter = Some(full_name);
+                                                        }
+                                                        if let Err(err) = this.config.save() {
+                                                            tracing::warn!("failed to save connection group: {err:#}");
+                                                        }
+                                                        this.active_dialog = None;
+                                                        this.editing_connection_group = None;
+                                                        this.connection_group_parent = None;
+                                                        window.close_dialog(cx);
+                                                        cx.notify();
+                                                    }
+                                                })),
+                                        ),
+                                ),
+                        )
+                    }
+                })
+        });
+    }
+
     pub(crate) fn show_ssh_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.active_dialog.is_some() {
             return;
@@ -84,6 +356,11 @@ impl Ashell {
                         let key_auth_incomplete = is_key
                             && !view.read(cx).using_custom_key_path
                             && view.read(cx).managed_key_selected.is_none();
+                        let connection_groups = view.read(cx).config.connection_groups().to_vec();
+                        let selected_group = view.read(cx).session_group_selection.clone();
+                        let group_label = selected_group
+                            .clone()
+                            .unwrap_or_else(|| t!("connection_group_ungrouped").to_string());
                         content.child(
                             v_flex()
                                 .gap_3()
@@ -144,7 +421,40 @@ impl Ashell {
                                                 )
                                                 .child(
                                                     Input::new(&user_input).flex_1().tab_index(3),
-                                                ),
+                                        ),
+                                        )
+                                        .child(
+                                            Button::new("ssh-session-group")
+                                                .secondary()
+                                                .w_full()
+                                                .label(format!("{}: {}", t!("connection_group"), group_label))
+                                                .dropdown_menu_with_anchor(Anchor::BottomLeft, {
+                                                    let view = view.clone();
+                                                    move |mut menu, window, cx| {
+                                                        let selected = view.read(cx).session_group_selection.clone();
+                                                        menu = menu.item(
+                                                            PopupMenuItem::new(t!("connection_group_ungrouped").to_string())
+                                                                .checked(selected.is_none())
+                                                                .on_click(window.listener_for(&view, |this, _, _, cx| {
+                                                                    this.session_group_selection = None;
+                                                                    cx.notify();
+                                                                })),
+                                                        );
+                                                        for group in connection_groups.clone() {
+                                                            let group_name = group.clone();
+                                                            let checked = selected.as_deref() == Some(group.as_str());
+                                                            menu = menu.item(
+                                                                PopupMenuItem::new(group)
+                                                                    .checked(checked)
+                                                                    .on_click(window.listener_for(&view, move |this, _, _, cx| {
+                                                                        this.session_group_selection = Some(group_name.clone());
+                                                                        cx.notify();
+                                                                    })),
+                                                            );
+                                                        }
+                                                        menu
+                                                    }
+                                                }),
                                         )
                                 })
                                 .when(is_password, |this| {

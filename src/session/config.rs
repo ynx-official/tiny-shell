@@ -73,6 +73,9 @@ pub struct Session {
     pub managed_key_id: Option<String>,
     #[serde(default)]
     pub last_used: Option<String>,
+    /// Optional user-created folder in the connection manager.
+    #[serde(default)]
+    pub group: Option<String>,
     #[serde(default = "default_global_proxy_type")]
     pub proxy_type: String, // "none", "socks5", "http"
     #[serde(default)]
@@ -101,6 +104,7 @@ impl Session {
             passphrase: String::new(),
             managed_key_id: None,
             last_used: None,
+            group: None,
             proxy_type: "none".to_string(),
             proxy_host: String::new(),
             proxy_port: None,
@@ -131,6 +135,7 @@ impl Session {
             passphrase,
             managed_key_id: None,
             last_used: None,
+            group: None,
             proxy_type: "none".to_string(),
             proxy_host: String::new(),
             proxy_port: None,
@@ -211,6 +216,8 @@ pub struct ConfigFile {
     pub cursor_style: CursorStyle,
     #[serde(default)]
     pub sessions: Vec<Session>,
+    #[serde(default)]
+    pub connection_groups: Vec<String>,
     #[serde(default)]
     pub managed_keys: Vec<ManagedKey>,
     #[serde(default)]
@@ -332,6 +339,7 @@ impl Default for ConfigFile {
             title_bar_style: TitleBarStyle::default(),
             cursor_style: CursorStyle::default(),
             sessions: Vec::new(),
+            connection_groups: Vec::new(),
             managed_keys: Vec::new(),
             window_bounds: None,
             workspace_panels: None,
@@ -452,6 +460,93 @@ impl ConfigStore {
 
     pub fn sessions(&self) -> &[Session] {
         &self.cache.sessions
+    }
+
+    pub fn connection_groups(&self) -> &[String] {
+        &self.cache.connection_groups
+    }
+
+    pub fn add_connection_group(&mut self, name: String) {
+        if !name.trim().is_empty()
+            && !self
+                .cache
+                .connection_groups
+                .iter()
+                .any(|group| group == &name)
+        {
+            self.cache.connection_groups.push(name);
+            self.cache.connection_groups.sort();
+        }
+    }
+
+    pub fn rename_connection_group(&mut self, old_name: &str, new_name: String) {
+        if old_name == new_name || new_name.trim().is_empty() {
+            return;
+        }
+        if self
+            .cache
+            .connection_groups
+            .iter()
+            .any(|group| group == &new_name)
+        {
+            return;
+        }
+        let old_prefix = format!("{old_name}/");
+        let new_prefix = format!("{new_name}/");
+        for group in &mut self.cache.connection_groups {
+            if group == old_name {
+                *group = new_name.clone();
+            } else if let Some(suffix) = group.strip_prefix(&old_prefix) {
+                *group = format!("{new_prefix}{suffix}");
+            }
+        }
+        for session in &mut self.cache.sessions {
+            if session.group.as_deref() == Some(old_name) {
+                session.group = Some(new_name.clone());
+            } else if let Some(suffix) = session
+                .group
+                .as_deref()
+                .and_then(|group| group.strip_prefix(&old_prefix))
+            {
+                session.group = Some(format!("{new_prefix}{suffix}"));
+            }
+        }
+        self.cache.connection_groups.sort();
+    }
+
+    pub fn remove_connection_group(&mut self, name: &str) {
+        let prefix = format!("{name}/");
+        self.cache
+            .connection_groups
+            .retain(|group| group != name && !group.starts_with(&prefix));
+        for session in &mut self.cache.sessions {
+            if session
+                .group
+                .as_deref()
+                .is_some_and(|group| group == name || group.starts_with(&prefix))
+            {
+                session.group = None;
+            }
+        }
+    }
+
+    pub fn move_connection_group(&mut self, name: &str, new_parent: Option<&str>) {
+        let leaf = name.rsplit('/').next().unwrap_or(name);
+        let destination = new_parent
+            .filter(|parent| !parent.is_empty())
+            .map(|parent| format!("{parent}/{leaf}"))
+            .unwrap_or_else(|| leaf.to_string());
+        if destination == name
+            || destination.starts_with(&format!("{name}/"))
+            || self
+                .cache
+                .connection_groups
+                .iter()
+                .any(|group| group == &destination)
+        {
+            return;
+        }
+        self.rename_connection_group(name, destination);
     }
 
     pub fn replace_sessions(&mut self, sessions: Vec<Session>) {

@@ -115,6 +115,10 @@ impl Ashell {
             .as_deref()
             .and_then(|id| self.config.get(id))
             .and_then(|session| session.last_used.clone());
+        let existing_group = existing_id
+            .as_deref()
+            .and_then(|id| self.config.get(id))
+            .and_then(|session| session.group.clone());
 
         let mut session = match self.ssh_auth_method {
             AuthMethod::Password => Session::password(host, port, user, password),
@@ -150,6 +154,7 @@ impl Ashell {
             session.id = id;
         }
         session.last_used = existing_last_used;
+        session.group = self.session_group_selection.clone().or(existing_group);
         session.proxy_type = self.ssh_proxy_type.clone();
         session.proxy_host = self.proxy_host_input.read(cx).value().trim().to_string();
         session.proxy_port = self
@@ -168,6 +173,7 @@ impl Ashell {
 
         self.open_ssh_session(session, cx);
         self.editing_session_id = None;
+        self.session_group_selection = self.connection_group_filter.clone();
         self.active_dialog = None;
         window.close_dialog(cx);
         cx.notify();
@@ -215,6 +221,7 @@ impl Ashell {
         cx: &mut Context<Self>,
     ) {
         self.editing_session_id = Some(session.id.clone());
+        self.session_group_selection = session.group.clone();
         self.ssh_auth_method = session.auth;
         // Restore managed key selection or custom path mode.
         self.managed_key_selected = session.managed_key_id.clone();

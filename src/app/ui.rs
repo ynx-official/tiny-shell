@@ -316,17 +316,45 @@ impl Ashell {
     }
 
     fn render_connection_manager_page(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let mut sessions = self.config.sessions().to_vec();
+        let all_sessions = self.config.sessions().to_vec();
+        let selected_group = self.connection_group_filter.clone();
+        let mut groups = self.config.connection_groups().to_vec();
+        for session in &all_sessions {
+            if let Some(group) = &session.group
+                && !groups.iter().any(|candidate| candidate == group)
+            {
+                groups.push(group.clone());
+            }
+        }
+        groups.sort();
+        groups.dedup();
+        let groups_for_rows = groups.clone();
+
+        let mut sessions: Vec<_> = all_sessions
+            .iter()
+            .filter(|session| {
+                selected_group.as_deref().is_none_or(|group| {
+                    let prefix = format!("{group}/");
+                    session.group.as_deref().is_some_and(|session_group| {
+                        session_group == group || session_group.starts_with(&prefix)
+                    })
+                })
+            })
+            .cloned()
+            .collect();
         sessions.sort_by(|left, right| right.last_used.cmp(&left.last_used));
         let has_sessions = !sessions.is_empty();
 
         v_flex()
             .size_full()
-            .p_6()
-            .gap_5()
+            .p_4()
+            .gap_3()
             .child(
                 h_flex()
+                    .flex_none()
+                    .h(px(60.))
                     .items_center()
+                    .gap_2()
                     .child(
                         v_flex()
                             .gap_1()
@@ -345,6 +373,15 @@ impl Ashell {
                     )
                     .child(div().flex_1())
                     .child(
+                        Button::new("connection-manager-new-group")
+                            .secondary()
+                            .icon(IconName::FolderOpen)
+                            .label(t!("connection_group_new").to_string())
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.show_connection_group_dialog(None, None, window, cx);
+                            })),
+                    )
+                    .child(
                         Button::new("connection-manager-new")
                             .primary()
                             .icon(IconName::Plus)
@@ -355,152 +392,404 @@ impl Ashell {
                     ),
             )
             .child(
-                v_flex()
+                h_flex()
                     .flex_1()
                     .min_h(px(0.))
+                    .h_full()
+                    .items_stretch()
+                    .gap_0()
                     .rounded_md()
                     .border_1()
                     .border_color(cx.theme().border)
                     .overflow_hidden()
                     .child(
-                        h_flex()
+                        v_flex()
+                            .h_full()
+                            .w(px(210.))
                             .flex_none()
-                            .items_center()
-                            .h(px(38.))
-                            .px_4()
-                            .gap_3()
-                            .bg(cx.theme().muted)
-                            .border_b_1()
+                            .p_2()
+                            .gap_1()
+                            .border_r_1()
                             .border_color(cx.theme().border)
-                            .child(div().flex_1().text_size(rems(0.833)).child(t!("session")))
-                            .child(div().w(px(150.)).text_size(rems(0.833)).child(t!("host")))
+                            .bg(cx.theme().sidebar)
                             .child(
                                 div()
-                                    .w(px(130.))
-                                    .text_size(rems(0.833))
-                                    .child(t!("overview_recent")),
+                                    .id("connection-group-all")
+                                    .w_full()
+                                    .cursor_pointer()
+                                    .rounded_md()
+                                    .bg(if selected_group.is_none() {
+                                        cx.theme().tab_active
+                                    } else {
+                                        cx.theme().sidebar
+                                    })
+                                    .hover(|this| this.bg(cx.theme().secondary))
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.connection_group_filter = None;
+                                        cx.notify();
+                                    }))
+                                    .child(
+                                        h_flex()
+                                            .items_center()
+                                            .gap_2()
+                                            .p_3()
+                                            .child(
+                                                Icon::new(IconName::Network).with_size(Size::Small),
+                                            )
+                                            .child(div().flex_1().child(t!("connection_group_all")))
+                                            .child(
+                                                div()
+                                                    .text_size(rems(0.8))
+                                                    .text_color(cx.theme().muted_foreground)
+                                        .child(all_sessions.len().to_string()),
+                                            ),
+                                    ),
                             )
-                            .child(
+                            .children(groups.into_iter().enumerate().map(|(ix, group)| {
+                                let group_name = group.clone();
+                                let group_prefix = format!("{group}/");
+                                let count = all_sessions
+                                    .iter()
+                                    .filter(|session| {
+                                        session.group.as_deref().is_some_and(|session_group| {
+                                            session_group == group || session_group.starts_with(&group_prefix)
+                                        })
+                                    })
+                                    .count();
+                                let selected = selected_group.as_deref() == Some(group.as_str());
+                                let depth = group.matches('/').count();
+                                let group_label = group.rsplit('/').next().unwrap_or(&group).to_string();
                                 div()
-                                    .w(px(180.))
-                                    .text_size(rems(0.833))
-                                    .child(t!("settings")),
-                            ),
+                                    .id(("connection-group", ix))
+                                    .w_full()
+                                    .cursor_pointer()
+                                    .rounded_md()
+                                    .bg(if selected {
+                                        cx.theme().tab_active
+                                    } else {
+                                        cx.theme().sidebar
+                                    })
+                                    .hover(|this| this.bg(cx.theme().secondary))
+                                    .on_click(cx.listener({
+                                        let group_name = group_name.clone();
+                                        move |this, _, _, cx| {
+                                            this.connection_group_filter = Some(group_name.clone());
+                                            cx.notify();
+                                        }
+                                    }))
+                                    .context_menu({
+                                        let view = cx.entity();
+                                        let group_name = group_name.clone();
+                                        move |mut menu, window, _| {
+                                            menu = menu.item(
+                                                PopupMenuItem::new(
+                                                    t!("connection_group_rename").to_string(),
+                                                )
+                                                .on_click(window.listener_for(&view, {
+                                                    let group_name = group_name.clone();
+                                                    move |this, _, window, cx| {
+                                                        this.show_connection_group_dialog(
+                                                            Some(group_name.clone()),
+                                                            None,
+                                                            window,
+                                                            cx,
+                                                        );
+                                                    }
+                                                })),
+                                            )
+                                            .item(
+                                                PopupMenuItem::new(t!("connection_group_new_child").to_string())
+                                                    .on_click(window.listener_for(&view, {
+                                                        let group_name = group_name.clone();
+                                                        move |this, _, window, cx| {
+                                                            this.show_connection_group_dialog(None, Some(group_name.clone()), window, cx);
+                                                        }
+                                                    })),
+                                            )
+                                            .item(
+                                                PopupMenuItem::new(t!("connection_group_delete").to_string())
+                                                    .on_click(window.listener_for(&view, {
+                                                        let group_name = group_name.clone();
+                                                        move |this, _, _, cx| {
+                                                            this.config.remove_connection_group(&group_name);
+                                                            if let Err(err) = this.config.save() {
+                                                                tracing::warn!("failed to remove connection group: {err:#}");
+                                                            }
+                                                            if this.connection_group_filter.as_deref() == Some(group_name.as_str()) {
+                                                                this.connection_group_filter = None;
+                                                            }
+                                                            cx.notify();
+                                                        }
+                                                    })),
+                                            )
+                                            .item(
+                                                PopupMenuItem::new(t!("connection_group_move_to").to_string())
+                                                    .on_click(window.listener_for(&view, {
+                                                        let group_name = group_name.clone();
+                                                        move |this, _, window, cx| {
+                                                            this.show_move_connection_group_dialog(group_name.clone(), window, cx);
+                                                        }
+                                                    })),
+                                            )
+                                            ;
+                                            menu
+                                        }
+                                    })
+                                    .child(
+                                        h_flex()
+                                            .items_center()
+                                            .gap_2()
+                                            .p_3()
+                                            .pl(px(12. + depth as f32 * 14.))
+                                            .child(
+                                                Icon::new(IconName::Folder).with_size(Size::Small),
+                                            )
+                                            .child(div().flex_1().child(group_label))
+                                            .child(
+                                                div()
+                                                    .text_size(rems(0.8))
+                                                    .text_color(cx.theme().muted_foreground)
+                                                    .child(count.to_string()),
+                                            ),
+                                    )
+                            })),
                     )
                     .child(
                         v_flex()
                             .flex_1()
-                            .min_h(px(0.))
-                            .overflow_y_scrollbar()
-                            .children(sessions.into_iter().enumerate().map(|(ix, session)| {
-                                let connect_session = session.clone();
-                                let edit_id = session.id.clone();
-                                let delete_id = session.id.clone();
-                                let host = format!("{}:{}", session.host, session.port);
-                                let recent = Self::recent_usage_label(session.last_used.as_deref());
+                            .h_full()
+                            .min_w(px(0.))
+                            .bg(cx.theme().background)
+                            .overflow_hidden()
+                            .child(
                                 h_flex()
-                                    .id(("connection-manager-row", ix))
                                     .flex_none()
                                     .items_center()
-                                    .min_h(px(58.))
+                                    .h(px(38.))
                                     .px_4()
                                     .gap_3()
+                                    .bg(cx.theme().muted)
                                     .border_b_1()
                                     .border_color(cx.theme().border)
-                                    .hover(|this| this.bg(cx.theme().muted))
                                     .child(
-                                        h_flex()
-                                            .flex_1()
-                                            .items_center()
-                                            .gap_2()
-                                            .child(
-                                                Icon::new(IconName::Network).with_size(Size::Small),
-                                            )
-                                            .child(
-                                                v_flex()
-                                                    .gap_1()
-                                                    .child(
-                                                        div()
-                                                            .font_weight(FontWeight::MEDIUM)
-                                                            .child(session.name),
-                                                    )
-                                                    .child(
-                                                        div()
-                                                            .text_size(rems(0.8))
-                                                            .text_color(cx.theme().muted_foreground)
-                                                            .child(session.user),
-                                                    ),
-                                            ),
+                                        div().flex_1().text_size(rems(0.833)).child(t!("session")),
                                     )
-                                    .child(div().w(px(150.)).text_size(rems(0.833)).child(host))
+                                    .child(
+                                        div().w(px(150.)).text_size(rems(0.833)).child(t!("host")),
+                                    )
                                     .child(
                                         div()
                                             .w(px(130.))
-                                            .text_size(rems(0.8))
-                                            .text_color(cx.theme().muted_foreground)
-                                            .child(recent),
+                                            .text_size(rems(0.833))
+                                            .child(t!("overview_recent")),
                                     )
                                     .child(
-                                        h_flex()
+                                        div()
                                             .w(px(180.))
-                                            .justify_end()
-                                            .gap_1()
-                                            .child(
-                                                Button::new(format!(
-                                                    "connection-manager-connect-{ix}"
-                                                ))
-                                                .small()
-                                                .primary()
-                                                .label(t!("connect").to_string())
-                                                .on_click(cx.listener(move |this, _, _, cx| {
-                                                    this.open_ssh_session(
-                                                        connect_session.clone(),
-                                                        cx,
-                                                    )
-                                                })),
-                                            )
-                                            .child(
-                                                Button::new(format!(
-                                                    "connection-manager-edit-{ix}"
-                                                ))
-                                                .ghost()
-                                                .small()
-                                                .label(t!("edit").to_string())
-                                                .on_click(cx.listener(
-                                                    move |this, _, window, cx| {
-                                                        this.edit_saved_session(
-                                                            edit_id.clone(),
-                                                            window,
-                                                            cx,
+                                            .text_size(rems(0.833))
+                                            .child(t!("overview_actions")),
+                                    ),
+                            )
+                            .child(
+                                v_flex()
+                                    .flex_1()
+                                    .min_h(px(0.))
+                                    .overflow_y_scrollbar()
+                                    .children(sessions.into_iter().enumerate().map(
+                                        |(ix, session)| {
+                                            let connect_session = session.clone();
+                                            let edit_id = session.id.clone();
+                                            let delete_id = session.id.clone();
+                                            let session_id = session.id.clone();
+                                            let groups_for_menu = groups_for_rows.clone();
+                                            let host = format!("{}:{}", session.host, session.port);
+                                            let recent = Self::recent_usage_label(
+                                                session.last_used.as_deref(),
+                                            );
+                                            h_flex()
+                                                .id(("connection-manager-row", ix))
+                                                .flex_none()
+                                                .items_center()
+                                                .min_h(px(58.))
+                                                .px_4()
+                                                .gap_3()
+                                                .border_b_1()
+                                                .border_color(cx.theme().border)
+                                                .hover(|this| this.bg(cx.theme().muted))
+                                                .context_menu({
+                                                    let view = cx.entity();
+                                                    move |mut menu, window, _| {
+                                                        let session_id = session_id.clone();
+                                                        menu = menu.item(
+                                                            PopupMenuItem::new(
+                                                                t!("connection_group_ungrouped")
+                                                                    .to_string(),
+                                                            )
+                                                            .on_click(window.listener_for(&view, {
+                                                                let session_id = session_id.clone();
+                                                                move |this, _, _, cx| {
+                                                                    if let Some(mut session) = this
+                                                                        .config
+                                                                        .get(&session_id)
+                                                                        .cloned()
+                                                                    {
+                                                                        session.group = None;
+                                                                        this.config.upsert(session);
+                                                                        let _ = this.config.save();
+                                                                        cx.notify();
+                                                                    }
+                                                                }
+                                                            })),
+                                                        );
+                                                        for group in &groups_for_menu {
+                                                            let group_name = group.clone();
+                                                            let session_id = session_id.clone();
+                                                            menu = menu.item(
+                                                                PopupMenuItem::new(format!(
+                                                                    "{} {}",
+                                                                    t!("connection_group_move_to"),
+                                                                    group_name
+                                                                ))
+                                                                .on_click(window.listener_for(
+                                                                    &view,
+                                                                    move |this, _, _, cx| {
+                                                                        if let Some(mut session) =
+                                                                            this.config
+                                                                                .get(&session_id)
+                                                                                .cloned()
+                                                                        {
+                                                                            session.group = Some(
+                                                                                group_name.clone(),
+                                                                            );
+                                                                            this.config
+                                                                                .upsert(session);
+                                                                            let _ =
+                                                                                this.config.save();
+                                                                            cx.notify();
+                                                                        }
+                                                                    },
+                                                                )),
+                                                            );
+                                                        }
+                                                        menu
+                                                    }
+                                                })
+                                                .child(
+                                                    h_flex()
+                                                        .flex_1()
+                                                        .items_center()
+                                                        .gap_2()
+                                                        .child(
+                                                            Icon::new(IconName::Network)
+                                                                .with_size(Size::Small),
                                                         )
-                                                    },
-                                                )),
-                                            )
-                                            .child(
-                                                Button::new(format!(
-                                                    "connection-manager-delete-{ix}"
-                                                ))
-                                                .ghost()
-                                                .small()
-                                                .icon(IconName::Delete)
-                                                .on_click(cx.listener(move |this, _, _, cx| {
-                                                    this.remove_saved_session(delete_id.clone(), cx)
-                                                })),
-                                            ),
-                                    )
-                            }))
-                            .when(!has_sessions, |this| {
-                                this.child(
-                                    v_flex()
-                                        .size_full()
-                                        .items_center()
-                                        .justify_center()
-                                        .gap_3()
-                                        .text_color(cx.theme().muted_foreground)
-                                        .child(Icon::new(IconName::Network).with_size(Size::Large))
-                                        .child(t!("overview_no_connections")),
-                                )
-                            }),
+                                                        .child(
+                                                            v_flex()
+                                                                .gap_1()
+                                                                .child(
+                                                                    div()
+                                                                        .font_weight(
+                                                                            FontWeight::MEDIUM,
+                                                                        )
+                                                                        .child(session.name),
+                                                                )
+                                                                .child(
+                                                                    div()
+                                                                        .text_size(rems(0.8))
+                                                                        .text_color(
+                                                                            cx.theme()
+                                                                                .muted_foreground,
+                                                                        )
+                                                                        .child(session.user),
+                                                                ),
+                                                        ),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .w(px(150.))
+                                                        .text_size(rems(0.833))
+                                                        .child(host),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .w(px(130.))
+                                                        .text_size(rems(0.8))
+                                                        .text_color(cx.theme().muted_foreground)
+                                                        .child(recent),
+                                                )
+                                                .child(
+                                                    h_flex()
+                                                        .w(px(180.))
+                                                        .justify_end()
+                                                        .gap_1()
+                                                        .child(
+                                                            Button::new(format!(
+                                                                "connection-manager-connect-{ix}"
+                                                            ))
+                                                            .small()
+                                                            .primary()
+                                                            .label(t!("connect").to_string())
+                                                            .on_click(cx.listener(
+                                                                move |this, _, _, cx| {
+                                                                    this.open_ssh_session(
+                                                                        connect_session.clone(),
+                                                                        cx,
+                                                                    )
+                                                                },
+                                                            )),
+                                                        )
+                                                        .child(
+                                                            Button::new(format!(
+                                                                "connection-manager-edit-{ix}"
+                                                            ))
+                                                            .ghost()
+                                                            .small()
+                                                            .label(t!("edit").to_string())
+                                                            .on_click(cx.listener(
+                                                                move |this, _, window, cx| {
+                                                                    this.edit_saved_session(
+                                                                        edit_id.clone(),
+                                                                        window,
+                                                                        cx,
+                                                                    )
+                                                                },
+                                                            )),
+                                                        )
+                                                        .child(
+                                                            Button::new(format!(
+                                                                "connection-manager-delete-{ix}"
+                                                            ))
+                                                            .ghost()
+                                                            .small()
+                                                            .icon(IconName::Delete)
+                                                            .on_click(cx.listener(
+                                                                move |this, _, _, cx| {
+                                                                    this.remove_saved_session(
+                                                                        delete_id.clone(),
+                                                                        cx,
+                                                                    )
+                                                                },
+                                                            )),
+                                                        ),
+                                                )
+                                        },
+                                    ))
+                                    .when(!has_sessions, |this| {
+                                        this.child(
+                                            v_flex()
+                                                .size_full()
+                                                .items_center()
+                                                .justify_center()
+                                                .gap_3()
+                                                .text_color(cx.theme().muted_foreground)
+                                                .child(
+                                                    Icon::new(IconName::Network)
+                                                        .with_size(Size::Large),
+                                                )
+                                                .child(t!("overview_no_connections")),
+                                        )
+                                    }),
+                            ),
                     ),
             )
     }
@@ -513,10 +802,12 @@ impl Ashell {
 
         v_flex()
             .size_full()
-            .p_6()
-            .gap_5()
+            .p_4()
+            .gap_3()
             .child(
                 h_flex()
+                    .flex_none()
+                    .h(px(60.))
                     .items_center()
                     .child(
                         v_flex()
@@ -548,10 +839,12 @@ impl Ashell {
             .child(
                 v_flex()
                     .flex_1()
+                    .h_full()
                     .min_h(px(0.))
                     .rounded_md()
                     .border_1()
                     .border_color(cx.theme().border)
+                    .bg(cx.theme().background)
                     .overflow_hidden()
                     .child(
                         h_flex()
@@ -580,7 +873,7 @@ impl Ashell {
                                 div()
                                     .w(px(140.))
                                     .text_size(rems(0.833))
-                                    .child(t!("settings")),
+                                    .child(t!("overview_actions")),
                             ),
                     )
                     .child(
@@ -619,7 +912,7 @@ impl Ashell {
                                     .id(("key-manager-row", ix))
                                     .flex_none()
                                     .items_center()
-                                    .min_h(px(52.))
+                                    .min_h(px(58.))
                                     .px_4()
                                     .gap_3()
                                     .border_b_1()
