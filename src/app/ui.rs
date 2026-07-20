@@ -3676,11 +3676,22 @@ impl Ashell {
                         let home_tab = Tab::new()
                             .min_w(px(92.))
                             .child(
-                                div()
+                                h_flex()
+                                    .relative()
+                                    .h_full()
+                                    .items_center()
+                                    .px_3()
                                     .when(home_page_selected, |this| {
-                                        this.font_weight(FontWeight::BOLD)
-                                            .text_color(cx.theme().primary)
-                                            .text_base()
+                                        this.child(
+                                            div()
+                                                .absolute()
+                                                .top_0()
+                                                .left_0()
+                                                .right_0()
+                                                .h(px(2.))
+                                                .bg(cx.theme().primary),
+                                        )
+                                        .font_weight(FontWeight::BOLD)
                                     })
                                     .child(t!("new_tab")),
                             )
@@ -3690,8 +3701,14 @@ impl Ashell {
                                 cx.notify();
                             }));
                         let plus_tab = Tab::new()
-                            .min_w(px(42.))
-                            .child(Icon::new(IconName::Plus).with_size(Size::Small))
+                            .min_w(px(40.))
+                            .child(
+                                h_flex()
+                                    .h_full()
+                                    .items_center()
+                                    .justify_center()
+                                    .child(Icon::new(IconName::Plus).with_size(Size::Small)),
+                            )
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.home_page_open = true;
                                 this.home_page = HomePage::Overview;
@@ -3716,17 +3733,22 @@ impl Ashell {
                                         pane_ids.first().cloned().unwrap_or_default()
                                     };
 
+                                    // Status is independent of selection: grey means the
+                                    // backend is still connecting, green is ready, and red
+                                    // means the connection has failed or disconnected.
                                     let dot_color = pane_ids
                                         .first()
                                         .and_then(|id| self.tabs.iter().find(|t| t.id == *id))
                                         .map(|tab| {
-                                            if tab.connected {
+                                            if tab.disconnected_reason.is_some() {
+                                                cx.theme().danger
+                                            } else if tab.connected {
                                                 cx.theme().success
                                             } else {
-                                                cx.theme().danger
+                                                cx.theme().muted_foreground
                                             }
                                         })
-                                        .unwrap_or(cx.theme().success);
+                                        .unwrap_or(cx.theme().muted_foreground);
                                     let drag_gid = gid.clone();
                                     let context_gid = gid.clone();
                                     let bounds_gid = gid.clone();
@@ -3738,10 +3760,14 @@ impl Ashell {
                                                     .insert(bounds_gid.clone(), bounds);
                                             });
                                         })
-                                        .min_w(px(80.))
-                                        .prefix(div().w(px(5.)).h(px(32.)).bg(dot_color))
+                                        .min_w(px(112.))
                                         .child(
-                                            div()
+                                            h_flex()
+                                                .relative()
+                                                .h_full()
+                                                .items_center()
+                                                .gap_2()
+                                                .px_2()
                                                 .on_mouse_down(
                                                     MouseButton::Left,
                                                     cx.listener(move |this, event: &MouseDownEvent, _, _| {
@@ -3749,11 +3775,25 @@ impl Ashell {
                                                     }),
                                                 )
                                                 .when(ix == selected, |this| {
-                                                    this.font_weight(FontWeight::BOLD)
-                                                        .text_color(cx.theme().primary)
-                                                        .text_base()
+                                                    this.child(
+                                                        div()
+                                                            .absolute()
+                                                            .top_0()
+                                                            .left_0()
+                                                            .right_0()
+                                                            .h(px(2.))
+                                                            .bg(cx.theme().primary),
+                                                    )
+                                                    .font_weight(FontWeight::BOLD)
                                                 })
-                                                .child(label),
+                                                .child(
+                                                    div()
+                                                        .size(px(8.))
+                                                        .flex_none()
+                                                        .rounded_full()
+                                                        .bg(dot_color),
+                                                )
+                                                .child(div().min_w(px(0.)).child(label)),
                                         )
                                         .on_click(cx.listener(move |this, _, window, cx| {
                                             this.activate_group(gid.clone(), window, cx)
@@ -3763,7 +3803,7 @@ impl Ashell {
                                                 .ghost()
                                                 .xsmall()
                                                 .icon(IconName::Close)
-                                                .mr(px(5.))
+                                                .mr(px(4.))
                                                 .on_mouse_down(
                                                     MouseButton::Left,
                                                     |_, window, cx| {
@@ -4191,6 +4231,92 @@ impl Ashell {
                                     }),
                                 ),
                         ),
+                    );
+                }
+
+                // A failed SSH attempt belongs to this terminal pane, not to
+                // the entire application window. Keeping the recovery card
+                // here leaves other tabs, the sidebar, and SFTP usable.
+                if let Some(progress) = this
+                    .connection_progress
+                    .clone()
+                    .filter(|progress| progress.tab_id == *tab_id && progress.failed)
+                {
+                    el = div().size_full().relative().child(el).child(
+                        div()
+                            .absolute()
+                            .top_0()
+                            .left_0()
+                            .right_0()
+                            .bottom_0()
+                            .bg(gpui::Hsla {
+                                h: 0.0,
+                                s: 0.0,
+                                l: 0.0,
+                                a: 0.28,
+                            })
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .p_4()
+                            .child(
+                                v_flex()
+                                    .w(px(420.))
+                                    .max_w_full()
+                                    .gap_3()
+                                    .p_4()
+                                    .rounded_lg()
+                                    .border_1()
+                                    .border_color(cx.theme().border)
+                                    .bg(cx.theme().popover)
+                                    .shadow_lg()
+                                    .child(
+                                        h_flex()
+                                            .items_center()
+                                            .gap_2()
+                                            .child(
+                                                Icon::new(IconName::Close)
+                                                    .with_size(Size::Small)
+                                                    .text_color(cx.theme().danger),
+                                            )
+                                            .child(
+                                                div()
+                                                    .font_weight(FontWeight::SEMIBOLD)
+                                                    .child(progress.title.clone()),
+                                            ),
+                                    )
+                                    .child(div().max_h(px(180.)).overflow_y_scrollbar().children(
+                                        progress.lines.iter().cloned().map(|line| {
+                                            div()
+                                                .text_size(rems(0.875))
+                                                .text_color(cx.theme().danger)
+                                                .child(line)
+                                        }),
+                                    ))
+                                    .child(
+                                        h_flex()
+                                            .justify_end()
+                                            .gap_2()
+                                            .child(
+                                                Button::new(format!("pane-connect-retry-{tab_id}"))
+                                                    .primary()
+                                                    .label(t!("retry").to_string())
+                                                    .on_click(cx.listener(|this, _, _, cx| {
+                                                        this.retry_connection_progress(cx);
+                                                    })),
+                                            )
+                                            .child(
+                                                Button::new(format!(
+                                                    "pane-connect-cancel-{tab_id}"
+                                                ))
+                                                .secondary()
+                                                .label(t!("cancel").to_string())
+                                                .on_click(cx.listener(|this, _, _, cx| {
+                                                    this.cancel_connection_progress(cx);
+                                                })),
+                                            ),
+                                    ),
+                            ),
                     );
                 }
                 let indicator_color = this
@@ -4834,7 +4960,11 @@ impl Render for Ashell {
                         ),
                 )
             })
-            .when_some(self.connection_progress.clone(), |this, progress| {
+            .when_some(
+                self.connection_progress
+                    .clone()
+                    .filter(|progress| !progress.failed),
+                |this, progress| {
                 this.child(
                     div()
                         .absolute()
