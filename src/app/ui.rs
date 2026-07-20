@@ -19,6 +19,7 @@ use gpui_component::{
     v_flex,
 };
 use rust_i18n::t;
+use std::collections::{HashMap, HashSet};
 
 use crate::{
     Ashell, PaneLayout,
@@ -326,8 +327,9 @@ impl Ashell {
                 groups.push(group.clone());
             }
         }
-        groups.sort();
-        groups.dedup();
+        let mut seen = HashSet::new();
+        groups.retain(|group| seen.insert(group.clone()));
+        groups = Self::connection_group_tree_order(groups);
         let groups_for_rows = groups.clone();
 
         let mut sessions: Vec<_> = all_sessions
@@ -457,10 +459,16 @@ impl Ashell {
                                     })
                                     .count();
                                 let selected = selected_group.as_deref() == Some(group.as_str());
+                                let dragging = self.dragging_connection_group.as_deref() == Some(group.as_str());
+                                let show_drop_before = self
+                                    .connection_group_drop_before
+                                    .as_deref()
+                                    == Some(group.as_str());
                                 let depth = group.matches('/').count();
                                 let group_label = group.rsplit('/').next().unwrap_or(&group).to_string();
                                 div()
                                     .id(("connection-group", ix))
+                                    .relative()
                                     .w_full()
                                     .cursor_pointer()
                                     .rounded_md()
@@ -470,6 +478,26 @@ impl Ashell {
                                         cx.theme().sidebar
                                     })
                                     .hover(|this| this.bg(cx.theme().secondary))
+                                    .on_prepaint({
+                                        let group_name = group_name.clone();
+                                        let view = cx.entity();
+                                        move |bounds, _window, cx| {
+                                            view.update(cx, |this, _| {
+                                                this.connection_group_bounds
+                                                    .insert(group_name.clone(), bounds);
+                                            });
+                                        }
+                                    })
+                                    .on_mouse_down(
+                                        MouseButton::Left,
+                                        cx.listener({
+                                            let group_name = group_name.clone();
+                                            move |this, event: &MouseDownEvent, _, _| {
+                                                this.pending_connection_group_drag =
+                                                    Some((group_name.clone(), event.position));
+                                            }
+                                        }),
+                                    )
                                     .on_click(cx.listener({
                                         let group_name = group_name.clone();
                                         move |this, _, _, cx| {
@@ -552,6 +580,18 @@ impl Ashell {
                                                     .child(count.to_string()),
                                             ),
                                     )
+                                    .when(show_drop_before, |this| {
+                                        this.child(
+                                            div()
+                                                .absolute()
+                                                .top_0()
+                                                .left_0()
+                                                .right_0()
+                                                .h(px(2.))
+                                                .bg(cx.theme().primary),
+                                        )
+                                    })
+                                    .when(dragging, |this| this.opacity(0.55))
                             })),
                     )
                     .child(
@@ -792,6 +832,35 @@ impl Ashell {
                             ),
                     ),
             )
+    }
+
+    /// Render a stable tree: group creation order defines sibling order while
+    /// descendants remain directly below their parent.
+    fn connection_group_tree_order(groups: Vec<String>) -> Vec<String> {
+        let present = groups.iter().cloned().collect::<HashSet<_>>();
+        let mut children: HashMap<Option<String>, Vec<String>> = HashMap::new();
+        for group in groups {
+            let parent = group
+                .rsplit_once('/')
+                .map(|(parent, _)| parent.to_string())
+                .filter(|parent| present.contains(parent));
+            children.entry(parent).or_default().push(group);
+        }
+
+        let mut ordered = Vec::new();
+        let mut stack = children
+            .remove(&None)
+            .unwrap_or_default()
+            .into_iter()
+            .rev()
+            .collect::<Vec<_>>();
+        while let Some(group) = stack.pop() {
+            if let Some(child_groups) = children.remove(&Some(group.clone())) {
+                stack.extend(child_groups.into_iter().rev());
+            }
+            ordered.push(group);
+        }
+        ordered
     }
 
     fn render_key_manager_page(&self, cx: &mut Context<Self>) -> impl IntoElement {

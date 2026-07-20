@@ -2043,6 +2043,98 @@ impl Ashell {
 
     // ─── Tab drag, reorder, detach and merge ──────────────────────────
 
+    fn connection_group_drop_before_at(
+        &self,
+        source: &str,
+        position: Point<Pixels>,
+    ) -> Option<Option<String>> {
+        let parent = source.rsplit_once('/').map(|(parent, _)| parent);
+        let mut rows = self
+            .config
+            .connection_groups()
+            .iter()
+            .filter(|group| group.as_str() != source)
+            .filter(|group| group.rsplit_once('/').map(|(parent, _)| parent) == parent)
+            .filter_map(|group| {
+                self.connection_group_bounds
+                    .get(group)
+                    .copied()
+                    .map(|bounds| (group.clone(), bounds))
+            })
+            .collect::<Vec<_>>();
+        rows.sort_by(|(_, left), (_, right)| left.origin.y.partial_cmp(&right.origin.y).unwrap());
+
+        let first = rows.first()?.1;
+        let last = rows.last()?.1;
+        if position.x < first.left()
+            || position.x > first.right()
+            || position.y < first.top() - px(10.)
+            || position.y > last.bottom() + px(10.)
+        {
+            return None;
+        }
+        Some(
+            rows.iter()
+                .find(|(_, bounds)| position.y < bounds.origin.y + bounds.size.height / 2.)
+                .map(|(group, _)| group.clone()),
+        )
+    }
+
+    fn on_connection_group_drag_mouse_move(
+        &mut self,
+        event: &MouseMoveEvent,
+        cx: &mut Context<Self>,
+    ) {
+        if self.dragging_connection_group.is_none()
+            && let Some((group, origin)) = self.pending_connection_group_drag.clone()
+        {
+            let dx: f32 = (event.position.x - origin.x).into();
+            let dy: f32 = (event.position.y - origin.y).into();
+            if (dx * dx + dy * dy).sqrt() > 5.0 {
+                self.dragging_connection_group = Some(group);
+            }
+        }
+        if self.dragging_connection_group.is_none() {
+            return;
+        }
+
+        let source = self
+            .dragging_connection_group
+            .as_deref()
+            .expect("dragging group state must contain a source");
+        let next = self
+            .connection_group_drop_before_at(source, event.position)
+            .flatten();
+        if self.connection_group_drop_before != next {
+            self.connection_group_drop_before = next;
+            cx.notify();
+        }
+    }
+
+    /// Returns true when a group drag (including a pending click) consumed the
+    /// release, so it cannot also be interpreted as a tab drag release.
+    fn finish_connection_group_drag(
+        &mut self,
+        event: &MouseUpEvent,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let pending = self.pending_connection_group_drag.take();
+        let Some(source) = self.dragging_connection_group.take() else {
+            return pending.is_some();
+        };
+        let target = self.connection_group_drop_before_at(&source, event.position);
+        self.connection_group_drop_before = None;
+        if let Some(before) = target {
+            self.config
+                .reorder_connection_group(&source, before.as_deref());
+            if let Err(err) = self.config.save() {
+                tracing::warn!("failed to save connection group order: {err:#}");
+            }
+        }
+        cx.notify();
+        true
+    }
+
     /// Called on every root-level mouse move. Once the drag threshold is
     /// exceeded, the tab bar reorders within this window, any other source
     /// position detaches, and a hit on another window takes merge priority.
@@ -2052,6 +2144,7 @@ impl Ashell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.on_connection_group_drag_mouse_move(event, cx);
         if self.tab_drag.promote_if_needed(event.position, 5.0) {
             cx.notify();
         }
@@ -2264,6 +2357,9 @@ impl Ashell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.finish_connection_group_drag(event, cx) {
+            return;
+        }
         if let Some(incoming) = self.incoming_tab_drag.take() {
             let source_window = incoming.source_window;
             let source = incoming.source;

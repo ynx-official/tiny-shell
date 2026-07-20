@@ -475,7 +475,6 @@ impl ConfigStore {
                 .any(|group| group == &name)
         {
             self.cache.connection_groups.push(name);
-            self.cache.connection_groups.sort();
         }
     }
 
@@ -511,7 +510,54 @@ impl ConfigStore {
                 session.group = Some(format!("{new_prefix}{suffix}"));
             }
         }
-        self.cache.connection_groups.sort();
+    }
+
+    /// Move a group (and all of its descendants) before another group at the
+    /// same tree level. `None` places it at the end of its siblings.
+    pub fn reorder_connection_group(&mut self, name: &str, before: Option<&str>) {
+        let prefix = format!("{name}/");
+        let parent = name.rsplit_once('/').map(|(parent, _)| parent);
+        let same_parent = |group: &str| group.rsplit_once('/').map(|(parent, _)| parent) == parent;
+
+        if !self
+            .cache
+            .connection_groups
+            .iter()
+            .any(|group| group == name)
+            || before.is_some_and(|target| {
+                target == name || target.starts_with(&prefix) || !same_parent(target)
+            })
+        {
+            return;
+        }
+
+        let mut moving = Vec::new();
+        self.cache.connection_groups.retain(|group| {
+            if group == name || group.starts_with(&prefix) {
+                moving.push(group.clone());
+                false
+            } else {
+                true
+            }
+        });
+        let insert_at = before
+            .and_then(|target| {
+                self.cache
+                    .connection_groups
+                    .iter()
+                    .position(|group| group == target)
+            })
+            .unwrap_or_else(|| {
+                self.cache
+                    .connection_groups
+                    .iter()
+                    .rposition(|group| same_parent(group))
+                    .map(|index| index + 1)
+                    .unwrap_or(self.cache.connection_groups.len())
+            });
+        self.cache
+            .connection_groups
+            .splice(insert_at..insert_at, moving);
     }
 
     pub fn remove_connection_group(&mut self, name: &str) {
@@ -1396,5 +1442,30 @@ mod tests {
         assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
 
         fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn connection_group_order_is_created_and_reordered_explicitly() {
+        let mut store = ConfigStore {
+            path: PathBuf::from("unused.json"),
+            cache: ConfigFile::default(),
+        };
+        store.add_connection_group("first".into());
+        store.add_connection_group("second".into());
+        store.add_connection_group("third".into());
+        assert_eq!(store.connection_groups(), ["first", "second", "third"]);
+
+        store.add_connection_group("second/child".into());
+        store.reorder_connection_group("second", Some("first"));
+        assert_eq!(
+            store.connection_groups(),
+            ["second", "second/child", "first", "third"]
+        );
+
+        store.reorder_connection_group("third", None);
+        assert_eq!(
+            store.connection_groups(),
+            ["second", "second/child", "first", "third"]
+        );
     }
 }
