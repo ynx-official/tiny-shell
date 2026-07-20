@@ -401,6 +401,7 @@ pub(crate) enum DialogKind {
 pub(crate) enum HomePage {
     #[default]
     Overview,
+    Connections,
     KeyManager,
 }
 

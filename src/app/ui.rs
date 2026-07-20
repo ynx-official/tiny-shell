@@ -80,8 +80,9 @@ impl Ashell {
                                     .secondary()
                                     .icon(IconName::Network)
                                     .label(t!("overview_connections").to_string())
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.show_selector_dialog(window, cx)
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.home_page = HomePage::Connections;
+                                        cx.notify();
                                     })),
                             ),
                     ),
@@ -191,8 +192,11 @@ impl Ashell {
                                     let session_to_open = session.clone();
                                     let title = session.name.clone();
                                     let detail = format!(
-                                        "{}@{}:{}",
-                                        session.user, session.host, session.port
+                                        "{}@{}:{} · {}",
+                                        session.user,
+                                        session.host,
+                                        session.port,
+                                        Self::recent_usage_label(session.last_used.as_deref()),
                                     );
                                     div()
                                         .id(("overview-recent", ix))
@@ -291,8 +295,219 @@ impl Ashell {
             )
     }
 
+    fn recent_usage_label(last_used: Option<&str>) -> String {
+        let Some(last_used) = last_used else {
+            return t!("overview_not_used").to_string();
+        };
+        let Ok(used_at) = chrono::DateTime::parse_from_rfc3339(last_used) else {
+            return t!("overview_recently_used").to_string();
+        };
+        let elapsed =
+            chrono::Local::now().signed_duration_since(used_at.with_timezone(&chrono::Local));
+        if elapsed.num_minutes() < 1 {
+            t!("overview_just_now").to_string()
+        } else if elapsed.num_hours() < 1 {
+            t!("overview_minutes_ago", count = elapsed.num_minutes()).to_string()
+        } else if elapsed.num_days() < 1 {
+            t!("overview_hours_ago", count = elapsed.num_hours()).to_string()
+        } else {
+            t!("overview_days_ago", count = elapsed.num_days()).to_string()
+        }
+    }
+
+    fn render_connection_manager_page(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let mut sessions = self.config.sessions().to_vec();
+        sessions.sort_by(|left, right| right.last_used.cmp(&left.last_used));
+        let has_sessions = !sessions.is_empty();
+
+        v_flex()
+            .size_full()
+            .p_6()
+            .gap_5()
+            .child(
+                h_flex()
+                    .items_center()
+                    .child(
+                        v_flex()
+                            .gap_1()
+                            .child(
+                                div()
+                                    .text_size(rems(2.0))
+                                    .font_weight(FontWeight::BOLD)
+                                    .child(t!("overview_connections")),
+                            )
+                            .child(
+                                div()
+                                    .text_size(rems(0.917))
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(t!("overview_connections_desc")),
+                            ),
+                    )
+                    .child(div().flex_1())
+                    .child(
+                        Button::new("connection-manager-new")
+                            .primary()
+                            .icon(IconName::Plus)
+                            .label(t!("overview_new_connection").to_string())
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.open_new_ssh_dialog(window, cx)
+                            })),
+                    ),
+            )
+            .child(
+                v_flex()
+                    .flex_1()
+                    .min_h(px(0.))
+                    .rounded_md()
+                    .border_1()
+                    .border_color(cx.theme().border)
+                    .overflow_hidden()
+                    .child(
+                        h_flex()
+                            .flex_none()
+                            .items_center()
+                            .h(px(38.))
+                            .px_4()
+                            .gap_3()
+                            .bg(cx.theme().muted)
+                            .border_b_1()
+                            .border_color(cx.theme().border)
+                            .child(div().flex_1().text_size(rems(0.833)).child(t!("session")))
+                            .child(div().w(px(150.)).text_size(rems(0.833)).child(t!("host")))
+                            .child(
+                                div()
+                                    .w(px(130.))
+                                    .text_size(rems(0.833))
+                                    .child(t!("overview_recent")),
+                            )
+                            .child(
+                                div()
+                                    .w(px(180.))
+                                    .text_size(rems(0.833))
+                                    .child(t!("settings")),
+                            ),
+                    )
+                    .child(
+                        v_flex()
+                            .flex_1()
+                            .min_h(px(0.))
+                            .overflow_y_scrollbar()
+                            .children(sessions.into_iter().enumerate().map(|(ix, session)| {
+                                let connect_session = session.clone();
+                                let edit_id = session.id.clone();
+                                let delete_id = session.id.clone();
+                                let host = format!("{}:{}", session.host, session.port);
+                                let recent = Self::recent_usage_label(session.last_used.as_deref());
+                                h_flex()
+                                    .id(("connection-manager-row", ix))
+                                    .flex_none()
+                                    .items_center()
+                                    .min_h(px(58.))
+                                    .px_4()
+                                    .gap_3()
+                                    .border_b_1()
+                                    .border_color(cx.theme().border)
+                                    .hover(|this| this.bg(cx.theme().muted))
+                                    .child(
+                                        h_flex()
+                                            .flex_1()
+                                            .items_center()
+                                            .gap_2()
+                                            .child(
+                                                Icon::new(IconName::Network).with_size(Size::Small),
+                                            )
+                                            .child(
+                                                v_flex()
+                                                    .gap_1()
+                                                    .child(
+                                                        div()
+                                                            .font_weight(FontWeight::MEDIUM)
+                                                            .child(session.name),
+                                                    )
+                                                    .child(
+                                                        div()
+                                                            .text_size(rems(0.8))
+                                                            .text_color(cx.theme().muted_foreground)
+                                                            .child(session.user),
+                                                    ),
+                                            ),
+                                    )
+                                    .child(div().w(px(150.)).text_size(rems(0.833)).child(host))
+                                    .child(
+                                        div()
+                                            .w(px(130.))
+                                            .text_size(rems(0.8))
+                                            .text_color(cx.theme().muted_foreground)
+                                            .child(recent),
+                                    )
+                                    .child(
+                                        h_flex()
+                                            .w(px(180.))
+                                            .justify_end()
+                                            .gap_1()
+                                            .child(
+                                                Button::new(format!(
+                                                    "connection-manager-connect-{ix}"
+                                                ))
+                                                .small()
+                                                .primary()
+                                                .label(t!("connect").to_string())
+                                                .on_click(cx.listener(move |this, _, _, cx| {
+                                                    this.open_ssh_session(
+                                                        connect_session.clone(),
+                                                        cx,
+                                                    )
+                                                })),
+                                            )
+                                            .child(
+                                                Button::new(format!(
+                                                    "connection-manager-edit-{ix}"
+                                                ))
+                                                .ghost()
+                                                .small()
+                                                .label(t!("edit").to_string())
+                                                .on_click(cx.listener(
+                                                    move |this, _, window, cx| {
+                                                        this.edit_saved_session(
+                                                            edit_id.clone(),
+                                                            window,
+                                                            cx,
+                                                        )
+                                                    },
+                                                )),
+                                            )
+                                            .child(
+                                                Button::new(format!(
+                                                    "connection-manager-delete-{ix}"
+                                                ))
+                                                .ghost()
+                                                .small()
+                                                .icon(IconName::Delete)
+                                                .on_click(cx.listener(move |this, _, _, cx| {
+                                                    this.remove_saved_session(delete_id.clone(), cx)
+                                                })),
+                                            ),
+                                    )
+                            }))
+                            .when(!has_sessions, |this| {
+                                this.child(
+                                    v_flex()
+                                        .size_full()
+                                        .items_center()
+                                        .justify_center()
+                                        .gap_3()
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child(Icon::new(IconName::Network).with_size(Size::Large))
+                                        .child(t!("overview_no_connections")),
+                                )
+                            }),
+                    ),
+            )
+    }
+
     fn render_key_manager_page(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let keys = self.managed_keys.clone();
+        let sessions = self.config.sessions().to_vec();
         let has_keys = !keys.is_empty();
         let rename_input = self.key_inline_input.clone();
 
@@ -389,6 +604,16 @@ impl Ashell {
                                 let is_editing =
                                     self.editing_managed_key_id.as_deref() == Some(key_id.as_str());
                                 let rename_input = rename_input.clone();
+                                let reference_count = sessions
+                                    .iter()
+                                    .filter(|session| {
+                                        session.managed_key_id.as_deref() == Some(key_id.as_str())
+                                    })
+                                    .count();
+                                let imported_at =
+                                    chrono::DateTime::from_timestamp(key.created_at, 0)
+                                        .map(|date| date.format("%Y-%m-%d").to_string())
+                                        .unwrap_or_else(|| "-".to_string());
 
                                 h_flex()
                                     .id(("key-manager-row", ix))
@@ -414,9 +639,24 @@ impl Ashell {
                                                 Icon::new(IconName::Folder).with_size(Size::Small),
                                             )
                                             .child(
-                                                div()
-                                                    .font_weight(FontWeight::MEDIUM)
-                                                    .child(key_name.clone()),
+                                                v_flex()
+                                                    .gap_1()
+                                                    .child(
+                                                        div()
+                                                            .font_weight(FontWeight::MEDIUM)
+                                                            .child(key_name.clone()),
+                                                    )
+                                                    .child(
+                                                        div()
+                                                            .text_size(rems(0.72))
+                                                            .text_color(cx.theme().muted_foreground)
+                                                            .child(format!(
+                                                                "{} · {} {}",
+                                                                imported_at,
+                                                                reference_count,
+                                                                t!("overview_key_references")
+                                                            )),
+                                                    ),
                                             )
                                             .into_any_element()
                                     })
@@ -512,6 +752,7 @@ impl Ashell {
 
     fn render_overview_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let is_overview = self.home_page == HomePage::Overview;
+        let is_connections = self.home_page == HomePage::Connections;
         let is_key_manager = self.home_page == HomePage::KeyManager;
         v_flex()
             .w_full()
@@ -594,14 +835,25 @@ impl Ashell {
                             .cursor_pointer()
                             .rounded_md()
                             .hover(|this| this.bg(cx.theme().secondary))
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.show_selector_dialog(window, cx)
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.home_page = HomePage::Connections;
+                                cx.notify();
                             }))
                             .child(
                                 h_flex()
                                     .items_center()
                                     .gap_3()
                                     .p_3()
+                                    .bg(if is_connections {
+                                        cx.theme().tab_active
+                                    } else {
+                                        cx.theme().sidebar
+                                    })
+                                    .text_color(if is_connections {
+                                        cx.theme().primary
+                                    } else {
+                                        cx.theme().foreground
+                                    })
                                     .child(Icon::new(IconName::Network).with_size(Size::Small))
                                     .child(
                                         div()
@@ -2253,7 +2505,10 @@ impl Ashell {
                                         TabKind::Local => t!("local_terminal").to_string(),
                                         TabKind::Ssh => {
                                             if let Some((_, session)) = self.active_ssh_session() {
-                                                format!("ssh / {}", session.name)
+                                                format!(
+                                                    "{}@{}:{}",
+                                                    session.user, session.host, session.port
+                                                )
                                             } else {
                                                 "ssh".to_string()
                                             }
@@ -2265,9 +2520,11 @@ impl Ashell {
                             }),
                     ),
             )
-            .when(self.config.monitoring_position() == "Sidebar", |this| {
-                this.child(self.render_sidebar_monitoring_panel(cx))
-            })
+            .when(
+                self.active_kind() == Some(TabKind::Ssh)
+                    || self.config.monitoring_position() == "Sidebar",
+                |this| this.child(self.render_sidebar_monitoring_panel(cx)),
+            )
             .child(
                 Button::new("open-ssh-panel")
                     .primary()
@@ -3548,6 +3805,7 @@ impl Render for Ashell {
         } else {
             match self.home_page {
                 HomePage::Overview => self.render_home_page(cx).into_any_element(),
+                HomePage::Connections => self.render_connection_manager_page(cx).into_any_element(),
                 HomePage::KeyManager => self.render_key_manager_page(cx).into_any_element(),
             }
         };
