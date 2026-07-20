@@ -1075,6 +1075,46 @@ impl Ashell {
                 window.prevent_default();
                 cx.stop_propagation();
             }
+        } else if input == &self.connection_group_input {
+            if matches!(event, InputEvent::PressEnter { .. })
+                && self.active_dialog == Some(DialogKind::ConnectionGroup)
+            {
+                self.confirm_connection_group_dialog(window, cx);
+                window.prevent_default();
+                cx.stop_propagation();
+            }
+        } else if input == &self.key_inline_input {
+            if matches!(event, InputEvent::PressEnter { .. })
+                && let Some(key_id) = self.editing_managed_key_id.clone()
+            {
+                let name = self.key_inline_input.read(cx).value().trim().to_string();
+                if !name.is_empty() {
+                    self.rename_managed_key(key_id, name, cx);
+                }
+                window.prevent_default();
+                cx.stop_propagation();
+            }
+        } else if input == &self.key_import_remark_input {
+            if matches!(event, InputEvent::PressEnter { .. })
+                && self.editing_managed_key_id.is_some()
+            {
+                self.save_managed_key_rename(cx);
+                window.prevent_default();
+                cx.stop_propagation();
+            }
+        } else if matches!(event, InputEvent::PressEnter { .. })
+            && self.active_dialog == Some(DialogKind::NewSsh)
+            && (input == &self.session_name_input
+                || input == &self.host_input
+                || input == &self.port_input
+                || input == &self.user_input
+                || input == &self.password_input
+                || input == &self.key_path_input
+                || input == &self.passphrase_input)
+        {
+            self.connect_ssh(window, cx);
+            window.prevent_default();
+            cx.stop_propagation();
         }
         cx.notify();
     }

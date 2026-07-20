@@ -23,6 +23,50 @@ use crate::{
 };
 
 impl Ashell {
+    pub(crate) fn confirm_connection_group_dialog(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let name = self
+            .connection_group_input
+            .read(cx)
+            .value()
+            .trim()
+            .to_string();
+        if name.is_empty() {
+            return;
+        }
+        if let Some(old_name) = self.editing_connection_group.clone() {
+            let full_name = self
+                .connection_group_parent
+                .as_deref()
+                .map(|parent| format!("{parent}/{name}"))
+                .unwrap_or(name.clone());
+            self.config
+                .rename_connection_group(&old_name, full_name.clone());
+            if self.connection_group_filter.as_deref() == Some(old_name.as_str()) {
+                self.connection_group_filter = Some(full_name);
+            }
+        } else {
+            let full_name = self
+                .connection_group_parent
+                .as_deref()
+                .map(|parent| format!("{parent}/{name}"))
+                .unwrap_or(name.clone());
+            self.config.add_connection_group(full_name.clone());
+            self.connection_group_filter = Some(full_name);
+        }
+        if let Err(err) = self.config.save() {
+            tracing::warn!("failed to save connection group: {err:#}");
+        }
+        self.active_dialog = None;
+        self.editing_connection_group = None;
+        self.connection_group_parent = None;
+        window.close_dialog(cx);
+        cx.notify();
+    }
+
     pub(crate) fn show_move_connection_group_dialog(
         &mut self,
         group: String,
@@ -206,6 +250,15 @@ impl Ashell {
                 .w(px(380.))
                 .h(px(180.))
                 .overlay_closable(true)
+                .on_ok({
+                    let view = view.clone();
+                    move |_, window, cx| {
+                        view.update(cx, |this, cx| {
+                            this.confirm_connection_group_dialog(window, cx);
+                        });
+                        false
+                    }
+                })
                 .on_close({
                     let view = view.clone();
                     move |_, _, cx| {
@@ -239,54 +292,29 @@ impl Ashell {
                                             Button::new("connection-group-cancel")
                                                 .secondary()
                                                 .label(t!("cancel").to_string())
-                                                .on_click(window.listener_for(&view, |this, _, window, cx| {
-                                                    this.active_dialog = None;
-                                                    this.editing_connection_group = None;
-                                                    this.connection_group_parent = None;
-                                                    window.close_dialog(cx);
-                                                    cx.notify();
-                                                })),
-                                        )
-                                        .child(
-                                            Button::new("connection-group-save")
-                                                .primary()
-                                                .label(t!("save").to_string())
-                                                .on_click(window.listener_for(&view, {
-                                                    let group_input = group_input.clone();
-                                                    move |this, _, window, cx| {
-                                                        let name = group_input.read(cx).value().trim().to_string();
-                                                        if name.is_empty() {
-                                                            return;
-                                                        }
-                                                        if let Some(old_name) = this.editing_connection_group.clone() {
-                                                            let full_name = this
-                                                                .connection_group_parent
-                                                                .as_deref()
-                                                                .map(|parent| format!("{parent}/{name}"))
-                                                                .unwrap_or(name.clone());
-                                                            this.config.rename_connection_group(&old_name, full_name.clone());
-                                                            if this.connection_group_filter.as_deref() == Some(old_name.as_str()) {
-                                                                this.connection_group_filter = Some(full_name);
-                                                            }
-                                                        } else {
-                                                            let full_name = this
-                                                                .connection_group_parent
-                                                                .as_deref()
-                                                                .map(|parent| format!("{parent}/{name}"))
-                                                                .unwrap_or(name.clone());
-                                                            this.config.add_connection_group(full_name.clone());
-                                                            this.connection_group_filter = Some(full_name);
-                                                        }
-                                                        if let Err(err) = this.config.save() {
-                                                            tracing::warn!("failed to save connection group: {err:#}");
-                                                        }
+                                                .on_click(window.listener_for(
+                                                    &view,
+                                                    |this, _, window, cx| {
                                                         this.active_dialog = None;
                                                         this.editing_connection_group = None;
                                                         this.connection_group_parent = None;
                                                         window.close_dialog(cx);
                                                         cx.notify();
-                                                    }
-                                                })),
+                                                    },
+                                                )),
+                                        )
+                                        .child(
+                                            Button::new("connection-group-save")
+                                                .primary()
+                                                .label(t!("save").to_string())
+                                                .on_click(window.listener_for(
+                                                    &view,
+                                                    |this, _, window, cx| {
+                                                        this.confirm_connection_group_dialog(
+                                                            window, cx,
+                                                        );
+                                                    },
+                                                )),
                                         ),
                                 ),
                         )
@@ -321,6 +349,15 @@ impl Ashell {
                 .title(t!("new_ssh_connection"))
                 .w(px(520.))
                 .overlay_closable(true)
+                .on_ok({
+                    let view = view.clone();
+                    move |_, window, cx| {
+                        view.update(cx, |this, cx| {
+                            this.connect_ssh(window, cx);
+                        });
+                        false
+                    }
+                })
                 .on_close({
                     let view = view.clone();
                     move |_, _, cx| {
@@ -835,6 +872,17 @@ impl Ashell {
                 .w(px(760.))
                 .close_button(false)
                 .overlay_closable(false)
+                .on_ok({
+                    let view = view.clone();
+                    move |_, window, cx| {
+                        view.update(cx, |this, cx| {
+                            if this.managed_key_dialog_selection.is_some() {
+                                this.confirm_managed_key_selection(window, cx);
+                            }
+                        });
+                        false
+                    }
+                })
                 .content({
                     let view = view.clone();
                     let rename_input = rename_input.clone();
@@ -1076,6 +1124,15 @@ impl Ashell {
                 .w(px(440.))
                 .close_button(false)
                 .overlay_closable(false)
+                .on_ok({
+                    let view = view.clone();
+                    move |_, window, cx| {
+                        view.update(cx, |this, cx| {
+                            this.confirm_managed_key_import(window, cx);
+                        });
+                        false
+                    }
+                })
                 .content({
                     let view = view.clone();
                     let remark_input = remark_input.clone();
