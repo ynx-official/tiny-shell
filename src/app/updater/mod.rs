@@ -287,7 +287,7 @@ pub fn restart() -> ! {
 
 // ── Platform-specific installation ──────────────────────────────────────────
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn install_linux(new_binary: &std::path::Path, current_exe: &std::path::Path) -> anyhow::Result<()> {
     // Write the new binary next to the old one with a .new suffix, then rename.
     // On Linux, rename() over an in-use file is safe — the old inode stays alive
