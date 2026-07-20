@@ -118,154 +118,181 @@ impl Ashell {
         });
         processes.truncate(12);
 
-        v_flex()
+        div()
             .size_full()
             .overflow_y_scrollbar()
             .bg(cx.theme().muted.opacity(0.32))
-            .p_5()
-            .gap_4()
             .child(
                 v_flex()
-                    .gap_1()
-                    .child(
-                        div()
-                            .font_weight(FontWeight::BOLD)
-                            .text_size(rems(1.35))
-                            .child(t!("system_information")),
-                    )
-                    .child(
-                        div()
-                            .text_size(rems(0.78))
-                            .text_color(cx.theme().muted_foreground)
-                            .child(t!("system_information_desc")),
-                    ),
-            )
-            .child(
-                v_flex()
-                    .rounded_lg()
-                    .border_1()
-                    .border_color(cx.theme().border)
-                    .bg(cx.theme().background)
-                    .overflow_hidden()
-                    .child(card_title(t!("system_overview").to_string()))
-                    .child(
-                        h_flex()
-                            .items_start()
-                            .gap_6()
-                            .p_4()
-                            .child(v_flex().flex_1().min_w(px(0.)).children(vec![
-                                info_row(
-                                    t!("operating_system").to_string(),
-                                    snapshot.os_name.clone(),
-                                ),
-                                info_row(
-                                    t!("kernel_version").to_string(),
-                                    snapshot.kernel_version.clone(),
-                                ),
-                                info_row(t!("host_name").to_string(), snapshot.hostname.clone()),
-                                info_row(t!("ip_address").to_string(), snapshot.ip_address.clone()),
-                                info_row(
-                                    t!("system_load").to_string(),
-                                    snapshot.load_average.clone(),
-                                ),
-                            ]))
-                            .child(v_flex().flex_1().min_w(px(0.)).children(vec![
-                                info_row(t!("kernel").to_string(), snapshot.kernel_name.clone()),
-                                info_row(
-                                    t!("architecture").to_string(),
-                                    snapshot.architecture.clone(),
-                                ),
-                                info_row(t!("connection_address").to_string(), connection),
-                                info_row(
-                                    t!("uptime").to_string(),
-                                    format_uptime(snapshot.uptime_seconds),
-                                ),
-                                info_row(
-                                    t!("cpu_usage").to_string(),
-                                    format!("{:.1}%", snapshot.cpu_percent * 100.0),
-                                ),
-                            ])),
-                    ),
-            )
-            .child(
-                v_flex()
-                    .rounded_lg()
-                    .border_1()
-                    .border_color(cx.theme().border)
-                    .bg(cx.theme().background)
-                    .overflow_hidden()
-                    .child(card_title(t!("cpu").to_string()))
-                    .child(
-                        h_flex()
-                            .min_h(px(42.))
-                            .items_center()
-                            .px_4()
-                            .gap_4()
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .text_size(rems(0.76))
-                                    .child(display(snapshot.cpu_model.clone())),
-                            )
-                            .child(
-                                div()
-                                    .w(px(120.))
-                                    .text_center()
-                                    .text_size(rems(0.76))
-                                    .child(format!("{} {}", snapshot.cpu_cores, t!("cpu_cores"))),
-                            )
-                            .child(div().w(px(140.)).text_center().text_size(rems(0.76)).child(
-                                if snapshot.cpu_frequency_mhz == 0 {
-                                    "-".to_string()
-                                } else {
-                                    format!("{} MHz", snapshot.cpu_frequency_mhz)
-                                },
-                            ))
-                            .child(
-                                div()
-                                    .w(px(100.))
-                                    .text_center()
-                                    .text_size(rems(0.76))
-                                    .child(format!("{:.1}%", snapshot.cpu_percent * 100.0)),
-                            ),
-                    ),
-            )
-            .child(
-                h_flex()
-                    .items_start()
+                    .w_full()
+                    .flex_none()
+                    .p_5()
                     .gap_4()
                     .child(
                         v_flex()
-                            .flex_1()
-                            .rounded_lg()
-                            .border_1()
-                            .border_color(cx.theme().border)
-                            .bg(cx.theme().background)
-                            .overflow_hidden()
-                            .child(card_title(t!("memory").to_string()))
-                            .child(v_flex().p_4().children(vec![
-                                info_row(t!("total").to_string(), format_bytes(snapshot.mem_total)),
-                                info_row(t!("used").to_string(), format_bytes(snapshot.mem_used)),
-                                info_row(
-                                    t!("available").to_string(),
-                                    format_bytes(snapshot.mem_available),
-                                ),
-                                info_row(
-                                    t!("usage").to_string(),
-                                    format!("{:.1}%", snapshot.mem_percent * 100.0),
-                                ),
-                            ])),
+                            .gap_1()
+                            .child(
+                                div()
+                                    .font_weight(FontWeight::BOLD)
+                                    .text_size(rems(1.35))
+                                    .child(t!("system_information")),
+                            )
+                            .child(
+                                div()
+                                    .text_size(rems(0.78))
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(t!("system_information_desc")),
+                            ),
                     )
                     .child(
                         v_flex()
-                            .flex_1()
                             .rounded_lg()
                             .border_1()
                             .border_color(cx.theme().border)
                             .bg(cx.theme().background)
                             .overflow_hidden()
-                            .child(card_title(t!("swap").to_string()))
-                            .child(v_flex().p_4().children(vec![
+                            .child(card_title(t!("system_overview").to_string()))
+                            .child(
+                                h_flex()
+                                    .items_start()
+                                    .gap_6()
+                                    .p_4()
+                                    .child(v_flex().flex_1().min_w(px(0.)).children(vec![
+                                        info_row(
+                                            t!("operating_system").to_string(),
+                                            snapshot.os_name.clone(),
+                                        ),
+                                        info_row(
+                                            t!("kernel_version").to_string(),
+                                            snapshot.kernel_version.clone(),
+                                        ),
+                                        info_row(
+                                            t!("host_name").to_string(),
+                                            snapshot.hostname.clone(),
+                                        ),
+                                        info_row(
+                                            t!("ip_address").to_string(),
+                                            snapshot.ip_address.clone(),
+                                        ),
+                                        info_row(
+                                            t!("system_load").to_string(),
+                                            snapshot.load_average.clone(),
+                                        ),
+                                    ]))
+                                    .child(v_flex().flex_1().min_w(px(0.)).children(vec![
+                                        info_row(
+                                            t!("kernel").to_string(),
+                                            snapshot.kernel_name.clone(),
+                                        ),
+                                        info_row(
+                                            t!("architecture").to_string(),
+                                            snapshot.architecture.clone(),
+                                        ),
+                                        info_row(t!("connection_address").to_string(), connection),
+                                        info_row(
+                                            t!("uptime").to_string(),
+                                            format_uptime(snapshot.uptime_seconds),
+                                        ),
+                                        info_row(
+                                            t!("cpu_usage").to_string(),
+                                            format!("{:.1}%", snapshot.cpu_percent * 100.0),
+                                        ),
+                                    ])),
+                            ),
+                    )
+                    .child(
+                        v_flex()
+                            .rounded_lg()
+                            .border_1()
+                            .border_color(cx.theme().border)
+                            .bg(cx.theme().background)
+                            .overflow_hidden()
+                            .child(card_title(t!("cpu").to_string()))
+                            .child(
+                                h_flex()
+                                    .min_h(px(42.))
+                                    .items_center()
+                                    .px_4()
+                                    .gap_4()
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .text_size(rems(0.76))
+                                            .child(display(snapshot.cpu_model.clone())),
+                                    )
+                                    .child(
+                                        div()
+                                            .w(px(120.))
+                                            .text_center()
+                                            .text_size(rems(0.76))
+                                            .child(format!(
+                                                "{} {}",
+                                                snapshot.cpu_cores,
+                                                t!("cpu_cores")
+                                            )),
+                                    )
+                                    .child(
+                                        div()
+                                            .w(px(140.))
+                                            .text_center()
+                                            .text_size(rems(0.76))
+                                            .child(if snapshot.cpu_frequency_mhz == 0 {
+                                                "-".to_string()
+                                            } else {
+                                                format!("{} MHz", snapshot.cpu_frequency_mhz)
+                                            }),
+                                    )
+                                    .child(
+                                        div()
+                                            .w(px(100.))
+                                            .text_center()
+                                            .text_size(rems(0.76))
+                                            .child(format!("{:.1}%", snapshot.cpu_percent * 100.0)),
+                                    ),
+                            ),
+                    )
+                    .child(
+                        h_flex()
+                            .items_start()
+                            .gap_4()
+                            .child(
+                                v_flex()
+                                    .flex_1()
+                                    .rounded_lg()
+                                    .border_1()
+                                    .border_color(cx.theme().border)
+                                    .bg(cx.theme().background)
+                                    .overflow_hidden()
+                                    .child(card_title(t!("memory").to_string()))
+                                    .child(v_flex().p_4().children(vec![
+                                        info_row(
+                                            t!("total").to_string(),
+                                            format_bytes(snapshot.mem_total),
+                                        ),
+                                        info_row(
+                                            t!("used").to_string(),
+                                            format_bytes(snapshot.mem_used),
+                                        ),
+                                        info_row(
+                                            t!("available").to_string(),
+                                            format_bytes(snapshot.mem_available),
+                                        ),
+                                        info_row(
+                                            t!("usage").to_string(),
+                                            format!("{:.1}%", snapshot.mem_percent * 100.0),
+                                        ),
+                                    ])),
+                            )
+                            .child(
+                                v_flex()
+                                    .flex_1()
+                                    .rounded_lg()
+                                    .border_1()
+                                    .border_color(cx.theme().border)
+                                    .bg(cx.theme().background)
+                                    .overflow_hidden()
+                                    .child(card_title(t!("swap").to_string()))
+                                    .child(v_flex().p_4().children(vec![
                                 info_row(
                                     t!("total").to_string(),
                                     format_bytes(snapshot.total_swap),
@@ -282,144 +309,151 @@ impl Ashell {
                                     format!("{:.1}%", snapshot.swap_percent * 100.0),
                                 ),
                             ])),
-                    ),
-            )
-            .child(
-                v_flex()
-                    .rounded_lg()
-                    .border_1()
-                    .border_color(cx.theme().border)
-                    .bg(cx.theme().background)
-                    .overflow_hidden()
-                    .child(card_title(t!("processes").to_string()))
-                    .child(
-                        h_flex()
-                            .h(px(32.))
-                            .items_center()
-                            .px_4()
-                            .bg(cx.theme().muted)
-                            .text_size(rems(0.72))
-                            .text_color(cx.theme().muted_foreground)
-                            .child(div().flex_1().child(t!("process_command")))
-                            .child(div().w(px(120.)).text_center().child(t!("process_memory")))
-                            .child(div().w(px(100.)).text_center().child(t!("cpu"))),
+                            ),
                     )
-                    .children(processes.into_iter().enumerate().map(|(index, process)| {
-                        h_flex()
-                            .min_h(px(32.))
-                            .items_center()
-                            .px_4()
-                            .when(index % 2 == 1, |this| {
-                                this.bg(cx.theme().muted.opacity(0.35))
-                            })
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w(px(0.))
-                                    .overflow_hidden()
-                                    .whitespace_nowrap()
-                                    .text_ellipsis()
-                                    .text_size(rems(0.74))
-                                    .child(process.command),
-                            )
-                            .child(
-                                div()
-                                    .w(px(120.))
-                                    .text_center()
-                                    .text_size(rems(0.74))
-                                    .child(format_bytes(process.memory_bytes)),
-                            )
-                            .child(
-                                div()
-                                    .w(px(100.))
-                                    .text_center()
-                                    .text_size(rems(0.74))
-                                    .child(format!("{:.1}%", process.cpu_percent)),
-                            )
-                    })),
-            )
-            .child(
-                v_flex()
-                    .rounded_lg()
-                    .border_1()
-                    .border_color(cx.theme().border)
-                    .bg(cx.theme().background)
-                    .overflow_hidden()
-                    .child(card_title(t!("network").to_string()))
                     .child(
-                        h_flex()
-                            .min_h(px(46.))
-                            .items_center()
-                            .px_4()
-                            .child(info_row(
-                                t!("receive_rate").to_string(),
-                                snapshot.net_rx.clone(),
-                            ))
-                            .child(info_row(
-                                t!("send_rate").to_string(),
-                                snapshot.net_tx.clone(),
+                        v_flex()
+                            .rounded_lg()
+                            .border_1()
+                            .border_color(cx.theme().border)
+                            .bg(cx.theme().background)
+                            .overflow_hidden()
+                            .child(card_title(t!("processes").to_string()))
+                            .child(
+                                h_flex()
+                                    .h(px(32.))
+                                    .items_center()
+                                    .px_4()
+                                    .bg(cx.theme().muted)
+                                    .text_size(rems(0.72))
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(div().flex_1().child(t!("process_command")))
+                                    .child(
+                                        div().w(px(120.)).text_center().child(t!("process_memory")),
+                                    )
+                                    .child(div().w(px(100.)).text_center().child(t!("cpu"))),
+                            )
+                            .children(processes.into_iter().enumerate().map(|(index, process)| {
+                                h_flex()
+                                    .min_h(px(32.))
+                                    .items_center()
+                                    .px_4()
+                                    .when(index % 2 == 1, |this| {
+                                        this.bg(cx.theme().muted.opacity(0.35))
+                                    })
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_w(px(0.))
+                                            .overflow_hidden()
+                                            .whitespace_nowrap()
+                                            .text_ellipsis()
+                                            .text_size(rems(0.74))
+                                            .child(process.command),
+                                    )
+                                    .child(
+                                        div()
+                                            .w(px(120.))
+                                            .text_center()
+                                            .text_size(rems(0.74))
+                                            .child(format_bytes(process.memory_bytes)),
+                                    )
+                                    .child(
+                                        div()
+                                            .w(px(100.))
+                                            .text_center()
+                                            .text_size(rems(0.74))
+                                            .child(format!("{:.1}%", process.cpu_percent)),
+                                    )
+                            })),
+                    )
+                    .child(
+                        v_flex()
+                            .rounded_lg()
+                            .border_1()
+                            .border_color(cx.theme().border)
+                            .bg(cx.theme().background)
+                            .overflow_hidden()
+                            .child(card_title(t!("network").to_string()))
+                            .child(
+                                h_flex()
+                                    .min_h(px(46.))
+                                    .items_center()
+                                    .px_4()
+                                    .child(info_row(
+                                        t!("receive_rate").to_string(),
+                                        snapshot.net_rx.clone(),
+                                    ))
+                                    .child(info_row(
+                                        t!("send_rate").to_string(),
+                                        snapshot.net_tx.clone(),
+                                    )),
+                            ),
+                    )
+                    .child(
+                        v_flex()
+                            .rounded_lg()
+                            .border_1()
+                            .border_color(cx.theme().border)
+                            .bg(cx.theme().background)
+                            .overflow_hidden()
+                            .child(card_title(t!("file_system").to_string()))
+                            .child(
+                                h_flex()
+                                    .h(px(32.))
+                                    .items_center()
+                                    .px_4()
+                                    .bg(cx.theme().muted)
+                                    .text_size(rems(0.72))
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(div().flex_1().child(t!("mount_point")))
+                                    .child(div().w(px(130.)).text_center().child(t!("total")))
+                                    .child(div().w(px(130.)).text_center().child(t!("used")))
+                                    .child(div().w(px(130.)).text_center().child(t!("available"))),
+                            )
+                            .children(snapshot.filesystems.into_iter().enumerate().map(
+                                |(index, disk)| {
+                                    let used =
+                                        disk.total_bytes.saturating_sub(disk.available_bytes);
+                                    h_flex()
+                                        .min_h(px(32.))
+                                        .items_center()
+                                        .px_4()
+                                        .when(index % 2 == 1, |this| {
+                                            this.bg(cx.theme().muted.opacity(0.35))
+                                        })
+                                        .child(
+                                            div()
+                                                .flex_1()
+                                                .min_w(px(0.))
+                                                .text_size(rems(0.74))
+                                                .child(disk.mount),
+                                        )
+                                        .child(
+                                            div()
+                                                .w(px(130.))
+                                                .text_center()
+                                                .text_size(rems(0.74))
+                                                .child(format_bytes(disk.total_bytes)),
+                                        )
+                                        .child(
+                                            div()
+                                                .w(px(130.))
+                                                .text_center()
+                                                .text_size(rems(0.74))
+                                                .child(format_bytes(used)),
+                                        )
+                                        .child(
+                                            div()
+                                                .w(px(130.))
+                                                .text_center()
+                                                .text_size(rems(0.74))
+                                                .child(format_bytes(disk.available_bytes)),
+                                        )
+                                },
                             )),
-                    ),
-            )
-            .child(
-                v_flex()
-                    .rounded_lg()
-                    .border_1()
-                    .border_color(cx.theme().border)
-                    .bg(cx.theme().background)
-                    .overflow_hidden()
-                    .child(card_title(t!("file_system").to_string()))
-                    .child(
-                        h_flex()
-                            .h(px(32.))
-                            .items_center()
-                            .px_4()
-                            .bg(cx.theme().muted)
-                            .text_size(rems(0.72))
-                            .text_color(cx.theme().muted_foreground)
-                            .child(div().flex_1().child(t!("mount_point")))
-                            .child(div().w(px(130.)).text_center().child(t!("total")))
-                            .child(div().w(px(130.)).text_center().child(t!("used")))
-                            .child(div().w(px(130.)).text_center().child(t!("available"))),
                     )
-                    .children(snapshot.disks.into_iter().enumerate().map(|(index, disk)| {
-                        let used = disk.total_bytes.saturating_sub(disk.available_bytes);
-                        h_flex()
-                            .min_h(px(32.))
-                            .items_center()
-                            .px_4()
-                            .when(index % 2 == 1, |this| {
-                                this.bg(cx.theme().muted.opacity(0.35))
-                            })
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w(px(0.))
-                                    .text_size(rems(0.74))
-                                    .child(disk.mount),
-                            )
-                            .child(
-                                div()
-                                    .w(px(130.))
-                                    .text_center()
-                                    .text_size(rems(0.74))
-                                    .child(format_bytes(disk.total_bytes)),
-                            )
-                            .child(
-                                div()
-                                    .w(px(130.))
-                                    .text_center()
-                                    .text_size(rems(0.74))
-                                    .child(format_bytes(used)),
-                            )
-                            .child(
-                                div()
-                                    .w(px(130.))
-                                    .text_center()
-                                    .text_size(rems(0.74))
-                                    .child(format_bytes(disk.available_bytes)),
-                            )
-                    })),
+                    .child(div().h(px(24.)).flex_none()),
             )
     }
 
@@ -3728,25 +3762,28 @@ impl Ashell {
                     ),
             )
             .child(
-                h_flex()
-                    .id("sidebar-system-information")
-                    .h(px(28.))
-                    .items_center()
-                    .justify_center()
-                    .gap_1()
-                    .rounded_md()
-                    .border_1()
-                    .border_color(cx.theme().border)
-                    .bg(cx.theme().background)
-                    .cursor_pointer()
-                    .text_size(rems(0.8))
-                    .font_weight(FontWeight::MEDIUM)
-                    .hover(|this| this.bg(cx.theme().secondary.opacity(0.7)))
-                    .child(t!("server_information"))
-                    .child(Icon::new(IconName::ExternalLink).with_size(Size::Small))
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.open_system_info_tab(cx);
-                    })),
+                div().w_full().px_1().child(
+                    h_flex()
+                        .id("sidebar-system-information")
+                        .w_full()
+                        .h(px(26.))
+                        .px_2()
+                        .items_center()
+                        .justify_between()
+                        .rounded_md()
+                        .border_1()
+                        .border_color(cx.theme().border)
+                        .bg(cx.theme().muted)
+                        .cursor_pointer()
+                        .text_size(rems(0.85))
+                        .font_weight(FontWeight::MEDIUM)
+                        .hover(|this| this.bg(cx.theme().secondary.opacity(0.7)))
+                        .child(t!("server_information"))
+                        .child(Icon::new(IconName::ExternalLink).with_size(Size::Small))
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.open_system_info_tab(cx);
+                        })),
+                ),
             )
             .when(
                 self.active_kind() == Some(TabKind::Ssh)

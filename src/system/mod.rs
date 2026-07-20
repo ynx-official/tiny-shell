@@ -56,6 +56,9 @@ pub struct SystemSnapshot {
     pub net_rx_rate: u64,
     pub net_tx_rate: u64,
     pub disks: Vec<DiskSample>,
+    /// Complete mount list used by the full system information page. The
+    /// compact sidebar continues to use `disks`.
+    pub filesystems: Vec<DiskSample>,
     pub processes: Vec<ProcessSample>,
     pub total_swap: u64,
 }
@@ -117,6 +120,18 @@ impl SystemSampler {
         self.last_rx_total = rx_total;
         self.last_tx_total = tx_total;
         self.last_instant = now;
+
+        let mut filesystems: Vec<DiskSample> = self
+            .disks
+            .iter()
+            .filter(|disk| disk.total_space() > 0)
+            .map(|disk| DiskSample {
+                mount: disk.mount_point().to_string_lossy().to_string(),
+                available_bytes: disk.available_space(),
+                total_bytes: disk.total_space(),
+            })
+            .collect();
+        filesystems.sort_by(|a, b| a.mount.cmp(&b.mount));
 
         let mut disks: Vec<DiskSample> = self
             .disks
@@ -194,6 +209,7 @@ impl SystemSampler {
             net_rx_rate: rx_rate,
             net_tx_rate: tx_rate,
             disks,
+            filesystems,
             processes,
             total_swap: swap_total,
         }
@@ -262,6 +278,7 @@ pub fn format_bytes(bytes: u64) -> String {
 pub fn remote_snapshot_from_kv(raw: &str) -> Result<SystemSnapshot> {
     let mut kv = BTreeMap::new();
     let mut disks = Vec::new();
+    let mut filesystems = Vec::new();
     let mut processes = Vec::new();
 
     for line in raw.lines().map(str::trim).filter(|line| !line.is_empty()) {
@@ -282,6 +299,16 @@ pub fn remote_snapshot_from_kv(raw: &str) -> Result<SystemSnapshot> {
                 mount,
                 available_bytes,
                 total_bytes,
+            });
+            continue;
+        }
+
+        if let Some(rest) = line.strip_prefix("FILESYSTEM=") {
+            let mut parts = rest.split('\t');
+            filesystems.push(DiskSample {
+                mount: parts.next().unwrap_or_default().to_string(),
+                available_bytes: parts.next().unwrap_or("0").parse().unwrap_or_default(),
+                total_bytes: parts.next().unwrap_or("0").parse().unwrap_or_default(),
             });
             continue;
         }
@@ -330,6 +357,19 @@ pub fn remote_snapshot_from_kv(raw: &str) -> Result<SystemSnapshot> {
         }
         a.mount.cmp(&b.mount)
     });
+    filesystems.retain(|filesystem| filesystem.total_bytes > 0);
+    if filesystems.is_empty() {
+        filesystems = disks.clone();
+    }
+    filesystems.sort_by(|a, b| {
+        if a.mount == "/" {
+            return std::cmp::Ordering::Less;
+        }
+        if b.mount == "/" {
+            return std::cmp::Ordering::Greater;
+        }
+        a.mount.cmp(&b.mount)
+    });
 
     Ok(SystemSnapshot {
         os_name: kv.get("OS_NAME").cloned().unwrap_or_default(),
@@ -357,6 +397,7 @@ pub fn remote_snapshot_from_kv(raw: &str) -> Result<SystemSnapshot> {
         net_rx_rate: rx_rate,
         net_tx_rate: tx_rate,
         disks,
+        filesystems,
         processes,
         total_swap: swap_total,
     })
@@ -394,7 +435,9 @@ mod tests {
              NET_RX=128\n\
              NET_TX=64\n\
              PROCESS=42\t2048\t12.5\tsshd\n\
-             DISK=/\t3000000000\t10000000000",
+             DISK=/\t3000000000\t10000000000\n\
+             FILESYSTEM=/\t3000000000\t10000000000\n\
+             FILESYSTEM=/run\t1000000000\t2000000000",
         )
         .expect("remote snapshot should parse");
 
@@ -406,5 +449,7 @@ mod tests {
         assert_eq!(snapshot.mem_available, 10000);
         assert_eq!(snapshot.processes[0].command, "sshd");
         assert_eq!(snapshot.disks[0].mount, "/");
+        assert_eq!(snapshot.filesystems.len(), 2);
+        assert_eq!(snapshot.filesystems[1].mount, "/run");
     }
 }

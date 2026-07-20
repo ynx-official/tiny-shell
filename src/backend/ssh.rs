@@ -582,6 +582,7 @@ EOF
   echo "NET_TX=$(( ${net_tx_2:-0} - ${net_tx_1:-0} ))"
   { ps -eo pid=,rss=,pcpu=,comm= --sort=-rss 2>/dev/null | head -n 16; ps -eo pid=,rss=,pcpu=,comm= --sort=-pcpu 2>/dev/null | head -n 16; } | awk '"'"'!seen[$1]++ { pid=$1; mem=$2*1024; cpu=$3; $1=""; $2=""; $3=""; sub(/^[[:space:]]+/, ""); printf "PROCESS=%s\t%s\t%s\t%s\n", pid, mem, cpu, $0 }'"'"'
   df -kP 2>/dev/null | awk "NR > 1 && \$1 !~ /^(tmpfs|devtmpfs|ramfs|overlay|aufs)\$/ { printf \"DISK=%s\t%s\t%s\n\", \$6, \$4 * 1024, \$2 * 1024 }" | head -n 6
+  df -kP 2>/dev/null | awk "NR > 1 { printf \"FILESYSTEM=%s\t%s\t%s\n\", \$6, \$4 * 1024, \$2 * 1024 }" | head -n 128
   exit 0
 fi
 
@@ -633,6 +634,7 @@ EOF
   echo "NET_TX=$(( ${net_tx_2:-0} - ${net_tx_1:-0} ))"
   { ps -axo pid=,rss=,pcpu=,comm= 2>/dev/null | sort -k2,2nr | head -n 16; ps -axo pid=,rss=,pcpu=,comm= 2>/dev/null | sort -k3,3nr | head -n 16; } | awk '"'"'!seen[$1]++ { pid=$1; mem=$2*1024; cpu=$3; $1=""; $2=""; $3=""; sub(/^[[:space:]]+/, ""); printf "PROCESS=%s\t%s\t%s\t%s\n", pid, mem, cpu, $0 }'"'"'
   df -kP 2>/dev/null | awk "NR > 1 && \$1 !~ /^(devfs|tmpfs|devtmpfs|ramfs|overlay|aufs)\$/ { printf \"DISK=%s\t%s\t%s\n\", \$6, \$4 * 1024, \$2 * 1024 }" | head -n 6
+  df -kP 2>/dev/null | awk "NR > 1 { printf \"FILESYSTEM=%s\t%s\t%s\n\", \$6, \$4 * 1024, \$2 * 1024 }" | head -n 128
   exit 0
 fi
 
