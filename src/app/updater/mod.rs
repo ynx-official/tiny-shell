@@ -3,6 +3,9 @@ use std::path::PathBuf;
 use anyhow::Context;
 use serde::Deserialize;
 
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
+
 const REPO_OWNER: &str = "ynx-official";
 const REPO_NAME: &str = "tiny-shell";
 const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
