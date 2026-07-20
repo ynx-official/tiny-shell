@@ -543,6 +543,7 @@ EOF
   read net_rx_1 net_tx_1 <<EOF
 $(net_stat)
 EOF
+  net_snapshot_1=$(cat /proc/net/dev 2>/dev/null)
   sleep 1
   read cpu_total_2 cpu_idle_2 <<EOF
 $(cpu_stat)
@@ -550,6 +551,7 @@ EOF
   read net_rx_2 net_tx_2 <<EOF
 $(net_stat)
 EOF
+  net_snapshot_2=$(cat /proc/net/dev 2>/dev/null)
 
   cpu_delta=$((cpu_total_2 - cpu_total_1))
   idle_delta=$((cpu_idle_2 - cpu_idle_1))
@@ -580,6 +582,13 @@ EOF
   echo "SWAP_USED=$(( ${swap_total:-0} - ${swap_free:-0} ))"
   echo "NET_RX=$(( ${net_rx_2:-0} - ${net_rx_1:-0} ))"
   echo "NET_TX=$(( ${net_tx_2:-0} - ${net_tx_1:-0} ))"
+  printf "%s\n__ASHELL_SPLIT__\n%s\n" "$net_snapshot_1" "$net_snapshot_2" | awk -F"[: ]+" '"'"'
+    $0 == "__ASHELL_SPLIT__" { second=1; next }
+    /:/ && $2 != "Inter" && $2 != "face" {
+      name=$2
+      if (!second) { rx1[name]=$3; tx1[name]=$11 }
+      else { printf "NETIF=%s\t%s\t%s\t%s\t%s\n", name, $3, $11, $3-rx1[name], $11-tx1[name] }
+    }'"'"'
   { ps -eo pid=,rss=,pcpu=,comm= --sort=-rss 2>/dev/null | head -n 16; ps -eo pid=,rss=,pcpu=,comm= --sort=-pcpu 2>/dev/null | head -n 16; } | awk '"'"'!seen[$1]++ { pid=$1; mem=$2*1024; cpu=$3; $1=""; $2=""; $3=""; sub(/^[[:space:]]+/, ""); printf "PROCESS=%s\t%s\t%s\t%s\n", pid, mem, cpu, $0 }'"'"'
   df -kP 2>/dev/null | awk "NR > 1 && \$1 !~ /^(tmpfs|devtmpfs|ramfs|overlay|aufs)\$/ { printf \"DISK=%s\t%s\t%s\n\", \$6, \$4 * 1024, \$2 * 1024 }" | head -n 6
   df -kP 2>/dev/null | awk "NR > 1 { printf \"FILESYSTEM=%s\t%s\t%s\n\", \$6, \$4 * 1024, \$2 * 1024 }" | head -n 128
@@ -592,10 +601,12 @@ if [ "$os" = "Darwin" ]; then
   read net_rx_1 net_tx_1 <<EOF
 $(net_stat)
 EOF
+  net_snapshot_1=$(netstat -ibn 2>/dev/null)
   sleep 1
   read net_rx_2 net_tx_2 <<EOF
 $(net_stat)
 EOF
+  net_snapshot_2=$(netstat -ibn 2>/dev/null)
 
   cpu_percent=$(top -l 2 -n 0 -s 1 2>/dev/null | awk -F"[:,% ]+" '"'"'/CPU usage:/ { user=$3; sys=$5 } END { if (user == "" && sys == "") print "0.00"; else printf "%.2f", user + sys }'"'"')
   mem_total=$(sysctl -n hw.memsize 2>/dev/null || echo 0)
@@ -632,6 +643,13 @@ EOF
   echo "SWAP_USED=${swap_used:-0}"
   echo "NET_RX=$(( ${net_rx_2:-0} - ${net_rx_1:-0} ))"
   echo "NET_TX=$(( ${net_tx_2:-0} - ${net_tx_1:-0} ))"
+  printf "%s\n__ASHELL_SPLIT__\n%s\n" "$net_snapshot_1" "$net_snapshot_2" | awk '"'"'
+    $0 == "__ASHELL_SPLIT__" { second=1; next }
+    NR > 1 && $7 ~ /^[0-9]+$/ && $10 ~ /^[0-9]+$/ {
+      if (!second) { rx1[$1]+=$7; tx1[$1]+=$10 }
+      else { rx2[$1]+=$7; tx2[$1]+=$10 }
+    }
+    END { for (name in rx2) printf "NETIF=%s\t%s\t%s\t%s\t%s\n", name, rx2[name], tx2[name], rx2[name]-rx1[name], tx2[name]-tx1[name] }'"'"'
   { ps -axo pid=,rss=,pcpu=,comm= 2>/dev/null | sort -k2,2nr | head -n 16; ps -axo pid=,rss=,pcpu=,comm= 2>/dev/null | sort -k3,3nr | head -n 16; } | awk '"'"'!seen[$1]++ { pid=$1; mem=$2*1024; cpu=$3; $1=""; $2=""; $3=""; sub(/^[[:space:]]+/, ""); printf "PROCESS=%s\t%s\t%s\t%s\n", pid, mem, cpu, $0 }'"'"'
   df -kP 2>/dev/null | awk "NR > 1 && \$1 !~ /^(devfs|tmpfs|devtmpfs|ramfs|overlay|aufs)\$/ { printf \"DISK=%s\t%s\t%s\n\", \$6, \$4 * 1024, \$2 * 1024 }" | head -n 6
   df -kP 2>/dev/null | awk "NR > 1 { printf \"FILESYSTEM=%s\t%s\t%s\n\", \$6, \$4 * 1024, \$2 * 1024 }" | head -n 128

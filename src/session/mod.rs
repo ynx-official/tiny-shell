@@ -1472,6 +1472,8 @@ impl Ashell {
             self.cpu_history.clear();
             self.net_rx_history.clear();
             self.net_tx_history.clear();
+            self.selected_network_interface = None;
+            self.network_interface_histories.clear();
             self.system_status = None;
             self.remote_system_snapshots.clear();
             for (_, handle) in self.sftp_handles.drain() {
@@ -1913,6 +1915,8 @@ impl Ashell {
                 self.cpu_history.clear();
                 self.net_rx_history.clear();
                 self.net_tx_history.clear();
+                self.selected_network_interface = None;
+                self.network_interface_histories.clear();
                 self.remote_sample_in_flight = false;
                 if self.system_tab_id.is_none() {
                     self.system_status = Some("monitored session closed".to_string().into());

@@ -426,6 +426,12 @@ pub(crate) enum ProcessView {
     Activity,
 }
 
+#[derive(Default)]
+pub(crate) struct NetworkHistory {
+    pub(crate) receive: Vec<f32>,
+    pub(crate) transmit: Vec<f32>,
+}
+
 pub(crate) struct Ashell {
     pub(crate) focus_handle: FocusHandle,
     pub(crate) selector_focus_handle: FocusHandle,
@@ -570,6 +576,9 @@ pub(crate) struct Ashell {
     pub(crate) cpu_history: Vec<f32>,
     pub(crate) net_rx_history: Vec<f32>,
     pub(crate) net_tx_history: Vec<f32>,
+    /// `None` represents the aggregate of all interfaces.
+    pub(crate) selected_network_interface: Option<String>,
+    pub(crate) network_interface_histories: HashMap<String, NetworkHistory>,
     pub(crate) last_system_sample: Instant,
 
     pub(crate) search_input: Entity<InputState>,
@@ -1027,6 +1036,8 @@ impl Ashell {
             cpu_history: Vec::with_capacity(20),
             net_rx_history: Vec::with_capacity(20),
             net_tx_history: Vec::with_capacity(20),
+            selected_network_interface: None,
+            network_interface_histories: HashMap::new(),
             last_system_sample: Instant::now(),
 
             search_input,
@@ -1326,6 +1337,7 @@ impl Ashell {
                     self.remote_system_snapshots
                         .insert(tab_id.clone(), snapshot.clone());
                     if self.system_tab_id.as_deref() == Some(tab_id.as_str()) {
+                        self.record_network_interface_histories(&snapshot);
                         self.system_status = None;
                         self.system = snapshot.clone();
                         self.cpu_history.push(snapshot.cpu_percent);
@@ -1503,6 +1515,7 @@ impl Ashell {
                 }
             }
             let snapshot = self.system_sampler.lock().unwrap().sample().clone();
+            self.record_network_interface_histories(&snapshot);
             let cpu_usage = snapshot.cpu_percent;
             self.cpu_history.push(cpu_usage);
             if self.cpu_history.len() > 20 {
@@ -1520,6 +1533,35 @@ impl Ashell {
             return true;
         }
         false
+    }
+
+    fn record_network_interface_histories(&mut self, snapshot: &SystemSnapshot) {
+        if self
+            .selected_network_interface
+            .as_ref()
+            .is_some_and(|selected| {
+                !snapshot
+                    .network_interfaces
+                    .iter()
+                    .any(|interface| &interface.name == selected)
+            })
+        {
+            self.selected_network_interface = None;
+        }
+        for interface in &snapshot.network_interfaces {
+            let history = self
+                .network_interface_histories
+                .entry(interface.name.clone())
+                .or_default();
+            history.receive.push(interface.receive_rate as f32);
+            history.transmit.push(interface.transmit_rate as f32);
+            if history.receive.len() > 30 {
+                history.receive.remove(0);
+            }
+            if history.transmit.len() > 30 {
+                history.transmit.remove(0);
+            }
+        }
     }
 
     pub(crate) fn sync_theme_if_due(&mut self, cx: &mut Context<Self>) {

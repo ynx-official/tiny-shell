@@ -30,6 +30,15 @@ pub struct ProcessSample {
 }
 
 #[derive(Debug, Clone, Default)]
+pub struct NetworkSample {
+    pub name: String,
+    pub received_bytes: u64,
+    pub transmitted_bytes: u64,
+    pub receive_rate: u64,
+    pub transmit_rate: u64,
+}
+
+#[derive(Debug, Clone, Default)]
 pub struct SystemSnapshot {
     pub os_name: String,
     pub kernel_name: String,
@@ -55,6 +64,7 @@ pub struct SystemSnapshot {
     pub net_tx: String,
     pub net_rx_rate: u64,
     pub net_tx_rate: u64,
+    pub network_interfaces: Vec<NetworkSample>,
     pub disks: Vec<DiskSample>,
     /// Complete mount list used by the full system information page. The
     /// compact sidebar continues to use `disks`.
@@ -120,6 +130,18 @@ impl SystemSampler {
         self.last_rx_total = rx_total;
         self.last_tx_total = tx_total;
         self.last_instant = now;
+        let mut network_interfaces = self
+            .nets
+            .iter()
+            .map(|(name, data)| NetworkSample {
+                name: name.clone(),
+                received_bytes: data.total_received(),
+                transmitted_bytes: data.total_transmitted(),
+                receive_rate: (data.received() as f64 / elapsed) as u64,
+                transmit_rate: (data.transmitted() as f64 / elapsed) as u64,
+            })
+            .collect::<Vec<_>>();
+        network_interfaces.sort_by(|left, right| left.name.cmp(&right.name));
 
         let mut filesystems: Vec<DiskSample> = self
             .disks
@@ -208,6 +230,7 @@ impl SystemSampler {
             net_tx: format!("{}/s", format_bytes(tx_rate)),
             net_rx_rate: rx_rate,
             net_tx_rate: tx_rate,
+            network_interfaces,
             disks,
             filesystems,
             processes,
@@ -279,6 +302,7 @@ pub fn remote_snapshot_from_kv(raw: &str) -> Result<SystemSnapshot> {
     let mut kv = BTreeMap::new();
     let mut disks = Vec::new();
     let mut filesystems = Vec::new();
+    let mut network_interfaces = Vec::new();
     let mut processes = Vec::new();
 
     for line in raw.lines().map(str::trim).filter(|line| !line.is_empty()) {
@@ -309,6 +333,18 @@ pub fn remote_snapshot_from_kv(raw: &str) -> Result<SystemSnapshot> {
                 mount: parts.next().unwrap_or_default().to_string(),
                 available_bytes: parts.next().unwrap_or("0").parse().unwrap_or_default(),
                 total_bytes: parts.next().unwrap_or("0").parse().unwrap_or_default(),
+            });
+            continue;
+        }
+
+        if let Some(rest) = line.strip_prefix("NETIF=") {
+            let mut parts = rest.split('\t');
+            network_interfaces.push(NetworkSample {
+                name: parts.next().unwrap_or_default().to_string(),
+                received_bytes: parts.next().unwrap_or("0").parse().unwrap_or_default(),
+                transmitted_bytes: parts.next().unwrap_or("0").parse().unwrap_or_default(),
+                receive_rate: parts.next().unwrap_or("0").parse().unwrap_or_default(),
+                transmit_rate: parts.next().unwrap_or("0").parse().unwrap_or_default(),
             });
             continue;
         }
@@ -370,6 +406,7 @@ pub fn remote_snapshot_from_kv(raw: &str) -> Result<SystemSnapshot> {
         }
         a.mount.cmp(&b.mount)
     });
+    network_interfaces.sort_by(|left, right| left.name.cmp(&right.name));
 
     Ok(SystemSnapshot {
         os_name: kv.get("OS_NAME").cloned().unwrap_or_default(),
@@ -396,6 +433,7 @@ pub fn remote_snapshot_from_kv(raw: &str) -> Result<SystemSnapshot> {
         net_tx: format!("{}/s", format_bytes(tx_rate)),
         net_rx_rate: rx_rate,
         net_tx_rate: tx_rate,
+        network_interfaces,
         disks,
         filesystems,
         processes,
@@ -434,6 +472,7 @@ mod tests {
              SWAP_USED=1000\n\
              NET_RX=128\n\
              NET_TX=64\n\
+             NETIF=eth0\t10000\t5000\t128\t64\n\
              PROCESS=42\t2048\t12.5\tsshd\n\
              DISK=/\t3000000000\t10000000000\n\
              FILESYSTEM=/\t3000000000\t10000000000\n\
@@ -448,6 +487,8 @@ mod tests {
         assert_eq!(snapshot.cpu_cores, 8);
         assert_eq!(snapshot.mem_available, 10000);
         assert_eq!(snapshot.processes[0].command, "sshd");
+        assert_eq!(snapshot.network_interfaces[0].name, "eth0");
+        assert_eq!(snapshot.network_interfaces[0].receive_rate, 128);
         assert_eq!(snapshot.disks[0].mount, "/");
         assert_eq!(snapshot.filesystems.len(), 2);
         assert_eq!(snapshot.filesystems[1].mount, "/run");

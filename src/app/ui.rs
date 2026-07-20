@@ -1,7 +1,7 @@
 use crate::app::resizable::{h_resizable, resizable_panel, v_resizable};
 use gpui::{
-    Context, ElementId, Focusable as _, FontWeight, Hsla, InteractiveElement as _, IntoElement,
-    MouseButton, MouseDownEvent, ParentElement as _, PathBuilder, Pixels, Render,
+    Anchor, Context, ElementId, Focusable as _, FontWeight, Hsla, InteractiveElement as _,
+    IntoElement, MouseButton, MouseDownEvent, ParentElement as _, PathBuilder, Pixels, Render,
     StatefulInteractiveElement as _, Styled as _, Window, canvas, div, hsla, point,
     prelude::FluentBuilder as _, px, relative, rems, uniform_list,
 };
@@ -12,7 +12,7 @@ use gpui_component::{
     checkbox::Checkbox,
     h_flex,
     input::Input,
-    menu::{ContextMenuExt as _, PopupMenuItem},
+    menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenuItem},
     progress::Progress,
     scroll::{ScrollableElement as _, Scrollbar, ScrollbarShow},
     tab::{Tab, TabBar},
@@ -44,6 +44,55 @@ fn format_uptime(seconds: u64) -> String {
         format!("{}{} {}{}", hours, t!("hours"), minutes, t!("minutes"))
     } else {
         format!("{}{}", minutes, t!("minutes"))
+    }
+}
+
+fn smooth_monitoring_series(values: &[f32]) -> Vec<f32> {
+    let Some((&first, rest)) = values.split_first() else {
+        return Vec::new();
+    };
+    let mut smoothed = Vec::with_capacity(values.len());
+    smoothed.push(first);
+    let mut previous = first;
+    for value in rest {
+        previous = previous * 0.58 + *value * 0.42;
+        smoothed.push(previous);
+    }
+    smoothed
+}
+
+fn nice_network_scale(max_value: f32) -> f32 {
+    if max_value <= 1.0 {
+        return 1.0;
+    }
+    let magnitude = 10_f32.powf(max_value.log10().floor());
+    let normalized = max_value / magnitude;
+    let step = if normalized <= 1.0 {
+        1.0
+    } else if normalized <= 2.0 {
+        2.0
+    } else if normalized <= 5.0 {
+        5.0
+    } else {
+        10.0
+    };
+    step * magnitude
+}
+
+fn format_network_axis(bytes_per_second: f32) -> String {
+    let (value, unit) = if bytes_per_second >= 1024.0 * 1024.0 * 1024.0 {
+        (bytes_per_second / (1024.0 * 1024.0 * 1024.0), "G")
+    } else if bytes_per_second >= 1024.0 * 1024.0 {
+        (bytes_per_second / (1024.0 * 1024.0), "M")
+    } else if bytes_per_second >= 1024.0 {
+        (bytes_per_second / 1024.0, "K")
+    } else {
+        (bytes_per_second, "B")
+    };
+    if value >= 10.0 {
+        format!("{value:.0}{unit}")
+    } else {
+        format!("{value:.1}{unit}")
     }
 }
 
@@ -388,7 +437,76 @@ impl Ashell {
                                         t!("send_rate").to_string(),
                                         snapshot.net_tx.clone(),
                                     )),
-                            ),
+                            )
+                            .child(
+                                h_flex()
+                                    .h(px(32.))
+                                    .items_center()
+                                    .px_4()
+                                    .bg(cx.theme().muted)
+                                    .text_size(rems(0.72))
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(div().flex_1().child(t!("network_interface")))
+                                    .child(div().w(px(120.)).text_center().child(t!("received")))
+                                    .child(div().w(px(120.)).text_center().child(t!("sent")))
+                                    .child(
+                                        div().w(px(110.)).text_center().child(t!("receive_rate")),
+                                    )
+                                    .child(div().w(px(110.)).text_center().child(t!("send_rate"))),
+                            )
+                            .children(snapshot.network_interfaces.into_iter().enumerate().map(
+                                |(index, interface)| {
+                                    h_flex()
+                                        .min_h(px(34.))
+                                        .items_center()
+                                        .px_4()
+                                        .when(index % 2 == 1, |this| {
+                                            this.bg(cx.theme().muted.opacity(0.35))
+                                        })
+                                        .child(
+                                            div()
+                                                .flex_1()
+                                                .min_w(px(0.))
+                                                .text_size(rems(0.74))
+                                                .font_weight(FontWeight::MEDIUM)
+                                                .child(interface.name),
+                                        )
+                                        .child(
+                                            div()
+                                                .w(px(120.))
+                                                .text_center()
+                                                .text_size(rems(0.74))
+                                                .child(format_bytes(interface.received_bytes)),
+                                        )
+                                        .child(
+                                            div()
+                                                .w(px(120.))
+                                                .text_center()
+                                                .text_size(rems(0.74))
+                                                .child(format_bytes(interface.transmitted_bytes)),
+                                        )
+                                        .child(
+                                            div()
+                                                .w(px(110.))
+                                                .text_center()
+                                                .text_size(rems(0.74))
+                                                .child(format!(
+                                                    "{}/s",
+                                                    format_bytes(interface.receive_rate)
+                                                )),
+                                        )
+                                        .child(
+                                            div()
+                                                .w(px(110.))
+                                                .text_center()
+                                                .text_size(rems(0.74))
+                                                .child(format!(
+                                                    "{}/s",
+                                                    format_bytes(interface.transmit_rate)
+                                                )),
+                                        )
+                                },
+                            )),
                     )
                     .child(
                         v_flex()
@@ -3226,8 +3344,58 @@ impl Ashell {
         let mem_color = cx.theme().chart_2;
         let swap_color = cx.theme().chart_3;
         let disk_color = cx.theme().chart_5;
-        let net_color = cx.theme().chart_4;
+        let net_color = Hsla::from(gpui::rgb(0x1586F5));
+        let net_tx_color = cx.theme().danger;
+        let net_grid_color = cx.theme().border.opacity(0.26);
         let muted_fg = cx.theme().muted_foreground;
+        let selected_network_interface = self.selected_network_interface.clone();
+        let selected_network = selected_network_interface.as_ref().and_then(|selected| {
+            self.system
+                .network_interfaces
+                .iter()
+                .find(|interface| &interface.name == selected)
+        });
+        let selected_network_label = selected_network_interface
+            .clone()
+            .unwrap_or_else(|| t!("total").to_string());
+        let selected_rx_rate = selected_network
+            .map(|interface| interface.receive_rate)
+            .unwrap_or(self.system.net_rx_rate);
+        let selected_tx_rate = selected_network
+            .map(|interface| interface.transmit_rate)
+            .unwrap_or(self.system.net_tx_rate);
+        let selected_rx_history = smooth_monitoring_series(
+            &selected_network_interface
+                .as_ref()
+                .and_then(|selected| self.network_interface_histories.get(selected))
+                .map(|history| history.receive.clone())
+                .unwrap_or_else(|| self.net_rx_history.clone()),
+        );
+        let selected_tx_history = smooth_monitoring_series(
+            &selected_network_interface
+                .as_ref()
+                .and_then(|selected| self.network_interface_histories.get(selected))
+                .map(|history| history.transmit.clone())
+                .unwrap_or_else(|| self.net_tx_history.clone()),
+        );
+        let network_chart_max = nice_network_scale(
+            selected_rx_history
+                .iter()
+                .chain(selected_tx_history.iter())
+                .copied()
+                .fold(0.0f32, f32::max),
+        );
+        let network_axis_labels = [
+            format_network_axis(network_chart_max),
+            format_network_axis(network_chart_max * 2.0 / 3.0),
+            format_network_axis(network_chart_max / 3.0),
+        ];
+        let network_interface_names = self
+            .system
+            .network_interfaces
+            .iter()
+            .map(|interface| interface.name.clone())
+            .collect::<Vec<_>>();
         let process_view = self.process_view;
         let mut displayed_processes = self.system.processes.clone();
         match process_view {
@@ -3510,9 +3678,10 @@ impl Ashell {
             )
             .child(
                 v_flex()
-                    .gap_1()
+                    .gap_2()
                     .child(
                         h_flex()
+                            .items_center()
                             .justify_between()
                             .child(
                                 div()
@@ -3521,50 +3690,224 @@ impl Ashell {
                                     .child(t!("net").to_string()),
                             )
                             .child(
-                                div()
-                                    .text_size(rems(0.85))
-                                    .text_color(muted_fg)
-                                    .child(t!("live")),
+                                Button::new("sidebar-network-selector")
+                                    .secondary()
+                                    .xsmall()
+                                    .label(selected_network_label)
+                                    .icon(IconName::ChevronDown)
+                                    .dropdown_menu_with_anchor(Anchor::BottomRight, {
+                                        let view = cx.entity();
+                                        move |mut menu, window, cx| {
+                                            let selected =
+                                                view.read(cx).selected_network_interface.clone();
+                                            menu = menu.item(
+                                                PopupMenuItem::new(t!("total").to_string())
+                                                    .checked(selected.is_none())
+                                                    .on_click(window.listener_for(
+                                                        &view,
+                                                        |this, _, _, cx| {
+                                                            this.selected_network_interface = None;
+                                                            cx.notify();
+                                                        },
+                                                    )),
+                                            );
+                                            for name in network_interface_names.clone() {
+                                                let selected_name = name.clone();
+                                                menu = menu.item(
+                                                    PopupMenuItem::new(name.clone())
+                                                        .checked(selected.as_ref() == Some(&name))
+                                                        .on_click(window.listener_for(
+                                                            &view,
+                                                            move |this, _, _, cx| {
+                                                                this.selected_network_interface =
+                                                                    Some(selected_name.clone());
+                                                                cx.notify();
+                                                            },
+                                                        )),
+                                                );
+                                            }
+                                            menu
+                                        }
+                                    }),
                             ),
                     )
                     .child(
                         h_flex()
-                            .gap_2()
+                            .items_center()
+                            .gap_4()
+                            .text_size(rems(0.72))
                             .child(
                                 h_flex()
-                                    .flex_1()
-                                    .min_w(px(0.))
                                     .gap_1()
                                     .child(
                                         div()
-                                            .flex_none()
-                                            .text_size(rems(0.75))
-                                            .text_color(net_color)
-                                            .child("↓"),
+                                            .text_color(net_tx_color)
+                                            .child("↑"),
                                     )
                                     .child(
-                                        div()
-                                            .text_size(rems(0.75))
-                                            .child(self.system.net_rx.clone()),
+                                        div().child(format!(
+                                            "{}/s",
+                                            format_bytes(selected_tx_rate)
+                                        )),
                                     ),
                             )
                             .child(
                                 h_flex()
-                                    .flex_1()
-                                    .min_w(px(0.))
                                     .gap_1()
                                     .child(
                                         div()
-                                            .flex_none()
-                                            .text_size(rems(0.75))
-                                            .text_color(cx.theme().chart_5)
-                                            .child("↑"),
+                                            .text_color(net_color)
+                                            .child("↓"),
                                     )
                                     .child(
-                                        div()
-                                            .text_size(rems(0.75))
-                                            .child(self.system.net_tx.clone()),
+                                        div().child(format!(
+                                            "{}/s",
+                                            format_bytes(selected_rx_rate)
+                                        )),
                                     ),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .w_full()
+                            .h(px(88.))
+                            .p_2()
+                            .rounded_md()
+                            .border_1()
+                            .border_color(cx.theme().border.opacity(0.7))
+                            .bg(cx.theme().muted.opacity(0.22))
+                            .child(
+                                h_flex()
+                                    .size_full()
+                                    .gap_2()
+                                    .child(
+                                        v_flex()
+                                            .w(px(34.))
+                                            .h_full()
+                                            .flex_none()
+                                            .py_1()
+                                            .justify_between()
+                                            .text_size(rems(0.58))
+                                            .text_color(muted_fg)
+                                            .child(
+                                                div()
+                                                    .w_full()
+                                                    .text_right()
+                                                    .child(network_axis_labels[0].clone()),
+                                            )
+                                            .child(
+                                                div()
+                                                    .w_full()
+                                                    .text_right()
+                                                    .child(network_axis_labels[1].clone()),
+                                            )
+                                            .child(
+                                                div()
+                                                    .w_full()
+                                                    .text_right()
+                                                    .child(network_axis_labels[2].clone()),
+                                            )
+                                            .child(div().h(px(1.))),
+                                    )
+                                    .child(canvas(
+                                    move |bounds, _window, _cx| {
+                                        let point_count = selected_rx_history
+                                            .len()
+                                            .max(selected_tx_history.len());
+                                        if point_count < 2 {
+                                            return None;
+                                        }
+                                        let max_value = network_chart_max.max(1.0);
+                                        let plot_left = bounds.origin.x + px(4.);
+                                        let plot_right = bounds.origin.x + bounds.size.width - px(4.);
+                                        let plot_top = bounds.origin.y + px(5.);
+                                        let baseline = bounds.origin.y + bounds.size.height - px(5.);
+                                        let plot_width = plot_right - plot_left;
+                                        let plot_height = baseline - plot_top;
+                                        let mut paths = Vec::new();
+                                        for step in 1..=2 {
+                                            let y = plot_top + plot_height * step as f32 / 3.0;
+                                            let mut guide = PathBuilder::stroke(px(1.))
+                                                .dash_array(&[px(3.), px(4.)]);
+                                            guide.move_to(point(plot_left, y));
+                                            guide.line_to(point(plot_right, y));
+                                            if let Ok(path) = guide.build() {
+                                                paths.push((path, net_grid_color));
+                                            }
+                                        }
+                                        for (values, color) in [
+                                            (&selected_rx_history, net_color),
+                                            (&selected_tx_history, net_tx_color),
+                                        ] {
+                                            if values.len() < 2 {
+                                                continue;
+                                            }
+                                            let points = values
+                                                .iter()
+                                                .enumerate()
+                                                .map(|(index, value)| {
+                                                    let x = plot_left
+                                                        + plot_width * index as f32
+                                                            / (values.len() - 1) as f32;
+                                                    let y = baseline
+                                                        - plot_height * (*value / max_value * 0.92);
+                                                    point(x, y)
+                                                })
+                                                .collect::<Vec<_>>();
+
+                                            let append_curve = |builder: &mut PathBuilder| {
+                                                builder.move_to(points[0]);
+                                                for pair in points.windows(2) {
+                                                    let previous = pair[0];
+                                                    let current = pair[1];
+                                                    let midpoint = point(
+                                                        previous.x
+                                                            + (current.x - previous.x) * 0.5,
+                                                        previous.y
+                                                            + (current.y - previous.y) * 0.5,
+                                                    );
+                                                    builder.curve_to(midpoint, previous);
+                                                }
+                                                builder.line_to(*points.last().unwrap());
+                                            };
+
+                                            let mut fill = PathBuilder::fill();
+                                            fill.move_to(point(points[0].x, baseline));
+                                            fill.line_to(points[0]);
+                                            for pair in points.windows(2) {
+                                                let previous = pair[0];
+                                                let current = pair[1];
+                                                let midpoint = point(
+                                                    previous.x + (current.x - previous.x) * 0.5,
+                                                    previous.y + (current.y - previous.y) * 0.5,
+                                                );
+                                                fill.curve_to(midpoint, previous);
+                                            }
+                                            fill.line_to(*points.last().unwrap());
+                                            fill.line_to(point(points.last().unwrap().x, baseline));
+                                            fill.close();
+                                            if let Ok(path) = fill.build() {
+                                                paths.push((path, color.opacity(0.1)));
+                                            }
+
+                                            let mut stroke = PathBuilder::stroke(px(1.7));
+                                            append_curve(&mut stroke);
+                                            if let Ok(path) = stroke.build() {
+                                                paths.push((path, color));
+                                            }
+                                        }
+                                        Some(paths)
+                                    },
+                                    move |_bounds, paths, window, _cx| {
+                                        if let Some(paths) = paths {
+                                            for (path, color) in paths {
+                                                window.paint_path(path, color);
+                                            }
+                                        }
+                                    },
+                                )
+                                .flex_1()
+                                .h_full()),
                             ),
                     ),
             )
