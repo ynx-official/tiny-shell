@@ -563,13 +563,15 @@ EOF
   os_name=$(awk -F= '"'"'/^PRETTY_NAME=/ { value=$2; gsub(/^"|"$/, "", value); print value; exit }'"'"' /etc/os-release 2>/dev/null)
   cpu_model=$(awk -F: '"'"'/^(model name|Hardware)/ { value=$2; sub(/^[[:space:]]+/, "", value); print value; exit }'"'"' /proc/cpuinfo 2>/dev/null)
   cpu_frequency=$(awk -F: '"'"'/^cpu MHz/ { value=$2; sub(/^[[:space:]]+/, "", value); printf "%.0f", value; exit }'"'"' /proc/cpuinfo 2>/dev/null)
+  ip_addresses=$(hostname -I 2>/dev/null | xargs 2>/dev/null)
 
   echo "OS_NAME=${os_name:-Linux}"
   echo "KERNEL_NAME=$(uname -s 2>/dev/null)"
   echo "KERNEL_VERSION=$(uname -r 2>/dev/null)"
   echo "ARCHITECTURE=$(uname -m 2>/dev/null)"
   echo "HOSTNAME=$(hostname 2>/dev/null)"
-  echo "IP_ADDRESS=$(hostname -I 2>/dev/null | awk '"'"'{print $1}'"'"')"
+  echo "IP_ADDRESS=$(printf "%s\n" "$ip_addresses" | awk '"'"'{print $1}'"'"')"
+  echo "IP_ADDRESSES=$ip_addresses"
   echo "UPTIME_SECONDS=$(cut -d. -f1 /proc/uptime 2>/dev/null)"
   echo "LOAD_AVERAGE=$(cut -d" " -f1-3 /proc/loadavg 2>/dev/null)"
   echo "CPU_MODEL=${cpu_model:-unknown}"
@@ -624,13 +626,15 @@ EOF
   swap_total=$(printf "%s\n" "$swap_line" | awk -F"[= ,]+" '"'"'
     function mult(unit) { return unit=="K"?1024:(unit=="M"?1048576:(unit=="G"?1073741824:(unit=="T"?1099511627776:1))) }
     /used/ && /free/ { used=$4; free=$8; unit1=substr(used, length(used), 1); unit2=substr(free, length(free), 1); sub(/[A-Za-z]+$/, "", used); sub(/[A-Za-z]+$/, "", free); printf "%.0f", (used * mult(unit1)) + (free * mult(unit2)) }'"'"')
+  ip_addresses=$(ifconfig 2>/dev/null | awk '"'"'/inet / && $2 != "127.0.0.1" { printf "%s%s", separator, $2; separator=" " }'"'"')
 
   echo "OS_NAME=$(sw_vers -productName 2>/dev/null) $(sw_vers -productVersion 2>/dev/null)"
   echo "KERNEL_NAME=$(uname -s 2>/dev/null)"
   echo "KERNEL_VERSION=$(uname -r 2>/dev/null)"
   echo "ARCHITECTURE=$(uname -m 2>/dev/null)"
   echo "HOSTNAME=$(hostname 2>/dev/null)"
-  echo "IP_ADDRESS=$(ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr en1 2>/dev/null)"
+  echo "IP_ADDRESS=$(printf "%s\n" "$ip_addresses" | awk '"'"'{print $1}'"'"')"
+  echo "IP_ADDRESSES=$ip_addresses"
   echo "UPTIME_SECONDS=$(sysctl -n kern.boottime 2>/dev/null | awk -F"[=,]" '"'"'{ gsub(/ /, "", $2); print systime()-$2 }'"'"')"
   echo "LOAD_AVERAGE=$(sysctl -n vm.loadavg 2>/dev/null | tr -d "{}")"
   echo "CPU_MODEL=$(sysctl -n machdep.cpu.brand_string 2>/dev/null)"
@@ -663,6 +667,7 @@ echo "KERNEL_VERSION=$(uname -r 2>/dev/null)"
 echo "ARCHITECTURE=$(uname -m 2>/dev/null)"
 echo "HOSTNAME=$(hostname 2>/dev/null)"
 echo "IP_ADDRESS="
+echo "IP_ADDRESSES="
 echo "UPTIME_SECONDS=0"
 echo "LOAD_AVERAGE="
 echo "CPU_MODEL="

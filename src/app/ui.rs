@@ -3343,10 +3343,9 @@ impl Ashell {
         let cpu_color = cx.theme().chart_1;
         let mem_color = cx.theme().chart_2;
         let swap_color = cx.theme().chart_3;
-        let disk_color = cx.theme().chart_5;
         let net_color = Hsla::from(gpui::rgb(0x1586F5));
         let net_tx_color = cx.theme().danger;
-        let net_grid_color = cx.theme().border.opacity(0.26);
+        let net_grid_color = cx.theme().border.opacity(0.18);
         let muted_fg = cx.theme().muted_foreground;
         let selected_network_interface = self.selected_network_interface.clone();
         let selected_network = selected_network_interface.as_ref().and_then(|selected| {
@@ -3433,94 +3432,116 @@ impl Ashell {
             .p_1()
             .child(
                 v_flex()
-                    .gap_1()
-                    .child(
-                        h_flex()
-                            .justify_between()
-                            .child(
-                                div()
-                                    .text_size(rems(0.85))
-                                    .text_color(cpu_color)
-                                    .child(t!("cpu").to_string()),
-                            )
-                            .child(
-                                div()
-                                    .text_size(rems(0.85))
-                                    .text_color(muted_fg)
-                                    .child(format!("{:.1}%", cpu_pct * 100.0)),
-                            ),
-                    )
-                    .child(
-                        Progress::new("sidebar-cpu")
-                            .value(cpu_pct * 100.0)
-                            .color(cpu_color)
-                            .with_size(px(4.))
-                            .w_full(),
-                    ),
-            )
-            .child(
-                v_flex()
-                    .gap_1()
-                    .child(
-                        h_flex()
-                            .justify_between()
-                            .child(
-                                div()
-                                    .text_size(rems(0.85))
-                                    .text_color(mem_color)
-                                    .child(t!("mem").to_string()),
-                            )
-                            .child(
-                                div()
-                                    .text_size(rems(0.85))
-                                    .text_color(muted_fg)
-                                    .child(self.system.mem_detail.clone()),
-                            ),
-                    )
-                    .child(
-                        Progress::new("sidebar-mem")
-                            .value(mem_pct * 100.0)
-                            .color(mem_color)
-                            .with_size(px(4.))
-                            .w_full(),
-                    ),
-            )
-            .child(
-                v_flex()
-                    .gap_1()
-                    .child(
-                        h_flex()
-                            .justify_between()
-                            .child(
-                                div()
-                                    .text_size(rems(0.85))
-                                    .text_color(swap_color)
-                                    .child(t!("swap").to_string()),
-                            )
-                            .child(
-                                div()
-                                    .text_size(rems(0.85))
-                                    .text_color(muted_fg)
-                                    .child(self.system.swap_detail.clone()),
-                            ),
-                    )
-                    .child(
-                        Progress::new("sidebar-swap")
-                            .value(swap_pct * 100.0)
-                            .color(swap_color)
-                            .with_size(px(4.))
-                            .w_full(),
-                    ),
-            )
-            .child(
-                v_flex()
-                    .rounded_md()
+                    .rounded_lg()
                     .border_1()
                     .border_color(cx.theme().border)
                     .overflow_hidden()
                     .child(
                         h_flex()
-                            .h(px(26.))
+                            .h(px(32.))
+                            .items_center()
+                            .px_3()
+                            .bg(cx.theme().muted)
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_size(rems(0.82))
+                            .child(t!("resources")),
+                    )
+                    .child(
+                        v_flex()
+                            .p_3()
+                            .gap_3()
+                            .child(
+                                v_flex()
+                                    .gap_1()
+                                    .child(
+                                        h_flex()
+                                            .justify_between()
+                                            .text_size(rems(0.8))
+                                            .child(
+                                                div()
+                                                    .font_weight(FontWeight::MEDIUM)
+                                                    .child(t!("cpu")),
+                                            )
+                                            .child(
+                                                div()
+                                                    .text_color(muted_fg)
+                                                    .child(format!(
+                                                        "{:.1}%",
+                                                        cpu_pct * 100.0
+                                                    )),
+                                            ),
+                                    )
+                                    .child(
+                                        Progress::new("sidebar-cpu")
+                                            .value(cpu_pct * 100.0)
+                                            .color(cpu_color)
+                                            .with_size(px(4.))
+                                            .w_full(),
+                                    ),
+                            )
+                            .child(
+                                v_flex()
+                                    .gap_1()
+                                    .child(
+                                        h_flex()
+                                            .justify_between()
+                                            .text_size(rems(0.8))
+                                            .child(
+                                                div()
+                                                    .font_weight(FontWeight::MEDIUM)
+                                                    .child(t!("mem")),
+                                            )
+                                            .child(
+                                                div()
+                                                    .text_color(muted_fg)
+                                                    .child(self.system.mem_detail.clone()),
+                                            ),
+                                    )
+                                    .child(
+                                        Progress::new("sidebar-mem")
+                                            .value(mem_pct * 100.0)
+                                            .color(mem_color)
+                                            .with_size(px(4.))
+                                            .w_full(),
+                                    ),
+                            )
+                            .child(
+                                v_flex()
+                                    .gap_1()
+                                    .child(
+                                        h_flex()
+                                            .justify_between()
+                                            .text_size(rems(0.8))
+                                            .child(
+                                                div()
+                                                    .font_weight(FontWeight::MEDIUM)
+                                                    .child(t!("swap")),
+                                            )
+                                            .child(
+                                                div()
+                                                    .text_color(muted_fg)
+                                                    .child(self.system.swap_detail.clone()),
+                                            ),
+                                    )
+                                    .child(
+                                        Progress::new("sidebar-swap")
+                                            .value(swap_pct * 100.0)
+                                            .color(swap_color)
+                                            .with_size(px(4.))
+                                            .w_full(),
+                                    ),
+                            ),
+                    ),
+            )
+            .child(
+                v_flex()
+                    .rounded_lg()
+                    .border_1()
+                    .border_color(cx.theme().border)
+                    .overflow_hidden()
+                    .child(
+                        h_flex()
+                            .h(px(30.))
                             .items_center()
                             .p(px(2.))
                             .gap_1()
@@ -3546,7 +3567,7 @@ impl Ashell {
                                         muted_fg
                                     })
                                     .text_center()
-                                    .text_size(rems(0.72))
+                                    .text_size(rems(0.76))
                                     .font_weight(if process_view == ProcessView::Memory {
                                         FontWeight::SEMIBOLD
                                     } else {
@@ -3579,7 +3600,7 @@ impl Ashell {
                                         muted_fg
                                     })
                                     .text_center()
-                                    .text_size(rems(0.72))
+                                    .text_size(rems(0.76))
                                     .font_weight(if process_view == ProcessView::Cpu {
                                         FontWeight::SEMIBOLD
                                     } else {
@@ -3612,7 +3633,7 @@ impl Ashell {
                                         muted_fg
                                     })
                                     .text_center()
-                                    .text_size(rems(0.72))
+                                    .text_size(rems(0.76))
                                     .font_weight(if process_view == ProcessView::Activity {
                                         FontWeight::SEMIBOLD
                                     } else {
@@ -3628,17 +3649,17 @@ impl Ashell {
                     .children(displayed_processes.into_iter().enumerate().map(
                         |(index, process)| {
                             h_flex()
-                                .h(px(25.))
+                                .h(px(29.))
                                 .items_center()
                                 .when(index % 2 == 1, |this| {
-                                    this.bg(cx.theme().muted.opacity(0.45))
+                                    this.bg(cx.theme().muted.opacity(0.22))
                                 })
                                 .child(
                                     div()
                                         .flex_1()
                                         .min_w(px(0.))
                                         .text_center()
-                                        .text_size(rems(0.7))
+                                        .text_size(rems(0.73))
                                         .child(format_bytes(process.memory_bytes)),
                                 )
                                 .child(
@@ -3646,8 +3667,8 @@ impl Ashell {
                                         .flex_1()
                                         .min_w(px(0.))
                                         .text_center()
-                                        .text_size(rems(0.7))
-                                        .child(format!("{:.1}", process.cpu_percent)),
+                                        .text_size(rems(0.73))
+                                        .child(format!("{:.1}%", process.cpu_percent)),
                                 )
                                 .child(
                                     div()
@@ -3658,7 +3679,7 @@ impl Ashell {
                                         .whitespace_nowrap()
                                         .text_ellipsis()
                                         .text_center()
-                                        .text_size(rems(0.7))
+                                        .text_size(rems(0.73))
                                         .child(process.command),
                                 )
                         },
@@ -3678,15 +3699,21 @@ impl Ashell {
             )
             .child(
                 v_flex()
-                    .gap_2()
+                    .rounded_lg()
+                    .border_1()
+                    .border_color(cx.theme().border)
+                    .overflow_hidden()
                     .child(
                         h_flex()
+                            .h(px(36.))
+                            .px_3()
                             .items_center()
                             .justify_between()
+                            .bg(cx.theme().muted)
                             .child(
                                 div()
-                                    .text_size(rems(0.85))
-                                    .text_color(net_color)
+                                    .text_size(rems(0.82))
+                                    .font_weight(FontWeight::SEMIBOLD)
                                     .child(t!("net").to_string()),
                             )
                             .child(
@@ -3735,18 +3762,22 @@ impl Ashell {
                         h_flex()
                             .items_center()
                             .gap_4()
-                            .text_size(rems(0.72))
+                            .px_3()
+                            .pt_2()
+                            .text_size(rems(0.74))
                             .child(
                                 h_flex()
                                     .gap_1()
                                     .child(
                                         div()
-                                            .text_color(net_tx_color)
-                                            .child("↑"),
+                                            .size(px(7.))
+                                            .rounded_full()
+                                            .bg(net_tx_color),
                                     )
                                     .child(
                                         div().child(format!(
-                                            "{}/s",
+                                            "{} {}/s",
+                                            t!("upload"),
                                             format_bytes(selected_tx_rate)
                                         )),
                                     ),
@@ -3756,12 +3787,14 @@ impl Ashell {
                                     .gap_1()
                                     .child(
                                         div()
-                                            .text_color(net_color)
-                                            .child("↓"),
+                                            .size(px(7.))
+                                            .rounded_full()
+                                            .bg(net_color),
                                     )
                                     .child(
                                         div().child(format!(
-                                            "{}/s",
+                                            "{} {}/s",
+                                            t!("download"),
                                             format_bytes(selected_rx_rate)
                                         )),
                                     ),
@@ -3769,13 +3802,12 @@ impl Ashell {
                     )
                     .child(
                         div()
-                            .w_full()
                             .h(px(88.))
                             .p_2()
+                            .mx_3()
+                            .mb_3()
                             .rounded_md()
-                            .border_1()
-                            .border_color(cx.theme().border.opacity(0.7))
-                            .bg(cx.theme().muted.opacity(0.22))
+                            .bg(cx.theme().muted.opacity(0.18))
                             .child(
                                 h_flex()
                                     .size_full()
@@ -3807,7 +3839,12 @@ impl Ashell {
                                                     .text_right()
                                                     .child(network_axis_labels[2].clone()),
                                             )
-                                            .child(div().h(px(1.))),
+                                            .child(
+                                                div()
+                                                    .w_full()
+                                                    .text_right()
+                                                    .child("0K"),
+                                            ),
                                     )
                                     .child(canvas(
                                     move |bounds, _window, _cx| {
@@ -3835,9 +3872,11 @@ impl Ashell {
                                                 paths.push((path, net_grid_color));
                                             }
                                         }
+                                        let mut fills = Vec::new();
+                                        let mut strokes = Vec::new();
                                         for (values, color) in [
-                                            (&selected_rx_history, net_color),
                                             (&selected_tx_history, net_tx_color),
+                                            (&selected_rx_history, net_color),
                                         ] {
                                             if values.len() < 2 {
                                                 continue;
@@ -3849,8 +3888,12 @@ impl Ashell {
                                                     let x = plot_left
                                                         + plot_width * index as f32
                                                             / (values.len() - 1) as f32;
-                                                    let y = baseline
-                                                        - plot_height * (*value / max_value * 0.92);
+                                                    let normalized = if *value > 0.0 {
+                                                        (*value / max_value * 0.92).max(0.025)
+                                                    } else {
+                                                        0.0
+                                                    };
+                                                    let y = baseline - plot_height * normalized;
                                                     point(x, y)
                                                 })
                                                 .collect::<Vec<_>>();
@@ -3887,15 +3930,17 @@ impl Ashell {
                                             fill.line_to(point(points.last().unwrap().x, baseline));
                                             fill.close();
                                             if let Ok(path) = fill.build() {
-                                                paths.push((path, color.opacity(0.1)));
+                                                fills.push((path, color.opacity(0.055)));
                                             }
 
-                                            let mut stroke = PathBuilder::stroke(px(1.7));
+                                            let mut stroke = PathBuilder::stroke(px(1.5));
                                             append_curve(&mut stroke);
                                             if let Ok(path) = stroke.build() {
-                                                paths.push((path, color));
+                                                strokes.push((path, color));
                                             }
                                         }
+                                        paths.extend(fills);
+                                        paths.extend(strokes);
                                         Some(paths)
                                     },
                                     move |_bounds, paths, window, _cx| {
@@ -3913,50 +3958,54 @@ impl Ashell {
             )
             .child(
                 v_flex()
-                    .gap_2()
+                    .rounded_lg()
+                    .border_1()
+                    .border_color(cx.theme().border)
+                    .overflow_hidden()
                     .child(
                         h_flex()
+                            .h(px(36.))
+                            .px_3()
                             .justify_between()
                             .items_center()
+                            .bg(cx.theme().muted)
                             .child(
                                 div()
-                                    .text_size(rems(0.85))
-                                    .text_color(disk_color)
+                                    .text_size(rems(0.82))
+                                    .font_weight(FontWeight::SEMIBOLD)
                                     .child(t!("disk").to_string()),
                             )
-                            .children(if self.system.filesystems.len() > 3 {
-                                Some(
-                                    div()
-                                        .text_size(rems(0.65))
-                                        .text_color(muted_fg)
-                                        .child(t!("scroll").to_string()),
-                                )
-                            } else {
-                                None
-                            }),
+                            .child(
+                                div()
+                                    .text_size(rems(0.68))
+                                    .text_color(muted_fg)
+                                    .child(format!(
+                                        "{} {}",
+                                        self.system.filesystems.len(),
+                                        t!("mounts")
+                                    )),
+                            ),
                     )
                     .child(
                         v_flex()
                             .w_full()
-                            .rounded_lg()
-                            .border_1()
-                            .border_color(cx.theme().border)
-                            .overflow_hidden()
                             .child(
                                 h_flex()
-                                    .h(px(38.))
+                                    .h(px(32.))
                                     .flex_none()
                                     .items_center()
-                                    .px_4()
-                                    .bg(cx.theme().muted)
-                                    .text_size(rems(0.82))
-                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .px_3()
+                                    .border_t_1()
+                                    .border_b_1()
+                                    .border_color(cx.theme().border.opacity(0.7))
+                                    .text_size(rems(0.72))
+                                    .text_color(muted_fg)
                                     .child(div().flex_1().min_w(px(0.)).child(t!("disk_path")))
                                     .child(
                                         div()
                                             .flex_1()
                                             .min_w(px(0.))
-                                            .text_center()
+                                            .text_right()
                                             .child(t!("available_size")),
                                     ),
                             )
@@ -3969,22 +4018,23 @@ impl Ashell {
                                             .id("sidebar-disk-scroll")
                                             .track_scroll(&self.disk_scroll_handle)
                                             .overflow_y_scroll()
-                                            .max_h(px(244.))
-                                            .gap_1()
-                                            .p_1()
+                                            .max_h(px(228.))
                                             .children(self.system.filesystems.iter().enumerate().map(
                                                 |(index, disk)| {
                                                     let mount = disk.mount.clone();
+                                                    let capacity = format!(
+                                                        "{} / {}",
+                                                        format_bytes(disk.available_bytes),
+                                                        format_bytes(disk.total_bytes)
+                                                    );
                                                     h_flex()
-                                                        .h(px(48.))
+                                                        .h(px(36.))
                                                         .items_center()
                                                         .px_3()
-                                                        .rounded_sm()
+                                                        .border_b_1()
+                                                        .border_color(cx.theme().border.opacity(0.35))
                                                         .when(index % 2 == 1, |this| {
-                                                            this.bg(cx.theme().muted.opacity(0.45))
-                                                        })
-                                                        .when(index % 2 == 0, |this| {
-                                                            this.bg(cx.theme().background)
+                                                            this.bg(cx.theme().muted.opacity(0.22))
                                                         })
                                                         .child(
                                                             div()
@@ -3994,7 +4044,7 @@ impl Ashell {
                                                                 .overflow_hidden()
                                                                 .whitespace_nowrap()
                                                                 .text_ellipsis()
-                                                                .text_size(rems(0.8))
+                                                                .text_size(rems(0.73))
                                                                 .font_weight(FontWeight::MEDIUM)
                                                                 .tooltip({
                                                                     let mount = mount.clone();
@@ -4009,17 +4059,26 @@ impl Ashell {
                                                         )
                                                         .child(
                                                             div()
+                                                                .id(("sidebar-disk-capacity", index))
                                                                 .flex_1()
                                                                 .min_w(px(0.))
-                                                                .text_center()
+                                                                .text_right()
+                                                                .pr_2()
+                                                                .overflow_hidden()
                                                                 .whitespace_nowrap()
-                                                                .text_size(rems(0.76))
+                                                                .text_ellipsis()
+                                                                .text_size(rems(0.7))
                                                                 .text_color(muted_fg)
-                                                                .child(format!(
-                                                                    "{}/{}",
-                                                                    format_bytes(disk.available_bytes),
-                                                                    format_bytes(disk.total_bytes)
-                                                                )),
+                                                                .tooltip({
+                                                                    let capacity = capacity.clone();
+                                                                    move |window, cx| {
+                                                                        gpui_component::tooltip::Tooltip::new(
+                                                                            capacity.clone(),
+                                                                        )
+                                                                        .build(window, cx)
+                                                                    }
+                                                                })
+                                                                .child(capacity),
                                                         )
                                                 },
                                             )),
@@ -4053,6 +4112,16 @@ impl Ashell {
         let connection_text = active_session
             .map(|session| format!("{}@{}:{}", session.user, session.host, session.port))
             .unwrap_or_else(|| t!("local_terminal").to_string());
+        let mut ip_addresses = self.system.ip_addresses.clone();
+        if ip_addresses.is_empty() && !host_text.is_empty() {
+            ip_addresses.push(host_text.clone());
+        }
+        let primary_ip = ip_addresses
+            .first()
+            .cloned()
+            .unwrap_or_else(|| "-".to_string());
+        let additional_ip_count = ip_addresses.len().saturating_sub(1);
+        let ip_tooltip = ip_addresses.join("\n");
 
         v_flex()
             .gap_2()
@@ -4119,11 +4188,70 @@ impl Ashell {
                                     .child(t!("server_ip")),
                             )
                             .child(
-                                div()
+                                h_flex()
+                                    .id("sidebar-ip-list")
                                     .flex_1()
                                     .min_w(px(0.))
-                                    .text_size(rems(0.8))
-                                    .child(host_text),
+                                    .items_center()
+                                    .gap_1()
+                                    .tooltip({
+                                        let tooltip = ip_tooltip.clone();
+                                        move |window, cx| {
+                                            gpui_component::tooltip::Tooltip::new(tooltip.clone())
+                                                .build(window, cx)
+                                        }
+                                    })
+                                    .child(
+                                        div()
+                                            .id("sidebar-primary-ip")
+                                            .flex_1()
+                                            .min_w(px(0.))
+                                            .overflow_hidden()
+                                            .whitespace_nowrap()
+                                            .text_ellipsis()
+                                            .cursor_pointer()
+                                            .text_size(rems(0.8))
+                                            .on_click({
+                                                let ip = primary_ip.clone();
+                                                cx.listener(move |_this, _, _, cx| {
+                                                    cx.write_to_clipboard(
+                                                        gpui::ClipboardItem::new_string(ip.clone()),
+                                                    );
+                                                })
+                                            })
+                                            .child(primary_ip),
+                                    )
+                                    .when(additional_ip_count > 0, |this| {
+                                        this.child(
+                                            Button::new("sidebar-more-ips")
+                                                .ghost()
+                                                .xsmall()
+                                                .label(format!("+{additional_ip_count}"))
+                                                .dropdown_menu_with_anchor(Anchor::BottomLeft, {
+                                                    let view = cx.entity();
+                                                    move |mut menu, window, _cx| {
+                                                        for ip in ip_addresses.clone() {
+                                                            let copied_ip = ip.clone();
+                                                            menu = menu.item(
+                                                                PopupMenuItem::new(ip).on_click(
+                                                                    window.listener_for(
+                                                                        &view,
+                                                                        move |_this, _, _, cx| {
+                                                                            cx.write_to_clipboard(
+                                                                                gpui::ClipboardItem::new_string(
+                                                                                    copied_ip.clone(),
+                                                                                ),
+                                                                            );
+                                                                        },
+                                                                    ),
+                                                                ),
+                                                            );
+                                                        }
+                                                        menu
+                                                    }
+                                                }),
+                                        )
+                                    }),
                             ),
                     )
                     .child(
@@ -4143,6 +4271,25 @@ impl Ashell {
                                     .min_w(px(0.))
                                     .text_size(rems(0.75))
                                     .child(connection_text),
+                            ),
+                    )
+                    .child(
+                        h_flex()
+                            .items_center()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .w(px(48.))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_size(rems(0.8))
+                                    .child(t!("running")),
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w(px(0.))
+                                    .text_size(rems(0.75))
+                                    .child(format_uptime(self.system.uptime_seconds)),
                             ),
                     ),
             )
