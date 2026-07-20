@@ -3683,8 +3683,19 @@ impl Ashell {
                                         .top_0()
                                         .left_0()
                                         .right_0()
-                                        .h(px(3.))
-                                        .bg(selected_tab_color),
+                                        .bottom_0()
+                                        .rounded_tl(px(8.))
+                                        .rounded_tr(px(8.))
+                                        .bg(cx.theme().background)
+                                        .child(
+                                            div()
+                                                .absolute()
+                                                .top_0()
+                                                .left_0()
+                                                .right_0()
+                                                .h(px(3.))
+                                                .bg(selected_tab_color),
+                                        ),
                                 )
                             })
                             .child(
@@ -3705,6 +3716,15 @@ impl Ashell {
                             }));
                         let plus_tab = Tab::new()
                             .min_w(px(40.))
+                            .prefix(
+                                div()
+                                    .absolute()
+                                    .left_0()
+                                    .top(px(8.))
+                                    .bottom(px(8.))
+                                    .w(px(1.))
+                                    .bg(cx.theme().border.opacity(0.8)),
+                            )
                             .child(
                                 h_flex()
                                     .h_full()
@@ -3771,8 +3791,30 @@ impl Ashell {
                                                     .top_0()
                                                     .left_0()
                                                     .right_0()
-                                                    .h(px(3.))
-                                                    .bg(selected_tab_color),
+                                                    .bottom_0()
+                                                    .rounded_tl(px(8.))
+                                                    .rounded_tr(px(8.))
+                                                    .bg(cx.theme().background)
+                                                    .child(
+                                                        div()
+                                                            .absolute()
+                                                            .top_0()
+                                                            .left_0()
+                                                            .right_0()
+                                                            .h(px(3.))
+                                                            .bg(selected_tab_color),
+                                                    ),
+                                            )
+                                        })
+                                        .when(!tab_selected && ix > 0, |this| {
+                                            this.prefix(
+                                                div()
+                                                    .absolute()
+                                                    .left_0()
+                                                    .top(px(8.))
+                                                    .bottom(px(8.))
+                                                    .w(px(1.))
+                                                    .bg(cx.theme().border.opacity(0.8)),
                                             )
                                         })
                                         .child(
@@ -3782,6 +3824,13 @@ impl Ashell {
                                                 .items_center()
                                                 .gap_2()
                                                 .px_2()
+                                                .rounded_tl(px(8.))
+                                                .rounded_tr(px(8.))
+                                                .when(!tab_selected, |this| {
+                                                    this.hover(|this| {
+                                                        this.bg(cx.theme().secondary.opacity(0.55))
+                                                    })
+                                                })
                                                 .on_mouse_down(
                                                     MouseButton::Left,
                                                     cx.listener(move |this, event: &MouseDownEvent, _, _| {
