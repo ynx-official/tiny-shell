@@ -74,8 +74,14 @@ strip = true
 
 
 [profile.dev]
-opt-level = 1
+# Fast edit → run cycle for the application crate. Dependencies stay at a
+# modest optimization level below, so the terminal UI remains responsive.
+opt-level = 0
+debug = 1
 incremental = true
+
+[profile.dev.package."*"]
+opt-level = 1
 
 [build-dependencies]
 winres = "0.1.12"

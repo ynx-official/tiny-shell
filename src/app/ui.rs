@@ -34,11 +34,9 @@ impl Ashell {
     fn render_home_page(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let sessions = self.config.sessions().to_vec();
         let total_connections = sessions.len();
-        let recent_sessions: Vec<_> = sessions
-            .iter()
-            .filter(|session| session.last_used.is_some())
-            .take(3)
-            .collect();
+        let mut recent_sessions: Vec<_> = sessions.iter().collect();
+        recent_sessions.sort_by(|left, right| right.last_used.cmp(&left.last_used));
+        recent_sessions.truncate(3);
         let has_recent_sessions = !recent_sessions.is_empty();
 
         v_flex()

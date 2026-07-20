@@ -981,6 +981,18 @@ impl Ashell {
             session.host
         );
 
+        // Persist recency on the saved session, so Overview can show an
+        // accurate, stable "recently used" list across application restarts.
+        let last_used = chrono::Local::now().to_rfc3339();
+        session.last_used = Some(last_used.clone());
+        if let Some(mut saved_session) = self.config.get(&session.id).cloned() {
+            saved_session.last_used = Some(last_used);
+            self.config.upsert(saved_session);
+            if let Err(err) = self.config.save() {
+                tracing::warn!("failed to save session recency: {err:#}");
+            }
+        }
+
         // Resolve managed key reference: fill inline content from the
         // ManagedKey so the backend can authenticate without the original file.
         if let Some(mk_id) = &session.managed_key_id {
