@@ -1018,10 +1018,6 @@ async fn emit_entries(
         path: path.to_string(),
         entries,
     });
-    let _ = events.send(BackendEvent::SftpStatus {
-        tab_id: tab_id.to_string(),
-        text: path.to_string(),
-    });
     Ok(())
 }
 

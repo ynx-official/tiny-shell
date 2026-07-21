@@ -1988,12 +1988,22 @@ impl TinyShell {
         let toggle_path = path.clone();
         let is_current = current_path == path;
         let theme = cx.theme().clone();
+        let folder_icon = if row.expanded {
+            IconName::FolderOpen
+        } else {
+            IconName::Folder
+        };
         let tree_toggle = if path == "/" {
-            div().w(px(14.)).flex_none().into_any_element()
+            div().w(px(16.)).flex_none().into_any_element()
         } else {
             div()
-                .w(px(14.))
+                .w(px(16.))
+                .h_full()
                 .flex_none()
+                .flex()
+                .items_center()
+                .justify_center()
+                .cursor_pointer()
                 .text_size(rems(0.78))
                 .text_color(theme.muted_foreground)
                 .on_mouse_down(
@@ -2009,11 +2019,13 @@ impl TinyShell {
 
         h_flex()
             .w_full()
-            .h(px(28.))
-            .pl(px(8. + row.depth as f32 * 16.))
+            .h(px(30.))
+            .pl(px(5. + row.depth as f32 * 15.))
             .pr_2()
             .items_center()
-            .gap_1()
+            .gap(px(5.))
+            .rounded_sm()
+            .cursor_pointer()
             .bg(if is_current {
                 theme.secondary
             } else {
@@ -2027,13 +2039,27 @@ impl TinyShell {
                 }),
             )
             .child(tree_toggle)
-            .child(Icon::new(IconName::Folder).with_size(Size::Small))
+            .child(
+                Icon::new(folder_icon)
+                    .with_size(Size::Small)
+                    .text_color(if is_current {
+                        theme.primary
+                    } else {
+                        theme.muted_foreground
+                    }),
+            )
             .child(
                 div()
                     .flex_1()
                     .min_w(px(0.))
                     .overflow_hidden()
                     .text_size(rems(0.92))
+                    .text_color(if is_current {
+                        theme.foreground
+                    } else {
+                        theme.muted_foreground
+                    })
+                    .when(is_current, |style| style.font_weight(FontWeight::MEDIUM))
                     .child(row.name),
             )
             .into_any_element()
@@ -2050,24 +2076,25 @@ impl TinyShell {
             .collect::<Vec<_>>();
 
         v_flex()
-            .w(px(224.))
+            .w(px(236.))
             .h_full()
             .flex_none()
             .min_h(px(0.))
             .border_r_1()
             .border_color(cx.theme().border)
-            .bg(cx.theme().muted.opacity(0.45))
+            .bg(cx.theme().background)
             .child(
-                div()
-                    .h(px(26.))
-                    .px_3()
+                h_flex()
+                    .h(px(28.))
+                    .px_2()
                     .flex_none()
-                    .flex()
                     .items_center()
+                    .gap_1()
                     .border_b_1()
                     .border_color(cx.theme().border)
                     .text_size(rems(0.85))
                     .text_color(cx.theme().muted_foreground)
+                    .child(Icon::new(IconName::FolderOpen).with_size(Size::Small))
                     .child(t!("remote_files")),
             )
             .child(
@@ -2081,6 +2108,8 @@ impl TinyShell {
                             .size_full()
                             .track_scroll(&self.sftp_tree_scroll_handle)
                             .overflow_y_scroll()
+                            .p_1()
+                            .gap(px(1.))
                             .children(rows),
                     )
                     .child(
@@ -2422,7 +2451,6 @@ impl TinyShell {
             .clone()
             .into_iter()
             .collect::<Vec<_>>();
-        let status = sftp.status.clone();
         let selected_entries = sftp.selected_entries.clone();
         let all_selected = !entries.is_empty()
             && entries
@@ -2755,16 +2783,7 @@ impl TinyShell {
                 .border_t_1()
                 .border_color(cx.theme().border)
                 .bg(cx.theme().tab_bar)
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w(px(0.))
-                        .overflow_hidden()
-                        .text_size(rems(0.833))
-                        .text_color(cx.theme().primary)
-                        .italic()
-                        .child(status),
-                )
+                .child(div().flex_1())
                 .child(
                     Button::new("open-transfers")
                         .ghost()
