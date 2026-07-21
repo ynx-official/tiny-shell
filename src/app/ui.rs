@@ -4477,9 +4477,69 @@ impl TinyShell {
                             ),
                     )
                     .child(
+<<<<<<< HEAD
                         h_flex()
                             .items_center()
                             .gap_2()
+=======
+                        div()
+                            .text_size(rems(0.917))
+                            .text_color(cx.theme().muted_foreground)
+                            .child({
+                                if let Some(kind) = self.active_kind() {
+                                    match kind {
+                                        TabKind::Local => t!("local_terminal").to_string(),
+                                        TabKind::Ssh => {
+                                            if let Some((_, session)) = self.active_ssh_session() {
+                                                format!("ssh / {}", session.name)
+                                            } else {
+                                                "ssh".to_string()
+                                            }
+                                        }
+                                        TabKind::Serial => {
+                                            if let Some((_, session)) = self.active_ssh_session() {
+                                                format!("serial / {}", session.name)
+                                            } else {
+                                                "serial".to_string()
+                                            }
+                                        }
+                                    }
+                                } else {
+                                    self.active_title()
+                                }
+                            }),
+                    ),
+            )
+            .when(self.config.monitoring_position() == "Sidebar", |this| {
+                this.child(self.render_sidebar_monitoring_panel(cx))
+            })
+            .child(
+                Button::new("open-ssh-panel")
+                    .primary()
+                    .label(t!("add_ssh").to_string())
+                    .on_click(
+                        cx.listener(|this, _, window, cx| this.open_new_ssh_dialog(window, cx)),
+                    ),
+            )
+            .child(
+                v_flex()
+                    .flex_1()
+                    .min_h(px(0.))
+                    .gap_2()
+                    .child(
+                        div()
+                            .text_size(rems(1.0))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(cx.theme().primary)
+                            .child(t!("saved")),
+                    )
+                    .child(
+                        div()
+                            .relative()
+                            .flex_1()
+                            .min_h(px(0.))
+                            .size_full()
+>>>>>>> e7ca7bdc2316edaa175f8ced4bb432f8508fe048
                             .child(
                                 div()
                                     .w(px(48.))

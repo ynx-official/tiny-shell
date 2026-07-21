@@ -329,6 +329,15 @@ impl TinyShell {
         }
         self.active_dialog = Some(crate::app::DialogKind::NewSsh);
 
+        if let Some(id) = &self.editing_session_id {
+            if let Some(session) = self.config.get(id) {
+                self.session_protocol = session.protocol.clone();
+            }
+        } else {
+            self.session_protocol = "ssh".to_string();
+        }
+
+        let initial_is_serial = self.session_protocol == "serial";
         let view = cx.entity();
         let session_name_input = self.session_name_input.clone();
         let host_input = self.host_input.clone();
@@ -343,10 +352,11 @@ impl TinyShell {
         let proxy_port_input = self.proxy_port_input.clone();
         let proxy_user_input = self.proxy_user_input.clone();
         let proxy_password_input = self.proxy_password_input.clone();
+        let baud_rate_input = self.baud_rate_input.clone();
 
         window.open_dialog(cx, move |dialog: Dialog, _window, _cx| {
             dialog
-                .title(t!("new_ssh_connection"))
+                .title(if initial_is_serial { t!("new_serial_connection") } else { t!("new_ssh_connection") })
                 .w(px(520.))
                 .overlay_closable(true)
                 .on_ok({
@@ -382,6 +392,7 @@ impl TinyShell {
                     let proxy_port_input = proxy_port_input.clone();
                     let proxy_user_input = proxy_user_input.clone();
                     let proxy_password_input = proxy_password_input.clone();
+                    let baud_rate_input = baud_rate_input.clone();
                     move |content, window, cx| {
                         let auth_method = view.read(cx).ssh_auth_method;
                         let is_password = auth_method == AuthMethod::Password;
@@ -390,6 +401,7 @@ impl TinyShell {
                         let is_editing = view.read(cx).editing_session_id.is_some();
                         let proxy_type = view.read(cx).ssh_proxy_type.clone();
                         let show_proxy_fields = proxy_type != "none";
+<<<<<<< HEAD
                         let key_auth_incomplete = is_key
                             && !view.read(cx).using_custom_key_path
                             && view.read(cx).managed_key_selected.is_none();
@@ -398,6 +410,11 @@ impl TinyShell {
                         let group_label = selected_group
                             .clone()
                             .unwrap_or_else(|| t!("connection_group_ungrouped").to_string());
+=======
+                        let protocol = view.read(cx).session_protocol.clone();
+                        let is_ssh = protocol == "ssh";
+                        let is_serial = protocol == "serial";
+>>>>>>> e7ca7bdc2316edaa175f8ced4bb432f8508fe048
                         content.child(
                             v_flex()
                                 .gap_3()
@@ -405,58 +422,254 @@ impl TinyShell {
                                     h_flex()
                                         .gap_2()
                                         .child(
-                                            Button::new("ssh-auth-password")
-                                                .label(t!("password").to_string())
-                                                .when(is_password, |button| button.primary())
+                                            Button::new("proto-ssh")
+                                                .label("SSH")
+                                                .when(is_ssh, |button| button.primary())
                                                 .on_click(window.listener_for(
                                                     &view,
-                                                    |this, _, _, cx| {
-                                                        this.set_ssh_auth_method(
-                                                            AuthMethod::Password,
-                                                            cx,
-                                                        )
+                                                    |this, _, window, cx| {
+                                                        this.set_session_protocol("ssh".to_string(), cx);
+                                                        Self::set_input_value(&this.port_input, "22", window, cx);
                                                     },
                                                 )),
                                         )
                                         .child(
-                                            Button::new("ssh-auth-key")
-                                                .label(t!("key").to_string())
-                                                .when(is_key, |button| button.primary())
+                                            Button::new("proto-serial")
+                                                .label("Serial")
+                                                .when(is_serial, |button| button.primary())
                                                 .on_click(window.listener_for(
                                                     &view,
-                                                    |this, _, _, cx| {
-                                                        this.set_ssh_auth_method(
-                                                            AuthMethod::Key,
-                                                            cx,
-                                                        )
-                                                    },
-                                                )),
-                                        )
-                                        .child(
-                                            Button::new("ssh-auth-config")
-                                                .label(t!("ssh_config").to_string())
-                                                .when(is_config, |button| button.primary())
-                                                .on_click(window.listener_for(
-                                                    &view,
-                                                    |this, _, _, cx| {
-                                                        this.set_ssh_auth_method(
-                                                            AuthMethod::Config,
-                                                            cx,
-                                                        )
+                                                    |this, _, _window, cx| {
+                                                        this.set_session_protocol("serial".to_string(), cx);
                                                     },
                                                 )),
                                         ),
                                 )
-                                .when(!is_config, |this| {
-                                    this.child(Input::new(&session_name_input).tab_index(0))
-                                        .child(Input::new(&host_input).tab_index(1))
+                                .when(is_serial, |this| {
+                                    this.child(
+                                        v_flex()
+                                            .gap_1()
+                                            .child(div().text_sm().text_color(cx.theme().muted_foreground).child(t!("session_name").to_string()))
+                                            .child(Input::new(&session_name_input).tab_index(0))
+                                    )
+                                    .child(
+                                        v_flex()
+                                            .gap_1()
+                                            .child(div().text_sm().text_color(cx.theme().muted_foreground).child(t!("serial_port").to_string()))
+                                            .child(Input::new(&host_input).tab_index(1))
+                                    )
+                                    .child(
+                                        v_flex()
+                                            .gap_1()
+                                            .child(div().text_sm().text_color(cx.theme().muted_foreground).child(t!("baud_rate").to_string()))
+                                            .child(Input::new(&baud_rate_input).tab_index(2))
+                                    )
+                                })
+                                .when(is_ssh, |this| {
+                                    this.child(
+                                        h_flex()
+                                            .gap_2()
+                                            .child(
+                                                Button::new("ssh-auth-password")
+                                                    .label(t!("password").to_string())
+                                                    .when(is_password, |button| button.primary())
+                                                    .on_click(window.listener_for(
+                                                        &view,
+                                                        |this, _, _, cx| {
+                                                            this.set_ssh_auth_method(
+                                                                AuthMethod::Password,
+                                                                cx,
+                                                            )
+                                                        },
+                                                    )),
+                                            )
+                                            .child(
+                                                Button::new("ssh-auth-key")
+                                                    .label(t!("key").to_string())
+                                                    .when(is_key, |button| button.primary())
+                                                    .on_click(window.listener_for(
+                                                        &view,
+                                                        |this, _, _, cx| {
+                                                            this.set_ssh_auth_method(
+                                                                AuthMethod::Key,
+                                                                cx,
+                                                            )
+                                                        },
+                                                    )),
+                                            )
+                                            .child(
+                                                Button::new("ssh-auth-config")
+                                                    .label(t!("ssh_config").to_string())
+                                                    .when(is_config, |button| button.primary())
+                                                    .on_click(window.listener_for(
+                                                        &view,
+                                                        |this, _, _, cx| {
+                                                            this.set_ssh_auth_method(
+                                                                AuthMethod::Config,
+                                                                cx,
+                                                            )
+                                                        },
+                                                    )),
+                                            ),
+                                    )
+                                    .when(!is_config, |this| {
+                                        this.child(Input::new(&session_name_input).tab_index(0))
+                                            .child(Input::new(&host_input).tab_index(1))
+                                            .child(
+                                                h_flex()
+                                                    .gap_2()
+                                                    .child(
+                                                        Input::new(&port_input).w(px(96.)).tab_index(2),
+                                                    )
+                                                    .child(
+                                                        Input::new(&user_input).flex_1().tab_index(3),
+                                                    ),
+                                            )
+                                    })
+                                    .when(is_password, |this| {
+                                        this.child(
+                                            Input::new(&password_input).mask_toggle().tab_index(4),
+                                        )
+                                    })
+                                    .when(is_key, |this| {
+                                        this.child(
+                                            h_flex()
+                                                .gap_2()
+                                                .child(
+                                                    div()
+                                                        .flex_1()
+                                                        .cursor_pointer()
+                                                        .on_mouse_down(
+                                                            MouseButton::Left,
+                                                            window.listener_for(
+                                                                &view,
+                                                                |this, _, window, cx| {
+                                                                    this.pick_ssh_key_path(window, cx);
+                                                                },
+                                                            ),
+                                                        )
+                                                        .child(
+                                                            Input::new(&key_path_input).tab_index(4),
+                                                        ),
+                                                )
+                                                .child(
+                                                    Button::new("clear-key-path")
+                                                        .ghost()
+                                                        .icon(IconName::Close)
+                                                        .on_click(window.listener_for(
+                                                            &view,
+                                                            |this, _, window, cx| {
+                                                                Self::set_input_value(
+                                                                    &this.key_path_input,
+                                                                    "",
+                                                                    window,
+                                                                    cx,
+                                                                );
+                                                            },
+                                                        )),
+                                                ),
+                                        )
+                                        .child(Input::new(&key_inline_input).h(px(128.)).tab_index(5))
+                                        .child(Input::new(&passphrase_input).mask_toggle().tab_index(6))
+                                    })
+                                    .when(is_config, |this| {
+                                        let entries = view.read(cx).ssh_config_entries.clone();
+                                        let selected = view.read(cx).ssh_config_selected;
+                                        let theme = cx.theme();
+                                        if entries.is_empty() {
+                                            this.child(
+                                                div()
+                                                    .text_sm()
+                                                    .text_color(theme.muted_foreground)
+                                                    .child(t!("ssh_config_empty").to_string()),
+                                            )
+                                        } else {
+                                            this.child(
+                                                div()
+                                                    .h(px(192.))
+                                                    .id("ssh-config-list")
+                                                    .track_scroll(
+                                                        &view.read(cx).connection_scroll_handle,
+                                                    )
+                                                    .overflow_y_scroll()
+                                                    .border_1()
+                                                    .border_color(theme.border)
+                                                    .rounded_md()
+                                                    .children(entries.iter().enumerate().map(
+                                                        |(i, entry)| {
+                                                            let is_selected = selected == Some(i);
+                                                            let label = if entry.user.is_empty() {
+                                                                format!(
+                                                                    "{}:{}",
+                                                                    entry.hostname, entry.port
+                                                                )
+                                                            } else {
+                                                                format!(
+                                                                    "{}@{}:{}",
+                                                                    entry.user,
+                                                                    entry.hostname,
+                                                                    entry.port
+                                                                )
+                                                            };
+                                                            let alias_label =
+                                                                if entry.host_alias == entry.hostname {
+                                                                    String::new()
+                                                                } else {
+                                                                    format!(" ({})", entry.host_alias)
+                                                                };
+                                                            let view_clone = view.clone();
+                                                            div()
+                                                                .id(("ssh-config-entry", i))
+                                                                .px_2()
+                                                                .py_1()
+                                                                .when(is_selected, |el| {
+                                                                    el.bg(theme.selection)
+                                                                })
+                                                                .cursor_pointer()
+                                                                .hover(|el| el.bg(theme.selection))
+                                                                .text_sm()
+                                                                .child(format!("{label}{alias_label}"))
+                                                                .on_click(window.listener_for(
+                                                                    &view_clone,
+                                                                    move |this, _, window, cx| {
+                                                                        this.select_ssh_config_entry(
+                                                                            i, window, cx,
+                                                                        );
+                                                                    },
+                                                                ))
+                                                        },
+                                                    )),
+                                            )
+                                        }
+                                    })
+                                    .when(!is_config, |this| {
+                                        this.child(
+                                            div()
+                                                .text_sm()
+                                                .font_weight(FontWeight::BOLD)
+                                                .child(t!("proxy").to_string()),
+                                        )
                                         .child(
                                             h_flex()
                                                 .gap_2()
                                                 .child(
-                                                    Input::new(&port_input).w(px(96.)).tab_index(2),
+                                                    Button::new("proxy-none")
+                                                        .label(t!("proxy_none").to_string())
+                                                        .when(proxy_type == "none", |button| {
+                                                            button.primary()
+                                                        })
+                                                        .on_click(window.listener_for(
+                                                            &view,
+                                                            |this, _, _, cx| {
+                                                                this.set_ssh_proxy_type(
+                                                                    "none".to_string(),
+                                                                    cx,
+                                                                )
+                                                            },
+                                                        )),
                                                 )
                                                 .child(
+<<<<<<< HEAD
                                                     Input::new(&user_input).flex_1().tab_index(3),
                                         ),
                                         )
@@ -678,138 +891,62 @@ impl TinyShell {
                                                 .id("ssh-config-list")
                                                 .track_scroll(
                                                     &view.read(cx).connection_scroll_handle,
+=======
+                                                    Button::new("proxy-socks5")
+                                                        .label("SOCKS5")
+                                                        .when(proxy_type == "socks5", |button| {
+                                                            button.primary()
+                                                        })
+                                                        .on_click(window.listener_for(
+                                                            &view,
+                                                            |this, _, _, cx| {
+                                                                this.set_ssh_proxy_type(
+                                                                    "socks5".to_string(),
+                                                                    cx,
+                                                                )
+                                                            },
+                                                        )),
                                                 )
-                                                .overflow_y_scroll()
-                                                .border_1()
-                                                .border_color(theme.border)
-                                                .rounded_md()
-                                                .children(entries.iter().enumerate().map(
-                                                    |(i, entry)| {
-                                                        let is_selected = selected == Some(i);
-                                                        let label = if entry.user.is_empty() {
-                                                            format!(
-                                                                "{}:{}",
-                                                                entry.hostname, entry.port
-                                                            )
-                                                        } else {
-                                                            format!(
-                                                                "{}@{}:{}",
-                                                                entry.user,
-                                                                entry.hostname,
-                                                                entry.port
-                                                            )
-                                                        };
-                                                        let alias_label =
-                                                            if entry.host_alias == entry.hostname {
-                                                                String::new()
-                                                            } else {
-                                                                format!(" ({})", entry.host_alias)
-                                                            };
-                                                        let view_clone = view.clone();
-                                                        div()
-                                                            .id(("ssh-config-entry", i))
-                                                            .px_2()
-                                                            .py_1()
-                                                            .when(is_selected, |el| {
-                                                                el.bg(theme.selection)
-                                                            })
-                                                            .cursor_pointer()
-                                                            .hover(|el| el.bg(theme.selection))
-                                                            .text_sm()
-                                                            .child(format!("{label}{alias_label}"))
-                                                            .on_click(window.listener_for(
-                                                                &view_clone,
-                                                                move |this, _, window, cx| {
-                                                                    this.select_ssh_config_entry(
-                                                                        i, window, cx,
-                                                                    );
-                                                                },
-                                                            ))
-                                                    },
-                                                )),
+                                                .child(
+                                                    Button::new("proxy-http")
+                                                        .label("HTTP")
+                                                        .when(proxy_type == "http", |button| {
+                                                            button.primary()
+                                                        })
+                                                        .on_click(window.listener_for(
+                                                            &view,
+                                                            |this, _, _, cx| {
+                                                                this.set_ssh_proxy_type(
+                                                                    "http".to_string(),
+                                                                    cx,
+                                                                )
+                                                            },
+                                                        )),
+                                                ),
                                         )
-                                    }
-                                })
-                                .when(!is_config, |this| {
-                                    this.child(
-                                        div()
-                                            .text_sm()
-                                            .font_weight(FontWeight::BOLD)
-                                            .child(t!("proxy").to_string()),
-                                    )
-                                    .child(
-                                        h_flex()
-                                            .gap_2()
-                                            .child(
-                                                Button::new("proxy-none")
-                                                    .label(t!("proxy_none").to_string())
-                                                    .when(proxy_type == "none", |button| {
-                                                        button.primary()
-                                                    })
-                                                    .on_click(window.listener_for(
-                                                        &view,
-                                                        |this, _, _, cx| {
-                                                            this.set_ssh_proxy_type(
-                                                                "none".to_string(),
-                                                                cx,
-                                                            )
-                                                        },
-                                                    )),
-                                            )
-                                            .child(
-                                                Button::new("proxy-socks5")
-                                                    .label("SOCKS5")
-                                                    .when(proxy_type == "socks5", |button| {
-                                                        button.primary()
-                                                    })
-                                                    .on_click(window.listener_for(
-                                                        &view,
-                                                        |this, _, _, cx| {
-                                                            this.set_ssh_proxy_type(
-                                                                "socks5".to_string(),
-                                                                cx,
-                                                            )
-                                                        },
-                                                    )),
-                                            )
-                                            .child(
-                                                Button::new("proxy-http")
-                                                    .label("HTTP")
-                                                    .when(proxy_type == "http", |button| {
-                                                        button.primary()
-                                                    })
-                                                    .on_click(window.listener_for(
-                                                        &view,
-                                                        |this, _, _, cx| {
-                                                            this.set_ssh_proxy_type(
-                                                                "http".to_string(),
-                                                                cx,
-                                                            )
-                                                        },
-                                                    )),
-                                            ),
-                                    )
-                                    .when(
-                                        show_proxy_fields,
-                                        |this| {
-                                            this.child(
-                                                h_flex()
-                                                    .gap_2()
-                                                    .child(Input::new(&proxy_host_input).flex_1())
-                                                    .child(
-                                                        Input::new(&proxy_port_input).w(px(96.)),
-                                                    ),
-                                            )
-                                            .child(
-                                                h_flex()
-                                                    .gap_2()
-                                                    .child(Input::new(&proxy_user_input).flex_1())
-                                                    .child(
-                                                        Input::new(&proxy_password_input).flex_1(),
-                                                    ),
-                                            )
-                                        },
-                                    )
+                                        .when(
+                                            show_proxy_fields,
+                                            |this| {
+                                                this.child(
+                                                    h_flex()
+                                                        .gap_2()
+                                                        .child(Input::new(&proxy_host_input).flex_1())
+                                                        .child(
+                                                            Input::new(&proxy_port_input).w(px(96.)),
+                                                        ),
+>>>>>>> e7ca7bdc2316edaa175f8ced4bb432f8508fe048
+                                                )
+                                                .child(
+                                                    h_flex()
+                                                        .gap_2()
+                                                        .child(Input::new(&proxy_user_input).flex_1())
+                                                        .child(
+                                                            Input::new(&proxy_password_input).flex_1(),
+                                                        ),
+                                                )
+                                            },
+                                        )
+                                    })
                                 })
                                 .child(
                                     h_flex()
@@ -1443,12 +1580,21 @@ impl TinyShell {
                                                             let is_selected =
                                                                 selected_index == ix + 2;
                                                             let name = session.name.clone();
-                                                            let detail = format!(
-                                                                "{}@{}:{}",
-                                                                session.user,
-                                                                session.host,
-                                                                session.port
-                                                            );
+                                                            let detail = if session.protocol
+                                                                == "serial"
+                                                            {
+                                                                format!(
+                                                                    "Serial: {}@{}",
+                                                                    session.host, session.baud_rate
+                                                                )
+                                                            } else {
+                                                                format!(
+                                                                    "{}@{}:{}",
+                                                                    session.user,
+                                                                    session.host,
+                                                                    session.port
+                                                                )
+                                                            };
                                                             div()
                                                     .id(("selector-open", ix))
                                                     .w_full()
