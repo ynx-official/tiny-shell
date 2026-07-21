@@ -527,6 +527,7 @@ pub(crate) struct TinyShell {
     pub(crate) is_layout_reset: bool,
     pub(crate) terminal_scrollbars: HashMap<String, TerminalScrollbarHandle>,
     pub(crate) remote_files_scroll_handle: UniformListScrollHandle,
+    pub(crate) sftp_tree_scroll_handle: gpui::ScrollHandle,
     pub(crate) disk_scroll_handle: gpui::ScrollHandle,
     pub(crate) tabs_scroll_handle: gpui::ScrollHandle,
     pub(crate) selector_scroll_handle: gpui::ScrollHandle,
@@ -536,12 +537,12 @@ pub(crate) struct TinyShell {
     pub(crate) group_picker_scroll_handle: gpui::ScrollHandle,
     pub(crate) connection_progress: Option<ConnectionProgress>,
     pub(crate) pending_sftp_path_sync: Option<String>,
+    pub(crate) pending_sftp_tree_scroll_path: Option<String>,
     pub(crate) sftp_context_menu: Option<SftpContextMenuState>,
     pub(crate) tab_context_menu: Option<TabContextMenuState>,
     pub(crate) sftp_creating_folder: bool,
     pub(crate) sftp_new_folder_input: Entity<InputState>,
     pub(crate) sftp_delete_scroll_handle: gpui::ScrollHandle,
-    pub(crate) show_hidden_files: bool,
     pub(crate) transfers: Vec<crate::terminal::Transfer>,
     pub(crate) show_transfers_dialog: bool,
     pub(crate) system_status: Option<SharedString>,
@@ -999,6 +1000,7 @@ impl TinyShell {
             is_layout_reset: false,
             terminal_scrollbars: HashMap::new(),
             remote_files_scroll_handle: UniformListScrollHandle::new(),
+            sftp_tree_scroll_handle: gpui::ScrollHandle::new(),
             disk_scroll_handle: gpui::ScrollHandle::new(),
             tabs_scroll_handle: gpui::ScrollHandle::new(),
             selector_scroll_handle: gpui::ScrollHandle::new(),
@@ -1008,12 +1010,12 @@ impl TinyShell {
             group_picker_scroll_handle: gpui::ScrollHandle::new(),
             connection_progress: None,
             pending_sftp_path_sync: Some("/".into()),
+            pending_sftp_tree_scroll_path: None,
             sftp_context_menu: None,
             tab_context_menu: None,
             sftp_creating_folder: false,
             sftp_new_folder_input,
             sftp_delete_scroll_handle: gpui::ScrollHandle::new(),
-            show_hidden_files: config.show_hidden_files(),
             transfers: {
                 let mut transfers = config.transfers();
                 for t in transfers.iter_mut() {
@@ -1350,9 +1352,24 @@ impl TinyShell {
                 } => {
                     if let Some(group) = self.tab_groups.iter_mut().find(|g| g.id == tab_id) {
                         if let Some(sftp) = group.sftp.as_mut() {
-                            sftp.current_path = path;
-                            sftp.entries = entries;
-                            self.pending_sftp_path_sync = Some(sftp.current_path.clone());
+                            sftp.directory_entries.insert(path.clone(), entries.clone());
+                            if sftp.current_path == path {
+                                sftp.entries = entries;
+                                if self.active_group.as_deref() == Some(tab_id.as_str()) {
+                                    self.pending_sftp_path_sync = Some(path);
+                                }
+                            }
+                        }
+                    }
+                }
+                BackendEvent::SftpDirectoryEntries {
+                    tab_id,
+                    path,
+                    entries,
+                } => {
+                    if let Some(group) = self.tab_groups.iter_mut().find(|g| g.id == tab_id) {
+                        if let Some(sftp) = group.sftp.as_mut() {
+                            sftp.directory_entries.insert(path, entries);
                         }
                     }
                 }
@@ -1524,8 +1541,26 @@ impl TinyShell {
                 BackendEvent::SftpHome { tab_id, home } => {
                     if let Some(group) = self.tab_groups.iter_mut().find(|g| g.id == tab_id) {
                         if let Some(sftp) = group.sftp.as_mut() {
-                            sftp.home_dir = home;
+                            sftp.home_dir = home.clone();
+                            sftp.current_path = home.clone();
+                            sftp.entries.clear();
+                            Self::expand_sftp_tree_to_path(sftp, &home);
+                            if self.active_group.as_deref() == Some(tab_id.as_str()) {
+                                self.pending_sftp_path_sync = Some(home.clone());
+                                self.pending_sftp_tree_scroll_path = Some(home);
+                            }
                         }
+                    }
+                    if let Some(terminal_tab_id) = self
+                        .active_tab
+                        .clone()
+                        .filter(|terminal_tab_id| {
+                            self.tab_groups.iter().any(|group| {
+                                group.id == tab_id && group.pane_root.contains(terminal_tab_id)
+                            })
+                        })
+                    {
+                        self.sync_initial_sftp_to_terminal_tab(&terminal_tab_id);
                     }
                 }
                 BackendEvent::TerminalTitleChanged { tab_id, title } => {
@@ -1533,7 +1568,10 @@ impl TinyShell {
                         tab.dynamic_title = title;
                     }
                     if self.active_tab.as_deref() == Some(tab_id.as_str()) {
-                        self.sync_sftp_to_terminal_tab(&tab_id, true);
+                        let initially_synced = self.sync_initial_sftp_to_terminal_tab(&tab_id);
+                        if !initially_synced {
+                            self.sync_sftp_to_terminal_tab(&tab_id, true);
+                        }
                     }
                 }
                 BackendEvent::SyncFinished(result) => {
@@ -1868,17 +1906,43 @@ impl TinyShell {
         }
 
         let group_id = group.id.clone();
+        self.navigate_sftp_group(&group_id, path)
+    }
+
+    pub(crate) fn sync_initial_sftp_to_terminal_tab(&mut self, tab_id: &str) -> bool {
+        let Some(tab) = self.tabs.iter().find(|tab| tab.id == tab_id) else {
+            return false;
+        };
+        if tab.kind != TabKind::Ssh {
+            return false;
+        }
+        let Some(group) = self
+            .tab_groups
+            .iter()
+            .find(|group| group.pane_root.contains(tab_id))
+        else {
+            return false;
+        };
+        let Some(sftp) = group.sftp.as_ref() else {
+            return false;
+        };
+        if sftp.initial_terminal_cwd_synced || sftp.home_dir.is_empty() {
+            return false;
+        }
+        let Some(path) = Self::parse_path_from_title(&tab.dynamic_title, &sftp.home_dir) else {
+            return false;
+        };
+        let group_id = group.id.clone();
+        if !self.navigate_sftp_group(&group_id, path) {
+            return false;
+        }
         if let Some(sftp) = self
             .tab_groups
             .iter_mut()
             .find(|group| group.id == group_id)
             .and_then(|group| group.sftp.as_mut())
         {
-            sftp.current_path = path.clone();
-        }
-        self.pending_sftp_path_sync = Some(path.clone());
-        if let Some(handle) = self.sftp_handles.get(&group_id) {
-            handle.list_dir(path);
+            sftp.initial_terminal_cwd_synced = true;
         }
         true
     }

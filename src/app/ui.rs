@@ -1,9 +1,9 @@
 use crate::app::resizable::{h_resizable, resizable_panel, v_resizable};
 use gpui::{
-    Anchor, Context, ElementId, Focusable as _, FontWeight, Hsla, InteractiveElement as _,
-    IntoElement, MouseButton, MouseDownEvent, ParentElement as _, PathBuilder, Pixels, Render,
-    StatefulInteractiveElement as _, Styled as _, Window, canvas, deferred, div, hsla, point,
-    prelude::FluentBuilder as _, px, relative, rems, uniform_list,
+    Anchor, AnyElement, Context, ElementId, Focusable as _, FontWeight, Hsla,
+    InteractiveElement as _, IntoElement, MouseButton, MouseDownEvent, ParentElement as _,
+    PathBuilder, Pixels, Render, StatefulInteractiveElement as _, Styled as _, Window, canvas,
+    deferred, div, hsla, point, prelude::FluentBuilder as _, px, relative, rems, uniform_list,
 };
 use gpui_component::{
     ActiveTheme, Disableable as _, ElementExt, Icon, IconName, InteractiveElementExt as _, Root,
@@ -1978,6 +1978,127 @@ impl TinyShell {
         cx.notify();
     }
 
+    fn render_sftp_tree_row(
+        &self,
+        row: crate::sftp::ops::SftpTreeRow,
+        current_path: &str,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let path = row.path.clone();
+        let toggle_path = path.clone();
+        let is_current = current_path == path;
+        let theme = cx.theme().clone();
+        let tree_toggle = if path == "/" {
+            div().w(px(14.)).flex_none().into_any_element()
+        } else {
+            div()
+                .w(px(14.))
+                .flex_none()
+                .text_size(rems(0.78))
+                .text_color(theme.muted_foreground)
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |this, _, _, cx| {
+                        this.toggle_sftp_tree_directory(toggle_path.clone(), cx);
+                        cx.stop_propagation();
+                    }),
+                )
+                .child(if row.expanded { "▾" } else { "▸" })
+                .into_any_element()
+        };
+
+        h_flex()
+            .w_full()
+            .h(px(28.))
+            .pl(px(8. + row.depth as f32 * 16.))
+            .pr_2()
+            .items_center()
+            .gap_1()
+            .bg(if is_current {
+                theme.secondary
+            } else {
+                theme.background.opacity(0.)
+            })
+            .hover(|style| style.bg(theme.muted.opacity(0.85)))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, _, _, cx| {
+                    this.select_sftp_tree_directory(path.clone(), cx);
+                }),
+            )
+            .child(tree_toggle)
+            .child(Icon::new(IconName::Folder).with_size(Size::Small))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(px(0.))
+                    .overflow_hidden()
+                    .text_size(rems(0.92))
+                    .child(row.name),
+            )
+            .into_any_element()
+    }
+
+    fn render_sftp_directory_tree(
+        &self,
+        sftp: &terminal::SftpUiState,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let rows = crate::sftp::ops::sftp_tree_rows(sftp)
+            .into_iter()
+            .map(|row| self.render_sftp_tree_row(row, &sftp.current_path, cx))
+            .collect::<Vec<_>>();
+
+        v_flex()
+            .w(px(224.))
+            .h_full()
+            .flex_none()
+            .min_h(px(0.))
+            .border_r_1()
+            .border_color(cx.theme().border)
+            .bg(cx.theme().muted.opacity(0.45))
+            .child(
+                div()
+                    .h(px(26.))
+                    .px_3()
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .border_b_1()
+                    .border_color(cx.theme().border)
+                    .text_size(rems(0.85))
+                    .text_color(cx.theme().muted_foreground)
+                    .child(t!("remote_files")),
+            )
+            .child(
+                div()
+                    .relative()
+                    .flex_1()
+                    .min_h(px(0.))
+                    .child(
+                        v_flex()
+                            .id("sftp-directory-tree")
+                            .size_full()
+                            .track_scroll(&self.sftp_tree_scroll_handle)
+                            .overflow_y_scroll()
+                            .children(rows),
+                    )
+                    .child(
+                        div()
+                            .absolute()
+                            .top_0()
+                            .right_0()
+                            .bottom_0()
+                            .w(px(8.))
+                            .child(
+                                Scrollbar::vertical(&self.sftp_tree_scroll_handle)
+                                    .scrollbar_show(ScrollbarShow::Scrolling),
+                            ),
+                    ),
+            )
+            .into_any_element()
+    }
+
     fn render_sftp_panel(
         &mut self,
         _window: &mut Window,
@@ -2148,19 +2269,6 @@ impl TinyShell {
                             this.download_selected_sftp_entries(window, cx);
                         })),
                 )
-                .child(
-                    Checkbox::new("sftp-show-hidden")
-                        .small()
-                        .label(t!("hidden").to_string())
-                        .checked(self.show_hidden_files)
-                        .tab_stop(false)
-                        .on_click(cx.listener(|this, checked, _, cx| {
-                            this.show_hidden_files = *checked;
-                            this.config.set_show_hidden_files(*checked);
-                            let _ = this.config.save();
-                            cx.notify();
-                        })),
-                )
             });
         let Some(sftp) = active_sftp else {
             let mut outer = v_flex()
@@ -2313,7 +2421,6 @@ impl TinyShell {
             .entries
             .clone()
             .into_iter()
-            .filter(|entry| self.show_hidden_files || !entry.name.starts_with('.'))
             .collect::<Vec<_>>();
         let status = sftp.status.clone();
         let selected_entries = sftp.selected_entries.clone();
@@ -2372,7 +2479,18 @@ impl TinyShell {
                 )
                 .child(
                     h_flex()
-                        .h(px(26.))
+                        .flex_1()
+                        .min_h(px(0.))
+                        .child(self.render_sftp_directory_tree(sftp, cx))
+                        .child(
+                            v_flex()
+                                .flex_1()
+                                .h_full()
+                                .min_w(px(0.))
+                                .min_h(px(0.))
+                                .child(
+                                    h_flex()
+                                        .h(px(26.))
                         .px_3()
                         .items_center()
                         .gap_2()
@@ -2482,17 +2600,20 @@ impl TinyShell {
                                                                 entry.clone(),
                                                                 cx,
                                                             );
-                                                            // 双击受支持的文本文件 → 内置编辑器
-                                                            if event.click_count >= 2
-                                                                && !entry.is_dir
-                                                                && is_editable_text_file(
+                                                            if event.click_count >= 2 {
+                                                                if entry.is_dir {
+                                                                    this.navigate_sftp(
+                                                                        entry.full_path.clone(),
+                                                                        cx,
+                                                                    );
+                                                                } else if is_editable_text_file(
                                                                     &entry.full_path,
-                                                                )
-                                                            {
-                                                                this.open_file_in_editor(
-                                                                    entry.full_path.clone(),
-                                                                    cx,
-                                                                );
+                                                                ) {
+                                                                    this.open_file_in_editor(
+                                                                        entry.full_path.clone(),
+                                                                        cx,
+                                                                    );
+                                                                }
                                                             }
                                                         }
                                                     }),
@@ -2619,6 +2740,8 @@ impl TinyShell {
                                 .child(
                                     Scrollbar::vertical(&self.remote_files_scroll_handle)
                                         .scrollbar_show(ScrollbarShow::Always),
+                                ),
+                        ),
                                 ),
                         ),
                 ),
@@ -5793,6 +5916,7 @@ impl Render for TinyShell {
             self.active_tab = self.tabs.first().map(|tab| tab.id.clone());
         }
         self.sync_sftp_path_input(window, cx);
+        self.sync_sftp_tree_scroll();
 
         // Refresh this window's screen-space bounds in the cross-window
         // registry so other windows can hit-test against it during a

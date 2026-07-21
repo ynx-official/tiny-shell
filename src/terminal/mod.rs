@@ -59,6 +59,11 @@ pub enum BackendEvent {
         path: String,
         entries: Vec<RemoteEntry>,
     },
+    SftpDirectoryEntries {
+        tab_id: String,
+        path: String,
+        entries: Vec<RemoteEntry>,
+    },
     SftpPreview {
         tab_id: String,
         preview: PreviewData,
@@ -210,11 +215,14 @@ pub struct SftpUiState {
     pub current_path: String,
     pub status: String,
     pub entries: Vec<RemoteEntry>,
+    pub directory_entries: std::collections::HashMap<String, Vec<RemoteEntry>>,
+    pub expanded_directories: std::collections::HashSet<String>,
     pub selected_path: Option<String>,
     pub preview: Option<PreviewData>,
     pub selected_entries: std::collections::HashSet<String>,
     pub home_dir: String,
     pub follow_terminal_cwd: bool,
+    pub initial_terminal_cwd_synced: bool,
 }
 
 impl TerminalTab {

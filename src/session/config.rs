@@ -305,7 +305,7 @@ fn default_locale() -> String {
 }
 
 fn default_terminal_font_size() -> f32 {
-    18.0
+    14.0
 }
 
 fn default_ui_font_size() -> f32 {
@@ -901,14 +901,6 @@ impl ConfigStore {
         self.cache.global_proxy_password = val;
     }
 
-    pub fn show_hidden_files(&self) -> bool {
-        self.cache.show_hidden_files
-    }
-
-    pub fn set_show_hidden_files(&mut self, val: bool) {
-        self.cache.show_hidden_files = val;
-    }
-
     pub fn lock_layout(&self) -> bool {
         self.cache.lock_layout
     }
@@ -1395,6 +1387,13 @@ fn decrypt_config(raw: &[u8], password: &str) -> Result<ConfigFile> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn default_font_sizes_are_14_px() {
+        let config = ConfigFile::default();
+        assert_eq!(config.terminal_font_size, 14.0);
+        assert_eq!(config.ui_font_size, 14.0);
+    }
 
     #[test]
     fn test_get_hardware_uuid() {

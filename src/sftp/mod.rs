@@ -66,6 +66,7 @@ pub struct PreviewData {
 #[derive(Debug)]
 pub enum SftpCommand {
     ListDir(String),
+    ListDirectoryTree(String),
     #[allow(dead_code)]
     Preview(String),
     Download {
@@ -177,6 +178,10 @@ impl Clone for SftpHandle {
 impl SftpHandle {
     pub fn list_dir(&self, path: String) {
         let _ = self.commands.send(SftpCommand::ListDir(path));
+    }
+
+    pub fn list_directory_tree(&self, path: String) {
+        let _ = self.commands.send(SftpCommand::ListDirectoryTree(path));
     }
 
     #[allow(dead_code)]
@@ -297,6 +302,30 @@ async fn run_sftp(
         home: home.clone(),
     });
 
+    if let Ok(entries) = list_dir_impl(&sftp, "/").await {
+        let _ = events.send(BackendEvent::SftpDirectoryEntries {
+            tab_id: tab_id.clone(),
+            path: "/".to_string(),
+            entries,
+        });
+    }
+
+    let mut ancestor = String::new();
+    for component in home.split('/').filter(|component| !component.is_empty()) {
+        ancestor.push('/');
+        ancestor.push_str(component);
+        if ancestor == home {
+            break;
+        }
+        if let Ok(entries) = list_dir_impl(&sftp, &ancestor).await {
+            let _ = events.send(BackendEvent::SftpDirectoryEntries {
+                tab_id: tab_id.clone(),
+                path: ancestor.clone(),
+                entries,
+            });
+        }
+    }
+
     emit_entries(&events, &tab_id, &sftp, &home).await?;
 
     let mut active_transfers: std::collections::HashMap<String, TransferStateFlag> =
@@ -337,6 +366,31 @@ async fn run_sftp(
                         tab_id: tab_id.clone(),
                         text: format!("list failed: {err:#}"),
                     });
+                }
+            }
+            SftpCommand::ListDirectoryTree(path) => {
+                let actual_path = if path == "~" {
+                    home.clone()
+                } else if let Some(rest) = path.strip_prefix("~/") {
+                    crate::sftp::join_remote(&home, rest)
+                } else {
+                    path
+                };
+
+                match list_dir_impl(&sftp, &actual_path).await {
+                    Ok(entries) => {
+                        let _ = events.send(BackendEvent::SftpDirectoryEntries {
+                            tab_id: tab_id.clone(),
+                            path: actual_path,
+                            entries,
+                        });
+                    }
+                    Err(err) => {
+                        let _ = events.send(BackendEvent::SftpStatus {
+                            tab_id: tab_id.clone(),
+                            text: format!("list failed: {err:#}"),
+                        });
+                    }
                 }
             }
             SftpCommand::Preview(path) => match preview_impl(&sftp, &path).await {

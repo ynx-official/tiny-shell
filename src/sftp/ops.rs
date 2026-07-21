@@ -1,5 +1,13 @@
 use gpui::{Context, PathPromptOptions, Pixels, Point, Window};
 
+#[derive(Clone)]
+pub(crate) struct SftpTreeRow {
+    pub path: String,
+    pub name: String,
+    pub depth: usize,
+    pub expanded: bool,
+}
+
 use crate::{
     TinyShell, SftpContextMenuState,
     sftp::{RemoteEntry, SftpHandle},
@@ -106,22 +114,130 @@ impl TinyShell {
     }
 
     pub(crate) fn navigate_sftp(&mut self, path: String, cx: &mut Context<Self>) {
-        if let Some(handle) = self.active_sftp_handle() {
-            tracing::info!("[sftp] navigating to directory: '{}'", path);
-            handle.list_dir(path.clone());
-            if let Some(sftp) = self.active_sftp_mut() {
-                sftp.current_path = path;
-                self.pending_sftp_path_sync = Some(sftp.current_path.clone());
-            }
+        if let Some(group_id) = self.active_group.clone()
+            && self.navigate_sftp_group(&group_id, path)
+        {
             cx.notify();
         }
     }
 
-    pub(crate) fn select_sftp_entry(&mut self, entry: RemoteEntry, cx: &mut Context<Self>) {
-        if entry.is_dir {
-            self.navigate_sftp(entry.full_path, cx);
-            return;
+    pub(crate) fn navigate_sftp_group(&mut self, group_id: &str, path: String) -> bool {
+        let Some(handle) = self.sftp_handles.get(group_id).cloned() else {
+            return false;
+        };
+        let Some(sftp) = self
+            .tab_groups
+            .iter_mut()
+            .find(|group| group.id == group_id)
+            .and_then(|group| group.sftp.as_mut())
+        else {
+            return false;
+        };
+        let path = Self::normalize_sftp_path(&path, &sftp.home_dir);
+
+        tracing::info!("[sftp] navigating to directory: '{}'", path);
+        let mut ancestors = Self::sftp_path_chain(&path);
+        ancestors.pop();
+        let missing_ancestors = ancestors
+            .into_iter()
+            .filter(|directory| !sftp.directory_entries.contains_key(directory))
+            .collect::<Vec<_>>();
+
+        Self::expand_sftp_tree_to_path(sftp, &path);
+        sftp.current_path = path.clone();
+        sftp.entries.clear();
+        sftp.selected_path = None;
+        sftp.selected_entries.clear();
+        if self.active_group.as_deref() == Some(group_id) {
+            self.pending_sftp_path_sync = Some(path.clone());
+            self.pending_sftp_tree_scroll_path = Some(path.clone());
         }
+
+        for directory in missing_ancestors {
+            handle.list_directory_tree(directory);
+        }
+        handle.list_dir(path);
+        true
+    }
+
+    pub(crate) fn sync_sftp_tree_scroll(&mut self) {
+        let Some(path) = self.pending_sftp_tree_scroll_path.clone() else {
+            return;
+        };
+        let Some(sftp) = self.active_sftp() else {
+            return;
+        };
+        let Some(index) = sftp_tree_rows(sftp)
+            .iter()
+            .position(|row| row.path == path)
+        else {
+            return;
+        };
+        self.sftp_tree_scroll_handle.scroll_to_item(index);
+        self.pending_sftp_tree_scroll_path = None;
+    }
+
+    pub(crate) fn toggle_sftp_tree_directory(&mut self, path: String, cx: &mut Context<Self>) {
+        let should_load = if let Some(sftp) = self.active_sftp_mut() {
+            if path == "/" {
+                sftp.expanded_directories.insert(path.clone());
+                !sftp.directory_entries.contains_key(&path)
+            } else if sftp.expanded_directories.remove(&path) {
+                false
+            } else {
+                sftp.expanded_directories.insert(path.clone());
+                !sftp.directory_entries.contains_key(&path)
+            }
+        } else {
+            false
+        };
+        if should_load {
+            if let Some(handle) = self.active_sftp_handle() {
+                handle.list_directory_tree(path);
+            }
+        }
+        cx.notify();
+    }
+
+    pub(crate) fn select_sftp_tree_directory(&mut self, path: String, cx: &mut Context<Self>) {
+        self.navigate_sftp(path, cx);
+    }
+
+    pub(crate) fn expand_sftp_tree_to_path(sftp: &mut terminal::SftpUiState, path: &str) {
+        for directory in Self::sftp_path_chain(path) {
+            sftp.expanded_directories.insert(directory);
+        }
+    }
+
+    fn sftp_path_chain(path: &str) -> Vec<String> {
+        let mut chain = vec!["/".to_string()];
+        let mut current = String::new();
+        for component in path.split('/').filter(|component| !component.is_empty()) {
+            current.push('/');
+            current.push_str(component);
+            chain.push(current.clone());
+        }
+        chain
+    }
+
+    fn normalize_sftp_path(path: &str, home_dir: &str) -> String {
+        let resolved = if path == "~" {
+            home_dir.to_string()
+        } else if let Some(rest) = path.strip_prefix("~/") {
+            crate::sftp::join_remote(home_dir, rest)
+        } else if !path.starts_with('/') {
+            format!("/{path}")
+        } else {
+            path.to_string()
+        };
+        if resolved == "/" {
+            resolved
+        } else {
+            resolved.trim_end_matches('/').to_string()
+        }
+    }
+
+    pub(crate) fn select_sftp_entry(&mut self, entry: RemoteEntry, cx: &mut Context<Self>) {
         self.mark_sftp_entry_selected(&entry.full_path, cx);
         if let Some(sftp) = self.active_sftp_mut() {
             if !sftp.selected_entries.remove(&entry.full_path) {
@@ -448,5 +564,84 @@ impl TinyShell {
                 cx.notify();
             }
         }
+    }
+}
+
+pub(crate) fn sftp_tree_rows(sftp: &terminal::SftpUiState) -> Vec<SftpTreeRow> {
+    fn append_rows(
+        rows: &mut Vec<SftpTreeRow>,
+        visited: &mut std::collections::HashSet<String>,
+        sftp: &terminal::SftpUiState,
+        path: &str,
+        name: String,
+        depth: usize,
+    ) {
+        if depth > 32 || !visited.insert(path.to_string()) {
+            return;
+        }
+        let expanded = path == "/" || sftp.expanded_directories.contains(path);
+        rows.push(SftpTreeRow {
+            path: path.to_string(),
+            name,
+            depth,
+            expanded,
+        });
+
+        if !expanded {
+            return;
+        }
+
+        if let Some(entries) = sftp.directory_entries.get(path) {
+            for entry in entries
+                .iter()
+                .filter(|entry| entry.is_dir)
+            {
+                append_rows(
+                    rows,
+                    visited,
+                    sftp,
+                    &entry.full_path,
+                    entry.name.clone(),
+                    depth + 1,
+                );
+            }
+        }
+    }
+
+    let root = "/".to_string();
+    let mut rows = Vec::new();
+    let mut visited = std::collections::HashSet::new();
+    append_rows(
+        &mut rows,
+        &mut visited,
+        sftp,
+        &root,
+        "/".to_string(),
+        0,
+    );
+    rows
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::TinyShell;
+
+    #[test]
+    fn builds_remote_path_chain_from_root() {
+        assert_eq!(
+            TinyShell::sftp_path_chain("/data/docker/mysql"),
+            ["/", "/data", "/data/docker", "/data/docker/mysql"]
+        );
+    }
+
+    #[test]
+    fn normalizes_home_and_trailing_slashes() {
+        assert_eq!(TinyShell::normalize_sftp_path("~", "/root"), "/root");
+        assert_eq!(
+            TinyShell::normalize_sftp_path("~/data/", "/root"),
+            "/root/data"
+        );
+        assert_eq!(TinyShell::normalize_sftp_path("/data/", "/root"), "/data");
+        assert_eq!(TinyShell::normalize_sftp_path("data/logs", "/root"), "/data/logs");
     }
 }

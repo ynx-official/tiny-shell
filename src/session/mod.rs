@@ -1113,11 +1113,14 @@ impl TinyShell {
                 current_path: "/".into(),
                 status: rust_i18n::t!("sftp_connecting").to_string(),
                 entries: Vec::new(),
+                directory_entries: std::collections::HashMap::new(),
+                expanded_directories: std::collections::HashSet::new(),
                 selected_path: None,
                 preview: None,
                 selected_entries: std::collections::HashSet::new(),
-                home_dir: "/".into(),
+                home_dir: String::new(),
                 follow_terminal_cwd: false,
+                initial_terminal_cwd_synced: false,
             }),
         });
         self.active_group = Some(group_id.clone());
@@ -2038,7 +2041,9 @@ impl TinyShell {
             let changed = self.active_tab.as_deref() != Some(tab_id.as_str());
             self.focused_pane_path = path;
             self.active_tab = Some(tab_id.clone());
-            self.sync_sftp_to_terminal_tab(&tab_id, true);
+            if !self.sync_initial_sftp_to_terminal_tab(&tab_id) {
+                self.sync_sftp_to_terminal_tab(&tab_id, true);
+            }
             // Clear stale search state when switching to a different pane.
             // The user can press Enter to re-search in the new pane.
             if changed && self.search_active {
