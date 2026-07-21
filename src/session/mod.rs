@@ -1085,6 +1085,7 @@ impl TinyShell {
             events.clone(),
         ));
         self.active_tab = Some(id.clone());
+        self.connection_progress_epoch = self.connection_progress_epoch.wrapping_add(1);
         self.connection_progress = Some(crate::app::ConnectionProgress {
             tab_id: id.clone(),
             title: rust_i18n::t!("connecting").into(),

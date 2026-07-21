@@ -5527,18 +5527,13 @@ impl TinyShell {
         progress: ConnectionProgress,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
+        let overlay_epoch = self.connection_progress_epoch;
         div()
             .absolute()
             .top_0()
             .left_0()
             .right_0()
             .bottom_0()
-            .bg(gpui::Hsla {
-                h: 0.0,
-                s: 0.0,
-                l: 0.0,
-                a: 0.48,
-            })
             .flex()
             .items_center()
             .justify_center()
@@ -5626,7 +5621,28 @@ impl TinyShell {
                                         ),
                                 )
                             }),
+                    )
+                    .with_animation(
+                        ElementId::NamedInteger(
+                            "ssh-connect-card-fade".into(),
+                            overlay_epoch,
+                        ),
+                        Animation::new(Duration::from_millis(200))
+                            .with_easing(ease_out_quint()),
+                        |this, delta| this.opacity(delta * delta),
                     ),
+            )
+            .with_animation(
+                ElementId::NamedInteger("ssh-connect-scrim-fade".into(), overlay_epoch),
+                Animation::new(Duration::from_millis(180)).with_easing(ease_out_quint()),
+                |this, delta| {
+                    this.bg(gpui::Hsla {
+                        h: 0.0,
+                        s: 0.0,
+                        l: 0.0,
+                        a: 0.48 * delta * delta,
+                    })
+                },
             )
     }
 

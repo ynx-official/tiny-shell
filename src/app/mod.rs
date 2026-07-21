@@ -548,6 +548,9 @@ pub(crate) struct TinyShell {
     pub(crate) connection_scroll_handle: gpui::ScrollHandle,
     pub(crate) group_picker_scroll_handle: gpui::ScrollHandle,
     pub(crate) connection_progress: Option<ConnectionProgress>,
+    /// Increments each time a connection progress overlay is shown, used as
+    /// an animation epoch so the overlay fade-in restarts on every open.
+    pub(crate) connection_progress_epoch: u64,
     pub(crate) pending_sftp_path_sync: Option<String>,
     pub(crate) pending_sftp_tree_scroll_path: Option<String>,
     pub(crate) sftp_context_menu: Option<SftpContextMenuState>,
@@ -1030,6 +1033,7 @@ impl TinyShell {
             connection_scroll_handle: gpui::ScrollHandle::new(),
             group_picker_scroll_handle: gpui::ScrollHandle::new(),
             connection_progress: None,
+            connection_progress_epoch: 0,
             pending_sftp_path_sync: Some("/".into()),
             pending_sftp_tree_scroll_path: None,
             sftp_context_menu: None,
@@ -1857,6 +1861,7 @@ impl TinyShell {
             }
         }
 
+        self.connection_progress_epoch = self.connection_progress_epoch.wrapping_add(1);
         self.connection_progress = Some(ConnectionProgress {
             tab_id: progress.tab_id.clone(),
             title: t!("connecting").into(),
