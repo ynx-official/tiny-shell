@@ -22,7 +22,7 @@ use rust_i18n::t;
 use std::collections::{HashMap, HashSet};
 
 use crate::{
-    TinyShell, PaneLayout,
+    PaneLayout, TinyShell,
     app::constants::{COLLAPSED_SIDEBAR_WIDTH, SIDEBAR_WIDTH, TERMINAL_KEY_CONTEXT},
     app::{HomePage, ProcessView, TabContextMenuState},
     sftp::format_mtime,
@@ -942,82 +942,22 @@ impl TinyShell {
     }
 
     fn render_settings_page(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        v_flex()
+        let view = cx.entity();
+        div()
             .size_full()
-            .p_6()
-            .gap_5()
+            .p_2()
+            .bg(cx.theme().muted.opacity(0.18))
             .child(
-                v_flex()
-                    .gap_1()
-                    .child(
-                        div()
-                            .text_size(rems(2.0))
-                            .font_weight(FontWeight::BOLD)
-                            .child(t!("settings")),
-                    )
-                    .child(
-                        div()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(t!("settings_page_desc")),
-                    ),
-            )
-            .child(
-                h_flex()
-                    .max_w(px(760.))
-                    .gap_3()
-                    .child(
-                        v_flex()
-                            .flex_1()
-                            .gap_2()
-                            .p_4()
-                            .rounded_md()
-                            .border_1()
-                            .border_color(cx.theme().border)
-                            .bg(cx.theme().muted)
-                            .child(Icon::new(IconName::Settings).with_size(Size::Medium))
-                            .child(
-                                div()
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .child(t!("settings_general")),
-                            )
-                            .child(
-                                div()
-                                    .text_size(rems(0.875))
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child(t!("settings_page_appearance")),
-                            ),
-                    )
-                    .child(
-                        v_flex()
-                            .flex_1()
-                            .gap_2()
-                            .p_4()
-                            .rounded_md()
-                            .border_1()
-                            .border_color(cx.theme().border)
-                            .bg(cx.theme().muted)
-                            .child(Icon::new(IconName::SquareTerminal).with_size(Size::Medium))
-                            .child(
-                                div()
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .child(t!("settings_terminal")),
-                            )
-                            .child(
-                                div()
-                                    .text_size(rems(0.875))
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child(t!("settings_page_terminal")),
-                            ),
-                    ),
-            )
-            .child(
-                Button::new("settings-page-open-editor")
-                    .primary()
-                    .icon(IconName::Settings)
-                    .label(t!("settings_open_editor").to_string())
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.show_settings_dialog(window, cx);
-                    })),
+                div()
+                    .size_full()
+                    .min_w_0()
+                    .min_h_0()
+                    .overflow_hidden()
+                    .rounded_lg()
+                    .border_1()
+                    .border_color(cx.theme().border)
+                    .bg(cx.theme().background)
+                    .child(self.render_settings_content(&view, "settings-page", cx)),
             )
     }
 
@@ -1864,9 +1804,9 @@ impl TinyShell {
                     .justify_center()
                     .gap_2()
                     .cursor_pointer()
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.show_update_dialog(window, cx)
-                    }))
+                    .on_click(
+                        cx.listener(|this, _, window, cx| this.show_update_dialog(window, cx)),
+                    )
                     .child(
                         div()
                             .font_weight(FontWeight::BOLD)

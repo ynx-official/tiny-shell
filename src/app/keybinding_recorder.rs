@@ -321,7 +321,7 @@ fn bind_workspace_actions(cx: &mut App, config: &ConfigStore) {
 }
 
 impl KeybindingsPage {
-    pub fn render_groups(view: &Entity<TinyShell>, cx: &mut App) -> Vec<SettingGroup> {
+    pub fn render_groups(state: &TinyShell, view: &Entity<TinyShell>) -> Vec<SettingGroup> {
         let groups = [
             (
                 "settings_group_keybind_general",
@@ -373,14 +373,13 @@ impl KeybindingsPage {
                     .find(|a| a.id == action_id)
                     .expect("action exists");
 
-                let recording = view.read(cx).recording_action.as_deref() == Some(action.id);
-                let has_error = view
-                    .read(cx)
+                let recording = state.recording_action.as_deref() == Some(action.id);
+                let has_error = state
                     .keybind_error
                     .as_ref()
                     .is_some_and(|(id, _)| id == action.id);
                 let error_msg = if has_error {
-                    view.read(cx)
+                    state
                         .keybind_error
                         .as_ref()
                         .map(|(_, msg)| msg.clone())
@@ -389,8 +388,7 @@ impl KeybindingsPage {
                 };
 
                 let keystroke = {
-                    let config = &view.read(cx).config;
-                    configured_keystroke(config, action.id).unwrap_or_default()
+                    configured_keystroke(&state.config, action.id).unwrap_or_default()
                 };
 
                 let btn_label = if recording {

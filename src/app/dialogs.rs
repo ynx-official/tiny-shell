@@ -2535,9 +2535,8 @@ impl TinyShell {
                     cx.update(|cx| match result {
                         Ok(crate::app::updater::UpdateCheckResult::UpdateAvailable(info)) => {
                             view.update(cx, |this, cx| {
-                                this.updater_status = Some(
-                                    crate::app::updater::UpdateStatus::UpdateAvailable(info),
-                                );
+                                this.updater_status =
+                                    Some(crate::app::updater::UpdateStatus::UpdateAvailable(info));
                                 cx.notify();
                             });
                         }
@@ -2878,66 +2877,44 @@ impl TinyShell {
         });
     }
 
-    pub(crate) fn show_settings_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.active_dialog.is_some() {
-            return;
-        }
-        self.active_dialog = Some(crate::app::DialogKind::Settings);
+    pub(crate) fn render_settings_content(
+        &self,
+        view: &gpui::Entity<Self>,
+        settings_id: &'static str,
+        cx: &mut gpui::App,
+    ) -> gpui::AnyElement {
+        use gpui::IntoElement;
+        use gpui_component::setting::{
+            SettingField, SettingGroup, SettingItem, SettingPage, Settings,
+        };
+        let version = env!("CARGO_PKG_VERSION");
+        let view_clone_for_general = view.clone();
+        let sync_endpoint_input = self.sync_endpoint_input.clone();
+        let sync_username_input = self.sync_username_input.clone();
+        let sync_webdav_password_input = self.sync_webdav_password_input.clone();
+        let sync_s3_endpoint_input = self.sync_s3_endpoint_input.clone();
+        let sync_s3_region_input = self.sync_s3_region_input.clone();
+        let sync_s3_bucket_input = self.sync_s3_bucket_input.clone();
+        let sync_s3_object_key_input = self.sync_s3_object_key_input.clone();
+        let sync_s3_access_key_input = self.sync_s3_access_key_input.clone();
+        let sync_s3_secret_key_input = self.sync_s3_secret_key_input.clone();
+        let sync_s3_session_token_input = self.sync_s3_session_token_input.clone();
+        let sync_encryption_password_input = self.sync_encryption_password_input.clone();
 
-        let view = cx.entity();
+        let focus_handle = self.focus_handle.clone();
 
-        // Unbind all workspace keys so they don't interfere with keybinding recording
-        crate::app::keybinding_recorder::unbind_all_workspace_keys(cx, &self.config);
-        self.keybinds_suspended = true;
-
-        window.open_dialog(cx, move |dialog: Dialog, _window, _| {
-            dialog
-                .title(t!("settings").to_string())
-                .w(px(840.))
-                .h(px(560.))
-                .on_close({
-                    let view = view.clone();
-                    move |_, _window, cx| {
-                        // Re-register all workspace keys when closing settings
-                        view.update(cx, |this, cx| {
-                            this.active_dialog = None;
-                            this.keybinds_suspended = false;
-                            this.recording_action = None;
-                            this.keybind_error = None;
-                            crate::app::keybinding_recorder::bind_workspace_keys_from_config(
-                                cx,
-                                &this.config,
-                            );
-                            cx.notify();
-                        });
-                    }
-                })
-                .content({
-                    let view = view.clone();
-                    move |content, _window, cx| {
-                        use gpui_component::setting::{Settings, SettingPage, SettingGroup, SettingItem, SettingField};
-                        use gpui::IntoElement;
-                        let version = env!("CARGO_PKG_VERSION");
-                        let view_clone_for_general = view.clone();
-                        let sync_endpoint_input = view.read(cx).sync_endpoint_input.clone();
-                        let sync_username_input = view.read(cx).sync_username_input.clone();
-                        let sync_webdav_password_input = view.read(cx).sync_webdav_password_input.clone();
-                        let sync_s3_endpoint_input = view.read(cx).sync_s3_endpoint_input.clone();
-                        let sync_s3_region_input = view.read(cx).sync_s3_region_input.clone();
-                        let sync_s3_bucket_input = view.read(cx).sync_s3_bucket_input.clone();
-                        let sync_s3_object_key_input = view.read(cx).sync_s3_object_key_input.clone();
-                        let sync_s3_access_key_input = view.read(cx).sync_s3_access_key_input.clone();
-                        let sync_s3_secret_key_input = view.read(cx).sync_s3_secret_key_input.clone();
-                        let sync_s3_session_token_input = view.read(cx).sync_s3_session_token_input.clone();
-                        let sync_encryption_password_input = view.read(cx).sync_encryption_password_input.clone();
-
-                        let focus_handle = view.read(cx).focus_handle.clone();
-
-                        content.child(
+        div()
+            .size_full()
+            .min_w_0()
+            .min_h_0()
+            .overflow_hidden()
+            .child(
                             div()
                                 .flex()
                                 .flex_col()
                                 .size_full()
+                                .min_w_0()
+                                .min_h_0()
                                 .track_focus(&focus_handle)
                                 .on_key_down({
                                     let view = view.clone();
@@ -3000,7 +2977,7 @@ impl TinyShell {
                                     }
                                 })
                                 .child(
-                                    Settings::new("settings")
+                                    Settings::new(settings_id)
                                         .sidebar_width(px(180.))
                                         .sidebar_style(div().bg(cx.theme().background).style())
                                 .page(
@@ -3841,10 +3818,10 @@ impl TinyShell {
                                                 )
                                                 .item(SettingItem::render({
                                                     let view = view.clone();
-                                                    let global_proxy_host_input = view.read(cx).global_proxy_host_input.clone();
-                                                    let global_proxy_port_input = view.read(cx).global_proxy_port_input.clone();
-                                                    let global_proxy_user_input = view.read(cx).global_proxy_user_input.clone();
-                                                    let global_proxy_password_input = view.read(cx).global_proxy_password_input.clone();
+                                                    let global_proxy_host_input = self.global_proxy_host_input.clone();
+                                                    let global_proxy_port_input = self.global_proxy_port_input.clone();
+                                                    let global_proxy_user_input = self.global_proxy_user_input.clone();
+                                                    let global_proxy_password_input = self.global_proxy_password_input.clone();
                                                     move |_, window, cx| {
                                                         let proxy_type = view.read(cx).global_proxy_type.clone();
                                                         v_flex()
@@ -3912,7 +3889,7 @@ impl TinyShell {
                                     let mut page = SettingPage::new(t!("settings_key_bindings").to_string())
                                         .icon(IconName::SquareTerminal)
                                         .default_open(true);
-                                    for group in crate::app::keybinding_recorder::KeybindingsPage::render_groups(&view, cx) {
+                                    for group in crate::app::keybinding_recorder::KeybindingsPage::render_groups(self, &view) {
                                         page = page.group(group);
                                     }
                                     page
@@ -4109,6 +4086,50 @@ impl TinyShell {
                                 )
                                 )
                         )
+        .into_any_element()
+    }
+
+    pub(crate) fn show_settings_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.active_dialog.is_some() {
+            return;
+        }
+        self.active_dialog = Some(crate::app::DialogKind::Settings);
+
+        let view = cx.entity();
+
+        // Unbind all workspace keys so they don't interfere with keybinding recording
+        crate::app::keybinding_recorder::unbind_all_workspace_keys(cx, &self.config);
+        self.keybinds_suspended = true;
+
+        window.open_dialog(cx, move |dialog: Dialog, _window, _| {
+            dialog
+                .title(t!("settings").to_string())
+                .w(px(840.))
+                .h(px(560.))
+                .on_close({
+                    let view = view.clone();
+                    move |_, _window, cx| {
+                        // Re-register all workspace keys when closing settings
+                        view.update(cx, |this, cx| {
+                            this.active_dialog = None;
+                            this.keybinds_suspended = false;
+                            this.recording_action = None;
+                            this.keybind_error = None;
+                            crate::app::keybinding_recorder::bind_workspace_keys_from_config(
+                                cx,
+                                &this.config,
+                            );
+                            cx.notify();
+                        });
+                    }
+                })
+                .content({
+                    let view = view.clone();
+                    move |content, _window, cx| {
+                        let settings = view.update(cx, |this, cx| {
+                            this.render_settings_content(&view, "settings-dialog", cx)
+                        });
+                        content.child(settings)
                     }
                 })
         });
