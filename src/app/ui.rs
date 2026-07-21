@@ -6315,17 +6315,21 @@ impl Render for TinyShell {
         // whenever the active view (home page / terminal tab / system info
         // page) changes. `main_view_key` acts as the epoch: a different key
         // produces a new animation ID, so with_animation replays from frame 0.
-        // Starting from opacity 0 + a small upward translate gives a real
+        // Starting from opacity 0 + a small upward slide gives a smooth
         // "page transition" feel instead of a flash.
         let main_content = div()
             .size_full()
             .overflow_hidden()
+            .relative()
             .child(main_content_raw)
             .with_animation(
                 ElementId::NamedInteger("main-content-fade".into(), main_view_key),
                 Animation::new(Duration::from_millis(260))
                     .with_easing(ease_out_quint()),
-                |this, delta| this.opacity(delta * delta),
+                |this, delta| {
+                    this.top(px(12.0 * (1.0 - delta)))
+                        .opacity(delta)
+                },
             );
 
         let workspace = if self.sidebar_collapsed {
