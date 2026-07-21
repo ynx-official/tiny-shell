@@ -515,6 +515,10 @@ pub(crate) struct TinyShell {
     /// The Home workspace is a first-class tab alongside terminal groups.
     pub(crate) home_page_open: bool,
     pub(crate) home_page: HomePage,
+    /// The previously selected home page, used to animate nav transitions.
+    pub(crate) prev_home_page: HomePage,
+    /// Increments each time the home page changes, used as an animation epoch.
+    pub(crate) home_page_epoch: u64,
     pub(crate) connection_group_filter: Option<String>,
     /// Bounds of the visible group rows, used to calculate a drop position.
     pub(crate) connection_group_bounds: HashMap<String, Bounds<Pixels>>,
@@ -988,6 +992,8 @@ impl TinyShell {
             active_system_info_tab: None,
             home_page_open: true,
             home_page: HomePage::default(),
+            prev_home_page: HomePage::default(),
+            home_page_epoch: 0,
             connection_group_filter: None,
             connection_group_bounds: HashMap::new(),
             pending_connection_group_drag: None,
@@ -1264,6 +1270,18 @@ impl TinyShell {
         changed |= advance(&mut self.animated_mem_percent, self.system.mem_percent);
         changed |= advance(&mut self.animated_swap_percent, self.system.swap_percent);
         changed
+    }
+
+    /// Switch the active home page, recording the previous selection and
+    /// bumping the animation epoch so the nav item transition can re-run.
+    pub(crate) fn set_home_page(&mut self, page: HomePage, cx: &mut Context<Self>) {
+        if self.home_page == page {
+            return;
+        }
+        self.prev_home_page = self.home_page;
+        self.home_page = page;
+        self.home_page_epoch = self.home_page_epoch.wrapping_add(1);
+        cx.notify();
     }
 
     pub(crate) fn show_ip_popover(&mut self, cx: &mut Context<Self>) {

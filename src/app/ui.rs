@@ -1,9 +1,11 @@
 use crate::app::resizable::{h_resizable, resizable_panel, v_resizable};
+use std::time::Duration;
 use gpui::{
-    Anchor, AnyElement, Context, ElementId, Focusable as _, FontWeight, Hsla,
-    InteractiveElement as _, IntoElement, MouseButton, MouseDownEvent, ParentElement as _,
-    PathBuilder, Pixels, Render, StatefulInteractiveElement as _, Styled as _, Window, canvas,
-    deferred, div, hsla, point, prelude::FluentBuilder as _, px, relative, rems, uniform_list,
+    Anchor, AnyElement, Animation, AnimationExt as _, Context, ElementId, Focusable as _,
+    FontWeight, Hsla, InteractiveElement as _, IntoElement, MouseButton, MouseDownEvent,
+    ParentElement as _, PathBuilder, Pixels, Render, StatefulInteractiveElement as _,
+    Styled as _, Window, canvas, deferred, div, ease_in_out, hsla, point,
+    prelude::FluentBuilder as _, px, relative, rems, uniform_list,
 };
 use gpui_component::{
     ActiveTheme, Disableable as _, ElementExt, Icon, IconName, InteractiveElementExt as _, Root,
@@ -24,7 +26,7 @@ use std::collections::{HashMap, HashSet};
 use crate::{
     PaneLayout, TinyShell,
     app::constants::{COLLAPSED_SIDEBAR_WIDTH, SIDEBAR_WIDTH, TERMINAL_KEY_CONTEXT},
-    app::{HomePage, ProcessView, TabContextMenuState},
+    app::{ConnectionProgress, HomePage, ProcessView, TabContextMenuState},
     sftp::format_mtime,
     sftp::ops::is_editable_text_file,
     system::format_bytes,
@@ -93,6 +95,26 @@ fn format_network_axis(bytes_per_second: f32) -> String {
         format!("{value:.0}{unit}")
     } else {
         format!("{value:.1}{unit}")
+    }
+}
+
+/// Linearly interpolate between two [`Hsla`] colors, taking the shortest path
+/// around the hue wheel so transitions between similar hues stay smooth.
+fn lerp_hsla(from: Hsla, to: Hsla, t: f32) -> Hsla {
+    let t = t.clamp(0.0, 1.0);
+    let mut dh = to.h - from.h;
+    if dh > 0.5 {
+        dh -= 1.0;
+    } else if dh < -0.5 {
+        dh += 1.0;
+    }
+    let h = from.h + dh * t;
+    let h = if h < 0.0 { h + 1.0 } else if h > 1.0 { h - 1.0 } else { h };
+    Hsla {
+        h,
+        s: from.s + (to.s - from.s) * t,
+        l: from.l + (to.l - from.l) * t,
+        a: from.a + (to.a - from.a) * t,
     }
 }
 
@@ -629,8 +651,7 @@ impl TinyShell {
                                     .icon(IconName::Network)
                                     .label(t!("overview_connections").to_string())
                                     .on_click(cx.listener(|this, _, _, cx| {
-                                        this.home_page = HomePage::Connections;
-                                        cx.notify();
+                                        this.set_home_page(HomePage::Connections, cx);
                                     })),
                             ),
                     ),
@@ -826,8 +847,7 @@ impl TinyShell {
                                     .icon(IconName::SquareTerminal)
                                     .label(t!("command_manager").to_string())
                                     .on_click(cx.listener(|this, _, _, cx| {
-                                        this.home_page = HomePage::Commands;
-                                        cx.notify();
+                                        this.set_home_page(HomePage::Commands, cx);
                                     })),
                             )
                             .child(
@@ -836,8 +856,7 @@ impl TinyShell {
                                     .icon(IconName::Folder)
                                     .label(t!("overview_key_manager").to_string())
                                     .on_click(cx.listener(|this, _, _, cx| {
-                                        this.home_page = HomePage::KeyManager;
-                                        cx.notify();
+                                        this.set_home_page(HomePage::KeyManager, cx);
                                     })),
                             )
                             .child(
@@ -924,8 +943,7 @@ impl TinyShell {
                                     .icon(IconName::Network)
                                     .label(t!("overview_connections").to_string())
                                     .on_click(cx.listener(|this, _, _, cx| {
-                                        this.home_page = HomePage::Connections;
-                                        cx.notify();
+                                        this.set_home_page(HomePage::Connections, cx);
                                     })),
                             )
                             .child(
@@ -1782,10 +1800,38 @@ impl TinyShell {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let active = self.home_page == page;
+        let was_active = self.prev_home_page == page && page != self.home_page;
+        let epoch = self.home_page_epoch;
+
+        // Target colors reflect the post-click state.
+        let target_bg = if active {
+            cx.theme().tab_active
+        } else {
+            cx.theme().sidebar
+        };
+        let target_text = if active {
+            cx.theme().primary
+        } else {
+            cx.theme().foreground
+        };
         let hover_background = if active {
             cx.theme().tab_active
         } else {
             cx.theme().secondary
+        };
+
+        // Source colors reflect the pre-click state. When the item is not the
+        // one transitioning, source equals target so the animation has no
+        // visible effect but still keeps the element's layout stable.
+        let from_bg = if was_active {
+            cx.theme().tab_active
+        } else {
+            cx.theme().sidebar
+        };
+        let from_text = if was_active {
+            cx.theme().primary
+        } else {
+            cx.theme().foreground
         };
 
         div()
@@ -1795,20 +1841,11 @@ impl TinyShell {
             .flex_none()
             .cursor_pointer()
             .rounded_md()
-            .bg(if active {
-                cx.theme().tab_active
-            } else {
-                cx.theme().sidebar
-            })
-            .text_color(if active {
-                cx.theme().primary
-            } else {
-                cx.theme().foreground
-            })
+            .bg(target_bg)
+            .text_color(target_text)
             .hover(move |this| this.bg(hover_background))
             .on_click(cx.listener(move |this, _, _, cx| {
-                this.home_page = page;
-                cx.notify();
+                this.set_home_page(page, cx);
             }))
             .child(
                 h_flex()
@@ -1829,6 +1866,14 @@ impl TinyShell {
                             .font_weight(FontWeight::MEDIUM)
                             .child(label),
                     ),
+            )
+            .with_animation(
+                ElementId::NamedInteger(format!("{}-nav-anim", id).into(), epoch),
+                Animation::new(Duration::from_millis(180)).with_easing(ease_in_out),
+                move |this, delta| {
+                    this.bg(lerp_hsla(from_bg, target_bg, delta))
+                        .text_color(lerp_hsla(from_text, target_text, delta))
+                },
             )
     }
 
@@ -5026,8 +5071,7 @@ impl TinyShell {
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.active_system_info_tab = None;
                                 this.home_page_open = true;
-                                this.home_page = HomePage::Overview;
-                                cx.notify();
+                                this.set_home_page(HomePage::Overview, cx);
                             }));
                         let plus_tab = Tab::new()
                             .min_w(px(40.))
@@ -5050,8 +5094,7 @@ impl TinyShell {
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.active_system_info_tab = None;
                                 this.home_page_open = true;
-                                this.home_page = HomePage::Overview;
-                                cx.notify();
+                                this.set_home_page(HomePage::Overview, cx);
                             }));
                         TabBar::new("tiny-shell-tab-bar")
                             .track_scroll(&self.tabs_scroll_handle)
@@ -5427,12 +5470,132 @@ impl TinyShell {
             .when(self.search_active, |el| {
                 el.child(self.render_search_bar(window, cx))
             })
+            // Connection progress overlay — scoped to the terminal panel so it
+            // only covers the active connection area, not the whole window.
+            .when_some(
+                self.connection_progress
+                    .clone()
+                    .filter(|progress| !progress.failed),
+                |this, progress| {
+                    this.child(self.render_connection_progress_overlay(progress, cx))
+                },
+            )
             // Every non-reorder drag has visible feedback. A neutral destination
             // explicitly states that releasing will cancel instead of moving data.
             .when(
                 (self.tab_drag.is_dragging() && self.tab_drag.reorder_index().is_none())
                     || self.incoming_tab_drag.is_some(),
                 |el| el.child(self.render_tab_drag_overlay(cx)),
+            )
+    }
+
+    /// Renders the connection progress overlay scoped to the terminal panel.
+    /// Unlike a full-window modal, this only covers the active connection area.
+    fn render_connection_progress_overlay(
+        &self,
+        progress: ConnectionProgress,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        div()
+            .absolute()
+            .top_0()
+            .left_0()
+            .right_0()
+            .bottom_0()
+            .bg(gpui::Hsla {
+                h: 0.0,
+                s: 0.0,
+                l: 0.0,
+                a: 0.48,
+            })
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(
+                div()
+                    .w(px(420.))
+                    .p_5()
+                    .rounded_lg()
+                    .border_1()
+                    .border_color(cx.theme().border)
+                    .bg(cx.theme().popover)
+                    .shadow_lg()
+                    .child(
+                        v_flex()
+                            .gap_4()
+                            .child(
+                                Button::new("ssh-connect-progress")
+                                    .primary()
+                                    .loading(!progress.failed)
+                                    .label(progress.title.clone()),
+                            )
+                            .child(
+                                div()
+                                    .relative()
+                                    .min_h(px(0.))
+                                    .max_h(px(220.))
+                                    .child(
+                                        div()
+                                            .id("connection-progress-scroll")
+                                            .max_h(px(220.))
+                                            .overflow_hidden()
+                                            .overflow_y_scroll()
+                                            .track_scroll(&self.connection_scroll_handle)
+                                            .child(
+                                                v_flex().gap_2().children(
+                                                    progress.lines.iter().cloned().map(|line| {
+                                                        div()
+                                                            .text_size(rems(1.0))
+                                                            .text_color(if progress.failed {
+                                                                cx.theme().danger
+                                                            } else {
+                                                                cx.theme().muted_foreground
+                                                            })
+                                                            .child(line)
+                                                    }),
+                                                ),
+                                            )
+                                    )
+                                    .child(
+                                        div()
+                                            .absolute()
+                                            .top_0()
+                                            .right_0()
+                                            .bottom_0()
+                                            .w(px(16.))
+                                            .child(
+                                                Scrollbar::vertical(&self.connection_scroll_handle)
+                                                    .scrollbar_show(ScrollbarShow::Scrolling)
+                                            )
+                                    )
+                            )
+                            .when(progress.failed, |this| {
+                                this.child(
+                                    h_flex()
+                                        .justify_end()
+                                        .gap_2()
+                                        .child(
+                                            Button::new("ssh-connect-progress-retry")
+                                                .primary()
+                                                .label(t!("retry").to_string())
+                                                .on_click(cx.listener(
+                                                    |this, _, _, cx| {
+                                                        this.retry_connection_progress(cx)
+                                                    },
+                                                )),
+                                        )
+                                        .child(
+                                            Button::new("ssh-connect-progress-close")
+                                                .label(t!("cancel").to_string())
+                                                .on_click(cx.listener(
+                                                    |this, _, _, cx| {
+                                                        this.cancel_connection_progress(cx)
+                                                    },
+                                                )),
+                                        ),
+                                )
+                            }),
+                    ),
             )
     }
 
@@ -6578,119 +6741,6 @@ impl Render for TinyShell {
                                                     this.detach_tab_to_new_window(cx);
                                                 })),
                                         ),
-                                ),
-                        ),
-                )
-            })
-            .when_some(
-                self.connection_progress
-                    .clone()
-                    .filter(|progress| !progress.failed),
-                |this, progress| {
-                this.child(
-                    div()
-                        .absolute()
-                        .top_0()
-                        .left_0()
-                        .right_0()
-                        .bottom_0()
-                        .bg(gpui::Hsla {
-                            h: 0.0,
-                            s: 0.0,
-                            l: 0.0,
-                            a: 0.48,
-                        })
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .child(
-                            div()
-                                .w(px(420.))
-                                .p_5()
-                                .rounded_lg()
-                                .border_1()
-                                .border_color(cx.theme().border)
-                                .bg(cx.theme().popover)
-                                .shadow_lg()
-                                .child(
-                                    v_flex()
-                                        .gap_4()
-                                        .child(
-                                            Button::new("ssh-connect-progress")
-                                                .primary()
-                                                .loading(!progress.failed)
-                                                .label(progress.title.clone()),
-                                        )
-                                        .child(
-                                            div()
-                                                .relative()
-                                                .min_h(px(0.))
-                                                .max_h(px(220.))
-                                                .child(
-                                                    div()
-                                                        .id("connection-progress-scroll")
-                                                        .max_h(px(220.))
-                                                        .overflow_hidden()
-                                                        .overflow_y_scroll()
-                                                        .track_scroll(&self.connection_scroll_handle)
-                                                        .child(
-                                                            v_flex().gap_2().children(
-                                                                progress.lines.iter().cloned().map(|line| {
-                                                                    div()
-                                                                        .text_size(rems(1.0))
-                                                                        .text_color(if progress.failed {
-                                                                            cx.theme().danger
-                                                                        } else {
-                                                                            cx.theme().muted_foreground
-                                                                        })
-                                                                        .child(line)
-                                                                }),
-                                                            ),
-                                                        )
-                                                )
-                                                .child(
-                                                    div()
-                                                        .absolute()
-                                                        .top_0()
-                                                        .right_0()
-                                                        .bottom_0()
-                                                        .w(px(16.))
-                                                        .child(
-                                                            Scrollbar::vertical(&self.connection_scroll_handle)
-                                                                .scrollbar_show(ScrollbarShow::Scrolling)
-                                                        )
-                                                )
-                                        )
-                                        .when(progress.failed, |this| {
-                                            this.child(
-                                                h_flex()
-                                                    .justify_end()
-                                                    .gap_2()
-                                                    .child(
-                                                        Button::new("ssh-connect-progress-retry")
-                                                            .primary()
-                                                            .label(t!("retry").to_string())
-                                                            .on_click(cx.listener(
-                                                                |this, _, _, cx| {
-                                                                    this.retry_connection_progress(
-                                                                        cx,
-                                                                    )
-                                                                },
-                                                            )),
-                                                    )
-                                                    .child(
-                                                        Button::new("ssh-connect-progress-close")
-                                                            .label(t!("cancel").to_string())
-                                                            .on_click(cx.listener(
-                                                                |this, _, _, cx| {
-                                                                    this.cancel_connection_progress(
-                                                                        cx,
-                                                                    )
-                                                                },
-                                                            )),
-                                                    ),
-                                            )
-                                        }),
                                 ),
                         ),
                 )
