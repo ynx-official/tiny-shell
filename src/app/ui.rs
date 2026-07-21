@@ -5653,6 +5653,7 @@ impl TinyShell {
         let card_text = hsla(0., 0., 1.0, 1.0);
         let neutral_bg = hsla(32. / 360., 0.82, 0.34, 0.98);
         let neutral_border = hsla(42. / 360., 0.95, 0.68, 1.0);
+        let drag_overlay_epoch = self.tab_drag.drag_overlay_epoch();
 
         div()
             .absolute()
@@ -5738,6 +5739,15 @@ impl TinyShell {
                                             .text_base()
                                             .font_weight(FontWeight::BOLD)
                                             .child(t!("drag_cancel_hint").to_string()),
+                                    )
+                                    .with_animation(
+                                        ElementId::NamedInteger(
+                                            "drag-cancel-card-fade".into(),
+                                            drag_overlay_epoch,
+                                        ),
+                                        Animation::new(Duration::from_millis(180))
+                                            .with_easing(ease_out_quint()),
+                                        |this, delta| this.opacity(delta * delta),
                                     ),
                             ),
                     )
@@ -5777,6 +5787,15 @@ impl TinyShell {
                                             .text_base()
                                             .font_weight(FontWeight::BOLD)
                                             .child(t!("drag_merge_hint").to_string()),
+                                    )
+                                    .with_animation(
+                                        ElementId::NamedInteger(
+                                            "drag-merge-card-fade".into(),
+                                            drag_overlay_epoch,
+                                        ),
+                                        Animation::new(Duration::from_millis(180))
+                                            .with_easing(ease_out_quint()),
+                                        |this, delta| this.opacity(delta * delta),
                                     ),
                             ),
                     )
@@ -5860,6 +5879,7 @@ impl TinyShell {
                     .and_then(|tab| tab.disconnected_reason.clone());
                 if let Some(reason) = disconnected_reason {
                     let tab_id_for_reconnect = tab_id.clone();
+                    let disconnect_epoch = this.disconnect_epoch;
                     el = div().size_full().relative().child(el).child(
                         div().absolute().bottom_0().left_0().right_0().child(
                             h_flex()
@@ -5889,6 +5909,15 @@ impl TinyShell {
                                     cx.listener(move |this, _, _, cx| {
                                         this.retry_disconnected_tab(&tab_id_for_reconnect, cx);
                                     }),
+                                )
+                                .with_animation(
+                                    ElementId::NamedInteger(
+                                        "disconnect-bar-fade".into(),
+                                        disconnect_epoch,
+                                    ),
+                                    Animation::new(Duration::from_millis(180))
+                                        .with_easing(ease_out_quint()),
+                                    |this, delta| this.opacity(delta * delta),
                                 ),
                         ),
                     );
@@ -5902,6 +5931,7 @@ impl TinyShell {
                     .clone()
                     .filter(|progress| progress.tab_id == *tab_id && progress.failed)
                 {
+                    let failed_epoch = this.connection_progress_epoch;
                     el = div().size_full().relative().child(el).child(
                         div()
                             .absolute()
@@ -5909,12 +5939,6 @@ impl TinyShell {
                             .left_0()
                             .right_0()
                             .bottom_0()
-                            .bg(gpui::Hsla {
-                                h: 0.0,
-                                s: 0.0,
-                                l: 0.0,
-                                a: 0.28,
-                            })
                             .flex()
                             .items_center()
                             .justify_center()
@@ -5975,7 +5999,32 @@ impl TinyShell {
                                                     this.cancel_connection_progress(cx);
                                                 })),
                                             ),
+                                    )
+                                    .with_animation(
+                                        ElementId::NamedInteger(
+                                            "pane-connect-card-fade".into(),
+                                            failed_epoch,
+                                        ),
+                                        Animation::new(Duration::from_millis(200))
+                                            .with_easing(ease_out_quint()),
+                                        |this, delta| this.opacity(delta * delta),
                                     ),
+                            )
+                            .with_animation(
+                                ElementId::NamedInteger(
+                                    "pane-connect-scrim-fade".into(),
+                                    failed_epoch,
+                                ),
+                                Animation::new(Duration::from_millis(180))
+                                    .with_easing(ease_out_quint()),
+                                |this, delta| {
+                                    this.bg(gpui::Hsla {
+                                        h: 0.0,
+                                        s: 0.0,
+                                        l: 0.0,
+                                        a: 0.28 * delta * delta,
+                                    })
+                                },
                             ),
                     );
                 }

@@ -1,8 +1,9 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, time::Duration};
 
 use gpui::{
-    Context, Focusable as _, Hsla, InteractiveElement as _, IntoElement, MouseButton,
-    ParentElement as _, Styled as _, Window, div, prelude::FluentBuilder as _, px, rems,
+    Animation, AnimationExt as _, Context, ElementId, Focusable as _, Hsla,
+    InteractiveElement as _, IntoElement, MouseButton, ParentElement as _, Styled as _, Window,
+    div, ease_out_quint, prelude::FluentBuilder as _, px, rems,
 };
 use gpui_component::{
     ActiveTheme as _, Disableable as _, ElementExt as _, IconName, Sizable as _,
@@ -25,6 +26,7 @@ impl TinyShell {
 
     pub(crate) fn open_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.search_active = true;
+        self.search_epoch = self.search_epoch.wrapping_add(1);
         // Focus the search input on the next frame so it happens after the
         // current render cycle completes, avoiding focus being stolen back
         // by the terminal panel's track_focus.
@@ -337,6 +339,7 @@ impl TinyShell {
         } else {
             String::new()
         };
+        let search_epoch = self.search_epoch;
 
         let view = cx.entity();
         div()
@@ -417,6 +420,11 @@ impl TinyShell {
                                 this.close_search(window, cx);
                             })),
                     ),
+            )
+            .with_animation(
+                ElementId::NamedInteger("search-bar-fade".into(), search_epoch),
+                Animation::new(Duration::from_millis(180)).with_easing(ease_out_quint()),
+                |this, delta| this.opacity(delta * delta),
             )
             .into_any_element()
     }

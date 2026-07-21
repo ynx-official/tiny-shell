@@ -558,6 +558,9 @@ pub(crate) struct TinyShell {
     /// Increments each time a context menu is opened, used as an animation
     /// epoch so the menu fade-in restarts on every open.
     pub(crate) context_menu_epoch: u64,
+    /// Increments each time a tab becomes disconnected, used as an animation
+    /// epoch so the reconnect bar fade-in restarts on every disconnect.
+    pub(crate) disconnect_epoch: u64,
     pub(crate) sftp_creating_folder: bool,
     pub(crate) sftp_new_folder_input: Entity<InputState>,
     pub(crate) sftp_delete_scroll_handle: gpui::ScrollHandle,
@@ -615,6 +618,9 @@ pub(crate) struct TinyShell {
     pub(crate) search_input: Entity<InputState>,
     pub(crate) quick_connection_search_input: Entity<InputState>,
     pub(crate) search_active: bool,
+    /// Increments each time the search bar is opened, used as an animation
+    /// epoch so the search bar fade-in restarts on every open.
+    pub(crate) search_epoch: u64,
     pub(crate) search_query: String,
     pub(crate) search_matches: Vec<(i32, i32)>,
     pub(crate) search_current: usize,
@@ -1039,6 +1045,7 @@ impl TinyShell {
             sftp_context_menu: None,
             tab_context_menu: None,
             context_menu_epoch: 0,
+            disconnect_epoch: 0,
             sftp_creating_folder: false,
             sftp_new_folder_input,
             sftp_delete_scroll_handle: gpui::ScrollHandle::new(),
@@ -1098,6 +1105,7 @@ impl TinyShell {
             search_input,
             quick_connection_search_input,
             search_active: false,
+            search_epoch: 0,
             search_query: String::new(),
             search_matches: Vec::new(),
             search_current: 0,
@@ -1546,6 +1554,7 @@ impl TinyShell {
                         tab.connected = false;
                         tab.status = reason.clone();
                         tab.disconnected_reason = Some(reason.clone());
+                        self.disconnect_epoch = self.disconnect_epoch.wrapping_add(1);
                     }
                     if self.system_tab_id.as_deref() == Some(tab_id.as_str()) {
                         self.system_status = Some(reason.clone().into());
@@ -1558,6 +1567,8 @@ impl TinyShell {
                                 .set_offset(gpui::point(px(0.), px(-99999.0)));
                             progress.title = t!("connection_failed").into();
                             progress.failed = true;
+                            self.connection_progress_epoch =
+                                self.connection_progress_epoch.wrapping_add(1);
                         }
                     }
                     self.status = reason.into();
