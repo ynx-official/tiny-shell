@@ -1,4 +1,8 @@
-use std::{fs, path::PathBuf};
+use std::{
+    fs::{self, OpenOptions},
+    io::Write,
+    path::{Path, PathBuf},
+};
 
 use anyhow::{Context, Result};
 use argon2::Argon2;
@@ -20,6 +24,33 @@ pub enum AuthMethod {
     Config,
 }
 
+/// A user-imported SSH private key managed by tiny-shell.
+///
+/// The key file content is copied into `inline_content` at import time,
+/// so deleting the original file does not affect connections that use
+/// this managed key.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ManagedKey {
+    pub id: String,
+    /// User-given name / remark for this key.
+    pub name: String,
+    /// Detected key type: "ed25519", "rsa", "ecdsa", "dsa", or "unknown".
+    #[serde(default)]
+    pub key_type: String,
+    /// SHA256 fingerprint string (e.g. "SHA256:xxxx...") for display & dedup.
+    #[serde(default)]
+    pub fingerprint: String,
+    /// The actual private key file content (copy of the original).
+    pub inline_content: String,
+    /// Passphrase for the key (stored in plaintext, same security level
+    /// as Session.password — file is 0o600 on unix).
+    #[serde(default)]
+    pub passphrase: String,
+    /// Import timestamp (unix epoch seconds).
+    #[serde(default)]
+    pub created_at: i64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Session {
     pub id: String,
@@ -36,8 +67,15 @@ pub struct Session {
     pub private_key_inline: String,
     #[serde(default)]
     pub passphrase: String,
+    /// Reference to a ManagedKey.id. When set, the key content is resolved
+    /// from the managed key at connection time (not stored in the session).
+    #[serde(default)]
+    pub managed_key_id: Option<String>,
     #[serde(default)]
     pub last_used: Option<String>,
+    /// Optional user-created folder in the connection manager.
+    #[serde(default)]
+    pub group: Option<String>,
     #[serde(default = "default_global_proxy_type")]
     pub proxy_type: String, // "none", "socks5", "http"
     #[serde(default)]
@@ -64,7 +102,9 @@ impl Session {
             private_key_path: String::new(),
             private_key_inline: String::new(),
             passphrase: String::new(),
+            managed_key_id: None,
             last_used: None,
+            group: None,
             proxy_type: "none".to_string(),
             proxy_host: String::new(),
             proxy_port: None,
@@ -93,7 +133,9 @@ impl Session {
             private_key_path,
             private_key_inline,
             passphrase,
+            managed_key_id: None,
             last_used: None,
+            group: None,
             proxy_type: "none".to_string(),
             proxy_host: String::new(),
             proxy_port: None,
@@ -175,6 +217,10 @@ pub struct ConfigFile {
     #[serde(default)]
     pub sessions: Vec<Session>,
     #[serde(default)]
+    pub connection_groups: Vec<String>,
+    #[serde(default)]
+    pub managed_keys: Vec<ManagedKey>,
+    #[serde(default)]
     pub window_bounds: Option<SavedWindowBounds>,
     #[serde(default)]
     pub workspace_panels: Option<Vec<f32>>,
@@ -247,7 +293,7 @@ fn default_s3_region() -> String {
 }
 
 fn default_s3_object_key() -> String {
-    "ashell-sync.json".to_string()
+    "tiny-shell-sync.json".to_string()
 }
 
 fn default_follow_system_theme() -> bool {
@@ -259,7 +305,7 @@ fn default_locale() -> String {
 }
 
 fn default_terminal_font_size() -> f32 {
-    18.0
+    14.0
 }
 
 fn default_ui_font_size() -> f32 {
@@ -293,6 +339,8 @@ impl Default for ConfigFile {
             title_bar_style: TitleBarStyle::default(),
             cursor_style: CursorStyle::default(),
             sessions: Vec::new(),
+            connection_groups: Vec::new(),
+            managed_keys: Vec::new(),
             window_bounds: None,
             workspace_panels: None,
             body_panels: None,
@@ -324,6 +372,7 @@ impl Default for ConfigFile {
     }
 }
 
+#[derive(Clone)]
 pub struct ConfigStore {
     path: PathBuf,
     cache: ConfigFile,
@@ -406,12 +455,145 @@ impl ConfigStore {
         Ok(dirs
             .home_dir()
             .join(".config")
-            .join("ashell")
+            .join("tiny-shell")
             .join("sessions.json"))
     }
 
     pub fn sessions(&self) -> &[Session] {
         &self.cache.sessions
+    }
+
+    pub fn connection_groups(&self) -> &[String] {
+        &self.cache.connection_groups
+    }
+
+    pub fn add_connection_group(&mut self, name: String) {
+        if !name.trim().is_empty()
+            && !self
+                .cache
+                .connection_groups
+                .iter()
+                .any(|group| group == &name)
+        {
+            self.cache.connection_groups.push(name);
+        }
+    }
+
+    pub fn rename_connection_group(&mut self, old_name: &str, new_name: String) {
+        if old_name == new_name || new_name.trim().is_empty() {
+            return;
+        }
+        if self
+            .cache
+            .connection_groups
+            .iter()
+            .any(|group| group == &new_name)
+        {
+            return;
+        }
+        let old_prefix = format!("{old_name}/");
+        let new_prefix = format!("{new_name}/");
+        for group in &mut self.cache.connection_groups {
+            if group == old_name {
+                *group = new_name.clone();
+            } else if let Some(suffix) = group.strip_prefix(&old_prefix) {
+                *group = format!("{new_prefix}{suffix}");
+            }
+        }
+        for session in &mut self.cache.sessions {
+            if session.group.as_deref() == Some(old_name) {
+                session.group = Some(new_name.clone());
+            } else if let Some(suffix) = session
+                .group
+                .as_deref()
+                .and_then(|group| group.strip_prefix(&old_prefix))
+            {
+                session.group = Some(format!("{new_prefix}{suffix}"));
+            }
+        }
+    }
+
+    /// Move a group (and all of its descendants) before another group at the
+    /// same tree level. `None` places it at the end of its siblings.
+    pub fn reorder_connection_group(&mut self, name: &str, before: Option<&str>) {
+        let prefix = format!("{name}/");
+        let parent = name.rsplit_once('/').map(|(parent, _)| parent);
+        let same_parent = |group: &str| group.rsplit_once('/').map(|(parent, _)| parent) == parent;
+
+        if !self
+            .cache
+            .connection_groups
+            .iter()
+            .any(|group| group == name)
+            || before.is_some_and(|target| {
+                target == name || target.starts_with(&prefix) || !same_parent(target)
+            })
+        {
+            return;
+        }
+
+        let mut moving = Vec::new();
+        self.cache.connection_groups.retain(|group| {
+            if group == name || group.starts_with(&prefix) {
+                moving.push(group.clone());
+                false
+            } else {
+                true
+            }
+        });
+        let insert_at = before
+            .and_then(|target| {
+                self.cache
+                    .connection_groups
+                    .iter()
+                    .position(|group| group == target)
+            })
+            .unwrap_or_else(|| {
+                self.cache
+                    .connection_groups
+                    .iter()
+                    .rposition(|group| same_parent(group))
+                    .map(|index| index + 1)
+                    .unwrap_or(self.cache.connection_groups.len())
+            });
+        self.cache
+            .connection_groups
+            .splice(insert_at..insert_at, moving);
+    }
+
+    pub fn remove_connection_group(&mut self, name: &str) {
+        let prefix = format!("{name}/");
+        self.cache
+            .connection_groups
+            .retain(|group| group != name && !group.starts_with(&prefix));
+        for session in &mut self.cache.sessions {
+            if session
+                .group
+                .as_deref()
+                .is_some_and(|group| group == name || group.starts_with(&prefix))
+            {
+                session.group = None;
+            }
+        }
+    }
+
+    pub fn move_connection_group(&mut self, name: &str, new_parent: Option<&str>) {
+        let leaf = name.rsplit('/').next().unwrap_or(name);
+        let destination = new_parent
+            .filter(|parent| !parent.is_empty())
+            .map(|parent| format!("{parent}/{leaf}"))
+            .unwrap_or_else(|| leaf.to_string());
+        if destination == name
+            || destination.starts_with(&format!("{name}/"))
+            || self
+                .cache
+                .connection_groups
+                .iter()
+                .any(|group| group == &destination)
+        {
+            return;
+        }
+        self.rename_connection_group(name, destination);
     }
 
     pub fn replace_sessions(&mut self, sessions: Vec<Session>) {
@@ -466,7 +648,7 @@ impl ConfigStore {
 
     pub fn sync_s3_object_key(&self) -> &str {
         if self.cache.sync_s3_object_key.is_empty() {
-            "ashell-sync.json"
+            "tiny-shell-sync.json"
         } else {
             &self.cache.sync_s3_object_key
         }
@@ -720,14 +902,6 @@ impl ConfigStore {
         self.cache.global_proxy_password = val;
     }
 
-    pub fn show_hidden_files(&self) -> bool {
-        self.cache.show_hidden_files
-    }
-
-    pub fn set_show_hidden_files(&mut self, val: bool) {
-        self.cache.show_hidden_files = val;
-    }
-
     pub fn lock_layout(&self) -> bool {
         self.cache.lock_layout
     }
@@ -752,6 +926,43 @@ impl ConfigStore {
         self.cache.sftp_panel_minimized = val;
     }
 
+    pub fn show_hidden_files(&self) -> bool {
+        self.cache.show_hidden_files
+    }
+
+    pub fn set_show_hidden_files(&mut self, val: bool) {
+        self.cache.show_hidden_files = val;
+    }
+
+    pub fn merge_interactive_preferences_from(&mut self, source: &ConfigStore) {
+        self.cache.follow_system_theme = source.cache.follow_system_theme;
+        self.cache.theme_mode = source.cache.theme_mode.clone();
+        self.cache.light_theme_name = source.cache.light_theme_name.clone();
+        self.cache.dark_theme_name = source.cache.dark_theme_name.clone();
+        self.cache.locale = source.cache.locale.clone();
+        self.cache.terminal_font_size = source.cache.terminal_font_size;
+        self.cache.ui_font_size = source.cache.ui_font_size;
+        self.cache.right_click_copy_paste = source.cache.right_click_copy_paste;
+        self.cache.keyword_highlight = source.cache.keyword_highlight;
+        self.cache.ui_font_family = source.cache.ui_font_family.clone();
+        self.cache.terminal_font_family = source.cache.terminal_font_family.clone();
+        self.cache.title_bar_style = source.cache.title_bar_style;
+        self.cache.cursor_style = source.cache.cursor_style;
+        self.cache.show_hidden_files = source.cache.show_hidden_files;
+        self.cache.lock_layout = source.cache.lock_layout;
+        self.cache.monitoring_position = source.cache.monitoring_position.clone();
+        self.cache.sidebar_collapsed = source.cache.sidebar_collapsed;
+        self.cache.sftp_panel_minimized = source.cache.sftp_panel_minimized;
+        self.cache.key_bindings = source.cache.key_bindings.clone();
+        self.cache.use_proxy = source.cache.use_proxy;
+        self.cache.read_env_proxy = source.cache.read_env_proxy;
+        self.cache.global_proxy_type = source.cache.global_proxy_type.clone();
+        self.cache.global_proxy_host = source.cache.global_proxy_host.clone();
+        self.cache.global_proxy_port = source.cache.global_proxy_port;
+        self.cache.global_proxy_user = source.cache.global_proxy_user.clone();
+        self.cache.global_proxy_password = source.cache.global_proxy_password.clone();
+    }
+
     pub fn get(&self, id: &str) -> Option<&Session> {
         self.cache.sessions.iter().find(|s| s.id == id)
     }
@@ -768,26 +979,97 @@ impl ConfigStore {
         self.cache.sessions.retain(|s| s.id != id);
     }
 
+    // ── Managed keys CRUD ──────────────────────────────────────────
+
+    pub fn managed_keys(&self) -> &[ManagedKey] {
+        &self.cache.managed_keys
+    }
+
+    pub fn get_managed_key(&self, id: &str) -> Option<&ManagedKey> {
+        self.cache.managed_keys.iter().find(|k| k.id == id)
+    }
+
+    pub fn upsert_managed_key(&mut self, key: ManagedKey) {
+        if let Some(existing) = self.cache.managed_keys.iter_mut().find(|k| k.id == key.id) {
+            *existing = key;
+        } else {
+            self.cache.managed_keys.push(key);
+        }
+    }
+
+    pub fn remove_managed_key(&mut self, id: &str) {
+        self.cache.managed_keys.retain(|k| k.id != id);
+        // Also clear the reference from any session that used this key.
+        for s in &mut self.cache.sessions {
+            if s.managed_key_id.as_deref() == Some(id) {
+                s.managed_key_id = None;
+            }
+        }
+    }
+
     pub fn save(&self) -> Result<()> {
         if self.path.as_os_str().is_empty() {
             return Ok(());
         }
         let hardware_uuid = get_hardware_uuid();
         let encrypted_bytes = encrypt_config(&self.cache, &hardware_uuid)?;
-        fs::write(&self.path, encrypted_bytes)
-            .with_context(|| format!("failed to write {}", self.path.display()))?;
+        write_config_atomically(&self.path, &encrypted_bytes)
+    }
+}
+
+fn write_config_atomically(path: &Path, bytes: &[u8]) -> Result<()> {
+    let parent = path
+        .parent()
+        .context("configuration path has no parent directory")?;
+    fs::create_dir_all(parent)
+        .with_context(|| format!("failed to create config dir {}", parent.display()))?;
+
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .context("configuration path has an invalid file name")?;
+    let temp_path = parent.join(format!(".{file_name}.{}.tmp", Uuid::new_v4()));
+
+    let write_result = (|| -> Result<()> {
+        let mut file = OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&temp_path)
+            .with_context(|| format!("failed to create {}", temp_path.display()))?;
+        file.write_all(bytes)
+            .with_context(|| format!("failed to write {}", temp_path.display()))?;
+        file.sync_all()
+            .with_context(|| format!("failed to sync {}", temp_path.display()))?;
 
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            if let Ok(mut perms) = fs::metadata(&self.path).map(|m| m.permissions()) {
-                perms.set_mode(0o600);
-                let _ = fs::set_permissions(&self.path, perms);
-            }
+            fs::set_permissions(&temp_path, fs::Permissions::from_mode(0o600))
+                .with_context(|| format!("failed to secure {}", temp_path.display()))?;
         }
 
+        fs::rename(&temp_path, path).with_context(|| {
+            format!(
+                "failed to replace configuration {} with {}",
+                path.display(),
+                temp_path.display()
+            )
+        })?;
+
+        #[cfg(unix)]
+        OpenOptions::new()
+            .read(true)
+            .open(parent)
+            .and_then(|directory| directory.sync_all())
+            .with_context(|| format!("failed to sync config dir {}", parent.display()))?;
+
         Ok(())
+    })();
+
+    if write_result.is_err() {
+        let _ = fs::remove_file(&temp_path);
     }
+    write_result
 }
 
 pub trait ProxyStream:
@@ -993,7 +1275,13 @@ struct EncryptedConfigEnvelope {
     payload: String,
 }
 
+static HARDWARE_UUID: OnceLock<String> = OnceLock::new();
+
 fn get_hardware_uuid() -> String {
+    HARDWARE_UUID.get_or_init(query_hardware_uuid).clone()
+}
+
+fn query_hardware_uuid() -> String {
     #[cfg(target_os = "macos")]
     {
         if let Ok(output) = std::process::Command::new("ioreg")
@@ -1038,43 +1326,20 @@ fn get_hardware_uuid() -> String {
 
     #[cfg(target_os = "windows")]
     {
-        if let Ok(output) = std::process::Command::new("reg")
-            .args(&[
-                "query",
-                "HKLM\\SOFTWARE\\Microsoft\\Cryptography",
-                "/v",
-                "MachineGuid",
-            ])
-            .output()
+        use winreg::{RegKey, enums::HKEY_LOCAL_MACHINE};
+
+        if let Ok(key) = RegKey::predef(HKEY_LOCAL_MACHINE)
+            .open_subkey("SOFTWARE\\Microsoft\\Cryptography")
+            && let Ok(guid) = key.get_value::<String, _>("MachineGuid")
         {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            for line in stdout.lines() {
-                if line.contains("MachineGuid") {
-                    if let Some(guid) = line.split_whitespace().last() {
-                        let guid = guid.trim().to_string();
-                        if !guid.is_empty() {
-                            return guid;
-                        }
-                    }
-                }
-            }
-        }
-        if let Ok(output) = std::process::Command::new("wmic")
-            .args(&["csproduct", "get", "uuid"])
-            .output()
-        {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            let lines: Vec<&str> = stdout.lines().collect();
-            if lines.len() >= 2 {
-                let uuid = lines[1].trim().to_string();
-                if !uuid.is_empty() {
-                    return uuid;
-                }
+            let guid = guid.trim().to_string();
+            if !guid.is_empty() {
+                return guid;
             }
         }
     }
 
-    "ashell-default-hardware-uuid-fallback".to_string()
+    "tiny-shell-default-hardware-uuid-fallback".to_string()
 }
 
 fn encrypt_config(config: &ConfigFile, password: &str) -> Result<Vec<u8>> {
@@ -1145,6 +1410,29 @@ mod tests {
     use super::*;
 
     #[test]
+    fn default_font_sizes_are_14_px() {
+        let config = ConfigFile::default();
+        assert_eq!(config.terminal_font_size, 14.0);
+        assert_eq!(config.ui_font_size, 14.0);
+    }
+
+    #[test]
+    fn merging_preferences_preserves_connection_data() {
+        let mut latest = ConfigStore::in_memory();
+        latest.cache.connection_groups = vec!["production".to_string()];
+        let mut source = ConfigStore::in_memory();
+        source.cache.connection_groups = vec!["stale".to_string()];
+        source.set_ui_font_size(18.0);
+        source.set_right_click_copy_paste(true);
+
+        latest.merge_interactive_preferences_from(&source);
+
+        assert_eq!(latest.cache.connection_groups, ["production"]);
+        assert_eq!(latest.ui_font_size(), 18.0);
+        assert!(latest.right_click_copy_paste());
+    }
+
+    #[test]
     fn test_get_hardware_uuid() {
         let uuid = get_hardware_uuid();
         assert!(!uuid.is_empty());
@@ -1166,5 +1454,54 @@ mod tests {
 
         // Decrypt with wrong password should fail
         assert!(decrypt_config(&encrypted, "wrong-password").is_err());
+    }
+
+    #[test]
+    fn config_save_replaces_existing_file_without_leaving_temp_files() {
+        let dir = std::env::temp_dir().join(format!("tiny-shell-config-test-{}", Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("sessions.json");
+        fs::write(&path, b"old config").unwrap();
+
+        let store = ConfigStore {
+            path: path.clone(),
+            cache: ConfigFile::default(),
+        };
+        store.save().unwrap();
+
+        let encrypted = fs::read(&path).unwrap();
+        let decrypted = decrypt_config(&encrypted, &get_hardware_uuid()).unwrap();
+        assert_eq!(
+            decrypted.terminal_font_family,
+            store.cache.terminal_font_family
+        );
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn connection_group_order_is_created_and_reordered_explicitly() {
+        let mut store = ConfigStore {
+            path: PathBuf::from("unused.json"),
+            cache: ConfigFile::default(),
+        };
+        store.add_connection_group("first".into());
+        store.add_connection_group("second".into());
+        store.add_connection_group("third".into());
+        assert_eq!(store.connection_groups(), ["first", "second", "third"]);
+
+        store.add_connection_group("second/child".into());
+        store.reorder_connection_group("second", Some("first"));
+        assert_eq!(
+            store.connection_groups(),
+            ["second", "second/child", "first", "third"]
+        );
+
+        store.reorder_connection_group("third", None);
+        assert_eq!(
+            store.connection_groups(),
+            ["second", "second/child", "first", "third"]
+        );
     }
 }

@@ -2,8 +2,8 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-APP_NAME="ashell"
-BUNDLE_ID="dev.ashell.app"
+APP_NAME="tiny-shell"
+BUNDLE_ID="dev.tiny-shell.app"
 APP_DIR="$ROOT_DIR/target/release/${APP_NAME}.app"
 CONTENTS_DIR="$APP_DIR/Contents"
 MACOS_DIR="$CONTENTS_DIR/MacOS"
@@ -17,7 +17,7 @@ rm -rf "$APP_DIR"
 mkdir -p "$MACOS_DIR" "$RESOURCES_DIR"
 cp "$ROOT_DIR/target/release/$APP_NAME" "$MACOS_DIR/$APP_NAME"
 
-cp "$ROOT_DIR/assets/icons/ashell.icns" "$RESOURCES_DIR/ashell.icns"
+cp "$ROOT_DIR/assets/icons/tiny-shell.icns" "$RESOURCES_DIR/tiny-shell.icns"
 
 cat > "$CONTENTS_DIR/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -30,7 +30,7 @@ cat > "$CONTENTS_DIR/Info.plist" <<EOF
   <key>CFBundleExecutable</key>
   <string>$APP_NAME</string>
   <key>CFBundleIconFile</key>
-  <string>ashell.icns</string>
+  <string>tiny-shell.icns</string>
   <key>CFBundleIdentifier</key>
   <string>$BUNDLE_ID</string>
   <key>CFBundleInfoDictionaryVersion</key>
@@ -40,7 +40,7 @@ cat > "$CONTENTS_DIR/Info.plist" <<EOF
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
-  <string>0.1.0</string>
+  <string>1.0.1</string>
   <key>CFBundleVersion</key>
   <string>1</string>
   <key>LSMinimumSystemVersion</key>

@@ -1,10 +1,10 @@
 use gpui::{
-    Anchor, Context, Focusable as _, FontWeight, InteractiveElement as _, MouseButton,
+    Anchor, Context, Focusable as _, FontWeight, InteractiveElement as _, IntoElement, MouseButton,
     ParentElement as _, SharedString, StatefulInteractiveElement as _, Styled as _, Window, div,
     prelude::FluentBuilder as _, px, rems,
 };
 use gpui_component::{
-    ActiveTheme as _, Disableable as _, IconName, Sizable as _, WindowExt as _,
+    ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, Size, WindowExt as _,
     button::{Button, ButtonVariants as _},
     dialog::Dialog,
     h_flex,
@@ -17,9 +17,312 @@ use gpui_component::{
 };
 use rust_i18n::t;
 
-use crate::{Ashell, session::config::AuthMethod, system::format_bytes};
+use crate::{
+    TinyShell, app::ssh_key_import::KeyImportValidation, session::config::AuthMethod,
+    system::format_bytes,
+};
 
-impl Ashell {
+impl TinyShell {
+    pub(crate) fn confirm_connection_group_dialog(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let name = self
+            .connection_group_input
+            .read(cx)
+            .value()
+            .trim()
+            .to_string();
+        if name.is_empty() {
+            return;
+        }
+        if let Some(old_name) = self.editing_connection_group.clone() {
+            let full_name = self
+                .connection_group_parent
+                .as_deref()
+                .map(|parent| format!("{parent}/{name}"))
+                .unwrap_or(name.clone());
+            self.config
+                .rename_connection_group(&old_name, full_name.clone());
+            if self.connection_group_filter.as_deref() == Some(old_name.as_str()) {
+                self.connection_group_filter = Some(full_name);
+            }
+        } else {
+            let full_name = self
+                .connection_group_parent
+                .as_deref()
+                .map(|parent| format!("{parent}/{name}"))
+                .unwrap_or(name.clone());
+            self.config.add_connection_group(full_name.clone());
+            self.connection_group_filter = Some(full_name);
+        }
+        if let Err(err) = self.config.save() {
+            tracing::warn!("failed to save connection group: {err:#}");
+        }
+        self.active_dialog = None;
+        self.editing_connection_group = None;
+        self.connection_group_parent = None;
+        window.close_dialog(cx);
+        cx.notify();
+    }
+
+    pub(crate) fn show_move_connection_group_dialog(
+        &mut self,
+        group: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.active_dialog.is_some() {
+            return;
+        }
+        self.moving_connection_group = Some(group.clone());
+        self.active_dialog = Some(crate::app::DialogKind::ConnectionGroupMove);
+        let candidates: Vec<String> = self
+            .config
+            .connection_groups()
+            .iter()
+            .filter(|candidate| {
+                candidate.as_str() != group && !candidate.starts_with(&format!("{group}/"))
+            })
+            .cloned()
+            .collect();
+        let view = cx.entity();
+        let scroll_handle = self.group_picker_scroll_handle.clone();
+        window.open_dialog(cx, move |dialog: Dialog, _window, _| {
+            dialog
+                .title(t!("connection_group_move_dialog_title").to_string())
+                .w(px(440.))
+                .h(px(500.))
+                .overlay_closable(true)
+                .on_close({
+                    let view = view.clone();
+                    move |_, _, cx| {
+                        view.update(cx, |this, cx| {
+                            this.active_dialog = None;
+                            this.moving_connection_group = None;
+                            cx.notify();
+                        });
+                    }
+                })
+                .content({
+                    let view = view.clone();
+                    let scroll_handle = scroll_handle.clone();
+                    let group = group.clone();
+                    let candidates = candidates.clone();
+                    move |content, window, cx| {
+                        let group = group.clone();
+                        let candidates = candidates.clone();
+                        let source_label = group.rsplit('/').next().unwrap_or(&group).to_string();
+                        content.child(
+                            v_flex()
+                                .size_full()
+                                .gap_3()
+                                .child(
+                                    div()
+                                        .text_size(rems(0.917))
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child(format!("{}: {}", t!("connection_group_move_source"), source_label)),
+                                )
+                                .child(
+                                    div()
+                                        .relative()
+                                        .flex_1()
+                                        .min_h(px(0.))
+                                        .rounded_md()
+                                        .border_1()
+                                        .border_color(cx.theme().border)
+                                        .child(
+                                            v_flex()
+                                                .id("connection-group-picker-scroll")
+                                                .size_full()
+                                                .track_scroll(&scroll_handle)
+                                                .overflow_y_scroll()
+                                                .p_2()
+                                                .gap_1()
+                                                .child(
+                                                    div()
+                                                        .id("connection-group-picker-root")
+                                                        .w_full()
+                                                        .cursor_pointer()
+                                                        .rounded_md()
+                                                        .hover(|this| this.bg(cx.theme().secondary))
+                                                        .on_click(window.listener_for(&view, {
+                                                            let group = group.clone();
+                                                            move |this, _, window, cx| {
+                                                                this.config.move_connection_group(&group, None);
+                                                                let _ = this.config.save();
+                                                                this.active_dialog = None;
+                                                                this.moving_connection_group = None;
+                                                                window.close_dialog(cx);
+                                                                cx.notify();
+                                                            }
+                                                        }))
+                                                        .child(
+                                                            h_flex()
+                                                                .items_center()
+                                                                .gap_2()
+                                                                .p_2()
+                                                                .child(Icon::new(IconName::Folder).with_size(gpui_component::Size::Small))
+                                                                .child(t!("connection_group_move_root")),
+                                                        ),
+                                                )
+                                                .children(candidates.iter().enumerate().map(|(ix, candidate)| {
+                                                    let target = candidate.clone();
+                                                    let source = group.clone();
+                                                    let depth = candidate.matches('/').count();
+                                                    let label = candidate.rsplit('/').next().unwrap_or(candidate).to_string();
+                                                    div()
+                                                        .id(("connection-group-picker", ix))
+                                                        .w_full()
+                                                        .cursor_pointer()
+                                                        .rounded_md()
+                                                        .hover(|this| this.bg(cx.theme().secondary))
+                                                        .on_click(window.listener_for(&view, move |this, _, window, cx| {
+                                                            this.config.move_connection_group(&source, Some(&target));
+                                                            let _ = this.config.save();
+                                                            this.active_dialog = None;
+                                                            this.moving_connection_group = None;
+                                                            window.close_dialog(cx);
+                                                            cx.notify();
+                                                        }))
+                                                        .child(
+                                                            h_flex()
+                                                                .items_center()
+                                                                .gap_2()
+                                                                .p_2()
+                                                                .pl(px(8. + depth as f32 * 16.))
+                                                                .child(Icon::new(IconName::Folder).with_size(gpui_component::Size::Small))
+                                                                .child(label),
+                                                        )
+                                                })),
+                                        )
+                                        .child(
+                                            div()
+                                                .absolute()
+                                                .top_0()
+                                                .right_0()
+                                                .bottom_0()
+                                                .w(px(8.))
+                                                .child(
+                                                    Scrollbar::vertical(&scroll_handle)
+                                                        .scrollbar_show(ScrollbarShow::Scrolling),
+                                                ),
+                                        ),
+                                ),
+                        )
+                    }
+                })
+        });
+    }
+
+    pub(crate) fn show_connection_group_dialog(
+        &mut self,
+        group: Option<String>,
+        parent: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.active_dialog.is_some() {
+            return;
+        }
+        self.editing_connection_group = group.clone();
+        self.connection_group_parent = group
+            .as_deref()
+            .and_then(|path| path.rsplit_once('/').map(|(parent, _)| parent.to_string()))
+            .or(parent);
+        Self::set_input_value(
+            &self.connection_group_input,
+            group
+                .as_deref()
+                .and_then(|path| path.rsplit('/').next())
+                .unwrap_or_default(),
+            window,
+            cx,
+        );
+        self.active_dialog = Some(crate::app::DialogKind::ConnectionGroup);
+
+        let view = cx.entity();
+        let group_input = self.connection_group_input.clone();
+        window.open_dialog(cx, move |dialog: Dialog, _window, _| {
+            dialog
+                .title(t!("connection_group_dialog_title").to_string())
+                .w(px(380.))
+                .h(px(180.))
+                .overlay_closable(true)
+                .on_ok({
+                    let view = view.clone();
+                    move |_, window, cx| {
+                        view.update(cx, |this, cx| {
+                            this.confirm_connection_group_dialog(window, cx);
+                        });
+                        false
+                    }
+                })
+                .on_close({
+                    let view = view.clone();
+                    move |_, _, cx| {
+                        view.update(cx, |this, cx| {
+                            this.active_dialog = None;
+                            this.editing_connection_group = None;
+                            this.connection_group_parent = None;
+                            cx.notify();
+                        });
+                    }
+                })
+                .content({
+                    let view = view.clone();
+                    let group_input = group_input.clone();
+                    move |content, window, cx| {
+                        content.child(
+                            v_flex()
+                                .gap_3()
+                                .child(
+                                    div()
+                                        .text_size(rems(0.917))
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child(t!("connection_group_name")),
+                                )
+                                .child(Input::new(&group_input).w_full())
+                                .child(
+                                    h_flex()
+                                        .justify_end()
+                                        .gap_2()
+                                        .child(
+                                            Button::new("connection-group-cancel")
+                                                .secondary()
+                                                .label(t!("cancel").to_string())
+                                                .on_click(window.listener_for(
+                                                    &view,
+                                                    |this, _, window, cx| {
+                                                        this.active_dialog = None;
+                                                        this.editing_connection_group = None;
+                                                        this.connection_group_parent = None;
+                                                        window.close_dialog(cx);
+                                                        cx.notify();
+                                                    },
+                                                )),
+                                        )
+                                        .child(
+                                            Button::new("connection-group-save")
+                                                .primary()
+                                                .label(t!("save").to_string())
+                                                .on_click(window.listener_for(
+                                                    &view,
+                                                    |this, _, window, cx| {
+                                                        this.confirm_connection_group_dialog(
+                                                            window, cx,
+                                                        );
+                                                    },
+                                                )),
+                                        ),
+                                ),
+                        )
+                    }
+                })
+        });
+    }
+
     pub(crate) fn show_ssh_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.active_dialog.is_some() {
             return;
@@ -46,11 +349,21 @@ impl Ashell {
                 .title(t!("new_ssh_connection"))
                 .w(px(520.))
                 .overlay_closable(true)
+                .on_ok({
+                    let view = view.clone();
+                    move |_, window, cx| {
+                        view.update(cx, |this, cx| {
+                            this.connect_ssh(window, cx);
+                        });
+                        false
+                    }
+                })
                 .on_close({
                     let view = view.clone();
                     move |_, _, cx| {
                         view.update(cx, |this, cx| {
                             this.active_dialog = None;
+                            this.key_import.close();
                             cx.notify();
                         });
                     }
@@ -77,6 +390,14 @@ impl Ashell {
                         let is_editing = view.read(cx).editing_session_id.is_some();
                         let proxy_type = view.read(cx).ssh_proxy_type.clone();
                         let show_proxy_fields = proxy_type != "none";
+                        let key_auth_incomplete = is_key
+                            && !view.read(cx).using_custom_key_path
+                            && view.read(cx).managed_key_selected.is_none();
+                        let connection_groups = view.read(cx).config.connection_groups().to_vec();
+                        let selected_group = view.read(cx).session_group_selection.clone();
+                        let group_label = selected_group
+                            .clone()
+                            .unwrap_or_else(|| t!("connection_group_ungrouped").to_string());
                         content.child(
                             v_flex()
                                 .gap_3()
@@ -137,7 +458,40 @@ impl Ashell {
                                                 )
                                                 .child(
                                                     Input::new(&user_input).flex_1().tab_index(3),
-                                                ),
+                                        ),
+                                        )
+                                        .child(
+                                            Button::new("ssh-session-group")
+                                                .secondary()
+                                                .w_full()
+                                                .label(format!("{}: {}", t!("connection_group"), group_label))
+                                                .dropdown_menu_with_anchor(Anchor::BottomLeft, {
+                                                    let view = view.clone();
+                                                    move |mut menu, window, cx| {
+                                                        let selected = view.read(cx).session_group_selection.clone();
+                                                        menu = menu.item(
+                                                            PopupMenuItem::new(t!("connection_group_ungrouped").to_string())
+                                                                .checked(selected.is_none())
+                                                                .on_click(window.listener_for(&view, |this, _, _, cx| {
+                                                                    this.session_group_selection = None;
+                                                                    cx.notify();
+                                                                })),
+                                                        );
+                                                        for group in connection_groups.clone() {
+                                                            let group_name = group.clone();
+                                                            let checked = selected.as_deref() == Some(group.as_str());
+                                                            menu = menu.item(
+                                                                PopupMenuItem::new(group)
+                                                                    .checked(checked)
+                                                                    .on_click(window.listener_for(&view, move |this, _, _, cx| {
+                                                                        this.session_group_selection = Some(group_name.clone());
+                                                                        cx.notify();
+                                                                    })),
+                                                            );
+                                                        }
+                                                        menu
+                                                    }
+                                                }),
                                         )
                                 })
                                 .when(is_password, |this| {
@@ -146,45 +500,165 @@ impl Ashell {
                                     )
                                 })
                                 .when(is_key, |this| {
-                                    this.child(
-                                        h_flex()
-                                            .gap_2()
-                                            .child(
-                                                div()
-                                                    .flex_1()
-                                                    .cursor_pointer()
-                                                    .on_mouse_down(
-                                                        MouseButton::Left,
-                                                        window.listener_for(
+                                    let managed_keys = view.read(cx).managed_keys.clone();
+                                    let managed_key_selected =
+                                        view.read(cx).managed_key_selected.clone();
+                                    let using_custom_key_path = view.read(cx).using_custom_key_path;
+                                    let theme = cx.theme();
+                                    let using_managed_key = !using_custom_key_path;
+
+                                    let key_label = if let Some(mk_id) = &managed_key_selected {
+                                        managed_keys
+                                            .iter()
+                                            .find(|k| &k.id == mk_id)
+                                            .map(|mk| format!("{} ({})", mk.name, mk.key_type))
+                                            .unwrap_or_else(|| t!("select_managed_key").to_string())
+                                    } else {
+                                        t!("select_managed_key").to_string()
+                                    };
+
+                                    let this =
+                                        this.child(
+                                            h_flex()
+                                                .w_full()
+                                                .gap_1()
+                                                .p(px(3.))
+                                                .rounded_md()
+                                                .border_1()
+                                                .border_color(theme.border)
+                                                .bg(theme.muted)
+                                                .child(
+                                                    Button::new("use-managed-key")
+                                                        .small()
+                                                        .flex_1()
+                                                        .when(using_managed_key, |button| {
+                                                            button.primary()
+                                                        })
+                                                        .label(t!("select_managed_key").to_string())
+                                                        .on_click(window.listener_for(
                                                             &view,
-                                                            |this, _, window, cx| {
-                                                                this.pick_ssh_key_path(window, cx);
+                                                            |this, _, _, cx| {
+                                                                this.use_managed_key(cx)
                                                             },
-                                                        ),
-                                                    )
+                                                        )),
+                                                )
+                                                .child(
+                                                    Button::new("use-custom-path")
+                                                        .small()
+                                                        .flex_1()
+                                                        .when(using_custom_key_path, |button| {
+                                                            button.primary()
+                                                        })
+                                                        .label(t!("use_custom_path").to_string())
+                                                        .on_click(window.listener_for(
+                                                            &view,
+                                                            |this, _, _, cx| {
+                                                                this.use_custom_key_path(cx)
+                                                            },
+                                                        )),
+                                                ),
+                                        );
+
+                                    if using_managed_key {
+                                        let this = this.child(
+                                            Button::new("managed-key-select")
+                                                .small()
+                                                .w_full()
+                                                .label(key_label)
+                                                .on_click(window.listener_for(
+                                                    &view,
+                                                    |this, _, window, cx| {
+                                                        this.open_managed_key_selector(window, cx);
+                                                    },
+                                                )),
+                                        );
+                                        let info = managed_key_selected
+                                            .as_ref()
+                                            .and_then(|id| {
+                                                managed_keys.iter().find(|k| &k.id == id)
+                                            })
+                                            .map(|mk| {
+                                                format!(
+                                                    "{}: {}  |  {}: {}",
+                                                    t!("key_type"),
+                                                    mk.key_type,
+                                                    t!("key_fingerprint"),
+                                                    mk.fingerprint
+                                                )
+                                            });
+
+                                        if let Some(info) = info {
+                                            this.child(
+                                                div()
+                                                    .px(px(8.))
+                                                    .py(px(6.))
+                                                    .rounded_md()
+                                                    .border_1()
+                                                    .border_color(theme.border)
+                                                    .text_xs()
+                                                    .text_color(theme.muted_foreground)
+                                                    .child(info),
+                                            )
+                                        } else {
+                                            this.child(
+                                                div()
+                                                    .text_xs()
+                                                    .text_color(theme.muted_foreground)
                                                     .child(
-                                                        Input::new(&key_path_input).tab_index(4),
+                                                        t!("select_managed_key_hint").to_string(),
                                                     ),
                                             )
-                                            .child(
-                                                Button::new("clear-key-path")
-                                                    .ghost()
-                                                    .icon(IconName::Close)
-                                                    .on_click(window.listener_for(
-                                                        &view,
-                                                        |this, _, window, cx| {
-                                                            Self::set_input_value(
-                                                                &this.key_path_input,
-                                                                "",
-                                                                window,
-                                                                cx,
-                                                            );
-                                                        },
-                                                    )),
-                                            ),
-                                    )
-                                    .child(Input::new(&key_inline_input).h(px(128.)).tab_index(5))
-                                    .child(Input::new(&passphrase_input).mask_toggle().tab_index(6))
+                                        }
+                                    } else {
+                                        this.child(
+                                            h_flex()
+                                                .gap_2()
+                                                .child(
+                                                    div()
+                                                        .flex_1()
+                                                        .cursor_pointer()
+                                                        .on_mouse_down(
+                                                            MouseButton::Left,
+                                                            window.listener_for(
+                                                                &view,
+                                                                |this, _, window, cx| {
+                                                                    this.pick_ssh_key_path(
+                                                                        window, cx,
+                                                                    );
+                                                                },
+                                                            ),
+                                                        )
+                                                        .child(
+                                                            Input::new(&key_path_input)
+                                                                .tab_index(4),
+                                                        ),
+                                                )
+                                                .child(
+                                                    Button::new("clear-key-path")
+                                                        .ghost()
+                                                        .icon(IconName::Close)
+                                                        .on_click(window.listener_for(
+                                                            &view,
+                                                            |this, _, window, cx| {
+                                                                Self::set_input_value(
+                                                                    &this.key_path_input,
+                                                                    "",
+                                                                    window,
+                                                                    cx,
+                                                                );
+                                                            },
+                                                        )),
+                                                ),
+                                        )
+                                        .child(
+                                            Input::new(&key_inline_input).h(px(128.)).tab_index(5),
+                                        )
+                                        .child(
+                                            Input::new(&passphrase_input)
+                                                .mask_toggle()
+                                                .tab_index(6),
+                                        )
+                                    }
                                 })
                                 .when(is_config, |this| {
                                     let entries = view.read(cx).ssh_config_entries.clone();
@@ -357,6 +831,7 @@ impl Ashell {
                                             this.child(
                                                 Button::new("connect-ssh-confirm")
                                                     .primary()
+                                                    .disabled(key_auth_incomplete)
                                                     .label(if is_editing {
                                                         t!("save")
                                                     } else {
@@ -379,6 +854,436 @@ impl Ashell {
             window.focus(&focus_host_input.read(cx).focus_handle(cx), cx);
         });
     }
+    pub(crate) fn show_managed_key_selector_dialog(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.active_dialog.is_some() {
+            return;
+        }
+        self.active_dialog = Some(crate::app::DialogKind::ManagedKeySelector);
+
+        let view = cx.entity();
+        let rename_input = self.key_import_remark_input.clone();
+        window.open_dialog(cx, move |dialog: Dialog, _window, _cx| {
+            dialog
+                .title(t!("select_private_key").to_string())
+                .w(px(760.))
+                .close_button(false)
+                .overlay_closable(false)
+                .on_ok({
+                    let view = view.clone();
+                    move |_, window, cx| {
+                        view.update(cx, |this, cx| {
+                            if this.managed_key_dialog_selection.is_some() {
+                                this.confirm_managed_key_selection(window, cx);
+                            }
+                        });
+                        false
+                    }
+                })
+                .content({
+                    let view = view.clone();
+                    let rename_input = rename_input.clone();
+                    move |content, window, cx| {
+                        let keys = view.read(cx).managed_keys.clone();
+                        let selected = view.read(cx).managed_key_dialog_selection.clone();
+                        let is_renaming = view.read(cx).editing_managed_key_id.is_some();
+                        let has_selection = selected.is_some();
+
+                        let mut rows = v_flex()
+                            .h(px(220.))
+                            .border_1()
+                            .border_color(cx.theme().border)
+                            .rounded_md()
+                            .overflow_hidden()
+                            .child(
+                                h_flex()
+                                    .px_2()
+                                    .py_1()
+                                    .bg(cx.theme().muted)
+                                    .border_b_1()
+                                    .border_color(cx.theme().border)
+                                    .child(
+                                        div()
+                                            .w(px(220.))
+                                            .flex_shrink_0()
+                                            .text_sm()
+                                            .child(t!("name").to_string()),
+                                    )
+                                    .child(
+                                        div()
+                                            .w(px(110.))
+                                            .flex_shrink_0()
+                                            .text_sm()
+                                            .child(t!("key_type").to_string()),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_w(px(0.))
+                                            .overflow_hidden()
+                                            .text_sm()
+                                            .child(t!("key_fingerprint").to_string()),
+                                    ),
+                            );
+
+                        if keys.is_empty() {
+                            rows = rows.child(
+                                div()
+                                    .flex_1()
+                                    .items_center()
+                                    .justify_center()
+                                    .text_sm()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(t!("no_managed_keys").to_string()),
+                            );
+                        } else {
+                            for (index, key) in keys.into_iter().enumerate() {
+                                let key_id = key.id.clone();
+                                let is_selected = selected.as_deref() == Some(key.id.as_str());
+                                let fingerprint = if key.fingerprint.len() > 24 {
+                                    format!("{}…", &key.fingerprint[..24])
+                                } else {
+                                    key.fingerprint.clone()
+                                };
+                                rows = rows.child(
+                                    h_flex()
+                                        .id(("managed-key-choice", index))
+                                        .px_2()
+                                        .py_2()
+                                        .cursor_pointer()
+                                        .border_b_1()
+                                        .border_color(cx.theme().border)
+                                        .when(is_selected, |row| row.bg(cx.theme().selection))
+                                        .hover(|row| row.bg(cx.theme().selection))
+                                        .child(
+                                            div()
+                                                .w(px(220.))
+                                                .flex_shrink_0()
+                                                .min_w(px(0.))
+                                                .overflow_hidden()
+                                                .text_sm()
+                                                .child(key.name),
+                                        )
+                                        .child(
+                                            div()
+                                                .w(px(110.))
+                                                .flex_shrink_0()
+                                                .text_sm()
+                                                .child(key.key_type),
+                                        )
+                                        .child(
+                                            div()
+                                                .flex_1()
+                                                .min_w(px(0.))
+                                                .overflow_hidden()
+                                                .text_sm()
+                                                .child(fingerprint),
+                                        )
+                                        .on_click(window.listener_for(
+                                            &view,
+                                            move |this, _, _, cx| {
+                                                this.select_managed_key_candidate(
+                                                    key_id.clone(),
+                                                    cx,
+                                                );
+                                            },
+                                        )),
+                                );
+                            }
+                        }
+
+                        content.child(
+                            v_flex()
+                                .gap_3()
+                                .child(
+                                    h_flex().gap_3().child(rows.flex_1()).child(
+                                        v_flex()
+                                            .w(px(104.))
+                                            .gap_2()
+                                            .child(
+                                                Button::new("selector-import-key")
+                                                    .w_full()
+                                                    .label(t!("import_key").to_string())
+                                                    .on_click(window.listener_for(
+                                                        &view,
+                                                        |this, _, window, cx| {
+                                                            this.open_key_import(window, cx);
+                                                        },
+                                                    )),
+                                            )
+                                            .child(
+                                                Button::new("selector-edit-key")
+                                                    .w_full()
+                                                    .disabled(!has_selection)
+                                                    .label(t!("edit").to_string())
+                                                    .on_click(window.listener_for(
+                                                        &view,
+                                                        |this, _, window, cx| {
+                                                            this.begin_managed_key_rename(
+                                                                window, cx,
+                                                            );
+                                                        },
+                                                    )),
+                                            )
+                                            .child(
+                                                Button::new("selector-delete-key")
+                                                    .w_full()
+                                                    .disabled(!has_selection)
+                                                    .label(t!("delete").to_string())
+                                                    .on_click(window.listener_for(
+                                                        &view,
+                                                        |this, _, _, cx| {
+                                                            this.delete_selected_managed_key(cx);
+                                                        },
+                                                    )),
+                                            ),
+                                    ),
+                                )
+                                .when(is_renaming, |this| {
+                                    this.child(
+                                        h_flex()
+                                            .gap_2()
+                                            .child(Input::new(&rename_input).flex_1())
+                                            .child(
+                                                Button::new("save-key-rename")
+                                                    .primary()
+                                                    .label(t!("save").to_string())
+                                                    .on_click(window.listener_for(
+                                                        &view,
+                                                        |this, _, _, cx| {
+                                                            this.save_managed_key_rename(cx);
+                                                        },
+                                                    )),
+                                            )
+                                            .child(
+                                                Button::new("cancel-key-rename")
+                                                    .label(t!("cancel").to_string())
+                                                    .on_click(window.listener_for(
+                                                        &view,
+                                                        |this, _, _, cx| {
+                                                            this.cancel_managed_key_rename(cx);
+                                                        },
+                                                    )),
+                                            ),
+                                    )
+                                })
+                                .child(
+                                    h_flex()
+                                        .justify_center()
+                                        .gap_2()
+                                        .child(
+                                            Button::new("confirm-key-selection")
+                                                .primary()
+                                                .disabled(!has_selection)
+                                                .label(t!("confirm").to_string())
+                                                .on_click(window.listener_for(
+                                                    &view,
+                                                    |this, _, window, cx| {
+                                                        this.confirm_managed_key_selection(
+                                                            window, cx,
+                                                        );
+                                                    },
+                                                )),
+                                        )
+                                        .child(
+                                            Button::new("cancel-key-selection")
+                                                .label(t!("cancel").to_string())
+                                                .on_click(window.listener_for(
+                                                    &view,
+                                                    |this, _, window, cx| {
+                                                        this.return_to_ssh_dialog(window, cx);
+                                                    },
+                                                )),
+                                        ),
+                                ),
+                        )
+                    }
+                })
+        });
+    }
+
+    pub(crate) fn show_managed_key_import_dialog(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.active_dialog.is_some() {
+            return;
+        }
+        self.active_dialog = Some(crate::app::DialogKind::ManagedKeyImport);
+
+        let view = cx.entity();
+        let remark_input = self.key_import_remark_input.clone();
+        let passphrase_input = self.key_import_passphrase_input.clone();
+        window.open_dialog(cx, move |dialog: Dialog, _window, _cx| {
+            dialog
+                .title(t!("key_import_dialog_title").to_string())
+                .w(px(440.))
+                .close_button(false)
+                .overlay_closable(false)
+                .on_ok({
+                    let view = view.clone();
+                    move |_, window, cx| {
+                        view.update(cx, |this, cx| {
+                            this.confirm_managed_key_import(window, cx);
+                        });
+                        false
+                    }
+                })
+                .content({
+                    let view = view.clone();
+                    let remark_input = remark_input.clone();
+                    let passphrase_input = passphrase_input.clone();
+                    move |content, window, cx| {
+                        let path = view.read(cx).key_import.path.clone();
+                        let validation = view.read(cx).key_import.validation.clone();
+                        let can_confirm = validation.can_confirm();
+                        let (status, status_color) = match &validation {
+                            KeyImportValidation::WaitingForFile => (
+                                t!("key_import_select_file_hint").to_string(),
+                                cx.theme().muted_foreground,
+                            ),
+                            KeyImportValidation::Validating => (
+                                t!("key_import_validating").to_string(),
+                                cx.theme().muted_foreground,
+                            ),
+                            KeyImportValidation::Invalid(error) => (
+                                format!("{}: {error}", t!("key_import_failed")),
+                                cx.theme().danger,
+                            ),
+                            KeyImportValidation::Duplicate => (
+                                t!("key_duplicate_fingerprint").to_string(),
+                                cx.theme().danger,
+                            ),
+                            KeyImportValidation::Valid {
+                                key_type,
+                                fingerprint,
+                            } => (
+                                format!(
+                                    "{} · {}: {}",
+                                    key_type,
+                                    t!("key_fingerprint"),
+                                    fingerprint
+                                ),
+                                cx.theme().success,
+                            ),
+                        };
+
+                        content.child(
+                            v_flex()
+                                .gap_3()
+                                .child(
+                                    h_flex()
+                                        .items_center()
+                                        .child(
+                                            div()
+                                                .w(px(80.))
+                                                .text_sm()
+                                                .child(t!("name").to_string()),
+                                        )
+                                        .child(Input::new(&remark_input).flex_1()),
+                                )
+                                .child(
+                                    h_flex()
+                                        .items_center()
+                                        .gap_2()
+                                        .child(
+                                            div()
+                                                .w(px(80.))
+                                                .text_sm()
+                                                .child(t!("private_key").to_string()),
+                                        )
+                                        .child(
+                                            div()
+                                                .flex_1()
+                                                .min_w(px(0.))
+                                                .px_3()
+                                                .py_2()
+                                                .rounded_md()
+                                                .border_1()
+                                                .border_color(cx.theme().border)
+                                                .text_sm()
+                                                .overflow_hidden()
+                                                .text_color(if path.is_empty() {
+                                                    cx.theme().muted_foreground
+                                                } else {
+                                                    cx.theme().foreground
+                                                })
+                                                .child(if path.is_empty() {
+                                                    t!("key_import_choose_file").to_string()
+                                                } else {
+                                                    path
+                                                }),
+                                        )
+                                        .child(
+                                            Button::new("browse-key-import")
+                                                .label(t!("browse").to_string())
+                                                .on_click(window.listener_for(
+                                                    &view,
+                                                    |this, _, window, cx| {
+                                                        this.pick_managed_key_import_file(
+                                                            window, cx,
+                                                        );
+                                                    },
+                                                )),
+                                        ),
+                                )
+                                .child(
+                                    h_flex()
+                                        .items_center()
+                                        .child(
+                                            div()
+                                                .w(px(80.))
+                                                .text_sm()
+                                                .child(t!("key_passphrase").to_string()),
+                                        )
+                                        .child(
+                                            Input::new(&passphrase_input).flex_1().mask_toggle(),
+                                        ),
+                                )
+                                .child(
+                                    div()
+                                        .pl(px(80.))
+                                        .text_xs()
+                                        .text_color(status_color)
+                                        .child(status),
+                                )
+                                .child(
+                                    h_flex()
+                                        .justify_center()
+                                        .gap_2()
+                                        .child(
+                                            Button::new("confirm-key-import")
+                                                .primary()
+                                                .disabled(!can_confirm)
+                                                .label(t!("confirm").to_string())
+                                                .on_click(window.listener_for(
+                                                    &view,
+                                                    |this, _, window, cx| {
+                                                        this.confirm_managed_key_import(window, cx);
+                                                    },
+                                                )),
+                                        )
+                                        .child(
+                                            Button::new("cancel-key-import")
+                                                .label(t!("cancel").to_string())
+                                                .on_click(window.listener_for(
+                                                    &view,
+                                                    |this, _, window, cx| {
+                                                        this.close_key_import(window, cx);
+                                                    },
+                                                )),
+                                        ),
+                                ),
+                        )
+                    }
+                })
+        });
+    }
+
     pub(crate) fn show_selector_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.active_dialog.is_some() {
             return;
@@ -631,6 +1536,358 @@ impl Ashell {
             window.focus(&deferred_selector_focus_handle, cx);
         });
     }
+    fn quick_connection_row(
+        session: crate::session::config::Session,
+        index: usize,
+        depth: usize,
+        view: &gpui::Entity<Self>,
+        window: &mut Window,
+        cx: &mut gpui::App,
+    ) -> gpui::AnyElement {
+        let connect_id = session.id.clone();
+        h_flex()
+            .id(("quick-connection-row", index))
+            .min_h(px(34.))
+            .pl(px(14. + depth as f32 * 16.))
+            .pr_3()
+            .items_center()
+            .gap_2()
+            .cursor_pointer()
+            .border_t_1()
+            .border_color(cx.theme().border.opacity(0.45))
+            .hover(|this| this.bg(cx.theme().secondary.opacity(0.65)))
+            .on_mouse_down(
+                MouseButton::Left,
+                window.listener_for(view, move |this, _, window, cx| {
+                    this.active_dialog = None;
+                    this.connect_saved_session(connect_id.clone(), cx);
+                    window.close_dialog(cx);
+                    cx.notify();
+                }),
+            )
+            .child(Icon::new(IconName::SquareTerminal).with_size(Size::Small))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(px(0.))
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .text_ellipsis()
+                    .text_size(rems(0.74))
+                    .font_weight(FontWeight::MEDIUM)
+                    .child(session.name),
+            )
+            .child(
+                div()
+                    .w(px(190.))
+                    .flex_none()
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .text_ellipsis()
+                    .text_size(rems(0.7))
+                    .child(session.host),
+            )
+            .child(
+                div()
+                    .w(px(64.))
+                    .flex_none()
+                    .text_center()
+                    .text_size(rems(0.7))
+                    .child(session.port.to_string()),
+            )
+            .child(
+                div()
+                    .w(px(100.))
+                    .flex_none()
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .text_ellipsis()
+                    .text_size(rems(0.7))
+                    .child(session.user),
+            )
+            .into_any_element()
+    }
+
+    pub(crate) fn show_quick_connection_manager_dialog(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.active_dialog.is_some() {
+            return;
+        }
+        self.active_dialog = Some(crate::app::DialogKind::QuickConnectionManager);
+        self.quick_connection_search_input
+            .update(cx, |input, cx| input.set_value("", window, cx));
+
+        let view = cx.entity();
+        let search_input = self.quick_connection_search_input.clone();
+        let deferred_search_input = search_input.clone();
+        let scroll_handle = self.quick_connection_scroll_handle.clone();
+
+        window.open_dialog(cx, move |dialog: Dialog, _window, _cx| {
+            dialog
+                .title(t!("quick_connection_title").to_string())
+                .w(px(760.))
+                .h(px(540.))
+                .overlay_closable(true)
+                .on_close({
+                    let view = view.clone();
+                    move |_, _, cx| {
+                        view.update(cx, |this, cx| {
+                            this.active_dialog = None;
+                            cx.notify();
+                        });
+                    }
+                })
+                .content({
+                    let view = view.clone();
+                    let search_input = search_input.clone();
+                    let scroll_handle = scroll_handle.clone();
+                    move |content, window, cx| {
+                        let query = search_input.read(cx).value().trim().to_lowercase();
+                        let (mut sessions, mut groups) = {
+                            let state = view.read(cx);
+                            (
+                                state.config.sessions().to_vec(),
+                                state.config.connection_groups().to_vec(),
+                            )
+                        };
+                        for session in &sessions {
+                            if let Some(group) = &session.group
+                                && !groups.contains(group)
+                            {
+                                groups.push(group.clone());
+                            }
+                        }
+                        groups = Self::connection_group_tree_order(groups);
+
+                        let session_matches = |session: &crate::session::config::Session| {
+                            query.is_empty()
+                                || session.name.to_lowercase().contains(&query)
+                                || session.host.to_lowercase().contains(&query)
+                                || session.user.to_lowercase().contains(&query)
+                                || session
+                                    .group
+                                    .as_deref()
+                                    .is_some_and(|group| group.to_lowercase().contains(&query))
+                        };
+                        sessions.retain(session_matches);
+
+                        if !query.is_empty() {
+                            groups.retain(|group| {
+                                group.to_lowercase().contains(&query)
+                                    || sessions.iter().any(|session| {
+                                        session.group.as_deref().is_some_and(|session_group| {
+                                            session_group == group
+                                                || session_group.starts_with(&format!("{group}/"))
+                                                || group.starts_with(&format!("{session_group}/"))
+                                        })
+                                    })
+                            });
+                        }
+
+                        let mut rows = Vec::new();
+                        let mut row_index = 0usize;
+                        for group in &groups {
+                            let depth = group.matches('/').count();
+                            let group_name = group.rsplit('/').next().unwrap_or(group).to_string();
+                            rows.push(
+                                h_flex()
+                                    .min_h(px(32.))
+                                    .pl(px(10. + depth as f32 * 16.))
+                                    .pr_3()
+                                    .items_center()
+                                    .gap_2()
+                                    .bg(cx.theme().muted.opacity(0.38))
+                                    .border_t_1()
+                                    .border_color(cx.theme().border.opacity(0.45))
+                                    .child(Icon::new(IconName::Folder).with_size(Size::Small))
+                                    .child(
+                                        div()
+                                            .text_size(rems(0.72))
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .child(group_name),
+                                    )
+                                    .into_any_element(),
+                            );
+                            for session in sessions
+                                .iter()
+                                .filter(|session| session.group.as_deref() == Some(group.as_str()))
+                            {
+                                rows.push(Self::quick_connection_row(
+                                    session.clone(),
+                                    row_index,
+                                    depth + 1,
+                                    &view,
+                                    window,
+                                    cx,
+                                ));
+                                row_index += 1;
+                            }
+                        }
+
+                        let ungrouped: Vec<_> = sessions
+                            .iter()
+                            .filter(|session| session.group.as_deref().is_none_or(str::is_empty))
+                            .cloned()
+                            .collect();
+                        if !ungrouped.is_empty() {
+                            rows.push(
+                                h_flex()
+                                    .min_h(px(32.))
+                                    .px_3()
+                                    .items_center()
+                                    .gap_2()
+                                    .bg(cx.theme().muted.opacity(0.38))
+                                    .border_t_1()
+                                    .border_color(cx.theme().border.opacity(0.45))
+                                    .child(Icon::new(IconName::Folder).with_size(Size::Small))
+                                    .child(
+                                        div()
+                                            .text_size(rems(0.72))
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .child(t!("quick_connection_ungrouped").to_string()),
+                                    )
+                                    .into_any_element(),
+                            );
+                            for session in ungrouped {
+                                rows.push(Self::quick_connection_row(
+                                    session,
+                                    row_index,
+                                    1,
+                                    &view,
+                                    window,
+                                    cx,
+                                ));
+                                row_index += 1;
+                            }
+                        }
+
+                        let has_rows = !rows.is_empty();
+                        content.child(
+                            v_flex()
+                                .size_full()
+                                .gap_3()
+                                .child(
+                                    h_flex()
+                                        .flex_none()
+                                        .gap_2()
+                                        .child(
+                                            div()
+                                                .flex_1()
+                                                .min_w(px(0.))
+                                                .child(Input::new(&search_input).small()),
+                                        )
+                                        .child(
+                                            Button::new("quick-connection-new")
+                                                .primary()
+                                                .small()
+                                                .icon(IconName::Plus)
+                                                .label(t!("overview_new_connection").to_string())
+                                                .on_click(window.listener_for(
+                                                    &view,
+                                                    |this, _, window, cx| {
+                                                        this.active_dialog = None;
+                                                        window.close_dialog(cx);
+                                                        this.open_new_ssh_dialog(window, cx);
+                                                    },
+                                                )),
+                                        ),
+                                )
+                                .child(
+                                    v_flex()
+                                        .flex_1()
+                                        .min_h(px(0.))
+                                        .overflow_hidden()
+                                        .rounded_md()
+                                        .border_1()
+                                        .border_color(cx.theme().border)
+                                        .child(
+                                            h_flex()
+                                                .flex_none()
+                                                .h(px(32.))
+                                                .px_3()
+                                                .items_center()
+                                                .bg(cx.theme().tab_bar)
+                                                .text_size(rems(0.68))
+                                                .font_weight(FontWeight::SEMIBOLD)
+                                                .text_color(cx.theme().muted_foreground)
+                                                .child(div().flex_1().child(t!("name").to_string()))
+                                                .child(
+                                                    div()
+                                                        .w(px(190.))
+                                                        .flex_none()
+                                                        .child(t!("host").to_string()),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .w(px(64.))
+                                                        .flex_none()
+                                                        .text_center()
+                                                        .child(t!("port").to_string()),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .w(px(100.))
+                                                        .flex_none()
+                                                        .child(t!("user").to_string()),
+                                                ),
+                                        )
+                                        .child(
+                                            div()
+                                                .relative()
+                                                .flex_1()
+                                                .min_h(px(0.))
+                                                .child(
+                                                    v_flex()
+                                                        .id("quick-connection-scroll-view")
+                                                        .size_full()
+                                                        .track_scroll(&scroll_handle)
+                                                        .overflow_y_scroll()
+                                                        .children(rows)
+                                                        .when(!has_rows, |this| {
+                                                            this.items_center()
+                                                                .justify_center()
+                                                                .text_color(
+                                                                    cx.theme().muted_foreground,
+                                                                )
+                                                                .child(
+                                                                    t!("quick_connection_empty")
+                                                                        .to_string(),
+                                                                )
+                                                        }),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .absolute()
+                                                        .top_0()
+                                                        .bottom_0()
+                                                        .left_0()
+                                                        .right_0()
+                                                        .child(
+                                                            Scrollbar::new(&scroll_handle)
+                                                                .id("quick-connection-scrollbar")
+                                                                .axis(
+                                                                    gpui_component::scroll::ScrollbarAxis::Vertical,
+                                                                )
+                                                                .scrollbar_show(
+                                                                    ScrollbarShow::Scrolling,
+                                                                ),
+                                                        ),
+                                                ),
+                                        ),
+                                ),
+                        )
+                    }
+                })
+        });
+
+        window.defer(cx, move |window, cx| {
+            window.focus(&deferred_search_input.read(cx).focus_handle(cx), cx);
+        });
+    }
+
     pub(crate) fn show_transfers_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.active_dialog.is_some() {
             return;
@@ -1250,66 +2507,414 @@ impl Ashell {
                 })
         });
     }
-    pub(crate) fn show_settings_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn check_for_updates(&mut self, cx: &mut Context<Self>) {
+        if matches!(
+            self.updater_status,
+            Some(crate::app::updater::UpdateStatus::Checking)
+                | Some(crate::app::updater::UpdateStatus::Downloading)
+        ) {
+            return;
+        }
+
+        self.updater_status = Some(crate::app::updater::UpdateStatus::Checking);
+        cx.notify();
+        let view = cx.entity();
+        cx.spawn({
+            let view = view.clone();
+            |_, cx: &mut gpui::AsyncApp| {
+                let cx = cx.clone();
+                async move {
+                    let (tx, rx) = futures::channel::oneshot::channel();
+                    crate::app::shared_runtime().spawn(async move {
+                        let result = crate::app::updater::check_for_update().await;
+                        let _ = tx.send(result);
+                    });
+                    let result = rx
+                        .await
+                        .unwrap_or_else(|_| Err(anyhow::anyhow!("update check cancelled")));
+                    cx.update(|cx| match result {
+                        Ok(crate::app::updater::UpdateCheckResult::UpdateAvailable(info)) => {
+                            view.update(cx, |this, cx| {
+                                this.updater_status =
+                                    Some(crate::app::updater::UpdateStatus::UpdateAvailable(info));
+                                cx.notify();
+                            });
+                        }
+                        Ok(crate::app::updater::UpdateCheckResult::UpToDate(info)) => {
+                            view.update(cx, |this, cx| {
+                                this.updater_status =
+                                    Some(crate::app::updater::UpdateStatus::UpToDate(info));
+                                cx.notify();
+                            });
+                        }
+                        Err(err) => {
+                            view.update(cx, |this, cx| {
+                                this.updater_status = Some(
+                                    crate::app::updater::UpdateStatus::Error(format!("{err:#}")),
+                                );
+                                cx.notify();
+                            });
+                        }
+                    });
+                }
+            }
+        })
+        .detach();
+    }
+
+    pub(crate) fn download_available_update(&mut self, cx: &mut Context<Self>) {
+        let info = match self.updater_status.clone() {
+            Some(crate::app::updater::UpdateStatus::UpdateAvailable(info)) => info,
+            _ => return,
+        };
+        self.updater_status = Some(crate::app::updater::UpdateStatus::Downloading);
+        cx.notify();
+
+        let view = cx.entity();
+        cx.spawn({
+            let view = view.clone();
+            |_, cx: &mut gpui::AsyncApp| {
+                let cx = cx.clone();
+                async move {
+                    let (tx, rx) = futures::channel::oneshot::channel();
+                    crate::app::shared_runtime().spawn(async move {
+                        let result = crate::app::updater::perform_update(&info).await;
+                        let _ = tx.send(result);
+                    });
+                    let result = rx
+                        .await
+                        .unwrap_or_else(|_| Err(anyhow::anyhow!("update download cancelled")));
+                    cx.update(|cx| match result {
+                        Ok(()) => {
+                            view.update(cx, |this, cx| {
+                                this.updater_status =
+                                    Some(crate::app::updater::UpdateStatus::InstallComplete);
+                                cx.notify();
+                            });
+                        }
+                        Err(err) => {
+                            view.update(cx, |this, cx| {
+                                this.updater_status = Some(
+                                    crate::app::updater::UpdateStatus::Error(format!("{err:#}")),
+                                );
+                                cx.notify();
+                            });
+                        }
+                    });
+                }
+            }
+        })
+        .detach();
+    }
+
+    pub(crate) fn show_update_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.active_dialog.is_some() {
             return;
         }
-        self.active_dialog = Some(crate::app::DialogKind::Settings);
+        if self.updater_status.is_none() {
+            self.check_for_updates(cx);
+        }
+        self.active_dialog = Some(crate::app::DialogKind::Updater);
 
         let view = cx.entity();
-
-        // Unbind all workspace keys so they don't interfere with keybinding recording
-        crate::app::keybinding_recorder::unbind_all_workspace_keys(cx, &self.config);
-        self.keybinds_suspended = true;
-
+        let notes_scroll_handle = gpui::ScrollHandle::new();
         window.open_dialog(cx, move |dialog: Dialog, _window, _| {
             dialog
-                .title(t!("settings").to_string())
-                .w(px(840.))
-                .h(px(560.))
+                .title(t!("update_dialog_title").to_string())
+                .w(px(600.))
+                .h(px(520.))
+                .overlay_closable(true)
                 .on_close({
                     let view = view.clone();
-                    move |_, _window, cx| {
-                        // Re-register all workspace keys when closing settings
+                    move |_, _, cx| {
                         view.update(cx, |this, cx| {
                             this.active_dialog = None;
-                            this.keybinds_suspended = false;
-                            this.recording_action = None;
-                            this.keybind_error = None;
-                            crate::app::keybinding_recorder::bind_workspace_keys_from_config(
-                                cx,
-                                &this.config,
-                            );
                             cx.notify();
                         });
                     }
                 })
                 .content({
                     let view = view.clone();
-                    move |content, _window, cx| {
-                        use gpui_component::setting::{Settings, SettingPage, SettingGroup, SettingItem, SettingField};
-                        use gpui::IntoElement;
-                        let version = env!("CARGO_PKG_VERSION");
-                        let view_clone_for_general = view.clone();
-                        let sync_endpoint_input = view.read(cx).sync_endpoint_input.clone();
-                        let sync_username_input = view.read(cx).sync_username_input.clone();
-                        let sync_webdav_password_input = view.read(cx).sync_webdav_password_input.clone();
-                        let sync_s3_endpoint_input = view.read(cx).sync_s3_endpoint_input.clone();
-                        let sync_s3_region_input = view.read(cx).sync_s3_region_input.clone();
-                        let sync_s3_bucket_input = view.read(cx).sync_s3_bucket_input.clone();
-                        let sync_s3_object_key_input = view.read(cx).sync_s3_object_key_input.clone();
-                        let sync_s3_access_key_input = view.read(cx).sync_s3_access_key_input.clone();
-                        let sync_s3_secret_key_input = view.read(cx).sync_s3_secret_key_input.clone();
-                        let sync_s3_session_token_input = view.read(cx).sync_s3_session_token_input.clone();
-                        let sync_encryption_password_input = view.read(cx).sync_encryption_password_input.clone();
+                    let notes_scroll_handle = notes_scroll_handle.clone();
+                    move |content, window, cx| {
+                        let current_version = env!("CARGO_PKG_VERSION");
+                        let status = view.read(cx).updater_status.clone();
+                        let (title, detail, notes, has_update, is_busy, is_error) = match status {
+                            Some(crate::app::updater::UpdateStatus::Checking) => (
+                                t!("checking_update").to_string(),
+                                format!("{} v{current_version}", t!("update_current_version")),
+                                String::new(),
+                                false,
+                                true,
+                                false,
+                            ),
+                            Some(crate::app::updater::UpdateStatus::UpToDate(info)) => (
+                                t!("update_no_update").to_string(),
+                                format!(
+                                    "{} v{current_version}  ·  {} v{}",
+                                    t!("update_current_version"),
+                                    t!("update_latest_version"),
+                                    info.version
+                                ),
+                                info.notes,
+                                false,
+                                false,
+                                false,
+                            ),
+                            Some(crate::app::updater::UpdateStatus::UpdateAvailable(info)) => (
+                                t!("update_available", version = info.version.clone()).to_string(),
+                                format!(
+                                    "{} v{current_version}  ·  {} v{}",
+                                    t!("update_current_version"),
+                                    t!("update_latest_version"),
+                                    info.version
+                                ),
+                                info.notes,
+                                true,
+                                false,
+                                false,
+                            ),
+                            Some(crate::app::updater::UpdateStatus::Downloading) => (
+                                t!("update_downloading").to_string(),
+                                t!("update_please_wait").to_string(),
+                                String::new(),
+                                false,
+                                true,
+                                false,
+                            ),
+                            Some(crate::app::updater::UpdateStatus::Installing) => (
+                                t!("update_installing").to_string(),
+                                t!("update_please_wait").to_string(),
+                                String::new(),
+                                false,
+                                true,
+                                false,
+                            ),
+                            Some(crate::app::updater::UpdateStatus::InstallComplete) => (
+                                t!("update_install_complete").to_string(),
+                                t!("update_restart_hint").to_string(),
+                                String::new(),
+                                false,
+                                false,
+                                false,
+                            ),
+                            Some(crate::app::updater::UpdateStatus::Error(error)) => (
+                                t!("update_check_failed").to_string(),
+                                error,
+                                String::new(),
+                                false,
+                                false,
+                                true,
+                            ),
+                            None => (
+                                t!("update_no_update").to_string(),
+                                format!("{} v{current_version}", t!("update_current_version")),
+                                String::new(),
+                                false,
+                                false,
+                                false,
+                            ),
+                        };
 
-                        let focus_handle = view.read(cx).focus_handle.clone();
+                        let note_rows = notes
+                            .lines()
+                            .filter_map(|line| {
+                                let line = line.trim();
+                                if line.is_empty() {
+                                    return None;
+                                }
+                                let is_heading = line.starts_with('#');
+                                let text = if is_heading {
+                                    line.trim_start_matches('#').trim().to_string()
+                                } else if let Some(item) = line
+                                    .strip_prefix("- ")
+                                    .or_else(|| line.strip_prefix("* "))
+                                {
+                                    format!("• {item}")
+                                } else {
+                                    line.to_string()
+                                };
+                                Some(
+                                    div()
+                                        .w_full()
+                                        .text_size(if is_heading { rems(0.92) } else { rems(0.8) })
+                                        .when(is_heading, |this| {
+                                            this.font_weight(FontWeight::SEMIBOLD)
+                                        })
+                                        .child(text),
+                                )
+                            })
+                            .collect::<Vec<_>>();
 
                         content.child(
+                            v_flex()
+                                .size_full()
+                                .gap_3()
+                                .child(
+                                    h_flex()
+                                        .flex_none()
+                                        .items_center()
+                                        .gap_3()
+                                        .p_3()
+                                        .rounded_lg()
+                                        .bg(cx.theme().muted.opacity(0.45))
+                                        .child(
+                                            div()
+                                                .size(px(10.))
+                                                .rounded_full()
+                                                .bg(if is_error {
+                                                    cx.theme().danger
+                                                } else if has_update {
+                                                    cx.theme().primary
+                                                } else {
+                                                    cx.theme().success
+                                                }),
+                                        )
+                                        .child(
+                                            v_flex()
+                                                .min_w(px(0.))
+                                                .gap_1()
+                                                .child(
+                                                    div()
+                                                        .text_size(rems(1.05))
+                                                        .font_weight(FontWeight::SEMIBOLD)
+                                                        .child(title),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .text_size(rems(0.78))
+                                                        .text_color(cx.theme().muted_foreground)
+                                                        .child(detail),
+                                                ),
+                                        ),
+                                )
+                                .child(
+                                    div()
+                                        .flex_none()
+                                        .text_size(rems(0.85))
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .child(t!("update_release_notes").to_string()),
+                                )
+                                .child(
+                                    div()
+                                        .relative()
+                                        .flex_1()
+                                        .min_h(px(0.))
+                                        .rounded_md()
+                                        .border_1()
+                                        .border_color(cx.theme().border)
+                                        .bg(cx.theme().background)
+                                        .child(
+                                            v_flex()
+                                                .id("update-notes-scroll")
+                                                .size_full()
+                                                .track_scroll(&notes_scroll_handle)
+                                                .overflow_y_scroll()
+                                                .p_3()
+                                                .gap_2()
+                                                .when(note_rows.is_empty(), |this| {
+                                                    this.items_center()
+                                                        .justify_center()
+                                                        .text_color(cx.theme().muted_foreground)
+                                                        .child(t!("update_no_release_notes").to_string())
+                                                })
+                                                .children(note_rows),
+                                        )
+                                        .child(
+                                            div()
+                                                .absolute()
+                                                .top_0()
+                                                .right_0()
+                                                .bottom_0()
+                                                .child(
+                                                    Scrollbar::vertical(&notes_scroll_handle)
+                                                        .scrollbar_show(ScrollbarShow::Scrolling),
+                                                ),
+                                        ),
+                                )
+                                .child(
+                                    h_flex()
+                                        .flex_none()
+                                        .justify_end()
+                                        .gap_2()
+                                        .child(
+                                            Button::new("update-release-page")
+                                                .ghost()
+                                                .label(t!("update_release_page").to_string())
+                                                .on_click(|_, _, _| {
+                                                    let _ = open::that(
+                                                        "https://github.com/ynx-official/tiny-shell/releases/latest",
+                                                    );
+                                                }),
+                                        )
+                                        .child(
+                                            Button::new("update-check-again")
+                                                .secondary()
+                                                .disabled(is_busy)
+                                                .label(t!("check_update").to_string())
+                                                .on_click(window.listener_for(
+                                                    &view,
+                                                    |this, _, _, cx| this.check_for_updates(cx),
+                                                )),
+                                        )
+                                        .when(has_update, |this| {
+                                            this.child(
+                                                Button::new("update-download")
+                                                    .primary()
+                                                    .label(t!("update_download").to_string())
+                                                    .on_click(window.listener_for(
+                                                        &view,
+                                                        |this, _, _, cx| {
+                                                            this.download_available_update(cx)
+                                                        },
+                                                    )),
+                                            )
+                                        }),
+                                ),
+                        )
+                    }
+                })
+        });
+    }
+
+    pub(crate) fn render_settings_content(
+        &self,
+        view: &gpui::Entity<Self>,
+        settings_id: &'static str,
+        cx: &mut gpui::App,
+    ) -> gpui::AnyElement {
+        use gpui::IntoElement;
+        use gpui_component::setting::{
+            SettingField, SettingGroup, SettingItem, SettingPage, Settings,
+        };
+        let version = env!("CARGO_PKG_VERSION");
+        let view_clone_for_general = view.clone();
+        let sync_endpoint_input = self.sync_endpoint_input.clone();
+        let sync_username_input = self.sync_username_input.clone();
+        let sync_webdav_password_input = self.sync_webdav_password_input.clone();
+        let sync_s3_endpoint_input = self.sync_s3_endpoint_input.clone();
+        let sync_s3_region_input = self.sync_s3_region_input.clone();
+        let sync_s3_bucket_input = self.sync_s3_bucket_input.clone();
+        let sync_s3_object_key_input = self.sync_s3_object_key_input.clone();
+        let sync_s3_access_key_input = self.sync_s3_access_key_input.clone();
+        let sync_s3_secret_key_input = self.sync_s3_secret_key_input.clone();
+        let sync_s3_session_token_input = self.sync_s3_session_token_input.clone();
+        let sync_encryption_password_input = self.sync_encryption_password_input.clone();
+
+        let focus_handle = self.focus_handle.clone();
+
+        div()
+            .size_full()
+            .min_w_0()
+            .min_h_0()
+            .overflow_hidden()
+            .child(
                             div()
                                 .flex()
                                 .flex_col()
                                 .size_full()
+                                .min_w_0()
+                                .min_h_0()
                                 .track_focus(&focus_handle)
                                 .on_key_down({
                                     let view = view.clone();
@@ -1353,9 +2958,7 @@ impl Ashell {
                                             this.recording_action = None;
                                             this.keybind_error = None;
                                             this.config.set_key_binding(&action, &new_key);
-                                            if let Err(err) = this.config.save() {
-                                                tracing::error!("failed to save key binding: {err:#}");
-                                            }
+                                            this.mark_config_preferences_dirty();
                                             cx.notify();
                                         });
                                     }
@@ -1372,7 +2975,7 @@ impl Ashell {
                                     }
                                 })
                                 .child(
-                                    Settings::new("settings")
+                                    Settings::new(settings_id)
                                         .sidebar_width(px(180.))
                                         .sidebar_style(div().bg(cx.theme().background).style())
                                 .page(
@@ -1528,7 +3131,7 @@ impl Ashell {
                                                                                         .checked(current_style == crate::session::config::TitleBarStyle::Native)
                                                                                         .on_click(window.listener_for(&view, |this, _, _, cx| {
                                                                                             this.config.set_title_bar_style(crate::session::config::TitleBarStyle::Native);
-                                                                                            let _ = this.config.save();
+                                                                                            this.mark_config_preferences_dirty();
                                                                                             cx.notify();
                                                                                         }))
                                                                                 )
@@ -1537,7 +3140,7 @@ impl Ashell {
                                                                                         .checked(current_style == crate::session::config::TitleBarStyle::Integrated)
                                                                                         .on_click(window.listener_for(&view, |this, _, _, cx| {
                                                                                             this.config.set_title_bar_style(crate::session::config::TitleBarStyle::Integrated);
-                                                                                            let _ = this.config.save();
+                                                                                            this.mark_config_preferences_dirty();
                                                                                             cx.notify();
                                                                                         }))
                                                                                 );
@@ -1772,7 +3375,7 @@ impl Ashell {
                                                                     .checked(view.read(cx).config.right_click_copy_paste())
                                                                     .on_click(window.listener_for(&view, |this, checked, _, cx| {
                                                                         this.config.set_right_click_copy_paste(*checked);
-                                                                        let _ = this.config.save();
+                                                                        this.mark_config_preferences_dirty();
                                                                         cx.notify();
                                                                     }))
                                                                     .into_any_element()
@@ -1791,7 +3394,7 @@ impl Ashell {
                                                                     .checked(view.read(cx).config.keyword_highlight())
                                                                     .on_click(window.listener_for(&view, |this, checked, _, cx| {
                                                                         this.config.set_keyword_highlight(*checked);
-                                                                        let _ = this.config.save();
+                                                                        this.mark_config_preferences_dirty();
                                                                         cx.notify();
                                                                     }))
                                                                     .into_any_element()
@@ -1810,7 +3413,7 @@ impl Ashell {
                                                                     .checked(view.read(cx).config.lock_layout())
                                                                     .on_click(window.listener_for(&view, |this, checked, _, cx| {
                                                                         this.config.set_lock_layout(*checked);
-                                                                        let _ = this.config.save();
+                                                                        this.mark_config_preferences_dirty();
                                                                         cx.notify();
                                                                     }))
                                                                     .into_any_element()
@@ -1847,7 +3450,7 @@ impl Ashell {
                                                                                         .checked(pos == "Bottom")
                                                                                         .on_click(window.listener_for(&view, |this, _, _window, cx| {
                                                                                             this.config.set_monitoring_position("Bottom");
-                                                                                            let _ = this.config.save();
+                                                                                            this.mark_config_preferences_dirty();
                                                                                             cx.notify();
                                                                                         }))
                                                                                 )
@@ -1856,7 +3459,7 @@ impl Ashell {
                                                                                         .checked(pos == "Sidebar")
                                                                                         .on_click(window.listener_for(&view, |this, _, _window, cx| {
                                                                                             this.config.set_monitoring_position("Sidebar");
-                                                                                            let _ = this.config.save();
+                                                                                            this.mark_config_preferences_dirty();
                                                                                             cx.notify();
                                                                                         }))
                                                                                 )
@@ -1865,7 +3468,7 @@ impl Ashell {
                                                                                         .checked(pos == "Hidden")
                                                                                         .on_click(window.listener_for(&view, |this, _, _window, cx| {
                                                                                             this.config.set_monitoring_position("Hidden");
-                                                                                            let _ = this.config.save();
+                                                                                            this.mark_config_preferences_dirty();
                                                                                             cx.notify();
                                                                                         }))
                                                                                 );
@@ -1947,6 +3550,153 @@ impl Ashell {
                                                             }
                                                         })
                                                     ).description(t!("reset_layout_hint").to_string())
+                                                )
+                                        )
+                                        // ── SSH Keys management group ──
+                                        .group(
+                                            SettingGroup::new()
+                                                .title(t!("settings_group_keys").to_string())
+                                                .item(
+                                                    SettingItem::new(
+                                                        t!("key_management").to_string(),
+                                                        SettingField::render({
+                                                            let view = view_clone_for_general.clone();
+                                                            move |_, window, _cx| {
+                                                                Button::new("import-key")
+                                                                    .small()
+                                                                    .primary()
+                                                                    .label(t!("import_key").to_string())
+                                                                    .on_click(window.listener_for(&view, |this, _, window, cx| {
+                                                                        this.import_managed_key(window, cx);
+                                                                    }))
+                                                                    .into_any_element()
+                                                            }
+                                                        })
+                                                    ).description(t!("key_management_desc").to_string())
+                                                )
+                                                .item(
+                                                    SettingItem::render({
+                                                        let view = view_clone_for_general.clone();
+                                                        move |_, _window, cx| {
+                                                            let keys = view.read(cx).managed_keys.clone();
+                                                            if keys.is_empty() {
+                                                                return div()
+                                                                    .py(px(12.))
+                                                                    .text_color(cx.theme().muted_foreground)
+                                                                    .child(t!("no_managed_keys").to_string())
+                                                                    .into_any_element();
+                                                            }
+                                                            let mut list = v_flex().gap_2();
+                                                            for key in keys {
+                                                                let view = view.clone();
+                                                                let key_id = key.id.clone();
+                                                                let key_name = key.name.clone();
+                                                                let key_type = key.key_type.clone();
+                                                                let fingerprint = {
+                                                                    let fp = key.fingerprint.clone();
+                                                                    if fp.len() > 30 {
+                                                                        format!("{}…", &fp[..30])
+                                                                    } else {
+                                                                        fp
+                                                                    }
+                                                                };
+                                                                let is_editing = view.read(cx).editing_managed_key_id.as_deref() == Some(&key.id);
+                                                                let rename_input = view.read(cx).key_inline_input.clone();
+                                                                list = list.child(
+                                                                    h_flex()
+                                                                        .items_center()
+                                                                        .gap_2()
+                                                                        .px(px(8.))
+                                                                        .py(px(6.))
+                                                                        .rounded_md()
+                                                                        .border_1()
+                                                                        .border_color(cx.theme().border)
+                                                                        .child(
+                                                                            div()
+                                                                                .px(px(6.))
+                                                                                .py(px(2.))
+                                                                                .rounded(px(4.))
+                                                                                .text_xs()
+                                                                                .text_color(cx.theme().primary)
+                                                                                .bg(cx.theme().accent.opacity(0.15))
+                                                                                .child(key_type)
+                                                                        )
+                                                                        .child(
+                                                                            if is_editing {
+                                                                                div().flex_1().child(
+                                                                                    Input::new(&rename_input)
+                                                                                        .small()
+                                                                                )
+                                                                            } else {
+                                                                                div().flex_1().child(key_name.clone())
+                                                                            }
+                                                                        )
+                                                                        .child(
+                                                                            div()
+                                                                                .text_xs()
+                                                                                .text_color(cx.theme().muted_foreground)
+                                                                                .child(fingerprint)
+                                                                        )
+                                                                        .child(
+                                                                            if is_editing {
+                                                                                Button::new(SharedString::from(format!("key-save-{}", key_id)))
+                                                                                    .ghost()
+                                                                                    .xsmall()
+                                                                                    .icon(IconName::Check)
+                                                                                    .on_click({
+                                                                                        let view = view.clone();
+                                                                                        let key_id = key_id.clone();
+                                                                                        move |_, _window, cx| {
+                                                                                            let new_name = view.read(cx).key_inline_input.read(cx).value().trim().to_string();
+                                                                                            if !new_name.is_empty() {
+                                                                                                let key_id = key_id.clone();
+                                                                                                view.update(cx, |this, cx| {
+                                                                                                    this.rename_managed_key(key_id, new_name, cx);
+                                                                                                });
+                                                                                            }
+                                                                                        }
+                                                                                    })
+                                                                            } else {
+                                                                                Button::new(SharedString::from(format!("key-rename-{}", key_id)))
+                                                                                    .ghost()
+                                                                                    .xsmall()
+                                                                                    .label(t!("key_rename").to_string())
+                                                                                    .on_click({
+                                                                                        let view = view.clone();
+                                                                                        let key_id = key_id.clone();
+                                                                                        let key_name = key_name.clone();
+                                                                                        move |_, window, cx| {
+                                                                                            let key_name = key_name.clone();
+                                                                                            view.update(cx, |this, cx| {
+                                                                                                this.editing_managed_key_id = Some(key_id.clone());
+                                                                                                Self::set_input_value(&this.key_inline_input, key_name, window, cx);
+                                                                                                cx.notify();
+                                                                                            });
+                                                                                        }
+                                                                                    })
+                                                                            }
+                                                                        )
+                                                                        .child(
+                                                                            Button::new(SharedString::from(format!("key-delete-{}", key_id)))
+                                                                                .ghost()
+                                                                                .xsmall()
+                                                                                .icon(IconName::Delete)
+                                                                                .on_click({
+                                                                                    let view = view.clone();
+                                                                                    let key_id = key_id.clone();
+                                                                                    move |_, _window, cx| {
+                                                                                        let key_id = key_id.clone();
+                                                                                        view.update(cx, |this, cx| {
+                                                                                            this.delete_managed_key(key_id, cx);
+                                                                                        });
+                                                                                    }
+                                                                                })
+                                                                        )
+                                                                );
+                                                            }
+                                                            list.into_any_element()
+                                                        }
+                                                    })
                                                 )
                                         )
                                 )
@@ -2037,7 +3787,7 @@ impl Ashell {
                                                                     .checked(view.read(cx).config.use_proxy())
                                                                     .on_click(window.listener_for(&view, |this, checked, _, cx| {
                                                                         this.config.set_use_proxy(*checked);
-                                                                        let _ = this.config.save();
+                                                                        this.mark_config_preferences_dirty();
                                                                         cx.notify();
                                                                     }))
                                                                     .into_any_element()
@@ -2056,7 +3806,7 @@ impl Ashell {
                                                                     .checked(view.read(cx).config.read_env_proxy())
                                                                     .on_click(window.listener_for(&view, |this, checked, _, cx| {
                                                                         this.config.set_read_env_proxy(*checked);
-                                                                        let _ = this.config.save();
+                                                                        this.mark_config_preferences_dirty();
                                                                         cx.notify();
                                                                     }))
                                                                     .into_any_element()
@@ -2066,10 +3816,10 @@ impl Ashell {
                                                 )
                                                 .item(SettingItem::render({
                                                     let view = view.clone();
-                                                    let global_proxy_host_input = view.read(cx).global_proxy_host_input.clone();
-                                                    let global_proxy_port_input = view.read(cx).global_proxy_port_input.clone();
-                                                    let global_proxy_user_input = view.read(cx).global_proxy_user_input.clone();
-                                                    let global_proxy_password_input = view.read(cx).global_proxy_password_input.clone();
+                                                    let global_proxy_host_input = self.global_proxy_host_input.clone();
+                                                    let global_proxy_port_input = self.global_proxy_port_input.clone();
+                                                    let global_proxy_user_input = self.global_proxy_user_input.clone();
+                                                    let global_proxy_password_input = self.global_proxy_password_input.clone();
                                                     move |_, window, cx| {
                                                         let proxy_type = view.read(cx).global_proxy_type.clone();
                                                         v_flex()
@@ -2125,7 +3875,7 @@ impl Ashell {
                                                                         this.config.set_global_proxy_port(port);
                                                                         this.config.set_global_proxy_user(user);
                                                                         this.config.set_global_proxy_password(password);
-                                                                        let _ = this.config.save();
+                                                                        this.mark_config_preferences_dirty();
                                                                         cx.notify();
                                                                     }))
                                                             )
@@ -2137,7 +3887,7 @@ impl Ashell {
                                     let mut page = SettingPage::new(t!("settings_key_bindings").to_string())
                                         .icon(IconName::SquareTerminal)
                                         .default_open(true);
-                                    for group in crate::app::keybinding_recorder::KeybindingsPage::render_groups(&view, cx) {
+                                    for group in crate::app::keybinding_recorder::KeybindingsPage::render_groups(self, &view) {
                                         page = page.group(group);
                                     }
                                     page
@@ -2151,37 +3901,234 @@ impl Ashell {
                                         .icon(IconName::Info)
                                         .group(
                                             SettingGroup::new()
-                                                .item(SettingItem::render(move |_, _window, cx| {
-                                                    v_flex()
-                                                        .gap_2()
-                                                        .items_center()
-                                                        .child(div().text_size(rems(1.5)).font_weight(FontWeight::BOLD).child("Ashell"))
-                                                        .child(div().text_size(rems(0.9)).child(format!("Version {}", version)))
-                                                        .child(
-                                                            div()
-                                                                .text_size(rems(0.9))
-                                                                .text_color(cx.theme().muted_foreground)
-                                                                .child("A GPUI Component based SSH and local terminal client"),
-                                                        )
-                                                        .child(
-                                                            div()
-                                                                .text_size(rems(0.9))
-                                                                .text_color(cx.theme().muted_foreground)
-                                                                .child(t!("about_feedback_hint")),
-                                                        )
-                                                        .child(
-                                                            Button::new("github-link")
-                                                                .label("https://github.com/rust-kotlin/ashell")
-                                                                .ghost()
-                                                                .on_click(|_, _window, _cx| {
-                                                                    let _ = open::that("https://github.com/rust-kotlin/ashell");
-                                                                }),
-                                                        )
+                                                .item(SettingItem::render({
+                                                    let view = view.clone();
+                                                    move |_, _window, cx| {
+                                                        let status_text = {
+                                                            let state = view.read(cx);
+                                                            match &state.updater_status {
+                                                                Some(crate::app::updater::UpdateStatus::Checking) => {
+                                                                    Some(t!("checking_update").to_string())
+                                                                }
+                                                                Some(crate::app::updater::UpdateStatus::UpToDate(_)) => {
+                                                                    Some(t!("update_latest").to_string())
+                                                                }
+                                                                Some(crate::app::updater::UpdateStatus::UpdateAvailable(info)) => {
+                                                                    Some(t!("update_available", version = info.version.clone()).to_string())
+                                                                }
+                                                                Some(crate::app::updater::UpdateStatus::Downloading) => {
+                                                                    Some(t!("update_downloading").to_string())
+                                                                }
+                                                                Some(crate::app::updater::UpdateStatus::Installing) => {
+                                                                    Some(t!("update_installing").to_string())
+                                                                }
+                                                                Some(crate::app::updater::UpdateStatus::InstallComplete) => {
+                                                                    Some(t!("update_install_complete").to_string())
+                                                                }
+                                                                Some(crate::app::updater::UpdateStatus::Error(msg)) => {
+                                                                    Some(t!("update_error", error = msg.clone()).to_string())
+                                                                }
+                                                                None => None,
+                                                            }
+                                                        };
+                                                        let has_update = matches!(
+                                                            view.read(cx).updater_status,
+                                                            Some(crate::app::updater::UpdateStatus::UpdateAvailable(_))
+                                                        );
+
+                                                        v_flex()
+                                                            .gap_2()
+                                                            .items_center()
+                                                            .child(div().text_size(rems(1.5)).font_weight(FontWeight::BOLD).child("tiny-shell"))
+                                                            .child(div().text_size(rems(0.9)).child(format!("Version {}", version)))
+                                                            .child(
+                                                                div()
+                                                                    .text_size(rems(0.9))
+                                                                    .text_color(cx.theme().muted_foreground)
+                                                                    .child("A GPUI Component based SSH and local terminal client"),
+                                                            )
+                                                            .child(
+                                                                div()
+                                                                    .text_size(rems(0.9))
+                                                                    .text_color(cx.theme().muted_foreground)
+                                                                    .child(t!("about_feedback_hint")),
+                                                            )
+                                                            .child(
+                                                                Button::new("github-link")
+                                                                    .label("https://github.com/ynx-official/tiny-shell")
+                                                                    .ghost()
+                                                                    .on_click(|_, _window, _cx| {
+                                                                        let _ = open::that("https://github.com/ynx-official/tiny-shell");
+                                                                    }),
+                                                            )
+                                                            .child(
+                                                                h_flex()
+                                                                    .gap_2()
+                                                                    .items_center()
+                                                                    .child(
+                                        Button::new("check-update")
+                                            .label(t!("check_update").to_string())
+                                            .on_click({
+                                                let view = view.clone();
+                                                move |_, _window, cx| {
+                                                    view.update(cx, |this, cx| {
+                                                        this.updater_status = Some(crate::app::updater::UpdateStatus::Checking);
+                                                        cx.notify();
+                                                    });
+                                                    cx.spawn({
+                                                        let view = view.clone();
+                                                        |cx: &mut gpui::AsyncApp| {
+                                                            let cx = cx.clone();
+                                                            async move {
+                                                                let (tx, rx) = futures::channel::oneshot::channel();
+                                                                crate::app::shared_runtime().spawn(async move {
+                                                                    let result = crate::app::updater::check_for_update().await;
+                                                                    let _ = tx.send(result);
+                                                                });
+                                                                let result = rx.await.unwrap_or_else(|_| {
+                                                                    Err(anyhow::anyhow!("update check cancelled"))
+                                                                });
+                                                                cx.update(|cx| {
+                                                                    match result {
+                                                                        Ok(crate::app::updater::UpdateCheckResult::UpdateAvailable(info)) => {
+                                                                            view.update(cx, |this, cx| {
+                                                                                this.updater_status = Some(crate::app::updater::UpdateStatus::UpdateAvailable(info));
+                                                                                cx.notify();
+                                                                            });
+                                                                        }
+                                                                        Ok(crate::app::updater::UpdateCheckResult::UpToDate(info)) => {
+                                                                            view.update(cx, |this, cx| {
+                                                                                this.updater_status = Some(crate::app::updater::UpdateStatus::UpToDate(info));
+                                                                                cx.notify();
+                                                                            });
+                                                                        }
+                                                                        Err(err) => {
+                                                                            view.update(cx, |this, cx| {
+                                                                                this.updater_status = Some(crate::app::updater::UpdateStatus::Error(format!("{err:#}")));
+                                                                                cx.notify();
+                                                                            });
+                                                                        }
+                                                                    }
+                                                                });
+                                                            }
+                                                        }
+                                                    }).detach();
+                                                }
+                                            }),
+                                    )
+                                                                    .when(has_update, |this| {
+                                                                        this.child(
+                                                                            Button::new("download-update")
+                                                                                .primary()
+                                                                                .label(t!("update_download").to_string())
+                                                                                .on_click({
+                                                                                    let view = view.clone();
+                                                                                    move |_, _window, cx| {
+                                                                                        let info = match view.read(cx).updater_status.clone() {
+                                                                                            Some(crate::app::updater::UpdateStatus::UpdateAvailable(info)) => info,
+                                                                                            _ => return,
+                                                                                        };
+                                                                                        view.update(cx, |this, cx| {
+                                                                                            this.updater_status = Some(crate::app::updater::UpdateStatus::Downloading);
+                                                                                            cx.notify();
+                                                                                        });
+                                                                                        cx.spawn({
+                                                                                            let view = view.clone();
+                                                                                            |cx: &mut gpui::AsyncApp| {
+                                                                                                let cx = cx.clone();
+                                                                                                async move {
+                                                                                                    let (tx, rx) = futures::channel::oneshot::channel();
+                                                                                                    let info = info.clone();
+                                                                                                    crate::app::shared_runtime().spawn(async move {
+                                                                                                        let result = crate::app::updater::perform_update(&info).await;
+                                                                                                        let _ = tx.send(result);
+                                                                                                    });
+                                                                                                    let result = rx.await.unwrap_or_else(|_| {
+                                                                                                        Err(anyhow::anyhow!("update download cancelled"))
+                                                                                                    });
+                                                                                                    cx.update(|cx| {
+                                                                                                        match result {
+                                                                                                            Ok(()) => {
+                                                                                                                view.update(cx, |this, cx| {
+                                                                                                                    this.updater_status = Some(crate::app::updater::UpdateStatus::InstallComplete);
+                                                                                                                    cx.notify();
+                                                                                                                });
+                                                                                                            }
+                                                                                                            Err(err) => {
+                                                                                                                view.update(cx, |this, cx| {
+                                                                                                                    this.updater_status = Some(crate::app::updater::UpdateStatus::Error(format!("{err:#}")));
+                                                                                                                    cx.notify();
+                                                                                                                });
+                                                                                                            }
+                                                                                                        }
+                                                                                                    });
+                                                                                                }
+                                                                                            }
+                                                                                        }).detach();
+                                                                                    }
+                                                                                }),
+                                                                        )
+                                                                    })
+                                                                    .when_some(status_text, |this, text| {
+                                                                        this.child(
+                                                                            div()
+                                                                                .text_size(rems(0.85))
+                                                                                .text_color(cx.theme().muted_foreground)
+                                                                                .child(text),
+                                                                        )
+                                                                    }),
+                                                            )
+                                                    }
                                                 }))
                                         )
                                 )
                                 )
                         )
+        .into_any_element()
+    }
+
+    pub(crate) fn show_settings_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.active_dialog.is_some() {
+            return;
+        }
+        self.active_dialog = Some(crate::app::DialogKind::Settings);
+
+        let view = cx.entity();
+
+        // Unbind all workspace keys so they don't interfere with keybinding recording
+        crate::app::keybinding_recorder::unbind_all_workspace_keys(cx, &self.config);
+        self.keybinds_suspended = true;
+
+        window.open_dialog(cx, move |dialog: Dialog, _window, _| {
+            dialog
+                .title(t!("settings").to_string())
+                .w(px(840.))
+                .h(px(560.))
+                .on_close({
+                    let view = view.clone();
+                    move |_, _window, cx| {
+                        // Re-register all workspace keys when closing settings
+                        view.update(cx, |this, cx| {
+                            this.active_dialog = None;
+                            this.keybinds_suspended = false;
+                            this.recording_action = None;
+                            this.keybind_error = None;
+                            this.persist_config_preferences_async();
+                            crate::app::keybinding_recorder::bind_workspace_keys_from_config(
+                                cx,
+                                &this.config,
+                            );
+                            cx.notify();
+                        });
+                    }
+                })
+                .content({
+                    let view = view.clone();
+                    move |content, _window, cx| {
+                        let settings = view.update(cx, |this, cx| {
+                            this.render_settings_content(&view, "settings-dialog", cx)
+                        });
+                        content.child(settings)
                     }
                 })
         });

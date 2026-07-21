@@ -1,8 +1,20 @@
-use gpui::{App, AppContext as _, Bounds, WindowOptions, point, px, size};
+use std::{
+    cell::RefCell,
+    rc::Rc,
+    sync::atomic::{AtomicBool, Ordering},
+};
+
+use gpui::{App, AppContext as _, Bounds, Entity, WindowOptions, point, px, size};
 use gpui_component::Root;
 
-use crate::Ashell;
-use crate::session::config::ConfigStore;
+use crate::TinyShell;
+use crate::session::{
+    GroupTransfer,
+    config::{ConfigStore, Session},
+    store::{SessionStore, WindowOwnerId},
+};
+
+static STARTUP_UPDATE_CHECK_STARTED: AtomicBool = AtomicBool::new(false);
 
 pub(crate) fn bind_workspace_keys(cx: &mut gpui::App) {
     let config = ConfigStore::load().unwrap_or_else(|_| ConfigStore::in_memory());
@@ -85,12 +97,12 @@ pub(crate) fn init_logging() {
     use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
     let log_dir = directories::BaseDirs::new()
-        .map(|dirs| dirs.home_dir().join(".config").join("ashell").join("log"))
+        .map(|dirs| dirs.home_dir().join(".config").join("tiny-shell").join("log"))
         .unwrap_or_else(|| std::path::PathBuf::from("."));
 
     std::fs::create_dir_all(&log_dir).ok();
 
-    let roller = LocalMinutelyRoller::new(log_dir.clone(), "ashell".to_string());
+    let roller = LocalMinutelyRoller::new(log_dir.clone(), "tiny-shell".to_string());
 
     let (non_blocking, _guard) = tracing_appender::non_blocking(roller);
     // Leak the guard so it lives for the entire duration of the app since GPUI's run might not return
@@ -235,6 +247,30 @@ pub(crate) fn open_main_window(cx: &mut App) {
         })
     });
 
+    let window_options = build_window_options(&config, cx, None);
+    let session_store = cx.new(|_| SessionStore::new());
+    open_window_with_options(window_options, None, session_store, cx);
+}
+
+/// Open a new window, optionally auto-connecting to a session.
+pub(crate) fn open_new_window(
+    session: Option<Session>,
+    session_store: Option<Entity<SessionStore>>,
+    cx: &mut App,
+) {
+    let config = ConfigStore::load().unwrap_or_else(|_| ConfigStore::in_memory());
+    // Offset new windows so they don't completely overlap
+    let offset = Some((px(40.), px(40.)));
+    let window_options = build_window_options(&config, cx, offset);
+    let session_store = session_store.unwrap_or_else(|| cx.new(|_| SessionStore::new()));
+    open_window_with_options(window_options, session, session_store, cx);
+}
+
+fn build_window_options(
+    config: &ConfigStore,
+    cx: &App,
+    offset: Option<(gpui::Pixels, gpui::Pixels)>,
+) -> WindowOptions {
     let mut window_options = WindowOptions::default();
 
     if config.title_bar_style() == crate::session::config::TitleBarStyle::Integrated {
@@ -246,7 +282,7 @@ pub(crate) fn open_main_window(cx: &mut App) {
     }
 
     #[cfg(not(target_os = "macos"))]
-    if let Ok(img) = image::load_from_memory(include_bytes!("../../assets/icons/ashell.png")) {
+    if let Ok(img) = image::load_from_memory(include_bytes!("../../assets/icons/tiny-shell.png")) {
         window_options.icon = Some(std::sync::Arc::new(img.into_rgba8()));
     }
 
@@ -275,10 +311,13 @@ pub(crate) fn open_main_window(cx: &mut App) {
                 y,
                 width,
                 height,
-            } => gpui::WindowBounds::Windowed(Bounds::new(
-                point(px(*x), px(*y)),
-                size(px(*width), px(*height)),
-            )),
+            } => {
+                let (mx, my) = offset.unwrap_or((px(0.), px(0.)));
+                gpui::WindowBounds::Windowed(Bounds::new(
+                    point(px(*x) + mx, px(*y) + my),
+                    size(px(*width), px(*height)),
+                ))
+            }
         });
     } else if let Some(display) = cx.displays().first().cloned() {
         let display_bounds = display.bounds();
@@ -292,21 +331,113 @@ pub(crate) fn open_main_window(cx: &mut App) {
         #[cfg(not(target_os = "macos"))]
         let y = display_bounds.origin.y + (display_bounds.size.height - height) / 2.0;
 
+        let (ox, oy) = offset.unwrap_or((px(0.), px(0.)));
         window_options.window_bounds = Some(gpui::WindowBounds::Windowed(Bounds::new(
-            point(x, y),
+            point(x + ox, y + oy),
             size(width, height),
         )));
     }
 
-    cx.open_window(window_options, |window, cx| {
-        window.activate_window();
-        window.set_window_title("ashell");
-        gpui_component::Theme::sync_system_appearance(Some(window), cx);
-        let view = cx.new(|cx| Ashell::new(window, cx));
+    window_options
+}
 
-        tracing::info!("[ui] main application window opened");
-        let focus_handle = view.read(cx).focus_handle.clone();
-        window.focus(&focus_handle, cx);
+fn open_window_with_options(
+    window_options: WindowOptions,
+    session: Option<Session>,
+    session_store: Entity<SessionStore>,
+    cx: &mut App,
+) {
+    open_window_with_initializer(
+        window_options,
+        session_store,
+        move |view, cx| {
+            if let Some(session) = session {
+                view.update(cx, |this, cx| this.open_ssh_session(session, cx));
+            }
+            true
+        },
+        cx,
+    )
+    .expect("failed to open window");
+}
+
+#[allow(clippy::result_large_err)]
+pub(crate) fn open_new_window_with_group(
+    transfer: GroupTransfer,
+    source_owner_id: WindowOwnerId,
+    session_store: Entity<SessionStore>,
+    cx: &mut App,
+) -> Result<(), (String, GroupTransfer)> {
+    let config = ConfigStore::load().unwrap_or_else(|_| ConfigStore::in_memory());
+    let window_options = build_window_options(&config, cx, Some((px(40.), px(40.))));
+    let pending = Rc::new(RefCell::new(Some(transfer)));
+    let failure = Rc::new(RefCell::new(None));
+    let pending_for_window = pending.clone();
+    let failure_for_window = failure.clone();
+
+    let opened = open_window_with_initializer(
+        window_options,
+        session_store,
+        move |view, cx| {
+            let Some(transfer) = pending_for_window.borrow_mut().take() else {
+                return false;
+            };
+            match view.update(cx, |this, cx| {
+                this.receive_group_transfer(transfer, source_owner_id, cx)
+            }) {
+                Ok(()) => true,
+                Err((message, transfer)) => {
+                    *failure_for_window.borrow_mut() = Some(message);
+                    *pending_for_window.borrow_mut() = Some(transfer);
+                    false
+                }
+            }
+        },
+        cx,
+    );
+
+    let message = failure.borrow_mut().take().or_else(|| opened.err());
+    let remaining = pending.borrow_mut().take();
+    match (message, remaining) {
+        (None, None) => Ok(()),
+        (Some(message), Some(transfer)) => Err((message, transfer)),
+        (None, Some(transfer)) => Err((
+            "new window did not accept the transferred tab group".to_string(),
+            transfer,
+        )),
+        (Some(message), None) => {
+            tracing::warn!("[ui] window reported an error after accepting transfer: {message}");
+            Ok(())
+        }
+    }
+}
+
+fn open_window_with_initializer(
+    window_options: WindowOptions,
+    session_store: Entity<SessionStore>,
+    initialize: impl FnOnce(Entity<TinyShell>, &mut App) -> bool + 'static,
+    cx: &mut App,
+) -> Result<(), String> {
+    cx.open_window(window_options, |window, cx| {
+        window.set_window_title("tiny-shell");
+        let view = cx.new(|cx| TinyShell::new(window, session_store.clone(), cx));
+
+        crate::app::register_window(window.window_handle(), view.clone());
+        let should_activate = initialize(view.clone(), cx);
+        if !STARTUP_UPDATE_CHECK_STARTED.swap(true, Ordering::AcqRel) {
+            view.update(cx, |this, cx| this.check_for_updates(cx));
+        }
+
+        tracing::info!("[ui] application window opened");
+        if should_activate {
+            let focus_handle = view.read(cx).focus_handle.clone();
+            // A newly created native window is already activated by Windows. Calling
+            // `activate_window` here makes GPUI synthesize a global Alt key press on
+            // Windows to obtain foreground permission, which can wake unrelated apps
+            // that own global shortcuts. Only establish GPUI's internal focus here;
+            // forced activation remains reserved for merging into an existing window.
+            window.focus(&focus_handle, cx);
+        }
 
         let view_clone = view.clone();
         window.on_window_should_close(cx, move |window: &mut gpui::Window, cx: &mut gpui::App| {
@@ -317,11 +448,19 @@ pub(crate) fn open_main_window(cx: &mut App) {
                 );
                 return true;
             }
-            view_clone.read(cx).save_layout_state(window, cx);
+            view_clone.update(cx, |this, cx| {
+                this.cancel_tab_drag(cx);
+                this.persist_config_preferences();
+                this.save_layout_state(window, cx);
+                this.cleanup_on_window_close();
+                cx.notify();
+            });
+            crate::app::deregister_window(handle, cx);
             true
         });
 
         cx.new(|cx| Root::new(view, window, cx))
     })
-    .expect("failed to open window");
+    .map(|_| ())
+    .map_err(|error| format!("failed to open window: {error:?}"))
 }

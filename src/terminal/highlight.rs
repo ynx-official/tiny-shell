@@ -1,6 +1,7 @@
 use crate::terminal::RenderCell;
 use gpui::Hsla;
 use std::collections::HashMap;
+use std::sync::OnceLock;
 
 trait HslaExt {
     fn into_rgba_like(self, r: u8, g: u8, b: u8) -> Self;
@@ -106,8 +107,10 @@ fn hsla(r: u8, g: u8, b: u8) -> Hsla {
     .into_rgba_like(r, g, b)
 }
 
-fn highlight_colors() -> HighlightColors {
-    HighlightColors {
+/// 返回进程级静态颜色表引用，避免每帧重建 ~40 个 Hsla。
+fn highlight_colors() -> &'static HighlightColors {
+    static COLORS: OnceLock<HighlightColors> = OnceLock::new();
+    COLORS.get_or_init(|| HighlightColors {
         // Log levels
         error: hsla(224, 96, 96),     // #E06060 red
         critical: hsla(255, 50, 50),  // #FF3232 bright red
@@ -161,15 +164,16 @@ fn highlight_colors() -> HighlightColors {
         network: hsla(199, 146, 234), // #C792EA purple
         url: hsla(86, 212, 199),      // #56D4C7 teal
         port: hsla(130, 170, 200),    // #82AAC8 muted teal
-    }
+    })
 }
 
-/// Highlight all occurrences of keyword list in `text`, writing to `map`.
-/// Case-insensitive, matches inside larger words (e.g. "my_ERROR" highlights "ERROR").
+/// Highlight all occurrences of keyword list in `text_lower`, writing to `map`.
+/// Case-insensitive匹配：调用方需预先将整行文本小写化后传入 `text_lower`，
+/// 避免此前每个关键词组（30+ 组）各自重新分配并小写化整行文本。
 /// Each keyword only matches once per position (no overlapping highlights).
 fn highlight_keywords(
     map: &mut HashMap<(i32, i32), Hsla>,
-    text: &str,
+    text_lower: &[u8],
     byte_to_col: &[i32],
     row_i32: i32,
     keywords: &[&str],
@@ -177,8 +181,6 @@ fn highlight_keywords(
 ) {
     for &kw in keywords {
         let kw_lower: Vec<u8> = kw.bytes().map(|b| b.to_ascii_lowercase()).collect();
-        let text_bytes = text.as_bytes();
-        let text_lower: Vec<u8> = text_bytes.iter().map(|b| b.to_ascii_lowercase()).collect();
         let mut start = 0;
         while start + kw_lower.len() <= text_lower.len() {
             if text_lower[start..].starts_with(&kw_lower) {
@@ -315,11 +317,14 @@ pub fn highlight_cells(cells: &[RenderCell], rows: usize) -> HashMap<(i32, i32),
             }
         }
         let text = chars_buf.as_str();
+        // 每行只小写化一次，供所有 highlight_keywords 调用复用
+        // （此前每个关键词组各 30+ 次重新分配并小写化整行文本）
+        let text_lower: Vec<u8> = text.bytes().map(|b| b.to_ascii_lowercase()).collect();
 
         // ── 1. Critical errors (highest priority) ──────────────
         highlight_keywords(
             &mut map,
-            text,
+            &text_lower,
             &byte_to_col,
             row_i32,
             &[
@@ -340,7 +345,7 @@ pub fn highlight_cells(cells: &[RenderCell], rows: usize) -> HashMap<(i32, i32),
         // ── 2. Error keywords ──────────────────────────────────
         highlight_keywords(
             &mut map,
-            text,
+            &text_lower,
             &byte_to_col,
             row_i32,
             &["ERROR", "ERR"],
@@ -350,7 +355,7 @@ pub fn highlight_cells(cells: &[RenderCell], rows: usize) -> HashMap<(i32, i32),
         // ── 3. Alert ───────────────────────────────────────────
         highlight_keywords(
             &mut map,
-            text,
+            &text_lower,
             &byte_to_col,
             row_i32,
             &["ALERT"],
@@ -360,7 +365,7 @@ pub fn highlight_cells(cells: &[RenderCell], rows: usize) -> HashMap<(i32, i32),
         // ── 4. Warning keywords ────────────────────────────────
         highlight_keywords(
             &mut map,
-            text,
+            &text_lower,
             &byte_to_col,
             row_i32,
             &["WARNING", "WARN"],
@@ -370,7 +375,7 @@ pub fn highlight_cells(cells: &[RenderCell], rows: usize) -> HashMap<(i32, i32),
         // ── 5. Info keywords ───────────────────────────────────
         highlight_keywords(
             &mut map,
-            text,
+            &text_lower,
             &byte_to_col,
             row_i32,
             &["INFO", "INFORMATION", "NOTICE"],
@@ -380,7 +385,7 @@ pub fn highlight_cells(cells: &[RenderCell], rows: usize) -> HashMap<(i32, i32),
         // ── 6. Debug keywords ──────────────────────────────────
         highlight_keywords(
             &mut map,
-            text,
+            &text_lower,
             &byte_to_col,
             row_i32,
             &["DEBUG", "DBG", "TRACE"],
@@ -390,7 +395,7 @@ pub fn highlight_cells(cells: &[RenderCell], rows: usize) -> HashMap<(i32, i32),
         // ── 7. Success status ──────────────────────────────────
         highlight_keywords(
             &mut map,
-            text,
+            &text_lower,
             &byte_to_col,
             row_i32,
             &[
@@ -411,7 +416,7 @@ pub fn highlight_cells(cells: &[RenderCell], rows: usize) -> HashMap<(i32, i32),
         // ── 8. Failure status ──────────────────────────────────
         highlight_keywords(
             &mut map,
-            text,
+            &text_lower,
             &byte_to_col,
             row_i32,
             &["FAILED", "FAILURE", "FAIL", "NOT OK"],
@@ -421,7 +426,7 @@ pub fn highlight_cells(cells: &[RenderCell], rows: usize) -> HashMap<(i32, i32),
         // ── 9. Pending / Waiting ───────────────────────────────
         highlight_keywords(
             &mut map,
-            text,
+            &text_lower,
             &byte_to_col,
             row_i32,
             &["PENDING", "WAITING", "PROCESSING", "IN PROGRESS", "QUEUED"],
@@ -431,7 +436,7 @@ pub fn highlight_cells(cells: &[RenderCell], rows: usize) -> HashMap<(i32, i32),
         // ── 10. Running / Active ───────────────────────────────
         highlight_keywords(
             &mut map,
-            text,
+            &text_lower,
             &byte_to_col,
             row_i32,
             &["RUNNING", "ACTIVE", "EXECUTING", "IN_PROGRESS", "LIVE"],
@@ -441,7 +446,7 @@ pub fn highlight_cells(cells: &[RenderCell], rows: usize) -> HashMap<(i32, i32),
         // ── 11. Stopped / Inactive ─────────────────────────────
         highlight_keywords(
             &mut map,
-            text,
+            &text_lower,
             &byte_to_col,
             row_i32,
             &["STOPPED", "INACTIVE", "HALTED", "IDLE", "PAUSED"],
@@ -451,7 +456,7 @@ pub fn highlight_cells(cells: &[RenderCell], rows: usize) -> HashMap<(i32, i32),
         // ── 12. Skipped ────────────────────────────────────────
         highlight_keywords(
             &mut map,
-            text,
+            &text_lower,
             &byte_to_col,
             row_i32,
             &["SKIPPED", "SKIP", "SKIPPING"],
@@ -461,7 +466,7 @@ pub fn highlight_cells(cells: &[RenderCell], rows: usize) -> HashMap<(i32, i32),
         // ── 13. Network UP ─────────────────────────────────────
         highlight_keywords(
             &mut map,
-            text,
+            &text_lower,
             &byte_to_col,
             row_i32,
             &[
@@ -479,7 +484,7 @@ pub fn highlight_cells(cells: &[RenderCell], rows: usize) -> HashMap<(i32, i32),
         // ── 14. Network DOWN ───────────────────────────────────
         highlight_keywords(
             &mut map,
-            text,
+            &text_lower,
             &byte_to_col,
             row_i32,
             &[
@@ -497,7 +502,7 @@ pub fn highlight_cells(cells: &[RenderCell], rows: usize) -> HashMap<(i32, i32),
         // ── 15. Timeout ────────────────────────────────────────
         highlight_keywords(
             &mut map,
-            text,
+            &text_lower,
             &byte_to_col,
             row_i32,
             &[
@@ -514,7 +519,7 @@ pub fn highlight_cells(cells: &[RenderCell], rows: usize) -> HashMap<(i32, i32),
         // ── 16. Refused / Denied ───────────────────────────────
         highlight_keywords(
             &mut map,
-            text,
+            &text_lower,
             &byte_to_col,
             row_i32,
             &[
@@ -533,7 +538,7 @@ pub fn highlight_cells(cells: &[RenderCell], rows: usize) -> HashMap<(i32, i32),
         // ── 17. Security / Protocol ────────────────────────────
         highlight_keywords(
             &mut map,
-            text,
+            &text_lower,
             &byte_to_col,
             row_i32,
             &[
@@ -555,7 +560,7 @@ pub fn highlight_cells(cells: &[RenderCell], rows: usize) -> HashMap<(i32, i32),
         // ── 18. Authentication ─────────────────────────────────
         highlight_keywords(
             &mut map,
-            text,
+            &text_lower,
             &byte_to_col,
             row_i32,
             &[
@@ -574,7 +579,7 @@ pub fn highlight_cells(cells: &[RenderCell], rows: usize) -> HashMap<(i32, i32),
         // ── 19. Danger (root/sudo/secrets) ─────────────────────
         highlight_keywords(
             &mut map,
-            text,
+            &text_lower,
             &byte_to_col,
             row_i32,
             &[
@@ -595,7 +600,7 @@ pub fn highlight_cells(cells: &[RenderCell], rows: usize) -> HashMap<(i32, i32),
         // ── 20. Operations: Start ──────────────────────────────
         highlight_keywords(
             &mut map,
-            text,
+            &text_lower,
             &byte_to_col,
             row_i32,
             &[
@@ -607,7 +612,7 @@ pub fn highlight_cells(cells: &[RenderCell], rows: usize) -> HashMap<(i32, i32),
         // ── 21. Operations: Stop ───────────────────────────────
         highlight_keywords(
             &mut map,
-            text,
+            &text_lower,
             &byte_to_col,
             row_i32,
             &[
@@ -624,7 +629,7 @@ pub fn highlight_cells(cells: &[RenderCell], rows: usize) -> HashMap<(i32, i32),
         // ── 22. Operations: Restart ────────────────────────────
         highlight_keywords(
             &mut map,
-            text,
+            &text_lower,
             &byte_to_col,
             row_i32,
             &[
@@ -641,7 +646,7 @@ pub fn highlight_cells(cells: &[RenderCell], rows: usize) -> HashMap<(i32, i32),
         // ── 23. Operations: Deploy ─────────────────────────────
         highlight_keywords(
             &mut map,
-            text,
+            &text_lower,
             &byte_to_col,
             row_i32,
             &[
@@ -661,7 +666,7 @@ pub fn highlight_cells(cells: &[RenderCell], rows: usize) -> HashMap<(i32, i32),
         // ── 24. Operations: Crash ──────────────────────────────
         highlight_keywords(
             &mut map,
-            text,
+            &text_lower,
             &byte_to_col,
             row_i32,
             &[
@@ -682,7 +687,7 @@ pub fn highlight_cells(cells: &[RenderCell], rows: usize) -> HashMap<(i32, i32),
         // ── 25. Resources: Memory ──────────────────────────────
         highlight_keywords(
             &mut map,
-            text,
+            &text_lower,
             &byte_to_col,
             row_i32,
             &["MEMORY", "RAM", "HEAP", "STACK", "SWAP", "MEM"],
@@ -692,7 +697,7 @@ pub fn highlight_cells(cells: &[RenderCell], rows: usize) -> HashMap<(i32, i32),
         // ── 26. Resources: CPU ─────────────────────────────────
         highlight_keywords(
             &mut map,
-            text,
+            &text_lower,
             &byte_to_col,
             row_i32,
             &[
@@ -710,7 +715,7 @@ pub fn highlight_cells(cells: &[RenderCell], rows: usize) -> HashMap<(i32, i32),
         // ── 27. Resources: Disk ────────────────────────────────
         highlight_keywords(
             &mut map,
-            text,
+            &text_lower,
             &byte_to_col,
             row_i32,
             &[
@@ -730,7 +735,7 @@ pub fn highlight_cells(cells: &[RenderCell], rows: usize) -> HashMap<(i32, i32),
         // ── 28. Dev: Exceptions ────────────────────────────────
         highlight_keywords(
             &mut map,
-            text,
+            &text_lower,
             &byte_to_col,
             row_i32,
             &[
@@ -757,7 +762,7 @@ pub fn highlight_cells(cells: &[RenderCell], rows: usize) -> HashMap<(i32, i32),
         // ── 29. Dev: Deprecated / TODO ─────────────────────────
         highlight_keywords(
             &mut map,
-            text,
+            &text_lower,
             &byte_to_col,
             row_i32,
             &[
@@ -773,7 +778,7 @@ pub fn highlight_cells(cells: &[RenderCell], rows: usize) -> HashMap<(i32, i32),
         );
 
         // ── 30. HTTP status codes ──────────────────────────────
-        highlight_http_codes(&mut map, text, &byte_to_col, row_i32, &colors);
+        highlight_http_codes(&mut map, text, &byte_to_col, row_i32, colors);
 
         // ── 31. IP addresses ───────────────────────────────────
         for m in find_ip_addresses(text) {
@@ -877,10 +882,10 @@ fn find_urls(text: &str) -> Vec<usize> {
     while let Some(pos) = text[start..].find("http") {
         let abs = start + pos;
         let remaining = &text[abs..];
-        if remaining.starts_with("https://") || remaining.starts_with("http://") {
-            if abs == 0 || is_boundary(text.as_bytes()[abs - 1] as char) {
-                positions.push(abs);
-            }
+        if (remaining.starts_with("https://") || remaining.starts_with("http://"))
+            && (abs == 0 || is_boundary(text.as_bytes()[abs - 1] as char))
+        {
+            positions.push(abs);
         }
         start = abs + 4;
     }
@@ -967,8 +972,8 @@ pub fn build_logical_lines<'a>(cells: &'a [RenderCell], rows: usize) -> Vec<Logi
         }
 
         let wraps_from_prev = row_idx > 0 && {
-            current_line.as_ref().map_or(false, |line| {
-                line.row_cells.last().map_or(false, |rc| {
+            current_line.as_ref().is_some_and(|line| {
+                line.row_cells.last().is_some_and(|rc| {
                     rc.cell
                         .flags
                         .contains(alacritty_terminal::term::cell::Flags::WRAPLINE)

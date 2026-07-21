@@ -10,7 +10,7 @@ use gpui::{
 };
 use gpui_component::ActiveTheme as _;
 
-use crate::Ashell;
+use crate::TinyShell;
 use crate::terminal::custom_blocks::{is_custom_block_supported, paint_custom_block};
 use crate::terminal::{RenderSnapshot, ViewportSelection};
 
@@ -144,7 +144,7 @@ struct CursorLayout {
 }
 
 pub struct TerminalElement {
-    view: Entity<Ashell>,
+    view: Entity<TinyShell>,
     focus_handle: FocusHandle,
     snapshot: RenderSnapshot,
     marked_text: Option<String>,
@@ -176,7 +176,7 @@ struct LayoutCustomBlock {
 }
 
 struct TerminalInputHandler {
-    view: Entity<Ashell>,
+    view: Entity<TinyShell>,
     element_bounds: Bounds<Pixels>,
     cell_width: f32,
     line_height: f32,
@@ -284,8 +284,9 @@ impl InputHandler for TerminalInputHandler {
 }
 
 impl TerminalElement {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
-        view: Entity<Ashell>,
+        view: Entity<TinyShell>,
         focus_handle: FocusHandle,
         snapshot: RenderSnapshot,
         marked_text: Option<String>,
@@ -390,11 +391,16 @@ impl TerminalElement {
         let mut underlines = Vec::new();
         let mut current_run: Option<BatchedTextRun> = None;
 
-        // Retrieve cached keyword highlights and merge with search highlights
-        let mut highlights = self.snapshot.highlights.clone();
-        if let Some(sm) = self.search_highlights.as_ref() {
-            highlights.extend(sm.iter().map(|(k, v)| (*k, *v)));
-        }
+        // 仅在有搜索高亮需要合并时才 clone，避免每帧克隆整个 highlights HashMap
+        let mut merged_highlights: std::collections::HashMap<(i32, i32), gpui::Hsla>;
+        let highlights: &std::collections::HashMap<(i32, i32), gpui::Hsla> =
+            if let Some(sm) = self.search_highlights.as_ref().filter(|sm| !sm.is_empty()) {
+                merged_highlights = self.snapshot.highlights.clone();
+                merged_highlights.extend(sm.iter().map(|(k, v)| (*k, *v)));
+                &merged_highlights
+            } else {
+                &self.snapshot.highlights
+            };
 
         for render_cell in &self.snapshot.cells {
             let cell = &render_cell.cell;
@@ -606,7 +612,7 @@ impl Element for TerminalElement {
         // This is 100% accurate because it is recorded during layout prepaint.
         let view = self.view.clone();
         let tab_id = self.tab_id.clone();
-        let _ = view.update(cx, |this, cx| {
+        view.update(cx, |this, cx| {
             let old_bounds = this.terminal_bounds.insert(tab_id.clone(), bounds);
 
             // Sync PTY size unconditionally on every prepaint layout pass to ensure

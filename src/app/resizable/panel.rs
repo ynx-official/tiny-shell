@@ -14,6 +14,8 @@ use gpui_component::{AxisExt, ElementExt, StyledExt, h_flex, v_flex};
 
 use super::{PANEL_MIN_SIZE, ResizablePanelEvent, ResizableState, resizable_panel, resize_handle};
 
+type ResizeCallback = Rc<dyn Fn(&Entity<ResizableState>, &mut Window, &mut App)>;
+
 #[derive(Clone)]
 pub(crate) struct DragPanel;
 impl Render for DragPanel {
@@ -30,7 +32,7 @@ pub struct ResizablePanelGroup {
     axis: Axis,
     size: Option<Pixels>,
     children: Vec<ResizablePanel>,
-    on_resize: Rc<dyn Fn(&Entity<ResizableState>, &mut Window, &mut App)>,
+    on_resize: ResizeCallback,
     locked: bool,
 }
 
@@ -318,7 +320,7 @@ impl RenderOnce for ResizablePanel {
 
 struct ResizePanelGroupElement {
     state: Entity<ResizableState>,
-    on_resize: Rc<dyn Fn(&Entity<ResizableState>, &mut Window, &mut App)>,
+    on_resize: ResizeCallback,
     axis: Axis,
 }
 
@@ -361,7 +363,6 @@ impl Element for ResizePanelGroupElement {
         _window: &mut Window,
         _cx: &mut App,
     ) -> Self::PrepaintState {
-        ()
     }
 
     fn paint(

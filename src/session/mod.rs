@@ -1,45 +1,117 @@
 pub mod config;
 pub mod ssh_config;
 pub mod ssh_keys;
+pub mod store;
+
+use std::collections::{HashMap, HashSet};
 
 use gpui::{
-    AppContext as _, Context, Entity, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent,
-    SharedString, Window, px,
+    AnyWindowHandle, App, AppContext as _, Context, Entity, KeyDownEvent, MouseButton,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, SharedString, Window, px,
 };
 use gpui_component::{Theme, WindowExt as _, input::InputState};
 use rust_i18n::t;
 use uuid::Uuid;
 
-use self::config::{AuthMethod, Session};
+use self::config::{AuthMethod, ManagedKey, Session};
 
 use crate::{
-    Ashell, PaneLayout, SelectorEntry, TabGroup,
-    app::constants::{DEFAULT_COLS, DEFAULT_ROWS},
+    TinyShell, PaneLayout, SelectorEntry, TabGroup,
+    app::{
+        IncomingTabDrag, SystemInfoTab,
+        constants::{DEFAULT_COLS, DEFAULT_ROWS},
+        tab_drag::{
+            DragTarget, DropIntent, TargetUpdate, cursor_inside_viewport, reorder_index_at_x,
+            should_close_empty_source, should_offer_detach,
+        },
+    },
     backend::{local, ssh},
     terminal::{BackendCommand, RenderSnapshot, TabKind, TerminalTab},
 };
 
-impl Ashell {
+pub(crate) struct GroupTransfer {
+    group: TabGroup,
+    group_index: usize,
+    tabs: Vec<(usize, TerminalTab)>,
+    sftp_handles: HashMap<String, crate::sftp::SftpHandle>,
+    route_ids: Vec<String>,
+    active_tab: Option<String>,
+    was_active_group: bool,
+}
+
+impl TinyShell {
+    pub(crate) fn open_system_info_tab(&mut self, cx: &mut Context<Self>) {
+        let Some(source_tab_id) = self.system_tab_id.clone().or_else(|| {
+            self.active_tab.as_ref().and_then(|active_id| {
+                self.tabs
+                    .iter()
+                    .find(|tab| tab.id == *active_id && tab.kind == TabKind::Ssh)
+                    .map(|tab| tab.id.clone())
+            })
+        }) else {
+            return;
+        };
+
+        let info_id = if let Some(existing) = self
+            .system_info_tabs
+            .iter()
+            .find(|tab| tab.source_tab_id == source_tab_id)
+        {
+            existing.id.clone()
+        } else {
+            let host_title = self
+                .tabs
+                .iter()
+                .find(|tab| tab.id == source_tab_id)
+                .map(|tab| tab.title.clone())
+                .unwrap_or_else(|| t!("system_information").to_string());
+            let id = Uuid::new_v4().to_string();
+            self.system_info_tabs.push(SystemInfoTab {
+                id: id.clone(),
+                source_tab_id: source_tab_id.clone(),
+                title: format!("{} · {}", host_title, t!("system_information")),
+            });
+            id
+        };
+
+        self.active_tab = Some(source_tab_id.clone());
+        self.system_tab_id = Some(source_tab_id);
+        self.active_system_info_tab = Some(info_id);
+        self.home_page_open = false;
+        self.request_active_system_snapshot();
+        cx.notify();
+    }
+
+    pub(crate) fn close_system_info_tab(&mut self, id: String, cx: &mut Context<Self>) {
+        let was_active = self.active_system_info_tab.as_deref() == Some(id.as_str());
+        self.system_info_tabs.retain(|tab| tab.id != id);
+        if was_active {
+            self.active_system_info_tab = None;
+        }
+        cx.notify();
+    }
+
     pub(crate) fn open_local(&mut self, cx: &mut Context<Self>) {
+        self.active_system_info_tab = None;
+        self.home_page_open = false;
+        let ordinal = self.next_tab_group_ordinal;
+        self.next_tab_group_ordinal += 1;
         let id = Uuid::new_v4().to_string();
-        match local::spawn_local_terminal(
-            id.clone(),
-            DEFAULT_COLS,
-            DEFAULT_ROWS,
-            self.events_tx.clone(),
-        ) {
+        let events = self.backend_events_sender(cx);
+        match local::spawn_local_terminal(id.clone(), DEFAULT_COLS, DEFAULT_ROWS, events.clone()) {
             Ok(backend) => {
                 let title = if cfg!(windows) { "PowerShell" } else { "Local" }.to_string();
-                let mut tab =
-                    TerminalTab::new_local(id.clone(), title, backend, self.events_tx.clone());
+                let mut tab = TerminalTab::new_local(id.clone(), title, backend, events);
                 tab.resize(DEFAULT_COLS, DEFAULT_ROWS);
                 self.tabs.push(tab);
+                self.register_backend_route(id.clone(), cx);
                 self.active_tab = Some(id.clone());
                 self.pane_root = PaneLayout::Single(id.clone());
                 self.focused_pane_path = vec![];
                 let group_id = Uuid::new_v4().to_string();
                 self.tab_groups.push(TabGroup {
                     id: group_id.clone(),
+                    ordinal,
                     title: "Local".to_string(),
                     pane_root: PaneLayout::Single(id),
                     sftp: None,
@@ -99,10 +171,31 @@ impl Ashell {
             .as_deref()
             .and_then(|id| self.config.get(id))
             .and_then(|session| session.last_used.clone());
+        let existing_group = existing_id
+            .as_deref()
+            .and_then(|id| self.config.get(id))
+            .and_then(|session| session.group.clone());
 
         let mut session = match self.ssh_auth_method {
             AuthMethod::Password => Session::password(host, port, user, password),
-            AuthMethod::Key => Session::key(host, port, user, key_path, key_inline, passphrase),
+            AuthMethod::Key => {
+                // If a managed key is selected, reference it by id.
+                // The actual key content is resolved at connection time.
+                if let Some(mk_id) = &self.managed_key_selected {
+                    let mut s = Session::key(
+                        host.clone(),
+                        port,
+                        user.clone(),
+                        String::new(),
+                        String::new(),
+                        String::new(),
+                    );
+                    s.managed_key_id = Some(mk_id.clone());
+                    s
+                } else {
+                    Session::key(host, port, user, key_path, key_inline, passphrase)
+                }
+            }
             AuthMethod::Config => {
                 // Force key_inline to empty — config mode never uses inline key content.
                 // The backend will try default keys from ~/.ssh/ if no explicit key path is set.
@@ -117,6 +210,7 @@ impl Ashell {
             session.id = id;
         }
         session.last_used = existing_last_used;
+        session.group = self.session_group_selection.clone().or(existing_group);
         session.proxy_type = self.ssh_proxy_type.clone();
         session.proxy_host = self.proxy_host_input.read(cx).value().trim().to_string();
         session.proxy_port = self
@@ -135,6 +229,7 @@ impl Ashell {
 
         self.open_ssh_session(session, cx);
         self.editing_session_id = None;
+        self.session_group_selection = self.connection_group_filter.clone();
         self.active_dialog = None;
         window.close_dialog(cx);
         cx.notify();
@@ -153,6 +248,10 @@ impl Ashell {
         self.editing_session_id = None;
         self.ssh_auth_method = AuthMethod::Password;
         self.ssh_config_selected = None;
+        self.managed_key_selected = None;
+        self.managed_key_dialog_selection = None;
+        self.editing_managed_key_id = None;
+        self.using_custom_key_path = false;
         Self::set_input_value(&self.session_name_input, "", window, cx);
         Self::set_input_value(&self.host_input, "", window, cx);
         Self::set_input_value(&self.port_input, "22", window, cx);
@@ -161,6 +260,9 @@ impl Ashell {
         Self::set_input_value(&self.key_path_input, "", window, cx);
         Self::set_input_value(&self.key_inline_input, "", window, cx);
         Self::set_input_value(&self.passphrase_input, "", window, cx);
+        Self::set_input_value(&self.key_import_remark_input, "", window, cx);
+        Self::set_input_value(&self.key_import_passphrase_input, "", window, cx);
+        self.key_import.close();
         self.ssh_proxy_type = "none".to_string();
         Self::set_input_value(&self.proxy_host_input, "", window, cx);
         Self::set_input_value(&self.proxy_port_input, "", window, cx);
@@ -175,7 +277,13 @@ impl Ashell {
         cx: &mut Context<Self>,
     ) {
         self.editing_session_id = Some(session.id.clone());
+        self.session_group_selection = session.group.clone();
         self.ssh_auth_method = session.auth;
+        // Restore managed key selection or custom path mode.
+        self.managed_key_selected = session.managed_key_id.clone();
+        self.using_custom_key_path = session.auth == AuthMethod::Key
+            && session.managed_key_id.is_none()
+            && !session.private_key_path.is_empty();
         Self::set_input_value(&self.session_name_input, session.name.clone(), window, cx);
         Self::set_input_value(&self.host_input, session.host.clone(), window, cx);
         Self::set_input_value(&self.port_input, session.port.to_string(), window, cx);
@@ -242,9 +350,9 @@ impl Ashell {
             .set_directory(start_dir)
             .pick_file();
 
-        cx.spawn_in(window, async move |this, mut cx| {
+        cx.spawn_in(window, async move |this, cx| {
             if let Some(file) = file_dialog.await {
-                let _ = gpui::AsyncWindowContext::update(&mut cx, |window, cx| {
+                let _ = gpui::AsyncWindowContext::update(cx, |window, cx| {
                     let _ = this.update(cx, |this, cx| {
                         Self::set_input_value(
                             &this.key_path_input,
@@ -258,6 +366,393 @@ impl Ashell {
             Ok::<(), anyhow::Error>(())
         })
         .detach();
+    }
+
+    // ── Managed SSH keys ────────────────────────────────────────────
+
+    pub(crate) fn open_managed_key_selector(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.managed_key_dialog_selection = self.managed_key_selected.clone();
+        self.active_dialog = None;
+        window.close_dialog(cx);
+        let view = cx.entity();
+        window.defer(cx, move |window, cx| {
+            view.update(cx, |this, cx| {
+                this.show_managed_key_selector_dialog(window, cx);
+            });
+        });
+    }
+
+    pub(crate) fn select_managed_key_candidate(&mut self, key_id: String, cx: &mut Context<Self>) {
+        self.managed_key_dialog_selection = Some(key_id);
+        cx.notify();
+    }
+
+    pub(crate) fn begin_managed_key_rename(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(key_id) = self.managed_key_dialog_selection.clone() else {
+            return;
+        };
+        let Some(key) = self.managed_keys.iter().find(|key| key.id == key_id) else {
+            return;
+        };
+        self.editing_managed_key_id = Some(key_id);
+        Self::set_input_value(&self.key_import_remark_input, key.name.clone(), window, cx);
+        cx.notify();
+    }
+
+    pub(crate) fn save_managed_key_rename(&mut self, cx: &mut Context<Self>) {
+        let Some(key_id) = self.editing_managed_key_id.clone() else {
+            return;
+        };
+        let name = self
+            .key_import_remark_input
+            .read(cx)
+            .value()
+            .trim()
+            .to_string();
+        if name.is_empty() {
+            return;
+        }
+        self.rename_managed_key(key_id, name, cx);
+    }
+
+    pub(crate) fn cancel_managed_key_rename(&mut self, cx: &mut Context<Self>) {
+        self.editing_managed_key_id = None;
+        cx.notify();
+    }
+
+    pub(crate) fn confirm_managed_key_selection(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.managed_key_selected = self.managed_key_dialog_selection.clone();
+        self.using_custom_key_path = false;
+        self.return_to_ssh_dialog(window, cx);
+    }
+
+    pub(crate) fn return_to_ssh_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.editing_managed_key_id = None;
+        self.managed_key_dialog_selection = None;
+        self.active_dialog = None;
+        window.close_dialog(cx);
+        let view = cx.entity();
+        window.defer(cx, move |window, cx| {
+            view.update(cx, |this, cx| this.show_ssh_dialog(window, cx));
+        });
+    }
+
+    pub(crate) fn open_key_import(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.editing_managed_key_id = None;
+        self.key_import.open();
+        Self::set_input_value(&self.key_import_remark_input, "", window, cx);
+        Self::set_input_value(&self.key_import_passphrase_input, "", window, cx);
+        self.active_dialog = None;
+        window.close_dialog(cx);
+        let view = cx.entity();
+        window.defer(cx, move |window, cx| {
+            view.update(cx, |this, cx| {
+                this.show_managed_key_import_dialog(window, cx);
+            });
+        });
+    }
+
+    pub(crate) fn close_key_import(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.key_import.close();
+        Self::set_input_value(&self.key_import_remark_input, "", window, cx);
+        Self::set_input_value(&self.key_import_passphrase_input, "", window, cx);
+        self.active_dialog = None;
+        window.close_dialog(cx);
+        let view = cx.entity();
+        window.defer(cx, move |window, cx| {
+            view.update(cx, |this, cx| {
+                this.show_managed_key_selector_dialog(window, cx);
+            });
+        });
+    }
+
+    pub(crate) fn pick_managed_key_import_file(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let start_dir = directories::BaseDirs::new()
+            .map(|d| d.home_dir().join(".ssh"))
+            .unwrap_or_else(|| std::path::PathBuf::from("/"));
+        let file_dialog = rfd::AsyncFileDialog::new()
+            .set_directory(start_dir)
+            .pick_file();
+
+        cx.spawn_in(window, async move |this, cx| {
+            if let Some(file) = file_dialog.await {
+                let path = file.path().to_path_buf();
+                let display_path = path.to_string_lossy().to_string();
+                let default_name = path
+                    .file_stem()
+                    .and_then(|value| value.to_str())
+                    .unwrap_or("imported-key")
+                    .to_string();
+
+                let _ = gpui::AsyncWindowContext::update(cx, |_, cx| {
+                    let _ = this.update(cx, |this, cx| {
+                        this.key_import.begin_file_validation(display_path.clone());
+                        cx.notify();
+                    });
+                });
+
+                let (result_tx, result_rx) = futures::channel::oneshot::channel();
+                std::thread::spawn(move || {
+                    let _ = result_tx.send(std::fs::read_to_string(&path));
+                });
+                let read_result = result_rx.await.unwrap_or_else(|_| {
+                    Err(std::io::Error::other("private key validation task stopped"))
+                });
+                let _ = gpui::AsyncWindowContext::update(cx, |window, cx| {
+                    let _ = this.update(cx, |this, cx| {
+                        if !this.key_import.open || this.key_import.path != display_path {
+                            return;
+                        }
+                        if this
+                            .key_import_remark_input
+                            .read(cx)
+                            .value()
+                            .trim()
+                            .is_empty()
+                        {
+                            Self::set_input_value(
+                                &this.key_import_remark_input,
+                                default_name,
+                                window,
+                                cx,
+                            );
+                        }
+                        match read_result {
+                            Ok(content) => {
+                                let passphrase = this
+                                    .key_import_passphrase_input
+                                    .read(cx)
+                                    .value()
+                                    .to_string();
+                                this.key_import.set_file(
+                                    display_path,
+                                    content,
+                                    &passphrase,
+                                    &this.managed_keys,
+                                );
+                            }
+                            Err(err) => this
+                                .key_import
+                                .set_read_error(display_path, format!("{err:#}")),
+                        }
+                        cx.notify();
+                    });
+                });
+            }
+            Ok::<(), anyhow::Error>(())
+        })
+        .detach();
+    }
+
+    pub(crate) fn confirm_managed_key_import(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let crate::app::ssh_key_import::KeyImportValidation::Valid {
+            key_type,
+            fingerprint,
+        } = self.key_import.validation.clone()
+        else {
+            return;
+        };
+
+        let fallback_name = std::path::Path::new(&self.key_import.path)
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .unwrap_or("imported-key");
+        let remark = self
+            .key_import_remark_input
+            .read(cx)
+            .value()
+            .trim()
+            .to_string();
+        let name = if remark.is_empty() {
+            fallback_name.to_string()
+        } else {
+            remark
+        };
+        let passphrase = self
+            .key_import_passphrase_input
+            .read(cx)
+            .value()
+            .to_string();
+        let key = ManagedKey {
+            id: Uuid::new_v4().to_string(),
+            name,
+            key_type,
+            fingerprint,
+            inline_content: self.key_import.content.clone(),
+            passphrase,
+            created_at: chrono::Local::now().timestamp(),
+        };
+        let key_id = key.id.clone();
+        self.config.upsert_managed_key(key);
+        if let Err(err) = self.config.save() {
+            tracing::warn!("failed to save config: {err:#}");
+            self.status = format!("{}: {err:#}", t!("key_import_failed")).into();
+            cx.notify();
+            return;
+        }
+        self.managed_keys = self.config.managed_keys().to_vec();
+        self.managed_key_dialog_selection = Some(key_id);
+        self.status = t!("key_imported").to_string().into();
+        self.close_key_import(window, cx);
+    }
+
+    /// Open a file picker to import a private key into managed storage.
+    /// Reads the file content, validates it, detects type + fingerprint,
+    /// and saves a new `ManagedKey`.
+    pub(crate) fn import_managed_key(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let start_dir = directories::BaseDirs::new()
+            .map(|d| d.home_dir().join(".ssh"))
+            .unwrap_or_else(|| std::path::PathBuf::from("/"));
+        let file_dialog = rfd::AsyncFileDialog::new()
+            .set_directory(start_dir)
+            .pick_file();
+
+        cx.spawn_in(window, async move |this, cx| {
+            if let Some(file) = file_dialog.await {
+                let path = file.path().to_path_buf();
+                let content = std::fs::read_to_string(&path).unwrap_or_default();
+                let file_name = path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("imported-key")
+                    .to_string();
+                let _ = gpui::AsyncWindowContext::update(cx, |_window, cx| {
+                    let _ = this.update(cx, |this, cx| {
+                        this.finalize_key_import(content, file_name, cx);
+                    });
+                });
+            }
+            Ok::<(), anyhow::Error>(())
+        })
+        .detach();
+    }
+
+    /// Validate raw key content and save as a new ManagedKey.
+    /// Reports errors via `self.status`.
+    fn finalize_key_import(
+        &mut self,
+        content: String,
+        default_name: String,
+        cx: &mut Context<Self>,
+    ) {
+        let passphrase = self.passphrase_input.read(cx).value().to_string();
+        let pass_opt = (!passphrase.is_empty()).then_some(passphrase.as_str());
+
+        match crate::session::ssh_keys::validate_and_inspect(&content, pass_opt) {
+            Ok((key_type, fingerprint)) => {
+                // Check for duplicate fingerprint
+                if self
+                    .config
+                    .managed_keys()
+                    .iter()
+                    .any(|k| k.fingerprint == fingerprint)
+                {
+                    self.status = t!("key_duplicate_fingerprint").to_string().into();
+                    cx.notify();
+                    return;
+                }
+                let key = ManagedKey {
+                    id: Uuid::new_v4().to_string(),
+                    name: default_name,
+                    key_type,
+                    fingerprint,
+                    inline_content: content,
+                    passphrase,
+                    created_at: chrono::Local::now().timestamp(),
+                };
+                self.config.upsert_managed_key(key.clone());
+                if let Err(err) = self.config.save() {
+                    tracing::warn!("failed to save config: {err:#}");
+                }
+                self.managed_keys = self.config.managed_keys().to_vec();
+                self.status = t!("key_imported").to_string().into();
+                cx.notify();
+            }
+            Err(err) => {
+                self.status = format!("{}: {err:#}", t!("key_import_failed")).into();
+                cx.notify();
+            }
+        }
+    }
+
+    /// Rename a managed key.
+    pub(crate) fn rename_managed_key(
+        &mut self,
+        key_id: String,
+        new_name: String,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(key) = self
+            .config
+            .managed_keys()
+            .iter()
+            .find(|k| k.id == key_id)
+            .cloned()
+        else {
+            return;
+        };
+        let mut updated = key;
+        updated.name = new_name;
+        self.config.upsert_managed_key(updated);
+        if let Err(err) = self.config.save() {
+            tracing::warn!("failed to save config: {err:#}");
+        }
+        self.managed_keys = self.config.managed_keys().to_vec();
+        self.editing_managed_key_id = None;
+        cx.notify();
+    }
+
+    /// Delete a managed key by id. Also clears the reference from any
+    /// session that used it.
+    pub(crate) fn delete_managed_key(&mut self, key_id: String, cx: &mut Context<Self>) {
+        self.config.remove_managed_key(&key_id);
+        if let Err(err) = self.config.save() {
+            tracing::warn!("failed to save config: {err:#}");
+        }
+        self.managed_keys = self.config.managed_keys().to_vec();
+        if self.managed_key_selected.as_deref() == Some(&key_id) {
+            self.managed_key_selected = None;
+        }
+        if self.managed_key_dialog_selection.as_deref() == Some(&key_id) {
+            self.managed_key_dialog_selection = None;
+        }
+        cx.notify();
+    }
+
+    pub(crate) fn delete_selected_managed_key(&mut self, cx: &mut Context<Self>) {
+        let Some(key_id) = self.managed_key_dialog_selection.clone() else {
+            return;
+        };
+        self.delete_managed_key(key_id, cx);
+    }
+
+    /// Switch the connection form back to managed-key mode.
+    pub(crate) fn use_managed_key(&mut self, cx: &mut Context<Self>) {
+        self.using_custom_key_path = false;
+        cx.notify();
+    }
+
+    /// Switch the connection form to use a custom key path (file picker).
+    pub(crate) fn use_custom_key_path(&mut self, cx: &mut Context<Self>) {
+        self.managed_key_selected = None;
+        self.using_custom_key_path = true;
+        cx.notify();
     }
 
     pub(crate) fn open_new_ssh_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -313,9 +808,7 @@ impl Ashell {
     pub(crate) fn change_terminal_font_size(&mut self, delta: f32, cx: &mut Context<Self>) {
         self.terminal_font_size = (self.terminal_font_size + delta).clamp(10.0, 24.0);
         self.config.set_terminal_font_size(self.terminal_font_size);
-        if let Err(err) = self.config.save() {
-            tracing::warn!("failed to save terminal font size: {err:#}");
-        }
+        self.mark_config_preferences_dirty();
         self.status = format!("terminal font size: {:.0}px", self.terminal_font_size).into();
         cx.notify();
     }
@@ -323,9 +816,7 @@ impl Ashell {
     pub(crate) fn change_ui_font_size(&mut self, delta: f32, cx: &mut Context<Self>) {
         self.ui_font_size = (self.ui_font_size + delta).clamp(8.0, 24.0);
         self.config.set_ui_font_size(self.ui_font_size);
-        if let Err(err) = self.config.save() {
-            tracing::warn!("failed to save UI font size: {err:#}");
-        }
+        self.mark_config_preferences_dirty();
         Theme::global_mut(cx).font_size = px(self.ui_font_size);
         self.status = format!("UI font size: {:.0}px", self.ui_font_size).into();
         cx.notify();
@@ -339,9 +830,7 @@ impl Ashell {
     ) {
         self.ui_font_family = family.into();
         self.config.set_ui_font_family(family);
-        if let Err(err) = self.config.save() {
-            tracing::warn!("failed to save UI font family: {err:#}");
-        }
+        self.mark_config_preferences_dirty();
         crate::app::theme::set_theme_font_names(Theme::global_mut(cx), &self.ui_font_family);
         cx.notify();
         window.refresh();
@@ -350,9 +839,7 @@ impl Ashell {
     pub(crate) fn change_terminal_font_family(&mut self, family: &str, cx: &mut Context<Self>) {
         self.terminal_font_family = family.into();
         self.config.set_terminal_font_family(family);
-        if let Err(err) = self.config.save() {
-            tracing::warn!("failed to save terminal font family: {err:#}");
-        }
+        self.mark_config_preferences_dirty();
         cx.notify();
     }
 
@@ -363,9 +850,7 @@ impl Ashell {
     ) {
         self.cursor_style = style;
         self.config.set_cursor_style(style);
-        if let Err(err) = self.config.save() {
-            tracing::warn!("failed to save cursor style: {err:#}");
-        }
+        self.mark_config_preferences_dirty();
         cx.notify();
     }
 
@@ -541,27 +1026,63 @@ impl Ashell {
         }
     }
 
-    pub(crate) fn open_ssh_session(&mut self, session: Session, cx: &mut Context<Self>) {
+    pub(crate) fn open_ssh_session(&mut self, mut session: Session, cx: &mut Context<Self>) {
+        self.active_system_info_tab = None;
+        self.home_page_open = false;
+        let ordinal = self.next_tab_group_ordinal;
+        self.next_tab_group_ordinal += 1;
         tracing::info!(
             "[session] opening ssh tab for session '{}' ({}@{})",
             session.name,
             session.user,
             session.host
         );
+
+        // Persist recency on the saved session, so Overview can show an
+        // accurate, stable "recently used" list across application restarts.
+        let last_used = chrono::Local::now().to_rfc3339();
+        session.last_used = Some(last_used.clone());
+        if let Some(mut saved_session) = self.config.get(&session.id).cloned() {
+            saved_session.last_used = Some(last_used);
+            self.config.upsert(saved_session);
+            if let Err(err) = self.config.save() {
+                tracing::warn!("failed to save session recency: {err:#}");
+            }
+        }
+
+        // Resolve managed key reference: fill inline content from the
+        // ManagedKey so the backend can authenticate without the original file.
+        if let Some(mk_id) = &session.managed_key_id {
+            if let Some(mk) = self.config.get_managed_key(mk_id) {
+                session.private_key_inline = mk.inline_content.clone();
+                session.private_key_path.clear();
+                if session.passphrase.is_empty() {
+                    session.passphrase = mk.passphrase.clone();
+                }
+            } else {
+                tracing::warn!(
+                    "[session] managed key '{}' not found, falling back to explicit key",
+                    mk_id
+                );
+            }
+        }
+
         let id = Uuid::new_v4().to_string();
+        let events = self.backend_events_sender(cx);
+        self.register_backend_route(id.clone(), cx);
         let backend = ssh::spawn_ssh_terminal(
             self.runtime.handle(),
             id.clone(),
             session.clone(),
             DEFAULT_COLS,
             DEFAULT_ROWS,
-            self.events_tx.clone(),
+            events.clone(),
         );
         self.tabs.push(TerminalTab::new_ssh(
             id.clone(),
             &session,
             backend,
-            self.events_tx.clone(),
+            events.clone(),
         ));
         self.active_tab = Some(id.clone());
         self.connection_progress = Some(crate::app::ConnectionProgress {
@@ -575,16 +1096,21 @@ impl Ashell {
         let group_id = Uuid::new_v4().to_string();
         self.tab_groups.push(TabGroup {
             id: group_id.clone(),
+            ordinal,
             title: session.name.clone(),
             pane_root: PaneLayout::Single(id.clone()),
             sftp: Some(crate::terminal::SftpUiState {
                 current_path: "/".into(),
                 status: rust_i18n::t!("sftp_connecting").to_string(),
                 entries: Vec::new(),
+                directory_entries: std::collections::HashMap::new(),
+                expanded_directories: std::collections::HashSet::new(),
                 selected_path: None,
                 preview: None,
                 selected_entries: std::collections::HashSet::new(),
-                home_dir: "/".into(),
+                home_dir: String::new(),
+                follow_terminal_cwd: false,
+                initial_terminal_cwd_synced: false,
             }),
         });
         self.active_group = Some(group_id.clone());
@@ -600,12 +1126,9 @@ impl Ashell {
             }
         }
         cx.notify();
-        let sftp_handle = crate::sftp::spawn_sftp(
-            self.runtime.handle(),
-            group_id.clone(),
-            session,
-            self.events_tx.clone(),
-        );
+        self.register_backend_route(group_id.clone(), cx);
+        let sftp_handle =
+            crate::sftp::spawn_sftp(self.runtime.handle(), group_id.clone(), session, events);
         self.sftp_handles.insert(group_id.clone(), sftp_handle);
         self.active_tab = Some(id.clone());
         self.pending_sftp_path_sync = Some("/".into());
@@ -641,6 +1164,8 @@ impl Ashell {
         let new_generation = self.tabs[ix].backend_generation + 1;
         let cols = self.tabs[ix].cols;
         let rows = self.tabs[ix].rows;
+        let events = self.backend_events_sender(cx);
+        self.register_backend_route(tab_id.to_string(), cx);
 
         // Close old backend (sends Close through the shared Arc<Mutex>)
         self.tabs[ix].send_backend(BackendCommand::Close);
@@ -653,7 +1178,7 @@ impl Ashell {
                 session.clone(),
                 cols,
                 rows,
-                self.events_tx.clone(),
+                events.clone(),
             );
 
             // Swap the backend — the Term's internal listener shares the
@@ -683,11 +1208,12 @@ impl Ashell {
                     if let Some(old_handle) = self.sftp_handles.remove(&group_id) {
                         old_handle.close();
                     }
+                    self.register_backend_route(group_id.clone(), cx);
                     let sftp_handle = crate::sftp::spawn_sftp(
                         self.runtime.handle(),
                         group_id.clone(),
                         session,
-                        self.events_tx.clone(),
+                        events.clone(),
                     );
                     self.sftp_handles.insert(group_id.clone(), sftp_handle);
 
@@ -700,12 +1226,7 @@ impl Ashell {
             }
         } else {
             // Local tab: spawn new local shell
-            match local::spawn_local_terminal(
-                tab_id.to_string(),
-                cols,
-                rows,
-                self.events_tx.clone(),
-            ) {
+            match local::spawn_local_terminal(tab_id.to_string(), cols, rows, events) {
                 Ok(backend) => {
                     // Swap the backend — preserves terminal history.
                     self.tabs[ix].set_backend(backend);
@@ -778,15 +1299,78 @@ impl Ashell {
     }
 
     pub(crate) fn close_tab(&mut self, id: String, cx: &mut Context<Self>) {
+        let closing_sftp_group = self
+            .tab_groups
+            .iter()
+            .find(|group| group.pane_root.contains(&id))
+            .filter(|group| group.pane_root.total_panes() <= 1)
+            .filter(|group| self.sftp_handles.contains_key(&group.id))
+            .map(|group| group.id.clone());
+
+        if let Some(session_id) = closing_sftp_group
+            && !crate::app::sftp_editor_window::request_session_close(
+                &session_id,
+                id.clone(),
+                cx.entity(),
+                cx,
+            )
+        {
+            return;
+        }
+
         self.handle_tab_close(id);
         cx.notify();
     }
 
+    pub(crate) fn disconnect_tab_group(&mut self, group_id: &str, cx: &mut Context<Self>) {
+        let Some(group) = self.tab_groups.iter().find(|group| group.id == group_id) else {
+            return;
+        };
+        let tab_ids: Vec<String> = group
+            .pane_root
+            .tab_ids()
+            .iter()
+            .map(|tab_id| (*tab_id).to_string())
+            .collect();
+
+        if let Some(handle) = self.sftp_handles.remove(group_id) {
+            handle.close();
+        }
+
+        for tab_id in tab_ids {
+            if let Some(tab) = self
+                .tabs
+                .iter_mut()
+                .find(|tab| tab.id == tab_id && tab.kind == TabKind::Ssh)
+            {
+                if tab.connected {
+                    tab.connected = false;
+                    tab.status = rust_i18n::t!("tab_manually_disconnected").into();
+                    tab.disconnected_reason = Some(
+                        rust_i18n::t!("tab_manually_disconnected").to_string(),
+                    );
+                    tab.send_backend(BackendCommand::Close);
+                }
+            }
+        }
+
+        self.status = rust_i18n::t!("tab_manually_disconnected").into();
+        cx.notify();
+    }
+
     pub(crate) fn handle_tab_close(&mut self, id: String) {
+        let removed_active_info = self.system_info_tabs.iter().any(|tab| {
+            tab.source_tab_id == id
+                && self.active_system_info_tab.as_deref() == Some(tab.id.as_str())
+        });
+        self.system_info_tabs.retain(|tab| tab.source_tab_id != id);
+        if removed_active_info {
+            self.active_system_info_tab = None;
+        }
         if self
             .connection_progress
             .as_ref()
-            .map_or(false, |p| p.tab_id == id)
+            .is_some_and(|p| p.tab_id == id)
         {
             self.connection_progress = None;
         }
@@ -804,11 +1388,12 @@ impl Ashell {
                 self.tabs[ix].send_backend(BackendCommand::Close);
                 self.tabs.remove(ix);
             }
+            self.remote_system_snapshots.remove(&id);
             return;
         };
 
         let pane_ids = group.pane_root.tab_ids();
-        let pane_ids_str: Vec<&str> = pane_ids.iter().map(|s| *s).collect();
+        let pane_ids_str = pane_ids.to_vec();
         let is_group_close = pane_ids.len() <= 1;
         tracing::info!(
             "[handle_tab_close] id='{}' group_panes={:?} is_group_close={}",
@@ -863,6 +1448,7 @@ impl Ashell {
                     self.tabs[ix].send_backend(BackendCommand::Close);
                     self.tabs.retain(|t| t.id != *tab_id);
                 }
+                self.remote_system_snapshots.remove(tab_id);
             }
             if let Some(handle) = self.sftp_handles.remove(&group.id) {
                 handle.close();
@@ -875,6 +1461,7 @@ impl Ashell {
                 self.tabs[ix].send_backend(BackendCommand::Close);
                 self.tabs.retain(|t| t.id != id);
             }
+            self.remote_system_snapshots.remove(&id);
             if let Some(g) = self
                 .tab_groups
                 .iter_mut()
@@ -886,21 +1473,42 @@ impl Ashell {
             self.sync_pane_root_to_group();
         }
 
+        self.system_info_tabs
+            .retain(|info| self.tabs.iter().any(|tab| tab.id == info.source_tab_id));
+        if self
+            .active_system_info_tab
+            .as_ref()
+            .is_some_and(|active_id| {
+                !self
+                    .system_info_tabs
+                    .iter()
+                    .any(|info| &info.id == active_id)
+            })
+        {
+            self.active_system_info_tab = None;
+        }
+
         if self.tabs.is_empty() || self.tab_groups.is_empty() {
             self.pane_root = PaneLayout::Single(String::new());
             self.focused_pane_path = vec![];
             self.active_tab = None;
             self.active_group = None;
+            self.system_info_tabs.clear();
+            self.active_system_info_tab = None;
             self.tab_groups.clear();
             self.tabs.clear();
             self.system_tab_id = None;
             self.cpu_history.clear();
             self.net_rx_history.clear();
             self.net_tx_history.clear();
+            self.selected_network_interface = None;
+            self.network_interface_histories.clear();
             self.system_status = None;
+            self.remote_system_snapshots.clear();
             for (_, handle) in self.sftp_handles.drain() {
                 handle.close();
             }
+            self.home_page_open = true;
             return;
         }
 
@@ -1020,33 +1628,12 @@ impl Ashell {
             .map(|tab| tab.kind)
     }
 
-    pub(crate) fn active_title(&self) -> String {
-        self.active_tab
-            .as_ref()
-            .and_then(|id| self.tabs.iter().find(|t| &t.id == id))
-            .map(|t| t.title.clone())
-            .unwrap_or_else(|| t!("idle_no_session").into())
-    }
-
-    pub(crate) fn active_ssh_session(&self) -> Option<(String, Session)> {
-        let active_id = self.active_tab.as_ref()?;
-        let tab = self.tabs.iter().find(|tab| &tab.id == active_id)?;
-        if !tab.connected {
-            return None;
-        }
-        Some((tab.id.clone(), tab.session.clone()?))
-    }
-
     pub(crate) fn active_session_id(&self) -> Option<&str> {
         self.active_tab
             .as_ref()
             .and_then(|id| self.tabs.iter().find(|tab| &tab.id == id))
             .and_then(|tab| tab.session.as_ref())
             .map(|session| session.id.as_str())
-    }
-
-    pub(crate) fn session_detail(&self, session: &Session) -> String {
-        format!("{}@{}:{}", session.user, session.host, session.port)
     }
 
     pub(crate) fn split_current_pane(&mut self, direction: &str, cx: &mut Context<Self>) {
@@ -1062,25 +1649,26 @@ impl Ashell {
             Some(id) if !id.is_empty() => id.to_string(),
             _ => return,
         };
-        // Find current tab to clone its type/session
-        let current_tab = match self.tabs.iter().find(|t| t.id == current_id) {
-            Some(tab) => tab,
+        let (current_kind, current_session) = match self.tabs.iter().find(|t| t.id == current_id) {
+            Some(tab) => (tab.kind, tab.session.clone()),
             None => return,
         };
         let new_id = Uuid::new_v4().to_string();
-        let mut tab = match current_tab.kind {
+        let events = self.backend_events_sender(cx);
+        self.register_backend_route(new_id.clone(), cx);
+        let mut tab = match current_kind {
             TabKind::Local => {
                 match local::spawn_local_terminal(
                     new_id.clone(),
                     DEFAULT_COLS,
                     DEFAULT_ROWS,
-                    self.events_tx.clone(),
+                    events.clone(),
                 ) {
                     Ok(backend) => TerminalTab::new_local(
                         new_id.clone(),
                         "Local".into(),
                         backend,
-                        self.events_tx.clone(),
+                        events.clone(),
                     ),
                     Err(err) => {
                         self.status = format!("failed to split: {err:#}").into();
@@ -1090,7 +1678,7 @@ impl Ashell {
                 }
             }
             TabKind::Ssh => {
-                let Some(session) = current_tab.session.clone() else {
+                let Some(session) = current_session else {
                     self.status = "cannot split: no session info".into();
                     cx.notify();
                     return;
@@ -1101,16 +1689,16 @@ impl Ashell {
                     session.clone(),
                     DEFAULT_COLS,
                     DEFAULT_ROWS,
-                    self.events_tx.clone(),
+                    events.clone(),
                 );
                 let sftp_handle = crate::sftp::spawn_sftp(
                     self.runtime.handle(),
                     new_id.clone(),
                     session.clone(),
-                    self.events_tx.clone(),
+                    events.clone(),
                 );
                 self.sftp_handles.insert(new_id.clone(), sftp_handle);
-                TerminalTab::new_ssh(new_id.clone(), &session, backend, self.events_tx.clone())
+                TerminalTab::new_ssh(new_id.clone(), &session, backend, events)
             }
         };
         tab.resize(DEFAULT_COLS, DEFAULT_ROWS);
@@ -1293,6 +1881,8 @@ impl Ashell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.home_page_open = false;
+        self.active_system_info_tab = None;
         // Save current group state
         if let Some(current_group_id) = self.active_group.clone() {
             if let Some(group) = self
@@ -1333,7 +1923,7 @@ impl Ashell {
                 let ids = group.pane_root.tab_ids();
                 for id in ids {
                     if let Some(tab) = self.tabs.iter().find(|t| t.id == *id) {
-                        if tab.kind == TabKind::Ssh && tab.connected {
+                        if tab.kind == TabKind::Ssh {
                             group_ssh_tabs.push(tab.id.clone());
                         }
                     }
@@ -1345,7 +1935,7 @@ impl Ashell {
         let is_current_valid = self
             .system_tab_id
             .as_ref()
-            .map_or(false, |id| group_ssh_tabs.contains(id));
+            .is_some_and(|id| group_ssh_tabs.contains(id));
 
         if !is_current_valid {
             let new_id = group_ssh_tabs.into_iter().next();
@@ -1354,11 +1944,22 @@ impl Ashell {
                 self.cpu_history.clear();
                 self.net_rx_history.clear();
                 self.net_tx_history.clear();
+                self.selected_network_interface = None;
+                self.network_interface_histories.clear();
                 self.remote_sample_in_flight = false;
                 if self.system_tab_id.is_none() {
                     self.system_status = Some("monitored session closed".to_string().into());
                 } else {
                     self.system_status = None;
+                    self.system = self
+                        .system_tab_id
+                        .as_ref()
+                        .and_then(|tab_id| self.remote_system_snapshots.get(tab_id))
+                        .cloned()
+                        .unwrap_or_default();
+                    self.animated_cpu_percent = self.system.cpu_percent;
+                    self.animated_mem_percent = self.system.mem_percent;
+                    self.animated_swap_percent = self.system.swap_percent;
                 }
                 self.request_active_system_snapshot();
             }
@@ -1424,7 +2025,7 @@ impl Ashell {
                 [first, rest @ ..],
             ) => children
                 .get(*first)
-                .map_or(false, |c| Self::is_layout_horizontal_at(c, rest)),
+                .is_some_and(|c| Self::is_layout_horizontal_at(c, rest)),
             _ => false,
         }
     }
@@ -1465,7 +2066,10 @@ impl Ashell {
         if find_path(&self.pane_root, &tab_id, &mut path) {
             let changed = self.active_tab.as_deref() != Some(tab_id.as_str());
             self.focused_pane_path = path;
-            self.active_tab = Some(tab_id);
+            self.active_tab = Some(tab_id.clone());
+            if !self.sync_initial_sftp_to_terminal_tab(&tab_id) {
+                self.sync_sftp_to_terminal_tab(&tab_id, true);
+            }
             // Clear stale search state when switching to a different pane.
             // The user can press Enter to re-search in the new pane.
             if changed && self.search_active {
@@ -1475,5 +2079,812 @@ impl Ashell {
                 self.search_target_tab = None;
             }
         }
+    }
+
+    // ─── Multi-window support ────────────────────────────────────────
+
+    /// Open a new blank window.
+    pub(crate) fn open_new_window(&mut self, cx: &mut Context<Self>) {
+        crate::app::startup::open_new_window(None, Some(self.session_store.clone()), cx);
+        self.status = "new window opened".into();
+        cx.notify();
+    }
+
+    /// Detach the current active tab into a new window.
+    /// For SSH tabs: extracts the session, closes the tab here, opens a new
+    /// window that auto-connects to the same session.
+    /// For Local tabs: opens a new window with a local terminal.
+    pub(crate) fn detach_tab_to_new_window(&mut self, cx: &mut Context<Self>) {
+        let Some(active_id) = self.active_tab.clone() else {
+            return;
+        };
+        let Some(tab) = self.tabs.iter().find(|t| t.id == active_id) else {
+            return;
+        };
+
+        let session = tab.session.clone();
+        let is_local = tab.kind == TabKind::Local;
+
+        // Window creation is the prepare step. Only commit the source close
+        // after the target window has been constructed successfully.
+        if is_local {
+            crate::app::startup::open_new_window(None, Some(self.session_store.clone()), cx);
+        } else if let Some(session) = session {
+            crate::app::startup::open_new_window(
+                Some(session),
+                Some(self.session_store.clone()),
+                cx,
+            );
+        } else {
+            self.status = "cannot detach: SSH session information is missing".into();
+            cx.notify();
+            return;
+        }
+        self.close_tab(active_id, cx);
+
+        self.status = "tab detached to new window".into();
+        cx.notify();
+    }
+
+    /// Detach a complete tab group to a new window without recreating its
+    /// terminal or SFTP backends. Window creation and route handoff form the
+    /// prepare step; any failure restores the original group in place.
+    fn detach_group_to_new_window(source: Entity<Self>, group_id: String, cx: &mut App) {
+        let prepared = source.update(cx, |this, _| {
+            this.take_group_transfer(&group_id)
+                .map(|transfer| (transfer, this.session_owner_id, this.session_store.clone()))
+        });
+
+        let (transfer, source_owner_id, session_store) = match prepared {
+            Ok(prepared) => prepared,
+            Err(message) => {
+                source.update(cx, |this, cx| {
+                    this.status = message.into();
+                    cx.notify();
+                });
+                return;
+            }
+        };
+
+        let result = crate::app::startup::open_new_window_with_group(
+            transfer,
+            source_owner_id,
+            session_store,
+            cx,
+        );
+
+        source.update(cx, |this, cx| {
+            match result {
+                Ok(()) => {
+                    this.status = "tab group detached to new window".into();
+                }
+                Err((message, transfer)) => {
+                    this.restore_group_transfer(transfer, cx);
+                    this.status = format!("failed to detach tab group: {message}").into();
+                }
+            }
+            cx.notify();
+        });
+    }
+
+    // ─── Tab drag, reorder, detach and merge ──────────────────────────
+
+    fn connection_group_drop_before_at(
+        &self,
+        source: &str,
+        position: Point<Pixels>,
+    ) -> Option<Option<String>> {
+        let parent = source.rsplit_once('/').map(|(parent, _)| parent);
+        let mut rows = self
+            .config
+            .connection_groups()
+            .iter()
+            .filter(|group| group.as_str() != source)
+            .filter(|group| group.rsplit_once('/').map(|(parent, _)| parent) == parent)
+            .filter_map(|group| {
+                self.connection_group_bounds
+                    .get(group)
+                    .copied()
+                    .map(|bounds| (group.clone(), bounds))
+            })
+            .collect::<Vec<_>>();
+        rows.sort_by(|(_, left), (_, right)| left.origin.y.partial_cmp(&right.origin.y).unwrap());
+
+        let first = rows.first()?.1;
+        let last = rows.last()?.1;
+        if position.x < first.left()
+            || position.x > first.right()
+            || position.y < first.top() - px(10.)
+            || position.y > last.bottom() + px(10.)
+        {
+            return None;
+        }
+        Some(
+            rows.iter()
+                .find(|(_, bounds)| position.y < bounds.origin.y + bounds.size.height / 2.)
+                .map(|(group, _)| group.clone()),
+        )
+    }
+
+    fn on_connection_group_drag_mouse_move(
+        &mut self,
+        event: &MouseMoveEvent,
+        cx: &mut Context<Self>,
+    ) {
+        if self.dragging_connection_group.is_none()
+            && let Some((group, origin)) = self.pending_connection_group_drag.clone()
+        {
+            let dx: f32 = (event.position.x - origin.x).into();
+            let dy: f32 = (event.position.y - origin.y).into();
+            if (dx * dx + dy * dy).sqrt() > 5.0 {
+                self.dragging_connection_group = Some(group);
+            }
+        }
+        if self.dragging_connection_group.is_none() {
+            return;
+        }
+
+        let source = self
+            .dragging_connection_group
+            .as_deref()
+            .expect("dragging group state must contain a source");
+        let next = self
+            .connection_group_drop_before_at(source, event.position)
+            .flatten();
+        if self.connection_group_drop_before != next {
+            self.connection_group_drop_before = next;
+            cx.notify();
+        }
+    }
+
+    /// Returns true when a group drag (including a pending click) consumed the
+    /// release, so it cannot also be interpreted as a tab drag release.
+    fn finish_connection_group_drag(
+        &mut self,
+        event: &MouseUpEvent,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let pending = self.pending_connection_group_drag.take();
+        let Some(source) = self.dragging_connection_group.take() else {
+            return pending.is_some();
+        };
+        let target = self.connection_group_drop_before_at(&source, event.position);
+        self.connection_group_drop_before = None;
+        if let Some(before) = target {
+            self.config
+                .reorder_connection_group(&source, before.as_deref());
+            if let Err(err) = self.config.save() {
+                tracing::warn!("failed to save connection group order: {err:#}");
+            }
+        }
+        cx.notify();
+        true
+    }
+
+    /// Called on every root-level mouse move. Once the drag threshold is
+    /// exceeded, the tab bar reorders within this window, any other source
+    /// position detaches, and a hit on another window takes merge priority.
+    pub(crate) fn on_tab_drag_mouse_move(
+        &mut self,
+        event: &MouseMoveEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.on_connection_group_drag_mouse_move(event, cx);
+        if self.tab_drag.promote_if_needed(event.position, 5.0) {
+            cx.notify();
+        }
+        if !self.tab_drag.is_dragging() {
+            return;
+        }
+
+        let source_handle = window.window_handle();
+        let source_entity = cx.entity();
+        let screen_pos = Self::screen_position(window, event.position);
+        let allow_merge_target = !cursor_inside_viewport(event.position, window.viewport_size());
+        self.update_tab_drag_merge_target(
+            source_handle,
+            source_entity,
+            screen_pos,
+            allow_merge_target,
+            cx,
+        );
+
+        let has_merge_target = self.tab_drag.merge_target().is_some();
+        let reorder_index = if has_merge_target {
+            None
+        } else if self
+            .tab_bar_bounds
+            .as_ref()
+            .is_some_and(|bounds| bounds.contains(&event.position))
+        {
+            let ordered_bounds = self
+                .tab_groups
+                .iter()
+                .filter_map(|group| {
+                    self.tab_group_bounds
+                        .get(&group.id)
+                        .copied()
+                        .map(|bounds| (group.id.clone(), bounds))
+                })
+                .collect::<Vec<_>>();
+            let dragged_group = self
+                .tab_drag
+                .dragging_group()
+                .expect("dragging state must contain a group");
+            reorder_index_at_x(dragged_group, event.position.x, &ordered_bounds)
+        } else {
+            None
+        };
+        let should_detach = should_offer_detach(
+            self.tab_groups.len(),
+            event.position,
+            window.viewport_size(),
+            self.tab_bar_bounds,
+            has_merge_target,
+        );
+
+        let reorder_changed = self.tab_drag.set_reorder_index(reorder_index);
+        let detach_changed = self.tab_drag.set_outside(should_detach);
+        if reorder_changed || detach_changed {
+            cx.notify();
+        }
+    }
+
+    fn update_tab_drag_merge_target(
+        &mut self,
+        source_handle: AnyWindowHandle,
+        source_entity: Entity<TinyShell>,
+        screen_pos: Point<Pixels>,
+        allow_target: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let new_target = allow_target
+            .then(|| crate::app::find_window_at_screen_pos(&source_handle, screen_pos))
+            .flatten()
+            .map(|(window_id, entity, _)| DragTarget {
+                window_id,
+                payload: (window_id, entity),
+            });
+
+        if let TargetUpdate::Changed { previous } = self.tab_drag.set_merge_target(new_target) {
+            if let Some((_, previous)) = previous {
+                previous.update(cx, |target, cx| {
+                    target.incoming_tab_drag = None;
+                    cx.notify();
+                });
+            }
+            if let Some(target) = self.tab_drag.merge_target() {
+                let (_, entity) = target.payload.clone();
+                let incoming = IncomingTabDrag {
+                    source_window: source_handle,
+                    source: source_entity,
+                    group_id: self
+                        .tab_drag
+                        .dragging_group()
+                        .expect("dragging state must contain a group")
+                        .to_string(),
+                };
+                entity.update(cx, |target, cx| {
+                    target.incoming_tab_drag = Some(incoming);
+                    cx.notify();
+                });
+            }
+            cx.notify();
+        }
+    }
+
+    fn prepare_tab_drag_release(
+        &mut self,
+        event: &MouseUpEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.tab_drag.is_dragging() {
+            return;
+        }
+
+        let source_handle = window.window_handle();
+        let screen_pos = Self::screen_position(window, event.position);
+        let actual_target_window = if cursor_inside_viewport(event.position, window.viewport_size())
+        {
+            None
+        } else {
+            crate::app::find_window_at_screen_pos(&source_handle, screen_pos)
+                .map(|(window_handle, _, _)| window_handle)
+        };
+        let presented_target_is_valid = self
+            .tab_drag
+            .merge_target()
+            .is_some_and(|target| Some(target.window_id) == actual_target_window);
+
+        if self.tab_drag.merge_target().is_some() && !presented_target_is_valid {
+            if let TargetUpdate::Changed {
+                previous: Some((_, previous)),
+            } = self.tab_drag.set_merge_target(None)
+            {
+                previous.update(cx, |target, cx| {
+                    target.incoming_tab_drag = None;
+                    cx.notify();
+                });
+            }
+        }
+
+        let has_merge_target = self.tab_drag.merge_target().is_some();
+        if let Some(presented_index) = self.tab_drag.reorder_index() {
+            let release_index = if !has_merge_target
+                && self
+                    .tab_bar_bounds
+                    .as_ref()
+                    .is_some_and(|bounds| bounds.contains(&event.position))
+            {
+                let ordered_bounds = self
+                    .tab_groups
+                    .iter()
+                    .filter_map(|group| {
+                        self.tab_group_bounds
+                            .get(&group.id)
+                            .copied()
+                            .map(|bounds| (group.id.clone(), bounds))
+                    })
+                    .collect::<Vec<_>>();
+                self.tab_drag.dragging_group().and_then(|group_id| {
+                    reorder_index_at_x(group_id, event.position.x, &ordered_bounds)
+                })
+            } else {
+                None
+            };
+            if release_index != Some(presented_index) {
+                self.tab_drag.set_reorder_index(None);
+            }
+        }
+
+        if self.tab_drag.outside() {
+            let detach_is_still_valid = should_offer_detach(
+                self.tab_groups.len(),
+                event.position,
+                window.viewport_size(),
+                self.tab_bar_bounds,
+                has_merge_target,
+            );
+            if !detach_is_still_valid {
+                self.tab_drag.set_outside(false);
+            }
+        }
+    }
+
+    /// Convert a window-local cursor position to a screen-space position by
+    /// adding the source window's screen-space origin.
+    fn screen_position(window: &Window, local: Point<Pixels>) -> Point<Pixels> {
+        let origin = match window.window_bounds() {
+            gpui::WindowBounds::Fullscreen(b)
+            | gpui::WindowBounds::Maximized(b)
+            | gpui::WindowBounds::Windowed(b) => b.origin,
+        };
+        Point::new(origin.x + local.x, origin.y + local.y)
+    }
+
+    /// Cancel a tab drag and clear the target window's incoming indicator.
+    pub(crate) fn cancel_tab_drag(&mut self, cx: &mut Context<Self>) {
+        if let Some((_, target)) = self.tab_drag.cancel() {
+            target.update(cx, |target, cx| {
+                target.incoming_tab_drag = None;
+                cx.notify();
+            });
+        }
+        cx.notify();
+    }
+
+    /// Finish a tab drag by moving the group to another existing window,
+    /// detaching it to a new window, or cancelling a neutral release.
+    pub(crate) fn on_tab_drag_mouse_up(
+        &mut self,
+        event: &MouseUpEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.finish_connection_group_drag(event, cx) {
+            return;
+        }
+        if let Some(incoming) = self.incoming_tab_drag.take() {
+            let source_window = incoming.source_window;
+            let source = incoming.source;
+            let group_id = incoming.group_id;
+            let target = cx.entity();
+            let target_window = window.window_handle();
+            window.defer(cx, move |_window, cx| {
+                let source_window_for_commit = source_window;
+                let should_close_source = source.update(cx, |source, cx| {
+                    source.finish_tab_drag_on_target(
+                        group_id,
+                        source_window_for_commit,
+                        target_window,
+                        target,
+                        cx,
+                    )
+                });
+                if should_close_source {
+                    if let Err(error) = source_window.update(cx, |_, window, _| {
+                        window.remove_window();
+                    }) {
+                        tracing::warn!(
+                            "[tab-drag] failed to close empty source window after target-forwarded merge: {error:?}"
+                        );
+                    }
+                }
+            });
+            cx.notify();
+            return;
+        }
+
+        self.prepare_tab_drag_release(event, window, cx);
+        match self.tab_drag.finish() {
+            DropIntent::Reorder { group_id, index } => {
+                self.reorder_tab_group(&group_id, index, window, cx);
+            }
+            DropIntent::Merge {
+                group_id,
+                target: (target_window, target),
+            } => {
+                let source_window = window.window_handle();
+                let merged = self.commit_group_merge(group_id, target_window, target, cx);
+                if should_close_empty_source(
+                    merged,
+                    self.tab_groups.is_empty(),
+                    &source_window,
+                    &target_window,
+                ) {
+                    window.remove_window();
+                }
+            }
+            DropIntent::Detach { group_id } => {
+                let source = cx.entity();
+                window.defer(cx, move |_window, cx| {
+                    Self::detach_group_to_new_window(source, group_id, cx);
+                });
+            }
+            DropIntent::None | DropIntent::Cancelled => cx.notify(),
+        }
+    }
+
+    fn finish_tab_drag_on_target(
+        &mut self,
+        group_id: String,
+        source_window: AnyWindowHandle,
+        target_window: AnyWindowHandle,
+        target: Entity<TinyShell>,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let intent = self.tab_drag.finish();
+        let valid_merge = matches!(
+            intent,
+            DropIntent::Merge {
+                group_id: active_group_id,
+                target: (active_target_window, _),
+            } if active_group_id == group_id && active_target_window == target_window
+        );
+        if !valid_merge {
+            target.update(cx, |target, cx| {
+                target.incoming_tab_drag = None;
+                cx.notify();
+            });
+            return false;
+        }
+
+        let merged = self.commit_group_merge(group_id, target_window, target, cx);
+        should_close_empty_source(
+            merged,
+            self.tab_groups.is_empty(),
+            &source_window,
+            &target_window,
+        )
+    }
+
+    #[allow(clippy::result_large_err)]
+    fn commit_group_merge(
+        &mut self,
+        group_id: String,
+        target_window: AnyWindowHandle,
+        target: Entity<TinyShell>,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        target.update(cx, |target, cx| {
+            target.incoming_tab_drag = None;
+            cx.notify();
+        });
+        let source_owner_id = self.session_owner_id;
+        let merged = match self.take_group_transfer(&group_id) {
+            Ok(transfer) => {
+                let result = target.update(cx, |target, cx| {
+                    target.receive_group_transfer(transfer, source_owner_id, cx)
+                });
+                match result {
+                    Ok(()) => {
+                        let focus_handle = target.read(cx).focus_handle.clone();
+                        crate::app::activate_window_with_retry(target_window, focus_handle, cx);
+                        self.status = "tab group moved into another window".into();
+                        true
+                    }
+                    Err((message, transfer)) => {
+                        self.restore_group_transfer(transfer, cx);
+                        self.status = format!("failed to move tab group: {message}").into();
+                        false
+                    }
+                }
+            }
+            Err(message) => {
+                self.status = message.into();
+                false
+            }
+        };
+        cx.notify();
+        merged
+    }
+
+    fn reorder_tab_group(
+        &mut self,
+        group_id: &str,
+        index: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(current_index) = self
+            .tab_groups
+            .iter()
+            .position(|group| group.id == group_id)
+        else {
+            self.status = "cannot reorder: source group no longer exists".into();
+            cx.notify();
+            return;
+        };
+
+        let group = self.tab_groups.remove(current_index);
+        let target_index = index.min(self.tab_groups.len());
+        let group_id = group.id.clone();
+        self.next_tab_group_ordinal = self.next_tab_group_ordinal.max(group.ordinal + 1);
+        self.tab_groups.insert(target_index, group);
+        self.activate_group(group_id, window, cx);
+        self.tabs_scroll_handle.scroll_to_item(target_index);
+        self.status = "tab group reordered".into();
+        window.activate_window();
+        self.focus_handle.focus(window, cx);
+        cx.notify();
+    }
+
+    fn take_group_transfer(&mut self, group_id: &str) -> Result<GroupTransfer, String> {
+        let group_index = self
+            .tab_groups
+            .iter()
+            .position(|group| group.id == group_id)
+            .ok_or_else(|| "cannot move: source group no longer exists".to_string())?;
+        let group = self.tab_groups[group_index].clone();
+        let tab_ids = group
+            .pane_root
+            .tab_ids()
+            .into_iter()
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        if tab_ids.is_empty() || tab_ids.iter().any(String::is_empty) {
+            return Err("cannot move: source group has no terminal panes".to_string());
+        }
+        let tab_id_set = tab_ids.iter().map(String::as_str).collect::<HashSet<_>>();
+        if tab_id_set.len() != tab_ids.len() {
+            return Err("cannot move: source group contains duplicate terminal ids".to_string());
+        }
+        if tab_ids
+            .iter()
+            .any(|tab_id| !self.tabs.iter().any(|tab| tab.id == *tab_id))
+        {
+            return Err("cannot move: a source terminal no longer exists".to_string());
+        }
+
+        let was_active_group = self.active_group.as_deref() == Some(group_id);
+        let active_tab = self
+            .active_tab
+            .clone()
+            .filter(|tab_id| tab_id_set.contains(tab_id.as_str()));
+        let mut tabs = Vec::with_capacity(tab_ids.len());
+        let mut remaining_tabs = Vec::with_capacity(self.tabs.len() - tab_ids.len());
+        for (index, tab) in std::mem::take(&mut self.tabs).into_iter().enumerate() {
+            if tab_id_set.contains(tab.id.as_str()) {
+                tabs.push((index, tab));
+            } else {
+                remaining_tabs.push(tab);
+            }
+        }
+        self.tabs = remaining_tabs;
+
+        let mut sftp_handles = HashMap::new();
+        let handle_ids = self
+            .sftp_handles
+            .keys()
+            .filter(|id| id.as_str() == group_id || tab_id_set.contains(id.as_str()))
+            .cloned()
+            .collect::<Vec<_>>();
+        for handle_id in handle_ids {
+            if let Some(handle) = self.sftp_handles.remove(&handle_id) {
+                sftp_handles.insert(handle_id, handle);
+            }
+        }
+
+        self.tab_groups.remove(group_index);
+        let mut route_ids = tab_ids;
+        route_ids.extend(sftp_handles.keys().cloned());
+        route_ids.sort();
+        route_ids.dedup();
+
+        if was_active_group {
+            self.activate_after_group_extraction(group_index);
+        } else {
+            self.sync_system_tab_to_active_group();
+        }
+        Ok(GroupTransfer {
+            group,
+            group_index,
+            tabs,
+            sftp_handles,
+            route_ids,
+            active_tab,
+            was_active_group,
+        })
+    }
+
+    fn activate_after_group_extraction(&mut self, removed_index: usize) {
+        if self.tab_groups.is_empty() {
+            self.pane_root = PaneLayout::Single(String::new());
+            self.focused_pane_path.clear();
+            self.active_tab = None;
+            self.active_group = None;
+            self.home_page_open = true;
+            self.sync_system_tab_to_active_group();
+            return;
+        }
+
+        let next_index = removed_index.min(self.tab_groups.len() - 1);
+        let next_group = &self.tab_groups[next_index];
+        let next_group_id = next_group.id.clone();
+        let next_layout = next_group.pane_root.clone();
+        let next_tab = next_layout.tab_ids().first().copied().map(str::to_string);
+        self.active_group = Some(next_group_id);
+        self.pane_root = next_layout;
+        self.focused_pane_path.clear();
+        self.active_tab = next_tab.clone();
+        if let Some(tab_id) = next_tab {
+            self.focus_pane_with_id(tab_id);
+        }
+        self.sync_system_tab_to_active_group();
+    }
+
+    fn restore_group_transfer(&mut self, mut transfer: GroupTransfer, cx: &mut Context<Self>) {
+        let owner_id = self.session_owner_id;
+        self.session_store.update(cx, |store, _| {
+            if !store.move_event_routes(&transfer.route_ids, owner_id, owner_id) {
+                for route_id in &transfer.route_ids {
+                    store.register_event_route(route_id.clone(), owner_id);
+                }
+            }
+        });
+
+        let group_index = transfer.group_index.min(self.tab_groups.len());
+        let group_id = transfer.group.id.clone();
+        let group_layout = transfer.group.pane_root.clone();
+        self.tab_groups.insert(group_index, transfer.group);
+        transfer.tabs.sort_by_key(|(index, _)| *index);
+        for (index, tab) in transfer.tabs {
+            self.tabs.insert(index.min(self.tabs.len()), tab);
+        }
+        self.sftp_handles.extend(transfer.sftp_handles);
+
+        if transfer.was_active_group {
+            self.active_group = Some(group_id);
+            self.pane_root = group_layout;
+            self.focused_pane_path.clear();
+            self.active_tab = transfer.active_tab.or_else(|| {
+                self.pane_root
+                    .tab_ids()
+                    .first()
+                    .copied()
+                    .map(str::to_string)
+            });
+            if let Some(tab_id) = self.active_tab.clone() {
+                self.focus_pane_with_id(tab_id);
+            }
+        }
+        self.sync_system_tab_to_active_group();
+        cx.notify();
+    }
+
+    /// Receive an intact group from another window without recreating any
+    /// terminal or SFTP backend. The group remains a separate top-level tab
+    /// because `TabGroup` owns a single SFTP UI state.
+    #[allow(clippy::result_large_err)]
+    pub(crate) fn receive_group_transfer(
+        &mut self,
+        transfer: GroupTransfer,
+        source_owner_id: crate::session::store::WindowOwnerId,
+        cx: &mut Context<Self>,
+    ) -> Result<(), (String, GroupTransfer)> {
+        let tab_ids = transfer
+            .tabs
+            .iter()
+            .map(|(_, tab)| tab.id.as_str())
+            .collect::<HashSet<_>>();
+        if tab_ids.len() != transfer.tabs.len()
+            || transfer
+                .group
+                .pane_root
+                .tab_ids()
+                .iter()
+                .any(|tab_id| !tab_ids.contains(*tab_id))
+        {
+            return Err((
+                "transfer payload does not match the group layout".to_string(),
+                transfer,
+            ));
+        }
+        if self
+            .tab_groups
+            .iter()
+            .any(|group| group.id == transfer.group.id)
+        {
+            return Err(("target already contains this group".to_string(), transfer));
+        }
+        if self
+            .tabs
+            .iter()
+            .any(|tab| tab_ids.contains(tab.id.as_str()))
+        {
+            return Err((
+                "target already contains one of the transferred terminals".to_string(),
+                transfer,
+            ));
+        }
+        if transfer
+            .sftp_handles
+            .keys()
+            .any(|handle_id| self.sftp_handles.contains_key(handle_id))
+        {
+            return Err((
+                "target already contains one of the transferred SFTP handles".to_string(),
+                transfer,
+            ));
+        }
+
+        let target_owner_id = self.session_owner_id;
+        let routes_moved = self.session_store.update(cx, |store, _| {
+            store.move_event_routes(&transfer.route_ids, source_owner_id, target_owner_id)
+        });
+        if !routes_moved {
+            return Err((
+                "backend event routes changed before the move could commit".to_string(),
+                transfer,
+            ));
+        }
+
+        let GroupTransfer {
+            group,
+            tabs,
+            sftp_handles,
+            active_tab,
+            ..
+        } = transfer;
+        let group_id = group.id.clone();
+        self.next_tab_group_ordinal = self.next_tab_group_ordinal.max(group.ordinal + 1);
+        let group_layout = group.pane_root.clone();
+        let fallback_tab = group_layout.tab_ids().first().copied().map(str::to_string);
+        self.tabs.extend(tabs.into_iter().map(|(_, tab)| tab));
+        self.sftp_handles.extend(sftp_handles);
+        self.tab_groups.push(group);
+        self.active_group = Some(group_id);
+        self.pane_root = group_layout;
+        self.focused_pane_path.clear();
+        self.active_tab = active_tab.or(fallback_tab);
+        if let Some(tab_id) = self.active_tab.clone() {
+            self.focus_pane_with_id(tab_id);
+        }
+        self.sync_system_tab_to_active_group();
+        self.status = "tab group moved from another window".into();
+        cx.notify();
+        Ok(())
     }
 }

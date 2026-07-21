@@ -1,9 +1,9 @@
 [package]
-name = "ashell"
-version = "0.4.11"
+name = "tiny-shell"
+version = "1.0.5"
 edition = "2024"
-authors = ["ashell contributors"]
-description = "A GPUI Component based SSH and local terminal client"
+authors = ["tiny-shell contributors"]
+description = "A modern, fast, GPUI Component-based desktop terminal client"
 license = "GPL-3.0-or-later"
 rust-version = "1.85.0"
 
@@ -51,19 +51,23 @@ chacha20poly1305 = "0.10"
 hmac = "0.12"
 hex = "0.4"
 rand = "0.8"
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+semver = "1"
 sha2 = "0.10"
 
+[target.'cfg(windows)'.dependencies]
+winreg = "0.55"
+
 [package.metadata.deb]
-maintainer = "ashell contributors"
+maintainer = "tiny-shell contributors"
 license-file = ["LICENSE"]
-extended-description = "A GPUI Component based SSH and local terminal client"
+extended-description = "A modern, fast, GPUI Component-based desktop terminal client"
 section = "terminal"
 priority = "optional"
 assets = [
-    ["target/release/ashell", "usr/bin/", "755"],
-    ["assets/ashell.desktop", "usr/share/applications/", "644"],
-    ["assets/icons/ashell.png", "usr/share/icons/hicolor/256x256/apps/", "644"],
+    ["target/release/tiny-shell", "usr/bin/", "755"],
+    ["assets/tiny-shell.desktop", "usr/share/applications/", "644"],
+    ["assets/icons/tiny-shell.png", "usr/share/icons/hicolor/256x256/apps/", "644"],
 ]
 
 [profile.release]
@@ -71,6 +75,17 @@ opt-level = 3
 lto = "thin"
 codegen-units = 1
 strip = true
+
+
+[profile.dev]
+# Fast edit → run cycle for the application crate. Dependencies stay at a
+# modest optimization level below, so the terminal UI remains responsive.
+opt-level = 0
+debug = 1
+incremental = true
+
+[profile.dev.package."*"]
+opt-level = 1
 
 [build-dependencies]
 winres = "0.1.12"

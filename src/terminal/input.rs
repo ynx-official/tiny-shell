@@ -8,15 +8,15 @@ use gpui::{
 };
 
 use crate::{
-    Ashell, TerminalBacktabKey, TerminalTabKey,
+    TinyShell, TerminalBacktabKey, TerminalTabKey,
     terminal::{BackendCommand, encode_key},
 };
 
 thread_local! {
-    static LAST_DRAG_SCROLL: std::cell::Cell<Option<std::time::Instant>> = std::cell::Cell::new(None);
+    static LAST_DRAG_SCROLL: std::cell::Cell<Option<std::time::Instant>> = const { std::cell::Cell::new(None) };
 }
 
-impl Ashell {
+impl TinyShell {
     pub(crate) fn on_terminal_key_down(
         &mut self,
         event: &KeyDownEvent,
@@ -165,7 +165,7 @@ impl Ashell {
             return;
         };
 
-        if tab.render_snapshot(false).display_offset > 0 {
+        if tab.display_offset() > 0 {
             tab.scroll_to_bottom();
         }
         tab.clear_selection();
@@ -204,7 +204,7 @@ impl Ashell {
             return;
         };
 
-        if tab.render_snapshot(false).display_offset > 0 {
+        if tab.display_offset() > 0 {
             tab.scroll_to_bottom();
         }
 
@@ -236,7 +236,7 @@ impl Ashell {
             return;
         };
 
-        if tab.render_snapshot(false).display_offset > 0 {
+        if tab.display_offset() > 0 {
             tab.scroll_to_bottom();
         }
         tab.clear_selection();
@@ -291,7 +291,7 @@ impl Ashell {
             return;
         };
 
-        if tab.render_snapshot(false).display_offset > 0 {
+        if tab.display_offset() > 0 {
             tab.scroll_to_bottom();
         }
         tab.clear_selection();
@@ -369,6 +369,11 @@ impl Ashell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // Skip terminal mouse handling during tab drag-to-split
+        if self.tab_drag.is_dragging() || self.tab_drag.is_pending() {
+            return;
+        }
+
         // Handle split drag
         if self.dragging_splitter.is_some() {
             if event.pressed_button == Some(MouseButton::Left) {
@@ -445,15 +450,11 @@ impl Ashell {
                 if should_scroll {
                     if row == 0 {
                         scroll_delta = 2;
-                    } else if row == 1 {
-                        scroll_delta = 1;
-                    } else if row == 2 {
+                    } else if row == 1 || row == 2 {
                         scroll_delta = 1;
                     } else if row == max_row {
                         scroll_delta = -2;
-                    } else if row == max_row.saturating_sub(1) {
-                        scroll_delta = -1;
-                    } else if row == max_row.saturating_sub(2) {
+                    } else if row == max_row.saturating_sub(1) || row == max_row.saturating_sub(2) {
                         scroll_delta = -1;
                     }
                 }
@@ -477,6 +478,11 @@ impl Ashell {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // Skip during tab drag — root handler takes care of it
+        if self.tab_drag.is_dragging() || self.tab_drag.is_pending() {
+            return;
+        }
+
         if self.dragging_splitter.is_some() {
             self.end_drag_split();
         }
@@ -492,7 +498,7 @@ impl Ashell {
         let bounds = self.terminal_bounds.get(active_id)?;
         if !bounds.contains(&position) {
             // Try other pane bounds
-            for (_, b) in &self.terminal_bounds {
+            for b in self.terminal_bounds.values() {
                 if b.contains(&position) {
                     // Found a different pane - focus it
                     // (this path is for click-to-focus; handled via focus_terminal)
@@ -528,7 +534,7 @@ impl Ashell {
         // Platform modifier (Cmd on macOS, Ctrl on Windows/Linux) + scroll → zoom terminal font size
         if event.modifiers.platform {
             let delta = match event.delta {
-                ScrollDelta::Lines(point) => point.y as f32 * 20.0,
+                ScrollDelta::Lines(point) => point.y * 20.0,
                 ScrollDelta::Pixels(point) => point.y.as_f32(),
             };
             self.terminal_zoom_accumulator += delta;

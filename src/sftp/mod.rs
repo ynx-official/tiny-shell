@@ -1,9 +1,11 @@
 pub mod ops;
+pub mod text_file;
 
 use std::{
     fs,
     path::{Path, PathBuf},
     sync::Arc,
+    time::{Duration, Instant},
 };
 
 use anyhow::{Context, Result, anyhow};
@@ -16,7 +18,7 @@ use russh::{
     client::{self, Handler},
     keys::{PrivateKey, decode_secret_key, load_secret_key},
 };
-use russh_sftp::client::SftpSession;
+use russh_sftp::{client::SftpSession, protocol::FileAttributes};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     sync::mpsc::{self, UnboundedReceiver, UnboundedSender},
@@ -35,6 +37,10 @@ use crate::{
             authenticate_with_default_keys, normalize_inline_private_key, private_keys_with_algs,
             session_has_explicit_key,
         },
+    },
+    sftp::text_file::{
+        EDITOR_HARD_LIMIT_BYTES, RemoteFileRevision, RemoteTextFile, RemoteTextSave,
+        decode_remote_text, encode_remote_text,
     },
     terminal::BackendEvent,
 };
@@ -60,6 +66,7 @@ pub struct PreviewData {
 #[derive(Debug)]
 pub enum SftpCommand {
     ListDir(String),
+    ListDirectoryTree(String),
     #[allow(dead_code)]
     Preview(String),
     Download {
@@ -75,6 +82,12 @@ pub enum SftpCommand {
         local_path: String,
         remote_path: String,
     },
+    /// 下载文件内容到内存(不落地临时文件),供内置编辑器使用。
+    DownloadFileContent {
+        remote_path: String,
+    },
+    /// 以版本校验和原子替换方式保存内存中的文本文件。
+    SaveFileContent(RemoteTextSave),
     UploadPaths {
         locals: Vec<String>,
         remote_dir: String,
@@ -167,6 +180,10 @@ impl SftpHandle {
         let _ = self.commands.send(SftpCommand::ListDir(path));
     }
 
+    pub fn list_directory_tree(&self, path: String) {
+        let _ = self.commands.send(SftpCommand::ListDirectoryTree(path));
+    }
+
     #[allow(dead_code)]
     pub fn preview(&self, path: String) {
         let _ = self.commands.send(SftpCommand::Preview(path));
@@ -186,6 +203,17 @@ impl SftpHandle {
 
     pub fn edit_file(&self, remote_path: String) {
         let _ = self.commands.send(SftpCommand::EditFile { remote_path });
+    }
+
+    /// 下载文件内容到内存,供内置编辑器使用。
+    pub fn download_file_content(&self, remote_path: String) {
+        let _ = self
+            .commands
+            .send(SftpCommand::DownloadFileContent { remote_path });
+    }
+
+    pub fn save_file_content(&self, save: RemoteTextSave) {
+        let _ = self.commands.send(SftpCommand::SaveFileContent(save));
     }
 
     pub fn close(&self) {
@@ -274,6 +302,30 @@ async fn run_sftp(
         home: home.clone(),
     });
 
+    if let Ok(entries) = list_dir_impl(&sftp, "/").await {
+        let _ = events.send(BackendEvent::SftpDirectoryEntries {
+            tab_id: tab_id.clone(),
+            path: "/".to_string(),
+            entries,
+        });
+    }
+
+    let mut ancestor = String::new();
+    for component in home.split('/').filter(|component| !component.is_empty()) {
+        ancestor.push('/');
+        ancestor.push_str(component);
+        if ancestor == home {
+            break;
+        }
+        if let Ok(entries) = list_dir_impl(&sftp, &ancestor).await {
+            let _ = events.send(BackendEvent::SftpDirectoryEntries {
+                tab_id: tab_id.clone(),
+                path: ancestor.clone(),
+                entries,
+            });
+        }
+    }
+
     emit_entries(&events, &tab_id, &sftp, &home).await?;
 
     let mut active_transfers: std::collections::HashMap<String, TransferStateFlag> =
@@ -314,6 +366,31 @@ async fn run_sftp(
                         tab_id: tab_id.clone(),
                         text: format!("list failed: {err:#}"),
                     });
+                }
+            }
+            SftpCommand::ListDirectoryTree(path) => {
+                let actual_path = if path == "~" {
+                    home.clone()
+                } else if let Some(rest) = path.strip_prefix("~/") {
+                    crate::sftp::join_remote(&home, rest)
+                } else {
+                    path
+                };
+
+                match list_dir_impl(&sftp, &actual_path).await {
+                    Ok(entries) => {
+                        let _ = events.send(BackendEvent::SftpDirectoryEntries {
+                            tab_id: tab_id.clone(),
+                            path: actual_path,
+                            entries,
+                        });
+                    }
+                    Err(err) => {
+                        let _ = events.send(BackendEvent::SftpStatus {
+                            tab_id: tab_id.clone(),
+                            text: format!("list failed: {err:#}"),
+                        });
+                    }
                 }
             }
             SftpCommand::Preview(path) => match preview_impl(&sftp, &path).await {
@@ -532,7 +609,16 @@ async fn run_sftp(
             }
             SftpCommand::EditFile { remote_path } => {
                 let id = uuid::Uuid::new_v4().to_string();
-                let config = crate::session::config::ConfigStore::load().unwrap();
+                let config = match crate::session::config::ConfigStore::load() {
+                    Ok(config) => config,
+                    Err(err) => {
+                        let _ = events.send(BackendEvent::SftpStatus {
+                            tab_id: tab_id.clone(),
+                            text: format!("failed to load configuration: {err:#}"),
+                        });
+                        continue;
+                    }
+                };
                 let tmp_dir = config.tmp_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
                 let base = base_name(&remote_path);
                 let local_path = tmp_dir.join(format!("{}-{}", id, base));
@@ -600,14 +686,16 @@ async fn run_sftp(
                         Err(_) => return,
                     };
 
-                    if let Err(_) = watcher.watch(&local_path, notify::RecursiveMode::NonRecursive)
+                    if watcher
+                        .watch(&local_path, notify::RecursiveMode::NonRecursive)
+                        .is_err()
                     {
                         return;
                     }
 
-                    while let Some(_) = rx.recv().await {
+                    while rx.recv().await.is_some() {
                         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                        while let Ok(_) = rx.try_recv() {} // drain pending
+                        while rx.try_recv().is_ok() {} // drain pending
 
                         if commands_tx_clone
                             .send(SftpCommand::UploadEditedFile {
@@ -670,6 +758,114 @@ async fn run_sftp(
                             let _ = events_clone.send(BackendEvent::SftpStatus {
                                 tab_id: tab_id_clone.clone(),
                                 text: format!("Auto-upload failed: {err:#}"),
+                            });
+                        }
+                    }
+                });
+            }
+            SftpCommand::DownloadFileContent { remote_path } => {
+                let handle_clone = handle.clone();
+                let events_clone = events.clone();
+                let tab_id_clone = tab_id.clone();
+
+                tokio::spawn(async move {
+                    let Ok(channel) = handle_clone.channel_open_session().await else {
+                        let _ = events_clone.send(BackendEvent::SftpStatus {
+                            tab_id: tab_id_clone,
+                            text: "Failed to open SFTP channel".into(),
+                        });
+                        return;
+                    };
+                    let Ok(_) = channel.request_subsystem(true, "sftp").await else {
+                        return;
+                    };
+                    let Ok(sftp_session) = SftpSession::new(channel.into_stream()).await else {
+                        return;
+                    };
+
+                    match read_remote_text_file(&sftp_session, &remote_path).await {
+                        Ok(file) => {
+                            let _ = events_clone.send(BackendEvent::SftpFileContent {
+                                tab_id: tab_id_clone,
+                                remote_path,
+                                file,
+                            });
+                        }
+                        Err(err) => {
+                            let _ = events_clone.send(BackendEvent::SftpStatus {
+                                tab_id: tab_id_clone,
+                                text: format!("Failed to read file: {err:#}"),
+                            });
+                        }
+                    }
+                });
+            }
+            SftpCommand::SaveFileContent(save) => {
+                let handle_clone = handle.clone();
+                let events_clone = events.clone();
+                let tab_id_clone = tab_id.clone();
+
+                tokio::spawn(async move {
+                    let remote_path = save.remote_path.clone();
+                    let Ok(channel) = handle_clone.channel_open_session().await else {
+                        let error = "Failed to open SFTP channel".to_string();
+                        let _ = events_clone.send(BackendEvent::SftpContentUploadFailed {
+                            tab_id: tab_id_clone.clone(),
+                            remote_path: remote_path.clone(),
+                            error: error.clone(),
+                        });
+                        let _ = events_clone.send(BackendEvent::SftpStatus {
+                            tab_id: tab_id_clone,
+                            text: error,
+                        });
+                        return;
+                    };
+                    let Ok(_) = channel.request_subsystem(true, "sftp").await else {
+                        return;
+                    };
+                    let Ok(sftp_session) = SftpSession::new(channel.into_stream()).await else {
+                        return;
+                    };
+
+                    match save_remote_text_file(&sftp_session, save).await {
+                        Ok(SaveRemoteTextOutcome::Saved(revision)) => {
+                            let now = chrono::Local::now().format("%H:%M:%S");
+                            let base = base_name(&remote_path).to_string();
+                            let _ = events_clone.send(BackendEvent::SftpContentUploaded {
+                                tab_id: tab_id_clone.clone(),
+                                remote_path,
+                                revision,
+                            });
+                            let _ = events_clone.send(BackendEvent::SftpStatus {
+                                tab_id: tab_id_clone,
+                                text: format!(
+                                    "{} ({})",
+                                    t!("auto_saved_and_uploaded", base = base.as_str()),
+                                    now
+                                ),
+                            });
+                        }
+                        Ok(SaveRemoteTextOutcome::Conflict(remote_file)) => {
+                            let _ = events_clone.send(BackendEvent::SftpContentConflict {
+                                tab_id: tab_id_clone.clone(),
+                                remote_path,
+                                remote_file,
+                            });
+                            let _ = events_clone.send(BackendEvent::SftpStatus {
+                                tab_id: tab_id_clone,
+                                text: "Remote file changed; save cancelled".into(),
+                            });
+                        }
+                        Err(err) => {
+                            let error = format!("{err:#}");
+                            let _ = events_clone.send(BackendEvent::SftpContentUploadFailed {
+                                tab_id: tab_id_clone.clone(),
+                                remote_path: remote_path.clone(),
+                                error: error.clone(),
+                            });
+                            let _ = events_clone.send(BackendEvent::SftpStatus {
+                                tab_id: tab_id_clone,
+                                text: format!("Upload failed: {error}"),
                             });
                         }
                     }
@@ -822,10 +1018,6 @@ async fn emit_entries(
         path: path.to_string(),
         entries,
     });
-    let _ = events.send(BackendEvent::SftpStatus {
-        tab_id: tab_id.to_string(),
-        text: path.to_string(),
-    });
     Ok(())
 }
 
@@ -851,7 +1043,8 @@ async fn connect_and_authenticate(
             .context("password authentication failed")?,
         AuthMethod::Key => {
             let has_explicit_key = session_has_explicit_key(session);
-            let success = if has_explicit_key {
+
+            if has_explicit_key {
                 let keypair = load_session_private_key(session)?;
                 let keys = private_keys_with_algs(keypair).context("invalid private key")?;
                 let mut success = false;
@@ -896,8 +1089,7 @@ async fn connect_and_authenticate(
                     ));
                 }
                 success
-            };
-            success
+            }
         }
         AuthMethod::Config => {
             // For Config auth, try the identity file from config entry, or default keys
@@ -1178,6 +1370,7 @@ async fn preview_impl(sftp: &SftpSession, path: &str) -> Result<PreviewData> {
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn download_path_impl(
     handle: &russh::client::Handle<SftpClientHandler>,
     sftp: &SftpSession,
@@ -1209,7 +1402,7 @@ async fn download_path_impl(
 
     if is_dir {
         let local_archive = local_dir.join(format!(
-            ".ashell-{}-{}.tar.gz",
+            ".tiny-shell-{}-{}.tar.gz",
             base_name(remote),
             Uuid::new_v4()
         ));
@@ -1276,6 +1469,7 @@ async fn download_dir_recursive(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn download_remote_directory_archive(
     handle: &russh::client::Handle<SftpClientHandler>,
     sftp: &SftpSession,
@@ -1287,7 +1481,7 @@ async fn download_remote_directory_archive(
     id: &str,
 ) -> Result<PathBuf> {
     let remote_archive = format!(
-        "/tmp/ashell-{}-{}.tar.gz",
+        "/tmp/tiny-shell-{}-{}.tar.gz",
         base_name(remote_dir),
         Uuid::new_v4()
     );
@@ -1338,6 +1532,176 @@ async fn download_remote_directory_archive(
     Ok(extracted_to)
 }
 
+enum SaveRemoteTextOutcome {
+    Saved(RemoteFileRevision),
+    Conflict(RemoteTextFile),
+}
+
+async fn read_remote_text_file(sftp: &SftpSession, remote: &str) -> Result<RemoteTextFile> {
+    let metadata = sftp
+        .metadata(remote)
+        .await
+        .with_context(|| format!("stat remote {remote}"))?;
+    if metadata
+        .size
+        .is_some_and(|size| size > EDITOR_HARD_LIMIT_BYTES)
+    {
+        return Err(anyhow!(
+            "file too large for in-memory editor ({} bytes, max {} bytes)",
+            metadata.size.unwrap_or_default(),
+            EDITOR_HARD_LIMIT_BYTES
+        ));
+    }
+
+    let mut file = sftp
+        .open(remote)
+        .await
+        .with_context(|| format!("open remote {remote}"))?;
+    let mut bytes = Vec::with_capacity(metadata.size.unwrap_or_default() as usize);
+    file.read_to_end(&mut bytes)
+        .await
+        .with_context(|| format!("read remote {remote}"))?;
+    decode_remote_text(bytes, metadata.mtime, metadata.permissions)
+        .with_context(|| format!("decode remote {remote}"))
+}
+
+async fn write_remote_temp_file(
+    sftp: &SftpSession,
+    remote: &str,
+    bytes: &[u8],
+    permissions: Option<u32>,
+) -> Result<()> {
+    let mut file = sftp
+        .create(remote)
+        .await
+        .with_context(|| format!("create remote temporary file {remote}"))?;
+    file.write_all(bytes)
+        .await
+        .with_context(|| format!("write remote temporary file {remote}"))?;
+    file.flush()
+        .await
+        .with_context(|| format!("flush remote temporary file {remote}"))?;
+    file.sync_all()
+        .await
+        .with_context(|| format!("sync remote temporary file {remote}"))?;
+    drop(file);
+
+    if let Some(permissions) = permissions {
+        let mut attributes = FileAttributes::empty();
+        attributes.permissions = Some(permissions);
+        sftp.set_metadata(remote, attributes)
+            .await
+            .with_context(|| format!("preserve permissions on {remote}"))?;
+    }
+    Ok(())
+}
+
+async fn remove_remote_file_if_present(sftp: &SftpSession, remote: &str) {
+    if sftp.try_exists(remote).await.unwrap_or(false) {
+        let _ = sftp.remove_file(remote).await;
+    }
+}
+
+async fn replace_remote_file(
+    sftp: &SftpSession,
+    remote: &str,
+    temp: &str,
+    backup: &str,
+) -> Result<()> {
+    match sftp.rename(temp, remote).await {
+        Ok(()) => return Ok(()),
+        Err(direct_error) => {
+            if !sftp.try_exists(temp).await.unwrap_or(false) {
+                tracing::warn!(
+                    "SFTP rename reported an error after temporary file disappeared; verifying target: {direct_error}"
+                );
+                return Ok(());
+            }
+        }
+    }
+
+    sftp.rename(remote, backup)
+        .await
+        .with_context(|| format!("move original {remote} to recovery backup {backup}"))?;
+    if let Err(replace_error) = sftp.rename(temp, remote).await {
+        let rollback = sftp.rename(backup, remote).await;
+        return match rollback {
+            Ok(()) => Err(anyhow!(
+                "replace remote {remote} failed and original file was restored: {replace_error}"
+            )),
+            Err(rollback_error) => Err(anyhow!(
+                "replace remote {remote} failed ({replace_error}); recovery backup remains at {backup} because rollback failed ({rollback_error})"
+            )),
+        };
+    }
+
+    if let Err(error) = sftp.remove_file(backup).await {
+        tracing::warn!("failed to remove SFTP save backup {backup}: {error}");
+    }
+    Ok(())
+}
+
+async fn save_remote_text_file(
+    sftp: &SftpSession,
+    save: RemoteTextSave,
+) -> Result<SaveRemoteTextOutcome> {
+    let current = read_remote_text_file(sftp, &save.remote_path).await?;
+    if !save.force && !save.expected_revision.same_content(&current.revision) {
+        return Ok(SaveRemoteTextOutcome::Conflict(current));
+    }
+
+    let bytes = encode_remote_text(&save.content, save.format);
+    if bytes.len() as u64 > EDITOR_HARD_LIMIT_BYTES {
+        return Err(anyhow!(
+            "edited file is too large to save ({} bytes, max {} bytes)",
+            bytes.len(),
+            EDITOR_HARD_LIMIT_BYTES
+        ));
+    }
+
+    let suffix = Uuid::new_v4();
+    let temp = format!("{}.tiny-shell-save-{suffix}.tmp", save.remote_path);
+    let backup = format!("{}.tiny-shell-save-{suffix}.bak", save.remote_path);
+    if let Err(error) =
+        write_remote_temp_file(sftp, &temp, &bytes, current.revision.permissions).await
+    {
+        remove_remote_file_if_present(sftp, &temp).await;
+        return Err(error);
+    }
+
+    let before_replace = match read_remote_text_file(sftp, &save.remote_path).await {
+        Ok(file) => file,
+        Err(error) => {
+            remove_remote_file_if_present(sftp, &temp).await;
+            return Err(error);
+        }
+    };
+    if !save.force
+        && !save
+            .expected_revision
+            .same_content(&before_replace.revision)
+    {
+        remove_remote_file_if_present(sftp, &temp).await;
+        return Ok(SaveRemoteTextOutcome::Conflict(before_replace));
+    }
+
+    if let Err(error) = replace_remote_file(sftp, &save.remote_path, &temp, &backup).await {
+        remove_remote_file_if_present(sftp, &temp).await;
+        return Err(error);
+    }
+
+    let saved = read_remote_text_file(sftp, &save.remote_path).await?;
+    let expected_saved =
+        RemoteFileRevision::from_bytes(&bytes, saved.revision.modified, saved.revision.permissions);
+    if !expected_saved.same_content(&saved.revision) {
+        return Err(anyhow!(
+            "remote save verification failed for {}",
+            save.remote_path
+        ));
+    }
+    Ok(SaveRemoteTextOutcome::Saved(saved.revision))
+}
+
 async fn download_file_impl(
     sftp: &SftpSession,
     remote: &str,
@@ -1359,6 +1723,10 @@ async fn download_file_impl(
     let mut transferred = 0u64;
 
     let mut buffer = vec![0u8; 128 * 1024];
+    // 节流：每 100ms 或每 1MB 上报一次进度，避免大文件传输洪泛 UI 线程
+    // （此前每 128KB 上报一次，1GB 文件约 8000 个事件 → 全量重渲染）
+    let mut last_progress_time = Instant::now();
+    let mut last_reported = 0u64;
     loop {
         flag.yield_if_paused(events, tab_id, id, transferred, total)
             .await?;
@@ -1375,13 +1743,19 @@ async fn download_file_impl(
             .with_context(|| format!("write {}", local.display()))?;
 
         transferred += read as u64;
-        let _ = events.send(BackendEvent::TransferProgress {
-            tab_id: tab_id.to_string(),
-            id: id.to_string(),
-            transferred,
-            total,
-            state: crate::terminal::TransferState::Running,
-        });
+        if last_progress_time.elapsed() >= Duration::from_millis(100)
+            || transferred - last_reported >= 1024 * 1024
+        {
+            let _ = events.send(BackendEvent::TransferProgress {
+                tab_id: tab_id.to_string(),
+                id: id.to_string(),
+                transferred,
+                total,
+                state: crate::terminal::TransferState::Running,
+            });
+            last_progress_time = Instant::now();
+            last_reported = transferred;
+        }
     }
     local_file.flush().await.context("flush local file")?;
 
@@ -1538,6 +1912,7 @@ async fn upload_paths_impl(
     Ok(summary)
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn upload_file_impl(
     sftp: &SftpSession,
     local_file: &Path,
@@ -1558,6 +1933,9 @@ async fn upload_file_impl(
         .with_context(|| format!("create remote {remote_path}"))?;
 
     let mut buffer = vec![0u8; 128 * 1024];
+    // 节流：每 100ms 或每 1MB 上报一次进度，避免大文件传输洪泛 UI 线程
+    let mut last_progress_time = Instant::now();
+    let mut last_reported = 0u64;
     loop {
         let cur = transferred.load(Ordering::Relaxed);
         flag.yield_if_paused(events, tab_id, id, cur, total).await?;
@@ -1571,13 +1949,19 @@ async fn upload_file_impl(
             .with_context(|| format!("write remote {remote_path}"))?;
 
         let new_cur = transferred.fetch_add(read as u64, Ordering::Relaxed) + read as u64;
-        let _ = events.send(BackendEvent::TransferProgress {
-            tab_id: tab_id.to_string(),
-            id: id.to_string(),
-            transferred: new_cur,
-            total,
-            state: crate::terminal::TransferState::Running,
-        });
+        if last_progress_time.elapsed() >= Duration::from_millis(100)
+            || new_cur - last_reported >= 1024 * 1024
+        {
+            let _ = events.send(BackendEvent::TransferProgress {
+                tab_id: tab_id.to_string(),
+                id: id.to_string(),
+                transferred: new_cur,
+                total,
+                state: crate::terminal::TransferState::Running,
+            });
+            last_progress_time = Instant::now();
+            last_reported = new_cur;
+        }
     }
     remote.flush().await.context("flush remote file")?;
     Ok(())

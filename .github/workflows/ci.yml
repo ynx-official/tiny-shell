@@ -6,7 +6,42 @@ on:
   pull_request:
     branches: ["main"]
 
+# New commits supersede in-flight checks for the same pull request or branch.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
 jobs:
+  quality:
+    name: format, clippy, and tests
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+        with:
+          # Share the native Windows cache with the Windows build job.
+          shared-key: windows-x86_64
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run Clippy
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+      - name: Run tests
+        run: cargo test --locked --all-targets
+
   build:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
@@ -51,8 +86,8 @@ jobs:
       - name: Cache cargo build
         uses: Swatinem/rust-cache@v2
         with:
-          key: ${{ matrix.target }}
+          # Reuse target-specific release artifacts across CI and tag builds.
+          shared-key: ${{ matrix.name }}
 
       - name: Build (release)
-        # We build in release mode so that the release workflow can reuse the exact artifacts
-        run: cargo build --release --target ${{ matrix.target }}
+        run: cargo build --locked --release --target ${{ matrix.target }}

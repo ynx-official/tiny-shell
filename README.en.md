@@ -1,120 +1,161 @@
 [中文](README.md) | [English](README.en.md)
 
-# ashell
+# tiny-shell
 
-![Preview](preview.png)
+<p align="center">
+  <img src="assets/icons/tiny-shell.png" alt="tiny-shell" width="128" />
+</p>
 
-`ashell` is a modern, GPUI Component-based desktop terminal client written in Rust.
+<p align="center">
+  <strong>A modern, high-performance desktop terminal client built with Rust</strong>
+</p>
 
-This project focuses on providing a high-performance and visually appealing shell workspace by combining local and remote environments with a rich set of built-in features. 
+<p align="center">
+  <a href="https://github.com/ynx-official/tiny-shell/releases/latest"><img src="https://img.shields.io/github/v/release/ynx-official/tiny-shell?style=flat-square" alt="Release"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0--or--later-blue.svg?style=flat-square" alt="License"></a>
+  <a href="https://github.com/ynx-official/tiny-shell"><img src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey?style=flat-square" alt="Platform"></a>
+</p>
 
-## 🚀 v0.4 Major Upgrades
+---
 
-v0.4 builds on the v0.3 foundation and focuses on more capable workspace operations and a smoother daily workflow:
-- ✨ **Keybinding Management**: View and edit common shortcuts from the settings UI with conflict hints.
-- ✨ **Settings Page Polish**: A more compact and clearer settings experience with improved layout and interaction flow.
-- ✨ **Multi-Pane Tabs with a tmux-like Workflow**: A single tab can now host multiple panes, with split, focus, and switching actions for a tmux-inspired experience.
-- ✨ **Transfer History Improvements**: The transfer history panel now presents richer task details, making upload and download activity easier to review.
-- ✨ **SSH Passphrase Support**: Private keys can now store a passphrase, and SSH connections will use it automatically.
-- ✨ **Terminal Rendering Enhancements**: Terminal rendering now handles Block Elements and similar custom glyphs more completely.
-
-## Download
-
-You can download the latest pre-compiled releases for macOS, Windows, and Linux from the [GitHub Releases page](https://github.com/rust-kotlin/ashell/releases/latest).
-
-## Mac Installation Guide
-
-### Method 1: Homebrew (Recommended)
-
-If you use [Homebrew](https://brew.sh/), you can install it quickly with:
-
-```bash
-brew install rust-kotlin/taps/ashell --cask
-```
-
-To update the app:
-
-```bash
-brew update
-brew upgrade ashell --cask
-```
-
-> **Note**: Since the app uses ad-hoc signing, the Homebrew installation or update includes a postflight script to automatically handle the quarantine flag. This will require you to enter your administrator password for authorization.
-
-### Method 2: Manual Download
-
-1. Download and unzip from the [Releases page](https://github.com/rust-kotlin/ashell/releases/latest).
-2. Move `ashell.app` to your **Applications** folder. 
-3. Since the app uses ad-hoc signing, macOS may warn that the app is "damaged" upon first launch. If this happens, open Terminal and run:
-
-```bash
-sudo xattr -cr /Applications/ashell.app
-```
+`tiny-shell` is a desktop terminal client built with the GPUI framework and GPUI Component library, written in Rust. It integrates local terminals, SSH remote connections, SFTP file management, and system monitoring into a single high-performance, visually polished workspace.
 
 ## Features
 
-The current version provides a fully-featured GPUI-native workspace:
+### 🖥️ Terminal Experience
+- **Alacritty Terminal Engine** — High-performance terminal emulation powered by `alacritty_terminal`, with full ANSI escape sequence support, true color, cursor styling, and mouse events
+- **Multi-Tab & Split Panes** — Multiple tabs with splittable panes in each tab, delivering a tmux-like workflow
+- **Built-in Monospace Font** — Ships with Maple Mono NF CN for excellent CJK character and Nerd Font icon support out of the box
+- **Global Font Controls** — Adjust terminal font family, size, and line spacing in real time
 
-- **Local & Remote Sessions:** Open local terminal tabs or connect to remote servers via SSH.
-- **Advanced SSH Authentication:** Supports both password-based and key-based (file path or inline) SSH connections.
-- **Session Management:** Easily save, reopen, edit, and remove your SSH sessions.
-- **SFTP Integration:** Built-in SFTP file manager to browse, upload, download, and manage remote files.
-- **Robust Terminal Emulator:** Parses terminal output with `alacritty_terminal`, supporting rich ANSI color spans, fast rendering, and complete keyboard input forwarding.
-- **System Telemetry:** Real-time visualization of CPU, memory, swap, network, and disk metrics in the left cockpit sidebar.
-- **Theming System:** Switch between multiple GPUI Component themes directly from the top toolbar.
-- **Embedded Fonts:** Uses embedded Maple Mono NF CN fonts out-of-the-box for excellent CJK character and Nerd Font icon support.
-- **v0.3 Core Enhancements:** Global font and font-size controls, concurrent SFTP transfers, persistent layout state, disconnect awareness, hot-swappable i18n, and smart terminal right-click copy/paste.
+### 🔗 Remote Connectivity
+- **SSH Client** — Password, key file, and inline key authentication, with passphrase-protected private key support
+- **Session Management** — Save, edit, delete, and quick-switch SSH sessions with group organization
+- **SFTP File Manager** — Built-in graphical SFTP client with upload, download, drag-and-drop, multi-select, remote file editing, and permission management
+- **Proxy Support** — SOCKS5 and HTTP proxy support, configurable globally or per session
 
-## Run
+### 📊 System Monitoring
+- **Real-Time Telemetry** — Live CPU, memory, swap, network, and disk usage with historical charts in the sidebar
+- **Remote Monitoring** — Automatically collects remote server metrics after SSH connection, no agent installation required
+- **Process Viewer** — Built-in process viewer for inspecting and managing processes on remote servers
 
-To run the application locally:
+### 🎨 Theming & Appearance
+- **Multiple Themes** — Matrix, Gruvbox, Tokyo Night, Solarized, Phygerr, and more, with light/dark mode support
+- **Custom Themes** — Import custom JSON theme files
+- **Compact Layout** — Collapsible sidebar for full-screen immersive terminal experience
 
+### ⚙️ Productivity Tools
+- **Keybinding System** — Visual shortcut manager with view, edit, and conflict detection
+- **Command Palette** — Global shortcut to quickly switch sessions, open files, and execute actions
+- **Config Sync** — Sync session configurations across devices via WebDAV or S3
+- **Managed Key Import** — Imported SSH keys are managed by the app; deleting the original file does not affect existing connections
+
+### 🔄 Auto-Update
+- **Cross-Platform Updates** — Built-in auto-update that checks, downloads, and installs the latest version from GitHub Releases
+- **Platform-Optimized** — Atomic replacement on Linux, App Bundle replacement on macOS, batch script on Windows
+
+## Installation
+
+### macOS
+
+#### Homebrew (Recommended)
 ```bash
-cargo run --release
+brew install ynx-official/taps/tiny-shell --cask
 ```
 
-## Package macOS App
-
+To update:
 ```bash
-./scripts/package-macos-app.sh
-open target/release/ashell.app
+brew update && brew upgrade tiny-shell --cask
 ```
 
-The packaging script creates a standard `.app` bundle. It does not attach an entitlements file, and after signing, it verifies that `com.apple.security.app-sandbox` is not present (meaning it runs non-sandboxed).
+#### Manual Install
+Download `tiny-shell-*-macos-*.zip` from the [Releases page](https://github.com/ynx-official/tiny-shell/releases/latest), unzip, and drag `tiny-shell.app` to your Applications folder.
 
-## Package Linux (Debian/Ubuntu)
+> If macOS warns the app is "damaged" on first launch:
+> ```bash
+> sudo xattr -cr /Applications/tiny-shell.app
+> ```
+
+### Windows
+
+Choose either package from the [Releases page](https://github.com/ynx-official/tiny-shell/releases/latest):
+
+- **Installer**: Download `tiny-shell-*-windows-x86_64-setup.exe` and follow the setup wizard. It provides a Start Menu shortcut, an optional desktop shortcut, and a standard uninstall entry.
+- **Portable**: Download `tiny-shell-*-windows-x86_64-portable.zip`, extract it, and run `tiny-shell.exe` without installation.
+
+### Linux
+
+#### Debian/Ubuntu (.deb)
+Download the `.deb` package from the [Releases page](https://github.com/ynx-official/tiny-shell/releases/latest):
+```bash
+sudo dpkg -i tiny-shell_*.deb
+```
+
+#### Generic Linux (tar.gz)
+```bash
+tar -xzf tiny-shell-*-linux-x86_64.tar.gz
+cd tiny-shell-*-linux-x86_64
+./tiny-shell
+```
+
+## Building from Source
 
 ### Prerequisites
+- Rust toolchain 1.85+
+- Linux: `pkg-config` `libfontconfig1-dev` `libxcb1-dev` and other X11/Wayland development libraries
+- macOS: Xcode Command Line Tools
+- Windows: MSVC Build Tools
 
+### Build & Run
 ```bash
-sudo apt install pkg-config libfontconfig1-dev
+# Clone the repository
+git clone https://github.com/ynx-official/tiny-shell.git
+cd tiny-shell
+
+# Run
+cargo run --release
+
+# Package macOS App Bundle
+./scripts/package-macos-app.sh
+
+# Package Linux .deb
 cargo install cargo-deb
-```
-
-### Build .deb
-
-```bash
-cargo build --release
 cargo deb
 ```
 
-The `.deb` file will be generated at:
+## Version History
 
-```
-target/debian/ashell_0.4.8-1_amd64.deb
-```
+### v1.0.1 (Current)
+- Rebranded from ashell to tiny-shell, repository moved to [ynx-official/tiny-shell](https://github.com/ynx-official/tiny-shell)
+- Added cross-platform auto-update for Linux, macOS, and Windows
+- Added auto-update UI prompts in both English and Chinese
+- Updated all brand assets: icons, desktop entries, config directories, environment variables
 
-### Install
+### v0.4.x
+- Visual keybinding management with conflict detection
+- Multi-pane split tabs (tmux-like experience)
+- Enhanced SFTP transfer history
+- SSH private key passphrase support
+- Complete Block Elements rendering in terminal
 
-```bash
-sudo dpkg -i target/debian/ashell_0.4.8-1_amd64.deb
-```
+### v0.3.x
+- Global font family and size controls
+- Concurrent SFTP transfers
+- Persistent layout state
+- Hot-swappable English/Chinese i18n
+- Terminal right-click copy/paste
 
-After installation, you can launch from the application menu or by running `ashell` in the terminal. The `.deb` package includes:
-- `/usr/bin/ashell` — Main binary
-- `/usr/share/applications/ashell.desktop` — Desktop entry
-- `/usr/share/icons/hicolor/256x256/apps/ashell.png` — Application icon
+## Tech Stack
+
+| Component | Technology |
+|-----------|------------|
+| GUI Framework | [GPUI](https://github.com/zed-industries/zed) |
+| Component Library | [gpui-component](https://github.com/longbridge/gpui-component) |
+| Terminal Engine | [alacritty_terminal](https://github.com/alacritty/alacritty) |
+| SSH Protocol | [russh](https://github.com/warp-tech/russh) |
+| i18n | [rust-i18n](https://github.com/longbridge/rust-i18n) |
+| System Info | [sysinfo](https://github.com/GuillaumeGomez/sysinfo) |
 
 ## License
 
-This project is licensed under the [GPL-3.0-or-later License](LICENSE).
+This project is licensed under the [GPL-3.0-or-later](LICENSE) license.

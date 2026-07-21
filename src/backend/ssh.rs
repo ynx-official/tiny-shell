@@ -306,7 +306,7 @@ async fn connect_and_authenticate(
             let passphrase = session.passphrase.trim();
             let passphrase = (!passphrase.is_empty()).then_some(passphrase);
 
-            let success = if has_explicit_key {
+            if has_explicit_key {
                 let keypair = load_session_private_key(session)?;
                 let algorithm = format!("{:?}", keypair.algorithm());
                 let _ = events.send(BackendEvent::Status {
@@ -356,8 +356,7 @@ async fn connect_and_authenticate(
                     ));
                 }
                 success
-            };
-            success
+            }
         }
         AuthMethod::Config => {
             // SSH Config auth: try the identity file from config, or default keys
@@ -544,6 +543,7 @@ EOF
   read net_rx_1 net_tx_1 <<EOF
 $(net_stat)
 EOF
+  net_snapshot_1=$(cat /proc/net/dev 2>/dev/null)
   sleep 1
   read cpu_total_2 cpu_idle_2 <<EOF
 $(cpu_stat)
@@ -551,6 +551,7 @@ EOF
   read net_rx_2 net_tx_2 <<EOF
 $(net_stat)
 EOF
+  net_snapshot_2=$(cat /proc/net/dev 2>/dev/null)
 
   cpu_delta=$((cpu_total_2 - cpu_total_1))
   idle_delta=$((cpu_idle_2 - cpu_idle_1))
@@ -559,7 +560,24 @@ EOF
   mem_available=$(awk '"'"'/^MemAvailable:/ {print $2 * 1024}'"'"' /proc/meminfo 2>/dev/null)
   swap_total=$(awk '"'"'/^SwapTotal:/ {print $2 * 1024}'"'"' /proc/meminfo 2>/dev/null)
   swap_free=$(awk '"'"'/^SwapFree:/ {print $2 * 1024}'"'"' /proc/meminfo 2>/dev/null)
+  os_name=$(awk -F= '"'"'/^PRETTY_NAME=/ { value=$2; gsub(/^"|"$/, "", value); print value; exit }'"'"' /etc/os-release 2>/dev/null)
+  cpu_model=$(awk -F: '"'"'/^(model name|Hardware)/ { value=$2; sub(/^[[:space:]]+/, "", value); print value; exit }'"'"' /proc/cpuinfo 2>/dev/null)
+  cpu_frequency=$(awk -F: '"'"'/^cpu MHz/ { value=$2; sub(/^[[:space:]]+/, "", value); printf "%.0f", value; exit }'"'"' /proc/cpuinfo 2>/dev/null)
+  ip_addresses=$(hostname -I 2>/dev/null | xargs 2>/dev/null)
 
+  echo "OS_NAME=${os_name:-Linux}"
+  echo "KERNEL_NAME=$(uname -s 2>/dev/null)"
+  echo "KERNEL_VERSION=$(uname -r 2>/dev/null)"
+  echo "ARCHITECTURE=$(uname -m 2>/dev/null)"
+  echo "HOSTNAME=$(hostname 2>/dev/null)"
+  echo "IP_ADDRESS=$(printf "%s\n" "$ip_addresses" | awk '"'"'{print $1}'"'"')"
+  echo "IP_ADDRESSES=$ip_addresses"
+  ip -o addr show scope global 2>/dev/null | awk '"'"'{ address=$4; sub(/\/.*/, "", address); printf "IP_ENTRY=%s\t%s\n", $2, address }'"'"'
+  echo "UPTIME_SECONDS=$(cut -d. -f1 /proc/uptime 2>/dev/null)"
+  echo "LOAD_AVERAGE=$(cut -d" " -f1-3 /proc/loadavg 2>/dev/null)"
+  echo "CPU_MODEL=${cpu_model:-unknown}"
+  echo "CPU_CORES=$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 0)"
+  echo "CPU_FREQUENCY_MHZ=${cpu_frequency:-0}"
   echo "CPU_PERCENT=${cpu_percent:-0.00}"
   echo "MEM_TOTAL=${mem_total:-0}"
   echo "MEM_USED=$(( ${mem_total:-0} - ${mem_available:-0} ))"
@@ -567,7 +585,16 @@ EOF
   echo "SWAP_USED=$(( ${swap_total:-0} - ${swap_free:-0} ))"
   echo "NET_RX=$(( ${net_rx_2:-0} - ${net_rx_1:-0} ))"
   echo "NET_TX=$(( ${net_tx_2:-0} - ${net_tx_1:-0} ))"
+  printf "%s\n__TINY_SHELL_SPLIT__\n%s\n" "$net_snapshot_1" "$net_snapshot_2" | awk -F"[: ]+" '"'"'
+    $0 == "__TINY_SHELL_SPLIT__" { second=1; next }
+    /:/ && $2 != "Inter" && $2 != "face" {
+      name=$2
+      if (!second) { rx1[name]=$3; tx1[name]=$11 }
+      else { printf "NETIF=%s\t%s\t%s\t%s\t%s\n", name, $3, $11, $3-rx1[name], $11-tx1[name] }
+    }'"'"'
+  { ps -eo pid=,rss=,pcpu=,comm= --sort=-rss 2>/dev/null | head -n 16; ps -eo pid=,rss=,pcpu=,comm= --sort=-pcpu 2>/dev/null | head -n 16; } | awk '"'"'!seen[$1]++ { pid=$1; mem=$2*1024; cpu=$3; $1=""; $2=""; $3=""; sub(/^[[:space:]]+/, ""); printf "PROCESS=%s\t%s\t%s\t%s\n", pid, mem, cpu, $0 }'"'"'
   df -kP 2>/dev/null | awk "NR > 1 && \$1 !~ /^(tmpfs|devtmpfs|ramfs|overlay|aufs)\$/ { printf \"DISK=%s\t%s\t%s\n\", \$6, \$4 * 1024, \$2 * 1024 }" | head -n 6
+  df -kP 2>/dev/null | awk "NR > 1 { printf \"FILESYSTEM=%s\t%s\t%s\n\", \$6, \$4 * 1024, \$2 * 1024 }" | head -n 128
   exit 0
 fi
 
@@ -577,10 +604,12 @@ if [ "$os" = "Darwin" ]; then
   read net_rx_1 net_tx_1 <<EOF
 $(net_stat)
 EOF
+  net_snapshot_1=$(netstat -ibn 2>/dev/null)
   sleep 1
   read net_rx_2 net_tx_2 <<EOF
 $(net_stat)
 EOF
+  net_snapshot_2=$(netstat -ibn 2>/dev/null)
 
   cpu_percent=$(top -l 2 -n 0 -s 1 2>/dev/null | awk -F"[:,% ]+" '"'"'/CPU usage:/ { user=$3; sys=$5 } END { if (user == "" && sys == "") print "0.00"; else printf "%.2f", user + sys }'"'"')
   mem_total=$(sysctl -n hw.memsize 2>/dev/null || echo 0)
@@ -598,7 +627,24 @@ EOF
   swap_total=$(printf "%s\n" "$swap_line" | awk -F"[= ,]+" '"'"'
     function mult(unit) { return unit=="K"?1024:(unit=="M"?1048576:(unit=="G"?1073741824:(unit=="T"?1099511627776:1))) }
     /used/ && /free/ { used=$4; free=$8; unit1=substr(used, length(used), 1); unit2=substr(free, length(free), 1); sub(/[A-Za-z]+$/, "", used); sub(/[A-Za-z]+$/, "", free); printf "%.0f", (used * mult(unit1)) + (free * mult(unit2)) }'"'"')
+  ip_addresses=$(ifconfig 2>/dev/null | awk '"'"'/inet / && $2 != "127.0.0.1" { printf "%s%s", separator, $2; separator=" " }'"'"')
 
+  echo "OS_NAME=$(sw_vers -productName 2>/dev/null) $(sw_vers -productVersion 2>/dev/null)"
+  echo "KERNEL_NAME=$(uname -s 2>/dev/null)"
+  echo "KERNEL_VERSION=$(uname -r 2>/dev/null)"
+  echo "ARCHITECTURE=$(uname -m 2>/dev/null)"
+  echo "HOSTNAME=$(hostname 2>/dev/null)"
+  echo "IP_ADDRESS=$(printf "%s\n" "$ip_addresses" | awk '"'"'{print $1}'"'"')"
+  echo "IP_ADDRESSES=$ip_addresses"
+  ifconfig 2>/dev/null | awk '"'"'
+    /^[[:alnum:]][^[:space:]]*:/ { interface=$1; sub(/:$/, "", interface) }
+    /inet / && $2 != "127.0.0.1" { printf "IP_ENTRY=%s\t%s\n", interface, $2 }
+    /inet6 / && $2 !~ /^fe80:/ && $2 != "::1" { address=$2; sub(/%.*/, "", address); printf "IP_ENTRY=%s\t%s\n", interface, address }'"'"'
+  echo "UPTIME_SECONDS=$(sysctl -n kern.boottime 2>/dev/null | awk -F"[=,]" '"'"'{ gsub(/ /, "", $2); print systime()-$2 }'"'"')"
+  echo "LOAD_AVERAGE=$(sysctl -n vm.loadavg 2>/dev/null | tr -d "{}")"
+  echo "CPU_MODEL=$(sysctl -n machdep.cpu.brand_string 2>/dev/null)"
+  echo "CPU_CORES=$(sysctl -n hw.logicalcpu 2>/dev/null || echo 0)"
+  echo "CPU_FREQUENCY_MHZ=$(($(sysctl -n hw.cpufrequency 2>/dev/null || echo 0) / 1000000))"
   echo "CPU_PERCENT=${cpu_percent:-0.00}"
   echo "MEM_TOTAL=${mem_total:-0}"
   echo "MEM_USED=${mem_used:-0}"
@@ -606,11 +652,32 @@ EOF
   echo "SWAP_USED=${swap_used:-0}"
   echo "NET_RX=$(( ${net_rx_2:-0} - ${net_rx_1:-0} ))"
   echo "NET_TX=$(( ${net_tx_2:-0} - ${net_tx_1:-0} ))"
+  printf "%s\n__TINY_SHELL_SPLIT__\n%s\n" "$net_snapshot_1" "$net_snapshot_2" | awk '"'"'
+    $0 == "__TINY_SHELL_SPLIT__" { second=1; next }
+    NR > 1 && $7 ~ /^[0-9]+$/ && $10 ~ /^[0-9]+$/ {
+      if (!second) { rx1[$1]+=$7; tx1[$1]+=$10 }
+      else { rx2[$1]+=$7; tx2[$1]+=$10 }
+    }
+    END { for (name in rx2) printf "NETIF=%s\t%s\t%s\t%s\t%s\n", name, rx2[name], tx2[name], rx2[name]-rx1[name], tx2[name]-tx1[name] }'"'"'
+  { ps -axo pid=,rss=,pcpu=,comm= 2>/dev/null | sort -k2,2nr | head -n 16; ps -axo pid=,rss=,pcpu=,comm= 2>/dev/null | sort -k3,3nr | head -n 16; } | awk '"'"'!seen[$1]++ { pid=$1; mem=$2*1024; cpu=$3; $1=""; $2=""; $3=""; sub(/^[[:space:]]+/, ""); printf "PROCESS=%s\t%s\t%s\t%s\n", pid, mem, cpu, $0 }'"'"'
   df -kP 2>/dev/null | awk "NR > 1 && \$1 !~ /^(devfs|tmpfs|devtmpfs|ramfs|overlay|aufs)\$/ { printf \"DISK=%s\t%s\t%s\n\", \$6, \$4 * 1024, \$2 * 1024 }" | head -n 6
+  df -kP 2>/dev/null | awk "NR > 1 { printf \"FILESYSTEM=%s\t%s\t%s\n\", \$6, \$4 * 1024, \$2 * 1024 }" | head -n 128
   exit 0
 fi
 
 echo "CPU_PERCENT=0.00"
+echo "OS_NAME=${os:-unknown}"
+echo "KERNEL_NAME=$(uname -s 2>/dev/null)"
+echo "KERNEL_VERSION=$(uname -r 2>/dev/null)"
+echo "ARCHITECTURE=$(uname -m 2>/dev/null)"
+echo "HOSTNAME=$(hostname 2>/dev/null)"
+echo "IP_ADDRESS="
+echo "IP_ADDRESSES="
+echo "UPTIME_SECONDS=0"
+echo "LOAD_AVERAGE="
+echo "CPU_MODEL="
+echo "CPU_CORES=0"
+echo "CPU_FREQUENCY_MHZ=0"
 echo "MEM_TOTAL=0"
 echo "MEM_USED=0"
 echo "SWAP_TOTAL=0"

@@ -42,7 +42,7 @@ pub fn spawn_local_terminal(
         "COLORTERM",
         std::env::var("COLORTERM").unwrap_or_else(|_| "truecolor".into()),
     );
-    cmd.env("TERM_PROGRAM", "ashell");
+    cmd.env("TERM_PROGRAM", "tiny-shell");
     if let Ok(path) = std::env::var("PATH") {
         cmd.env("PATH", path);
     }

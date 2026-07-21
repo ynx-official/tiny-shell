@@ -1,0 +1,92 @@
+param(
+    [string]$Version = "",
+    [string]$Target = "x86_64-pc-windows-msvc",
+    [string]$OutputDir = "dist",
+    [switch]$SkipBuild
+)
+
+$ErrorActionPreference = "Stop"
+
+$root = Split-Path -Parent $PSScriptRoot
+if ([string]::IsNullOrWhiteSpace($Version)) {
+    $manifest = Get-Content (Join-Path $root "Cargo.toml") -Raw
+    $match = [regex]::Match($manifest, '(?m)^version\s*=\s*"([^"]+)"')
+    if (-not $match.Success) {
+        throw "Unable to read the package version from Cargo.toml"
+    }
+    $Version = "v$($match.Groups[1].Value)"
+}
+
+if (-not $SkipBuild) {
+    cargo build --locked --release --target $Target
+    if ($LASTEXITCODE -ne 0) {
+        throw "cargo build failed with exit code $LASTEXITCODE"
+    }
+}
+
+$sourceExe = Join-Path $root "target\$Target\release\tiny-shell.exe"
+if (-not (Test-Path -LiteralPath $sourceExe -PathType Leaf)) {
+    throw "Compiled executable not found: $sourceExe"
+}
+
+if (-not [System.IO.Path]::IsPathRooted($OutputDir)) {
+    $OutputDir = Join-Path $root $OutputDir
+}
+$OutputDir = [System.IO.Path]::GetFullPath($OutputDir)
+New-Item -ItemType Directory -Path $OutputDir -Force | Out-Null
+
+$platform = "windows-x86_64"
+$portableBaseName = "tiny-shell-$Version-$platform-portable"
+$portableDir = Join-Path $OutputDir $portableBaseName
+$portableArchive = Join-Path $OutputDir "$portableBaseName.zip"
+$portableDir = [System.IO.Path]::GetFullPath($portableDir)
+$outputPrefix = $OutputDir.TrimEnd(
+    [System.IO.Path]::DirectorySeparatorChar,
+    [System.IO.Path]::AltDirectorySeparatorChar
+) + [System.IO.Path]::DirectorySeparatorChar
+if (-not $portableDir.StartsWith($outputPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+    throw "Portable staging directory must stay inside the output directory"
+}
+
+Remove-Item -LiteralPath $portableDir -Recurse -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath $portableArchive -Force -ErrorAction SilentlyContinue
+New-Item -ItemType Directory -Path $portableDir -Force | Out-Null
+Copy-Item -LiteralPath $sourceExe -Destination (Join-Path $portableDir "tiny-shell.exe")
+Copy-Item -LiteralPath (Join-Path $root "LICENSE") -Destination $portableDir
+Compress-Archive -LiteralPath $portableDir -DestinationPath $portableArchive -CompressionLevel Optimal
+
+$innoCandidates = @()
+if (-not [string]::IsNullOrWhiteSpace(${env:ProgramFiles(x86)})) {
+    $innoCandidates += Join-Path ${env:ProgramFiles(x86)} "Inno Setup 6\ISCC.exe"
+}
+if (-not [string]::IsNullOrWhiteSpace($env:ProgramFiles)) {
+    $innoCandidates += Join-Path $env:ProgramFiles "Inno Setup 6\ISCC.exe"
+}
+$iscc = $innoCandidates | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
+if (-not $iscc) {
+    throw "Inno Setup 6 was not found. Install it from https://jrsoftware.org/isinfo.php"
+}
+
+$normalizedVersion = $Version.TrimStart('v')
+$installerBaseName = "tiny-shell-$Version-$platform-setup"
+$installerPath = Join-Path $OutputDir "$installerBaseName.exe"
+Remove-Item -LiteralPath $installerPath -Force -ErrorAction SilentlyContinue
+
+$issFile = Join-Path $root "scripts\windows\tiny-shell.iss"
+$setupIcon = Join-Path $root "assets\icons\tiny-shell.ico"
+$licenseFile = Join-Path $root "LICENSE"
+& $iscc `
+    "/DMyAppVersion=$normalizedVersion" `
+    "/DSourceExe=$sourceExe" `
+    "/DSetupIcon=$setupIcon" `
+    "/DLicenseFile=$licenseFile" `
+    "/DOutputDir=$OutputDir" `
+    "/DOutputBaseFilename=$installerBaseName" `
+    $issFile
+if ($LASTEXITCODE -ne 0) {
+    throw "Inno Setup failed with exit code $LASTEXITCODE"
+}
+
+Write-Host "Windows packages created:"
+Write-Host "  Portable: $portableArchive"
+Write-Host "  Installer: $installerPath"

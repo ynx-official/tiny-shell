@@ -13,15 +13,15 @@ mod terminal;
 
 rust_i18n::i18n!("locales", fallback = "en");
 
-gpui::actions!(ashell_terminal, [TerminalTabKey, TerminalBacktabKey]);
+gpui::actions!(tiny_shell_terminal, [TerminalTabKey, TerminalBacktabKey]);
 
 pub(crate) use app::keybinding_recorder::{
-    ClosePane, Copy, FocusPaneDown, FocusPaneLeft, FocusPaneRight, FocusPaneUp, NewSsh, OpenSearch,
-    OpenSession, OpenSettings, OpenTransfers, Paste, SplitPaneDown, SplitPaneLeft, SplitPaneRight,
-    SplitPaneUp, ToggleSftpZoom, ToggleSidebar,
+    ClosePane, Copy, DetachTabToWindow, FocusPaneDown, FocusPaneLeft, FocusPaneRight, FocusPaneUp,
+    NewSsh, NewWindow, OpenSearch, OpenSession, OpenSettings, OpenTransfers, Paste, SplitPaneDown,
+    SplitPaneLeft, SplitPaneRight, SplitPaneUp, ToggleSftpZoom, ToggleSidebar,
 };
 
-pub(crate) use app::{Ashell, PaneLayout, SelectorEntry, SftpContextMenuState, TabGroup};
+pub(crate) use app::{TinyShell, PaneLayout, SelectorEntry, SftpContextMenuState, TabGroup};
 
 fn main() {
     app::startup::sync_macos_launch_environment();
@@ -33,12 +33,13 @@ fn main() {
         .with_quit_mode(gpui::QuitMode::LastWindowClosed);
 
     #[cfg(not(target_os = "macos"))]
-    let app = gpui_platform::application().with_assets(Assets);
+    let app = gpui_platform::application()
+        .with_assets(Assets)
+        .with_quit_mode(gpui::QuitMode::LastWindowClosed);
 
+    // On reopen (e.g. dock click), always open a new window
     app.on_reopen(|cx| {
-        if cx.windows().is_empty() {
-            app::startup::open_main_window(cx);
-        }
+        app::startup::open_new_window(None, None, cx);
     });
     app.run(move |cx| {
         gpui_component::init(cx);

@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=tiny-shell
+Comment=A modern, fast, GPUI Component-based desktop terminal client
+Exec=tiny-shell
+Icon=tiny-shell
+Terminal=false
+Type=Application
+Categories=System;TerminalEmulator;Utility;
+StartupWMClass=tiny-shell

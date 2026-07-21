@@ -12,9 +12,9 @@ use gpui_component::{
 };
 use rust_i18n::t;
 
-use crate::Ashell;
+use crate::TinyShell;
 
-impl Ashell {
+impl TinyShell {
     pub(crate) fn toggle_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.search_active {
             self.close_search(window, cx);
@@ -272,9 +272,7 @@ impl Ashell {
 
         let tab = tab.or_else(|| self.tabs.first());
 
-        let Some(tab) = tab else {
-            return None;
-        };
+        let tab = tab?;
         let snapshot = tab.render_snapshot(false);
         let display_offset = snapshot.display_offset as i32;
         let rows = snapshot.rows as i32;
@@ -323,22 +321,6 @@ impl Ashell {
         Some(map)
     }
 
-    /// Render the search button (used in the tab bar).
-    pub(crate) fn render_search_button(&self, cx: &mut Context<Self>) -> impl gpui::IntoElement {
-        // Wrap in a div so .hover() doesn't conflict with Button's internal hover.
-        div().child(
-            Button::new("search-btn")
-                .ghost()
-                .small()
-                .rounded(px(999.))
-                .icon(IconName::Search)
-                .tooltip(t!("search").to_string())
-                .on_click(cx.listener(|this, _, window, cx| {
-                    this.toggle_search(window, cx);
-                })),
-        )
-    }
-
     /// Render the expanded search bar overlay (when search is active).
     pub(crate) fn render_search_bar(
         &mut self,
@@ -362,7 +344,7 @@ impl Ashell {
             .top(px(8.))
             .right(px(24.))
             .on_prepaint(move |bounds, _window, cx| {
-                let _ = view.update(cx, |this, _| {
+                view.update(cx, |this, _| {
                     this.search_bar_bounds = Some(bounds);
                 });
             })

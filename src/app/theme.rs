@@ -2,7 +2,7 @@ use anyhow::{Context as _, Result};
 use gpui::{App, Context, SharedString, Window, px};
 use gpui_component::{ActiveTheme as _, Theme, ThemeMode, ThemeRegistry};
 
-use crate::Ashell;
+use crate::TinyShell;
 
 pub(crate) const EMBEDDED_THEME_JSONS: &[&str] = &[
     include_str!("../../assets/themes/matrix.json"),
@@ -12,9 +12,49 @@ pub(crate) const EMBEDDED_THEME_JSONS: &[&str] = &[
     include_str!("../../assets/themes/phygerr.json"),
 ];
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{
+    Mutex, OnceLock,
+    atomic::{AtomicBool, Ordering},
+};
+use std::time::{Duration, Instant};
 
 pub(crate) static USING_SYSTEM_MAPLE: AtomicBool = AtomicBool::new(false);
+static PROCESS_FOLLOW_SYSTEM_THEME: OnceLock<AtomicBool> = OnceLock::new();
+static LAST_SYSTEM_THEME_SYNC: Mutex<Option<Instant>> = Mutex::new(None);
+
+pub(crate) fn initialize_process_theme_preference(configured: bool) -> bool {
+    PROCESS_FOLLOW_SYSTEM_THEME
+        .get_or_init(|| AtomicBool::new(configured))
+        .load(Ordering::Relaxed)
+}
+
+pub(crate) fn process_follows_system_theme() -> bool {
+    PROCESS_FOLLOW_SYSTEM_THEME
+        .get()
+        .map(|value| value.load(Ordering::Relaxed))
+        .unwrap_or(true)
+}
+
+pub(crate) fn claim_system_theme_sync(interval: Duration) -> bool {
+    if !process_follows_system_theme() {
+        return false;
+    }
+    let Ok(mut last_sync) = LAST_SYSTEM_THEME_SYNC.lock() else {
+        return false;
+    };
+    let now = Instant::now();
+    if last_sync.is_some_and(|last| now.duration_since(last) < interval) {
+        return false;
+    }
+    *last_sync = Some(now);
+    true
+}
+
+fn set_process_follows_system_theme(follow: bool) {
+    PROCESS_FOLLOW_SYSTEM_THEME
+        .get_or_init(|| AtomicBool::new(follow))
+        .store(follow, Ordering::Relaxed);
+}
 
 pub(crate) fn load_fonts(cx: &mut App) -> Result<()> {
     let has_system_maple = cx
@@ -52,7 +92,7 @@ pub(crate) fn set_theme_font_names(theme: &mut Theme, ui_font_family: &str) {
     theme.mono_font_family = ui_font_family.into();
 }
 
-impl Ashell {
+impl TinyShell {
     pub(crate) fn switch_theme_mode(
         &mut self,
         mode: ThemeMode,
@@ -61,6 +101,7 @@ impl Ashell {
     ) {
         self.follow_system_theme = false;
         self.theme_mode = mode;
+        self.share_theme_preferences(cx);
         self.apply_theme_preferences(window, cx);
         self.status = format!("theme mode: {}", cx.theme().mode.name()).into();
         self.persist_theme_preferences();
@@ -84,6 +125,7 @@ impl Ashell {
         } else {
             self.light_theme_name = name.clone();
         }
+        self.share_theme_preferences(cx);
         self.apply_theme_preferences(window, cx);
         self.status = format!("theme: {name}").into();
         self.persist_theme_preferences();
@@ -98,6 +140,7 @@ impl Ashell {
         cx: &mut Context<Self>,
     ) {
         self.follow_system_theme = follow;
+        self.share_theme_preferences(cx);
         if follow {
             self.status = "theme mode: system".into();
         } else {
@@ -126,9 +169,7 @@ impl Ashell {
         }
         rust_i18n::set_locale(&active_locale);
         gpui_component::set_locale(&active_locale);
-        if let Err(err) = self.config.save() {
-            tracing::warn!("failed to save language preferences: {err:#}");
-        }
+        self.mark_config_preferences_dirty();
         window.refresh();
         cx.notify();
     }
@@ -168,8 +209,47 @@ impl Ashell {
             self.light_theme_name.to_string(),
             self.dark_theme_name.to_string(),
         );
-        if let Err(err) = self.config.save() {
-            tracing::warn!("failed to save theme preferences: {err:#}");
+        self.mark_config_preferences_dirty();
+    }
+
+    fn share_theme_preferences(&mut self, cx: &mut Context<Self>) {
+        set_process_follows_system_theme(self.follow_system_theme);
+
+        let current_entity_id = cx.entity_id();
+        let follow_system_theme = self.follow_system_theme;
+        let theme_mode = self.theme_mode;
+        let light_theme_name = self.light_theme_name.clone();
+        let dark_theme_name = self.dark_theme_name.clone();
+        let other_windows = crate::app::window_registry()
+            .lock()
+            .map(|registry| {
+                registry
+                    .iter()
+                    .filter(|entry| entry.entity.entity_id() != current_entity_id)
+                    .map(|entry| entry.entity.clone())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+
+        for entity in other_windows {
+            entity.update(cx, |other, cx| {
+                other.follow_system_theme = follow_system_theme;
+                other.theme_mode = theme_mode;
+                other.light_theme_name = light_theme_name.clone();
+                other.dark_theme_name = dark_theme_name.clone();
+                other.config.set_theme_preferences(
+                    follow_system_theme,
+                    if theme_mode.is_dark() {
+                        "dark"
+                    } else {
+                        "light"
+                    },
+                    light_theme_name.to_string(),
+                    dark_theme_name.to_string(),
+                );
+                cx.notify();
+            });
         }
+        cx.refresh_windows();
     }
 }

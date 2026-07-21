@@ -14,6 +14,11 @@ on:
 permissions:
   contents: write # needed to create / update the GitHub Release
 
+# Prevent two manually triggered runs for the same ref from publishing at once.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   build:
     name: ${{ matrix.name }}
@@ -25,19 +30,19 @@ jobs:
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             name: windows-x86_64
-            bin: ashell.exe
+            bin: tiny-shell.exe
           - os: ubuntu-22.04 # build on the oldest supported runner for broader glibc compatibility
             target: x86_64-unknown-linux-gnu
             name: linux-x86_64
-            bin: ashell
+            bin: tiny-shell
           - os: macos-14 # Apple Silicon
             target: aarch64-apple-darwin
             name: macos-aarch64
-            bin: ashell
+            bin: tiny-shell
           - os: macos-14 # Intel (cross-compiled from Apple Silicon to avoid queue delays)
             target: x86_64-apple-darwin
             name: macos-x86_64
-            bin: ashell
+            bin: tiny-shell
 
     steps:
       - uses: actions/checkout@v4
@@ -63,17 +68,28 @@ jobs:
       - name: Cache cargo build
         uses: Swatinem/rust-cache@v2
         with:
-          key: ${{ matrix.target }}
+          # Matches CI so a recent release build can warm the tag build.
+          shared-key: ${{ matrix.name }}
 
       - name: Build (release)
-        run: cargo build --release --target ${{ matrix.target }}
+        run: cargo build  --release --target ${{ matrix.target }}
 
-      - name: Package
+      - name: Ensure Inno Setup is available
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path -LiteralPath $iscc)) {
+            choco install innosetup --no-progress --yes
+          }
+
+      - name: Package (macOS / Linux)
+        if: runner.os != 'Windows'
         shell: bash
         run: |
           set -eu
           VERSION="${GITHUB_REF_NAME:-dev}"
-          STAGE="ashell-${VERSION}-${{ matrix.name }}"
+          STAGE="tiny-shell-${VERSION}-${{ matrix.name }}"
 
           if [ "${{ runner.os }}" = "macOS" ]; then
             # ── Build a proper .app bundle ────────────────────────────────────
@@ -81,12 +97,12 @@ jobs:
             # scripts/package-macos-app.sh, because that script runs `cargo build`
             # without respecting the `--target` flag from the matrix.
 
-            APP="ashell.app"
+            APP="tiny-shell.app"
             CONTENTS="$APP/Contents"
             mkdir -p "$CONTENTS/MacOS" "$CONTENTS/Resources"
 
-            cp "target/${{ matrix.target }}/release/ashell" "$CONTENTS/MacOS/"
-            cp "assets/icons/ashell.icns" "$CONTENTS/Resources/ashell.icns"
+            cp "target/${{ matrix.target }}/release/tiny-shell" "$CONTENTS/MacOS/"
+            cp "assets/icons/tiny-shell.icns" "$CONTENTS/Resources/tiny-shell.icns"
 
             VERSION_NUM="${VERSION#v}"
             cat > "$CONTENTS/Info.plist" <<EOF
@@ -98,15 +114,15 @@ jobs:
             <key>CFBundleDevelopmentRegion</key>
             <string>en</string>
             <key>CFBundleExecutable</key>
-            <string>ashell</string>
+            <string>tiny-shell</string>
             <key>CFBundleIconFile</key>
-            <string>ashell.icns</string>
+            <string>tiny-shell.icns</string>
             <key>CFBundleIdentifier</key>
-            <string>dev.ashell.app</string>
+            <string>dev.tiny-shell.app</string>
             <key>CFBundleInfoDictionaryVersion</key>
             <string>6.0</string>
             <key>CFBundleName</key>
-            <string>ashell</string>
+            <string>tiny-shell</string>
             <key>CFBundlePackageType</key>
             <string>APPL</string>
             <key>CFBundleShortVersionString</key>
@@ -129,27 +145,39 @@ jobs:
 
             # Package with ditto (Apple's tool) to preserve signature/metadata
             ditto -c -k --keepParent "$APP" "${STAGE}.zip"
-            echo "ASSET=${STAGE}.zip" >> "$GITHUB_ENV"
-
-          elif [ "${{ runner.os }}" = "Windows" ]; then
-            mkdir "$STAGE"
-            cp "target/${{ matrix.target }}/release/${{ matrix.bin }}" "$STAGE/"
-            7z a "${STAGE}.zip" "$STAGE" >/dev/null
-            echo "ASSET=${STAGE}.zip" >> "$GITHUB_ENV"
+            echo "ASSETS=${STAGE}.zip" >> "$GITHUB_ENV"
 
           else
             # Linux
             mkdir "$STAGE"
             cp "target/${{ matrix.target }}/release/${{ matrix.bin }}" "$STAGE/"
             tar -czf "${STAGE}.tar.gz" "$STAGE"
-            echo "ASSET=${STAGE}.tar.gz" >> "$GITHUB_ENV"
+            echo "ASSETS=${STAGE}.tar.gz" >> "$GITHUB_ENV"
           fi
+
+      - name: Package Windows portable and installer editions
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $version = $env:GITHUB_REF_NAME
+          ./scripts/package-windows.ps1 `
+            -Version $version `
+            -Target "${{ matrix.target }}" `
+            -OutputDir "dist" `
+            -SkipBuild
+
+          $portable = "dist/tiny-shell-$version-windows-x86_64-portable.zip"
+          $installer = "dist/tiny-shell-$version-windows-x86_64-setup.exe"
+          "ASSETS<<EOF" | Out-File -FilePath $env:GITHUB_ENV -Append
+          $portable | Out-File -FilePath $env:GITHUB_ENV -Append
+          $installer | Out-File -FilePath $env:GITHUB_ENV -Append
+          "EOF" | Out-File -FilePath $env:GITHUB_ENV -Append
 
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.name }}
-          path: ${{ env.ASSET }}
+          path: ${{ env.ASSETS }}
 
   publish:
     name: Publish Release
@@ -169,83 +197,4 @@ jobs:
           generate_release_notes: true
           fail_on_unmatched_files: true
 
-  cask:
-    name: Update Homebrew Cask
-    needs: publish
-    if: startsWith(github.ref, 'refs/tags/')
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout Homebrew Tap
-        uses: actions/checkout@v4
-        with:
-          repository: rust-kotlin/homebrew-taps
-          token: ${{ secrets.TAP_GITHUB_TOKEN }}
-          path: tap
-
-      - name: Download all macOS artifacts
-        uses: actions/download-artifact@v4
-        with:
-          pattern: macos-*
-          path: dist
-
-      - name: Update Cask
-        run: |
-          VERSION=${GITHUB_REF#refs/tags/v}
-          SHA_ARM=$(sha256sum dist/macos-aarch64/*.zip | cut -d' ' -f1)
-          SHA_INTEL=$(sha256sum dist/macos-x86_64/*.zip | cut -d' ' -f1)
-
-          mkdir -p tap/Casks
-          CASK_FILE="tap/Casks/ashell.rb"
-
-          cat > "$CASK_FILE" <<EOF
-          cask "ashell" do
-            version "${VERSION}"
-
-            on_arm do
-              sha256 "${SHA_ARM}"
-              url "https://github.com/rust-kotlin/ashell/releases/download/v#{version}/ashell-v#{version}-macos-aarch64.zip"
-            end
-            on_intel do
-              sha256 "${SHA_INTEL}"
-              url "https://github.com/rust-kotlin/ashell/releases/download/v#{version}/ashell-v#{version}-macos-x86_64.zip"
-            end
-
-            name "ashell"
-            desc "ashell is a modern, fast, GPUI Component-based desktop terminal client written in Rust."
-            homepage "https://github.com/rust-kotlin/ashell"
-
-            app "ashell.app"
-
-            postflight do
-              puts "Removing quarantine flag from ashell.app..."
-              system_command "/usr/bin/xattr",
-                             args: ["-rd", "com.apple.quarantine", "#{appdir}/ashell.app"],
-                             sudo: true
-            end
-
-            caveats <<~EOS
-              ashell uses ad-hoc signing. The installation includes a postflight script
-              that removes the 'com.apple.quarantine' attribute from the application
-              to allow it to run. This will require your administrator password.
-
-              ashell 采用本地签名。安装程序包含一个后置脚本，用于移除应用程序的
-              'com.apple.quarantine' 属性以允许其运行。这需要您的管理员密码。
-            EOS
-          end
-          EOF
-          # Remove the 10 leading spaces added for YAML formatting
-          sed -i 's/^          //' "$CASK_FILE"
-
-      - name: Commit and Push
-        run: |
-          VERSION=${GITHUB_REF#refs/tags/v}
-          cd tap
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          if [[ -n $(git status -s) ]]; then
-            git add Casks/ashell.rb
-            git commit -m "chore: bump ashell to v${VERSION}"
-            git push
-          else
-            echo "No changes to commit"
-          fi
+  

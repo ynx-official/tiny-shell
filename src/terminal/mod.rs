@@ -16,8 +16,16 @@ use alacritty_terminal::{
 use gpui::Keystroke;
 
 use crate::session::config::Session;
-use crate::sftp::{PreviewData, RemoteEntry};
+use crate::sftp::{
+    PreviewData, RemoteEntry,
+    text_file::{RemoteFileRevision, RemoteTextFile},
+};
 use crate::system::SystemSnapshot;
+
+type HighlightCache = Option<(
+    Vec<RenderCell>,
+    std::collections::HashMap<(i32, i32), gpui::Hsla>,
+)>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TabKind {
@@ -51,6 +59,11 @@ pub enum BackendEvent {
         path: String,
         entries: Vec<RemoteEntry>,
     },
+    SftpDirectoryEntries {
+        tab_id: String,
+        path: String,
+        entries: Vec<RemoteEntry>,
+    },
     SftpPreview {
         tab_id: String,
         preview: PreviewData,
@@ -58,6 +71,30 @@ pub enum BackendEvent {
     SftpStatus {
         tab_id: String,
         text: String,
+    },
+    /// 文件内容与远程版本信息已下载，供内置编辑器使用。
+    SftpFileContent {
+        tab_id: String,
+        remote_path: String,
+        file: RemoteTextFile,
+    },
+    /// 文件已通过版本校验并原子替换完成。
+    SftpContentUploaded {
+        tab_id: String,
+        remote_path: String,
+        revision: RemoteFileRevision,
+    },
+    /// 保存前检测到远程内容已发生变化。
+    SftpContentConflict {
+        tab_id: String,
+        remote_path: String,
+        remote_file: RemoteTextFile,
+    },
+    /// 内存中的文件内容上传失败。
+    SftpContentUploadFailed {
+        tab_id: String,
+        remote_path: String,
+        error: String,
     },
     RemoteSystem {
         tab_id: String,
@@ -135,12 +172,7 @@ pub struct TerminalTab {
     pub rows: u16,
     pub backend: std::sync::Arc<std::sync::Mutex<BackendTx>>,
     pub scroll_pixel_y: f32,
-    pub(crate) highlight_cache: std::cell::RefCell<
-        Option<(
-            Vec<RenderCell>,
-            std::collections::HashMap<(i32, i32), gpui::Hsla>,
-        )>,
-    >,
+    pub(crate) highlight_cache: std::cell::RefCell<HighlightCache>,
 }
 
 #[derive(Clone, Copy)]
@@ -183,10 +215,14 @@ pub struct SftpUiState {
     pub current_path: String,
     pub status: String,
     pub entries: Vec<RemoteEntry>,
+    pub directory_entries: std::collections::HashMap<String, Vec<RemoteEntry>>,
+    pub expanded_directories: std::collections::HashSet<String>,
     pub selected_path: Option<String>,
     pub preview: Option<PreviewData>,
     pub selected_entries: std::collections::HashSet<String>,
     pub home_dir: String,
+    pub follow_terminal_cwd: bool,
+    pub initial_terminal_cwd_synced: bool,
 }
 
 impl TerminalTab {
@@ -432,6 +468,14 @@ impl TerminalTab {
 
     pub fn scroll_to_bottom(&mut self) {
         self.term.scroll_display(Scroll::Bottom);
+    }
+
+    /// 轻量获取当前视口的滚动偏移量（是否在回看历史）。
+    ///
+    /// 替代此前为判断 `display_offset > 0` 而调用完整 `render_snapshot()`
+    /// （含 cell 迭代 + 高亮计算）的重型做法。
+    pub fn display_offset(&self) -> usize {
+        self.term.grid().display_offset()
     }
 
     #[allow(dead_code)]
