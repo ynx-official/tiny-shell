@@ -1465,8 +1465,13 @@ impl TinyShell {
                     if is_stale {
                         continue;
                     }
-                    let is_graceful_exit =
-                        reason == "local shell closed" || reason == "ssh session closed";
+                    let was_manually_disconnected = self
+                        .tabs
+                        .iter()
+                        .find(|tab| tab.id == tab_id)
+                        .is_some_and(|tab| !tab.connected && tab.disconnected_reason.is_some());
+                    let is_graceful_exit = !was_manually_disconnected
+                        && (reason == "local shell closed" || reason == "ssh session closed");
                     let editor_session = self
                         .tab_groups
                         .iter()
@@ -1482,7 +1487,9 @@ impl TinyShell {
                         self.status = reason.into();
                         continue;
                     }
-                    if let Some(tab) = self.tabs.iter_mut().find(|t| t.id == tab_id) {
+                    if !was_manually_disconnected
+                        && let Some(tab) = self.tabs.iter_mut().find(|t| t.id == tab_id)
+                    {
                         tab.connected = false;
                         tab.status = reason.clone();
                         tab.disconnected_reason = Some(reason.clone());

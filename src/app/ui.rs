@@ -6348,7 +6348,69 @@ impl Render for TinyShell {
                 )
             })
             .when_some(self.tab_context_menu.clone(), |this, menu| {
-                let detach_gid = menu.group_id.clone();
+                let group_id = menu.group_id.clone();
+                let group_tab_ids: Vec<String> = self
+                    .tab_groups
+                    .iter()
+                    .find(|group| group.id == group_id)
+                    .map(|group| {
+                        group
+                            .pane_root
+                            .tab_ids()
+                            .iter()
+                            .map(|tab_id| (*tab_id).to_string())
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let close_tab_id = group_tab_ids.first().cloned();
+                let close_other_tab_ids: Vec<String> = self
+                    .tab_groups
+                    .iter()
+                    .filter(|group| group.id != group_id)
+                    .filter_map(|group| group.pane_root.tab_ids().first().copied())
+                    .map(String::from)
+                    .collect();
+                let close_all_tab_ids: Vec<String> = self
+                    .tab_groups
+                    .iter()
+                    .filter_map(|group| group.pane_root.tab_ids().first().copied())
+                    .map(String::from)
+                    .collect();
+                let duplicate_session = group_tab_ids.iter().find_map(|tab_id| {
+                    self.tabs
+                        .iter()
+                        .find(|tab| tab.id == *tab_id && tab.kind == TabKind::Ssh)
+                        .and_then(|tab| tab.session.clone())
+                });
+                let reconnect_tab_ids: Vec<String> = group_tab_ids
+                    .iter()
+                    .filter(|tab_id| {
+                        self.tabs.iter().any(|tab| {
+                            tab.id == **tab_id
+                                && tab.kind == TabKind::Ssh
+                                && !tab.connected
+                                && tab.disconnected_reason.is_some()
+                        })
+                    })
+                    .cloned()
+                    .collect();
+                let reconnect_all_tab_ids: Vec<String> = self
+                    .tabs
+                    .iter()
+                    .filter(|tab| {
+                        tab.kind == TabKind::Ssh
+                            && !tab.connected
+                            && tab.disconnected_reason.is_some()
+                    })
+                    .map(|tab| tab.id.clone())
+                    .collect();
+                let is_connected_ssh = group_tab_ids.iter().any(|tab_id| {
+                    self.tabs.iter().any(|tab| {
+                        tab.id == *tab_id && tab.kind == TabKind::Ssh && tab.connected
+                    })
+                });
+                let disconnect_gid = group_id.clone();
+                let detach_gid = group_id;
                 this.child(
                     div()
                         .absolute()
@@ -6393,6 +6455,113 @@ impl Render for TinyShell {
                                 .child(
                                     v_flex()
                                         .w_full()
+                                        .child(
+                                            Button::new("tab-context-copy-label")
+                                                .ghost()
+                                                .w_full()
+                                                .justify_start()
+                                                .disabled(duplicate_session.is_none())
+                                                .label(t!("tab_copy_label").to_string())
+                                                .on_click(cx.listener(move |this, _, _, cx| {
+                                                    this.tab_context_menu = None;
+                                                    if let Some(session) = duplicate_session.clone() {
+                                                        this.open_ssh_session(session, cx);
+                                                    } else {
+                                                        cx.notify();
+                                                    }
+                                                })),
+                                        )
+                                        .child(
+                                            Button::new("tab-context-connect")
+                                                .ghost()
+                                                .w_full()
+                                                .justify_start()
+                                                .disabled(reconnect_tab_ids.is_empty())
+                                                .label(t!("tab_connect").to_string())
+                                                .on_click(cx.listener(move |this, _, _, cx| {
+                                                    this.tab_context_menu = None;
+                                                    for tab_id in &reconnect_tab_ids {
+                                                        this.retry_disconnected_tab(tab_id, cx);
+                                                    }
+                                                    cx.notify();
+                                                })),
+                                        )
+                                        .child(
+                                            Button::new("tab-context-connect-all")
+                                                .ghost()
+                                                .w_full()
+                                                .justify_start()
+                                                .disabled(reconnect_all_tab_ids.is_empty())
+                                                .label(t!("tab_connect_all").to_string())
+                                                .on_click(cx.listener(move |this, _, _, cx| {
+                                                    this.tab_context_menu = None;
+                                                    for tab_id in &reconnect_all_tab_ids {
+                                                        this.retry_disconnected_tab(tab_id, cx);
+                                                    }
+                                                    cx.notify();
+                                                })),
+                                        )
+                                        .child(div().my_1().h(px(1.)).bg(cx.theme().border))
+                                        .child(
+                                            Button::new("tab-context-disconnect")
+                                                .ghost()
+                                                .w_full()
+                                                .justify_start()
+                                                .disabled(!is_connected_ssh)
+                                                .label(t!("tab_disconnect").to_string())
+                                                .on_click(cx.listener(move |this, _, _, cx| {
+                                                    this.tab_context_menu = None;
+                                                    this.disconnect_tab_group(&disconnect_gid, cx);
+                                                })),
+                                        )
+                                        .child(div().my_1().h(px(1.)).bg(cx.theme().border))
+                                        .child(
+                                            Button::new("tab-context-close")
+                                                .ghost()
+                                                .w_full()
+                                                .justify_start()
+                                                .disabled(close_tab_id.is_none())
+                                                .label(t!("tab_close").to_string())
+                                                .on_click(cx.listener(move |this, _, _, cx| {
+                                                    this.tab_context_menu = None;
+                                                    if let Some(tab_id) = close_tab_id.clone() {
+                                                        this.close_tab(tab_id, cx);
+                                                    } else {
+                                                        cx.notify();
+                                                    }
+                                                })),
+                                        )
+                                        .child(
+                                            Button::new("tab-context-close-others")
+                                                .ghost()
+                                                .w_full()
+                                                .justify_start()
+                                                .disabled(close_other_tab_ids.is_empty())
+                                                .label(t!("tab_close_others").to_string())
+                                                .on_click(cx.listener(move |this, _, _, cx| {
+                                                    this.tab_context_menu = None;
+                                                    for tab_id in &close_other_tab_ids {
+                                                        this.close_tab(tab_id.clone(), cx);
+                                                    }
+                                                    cx.notify();
+                                                })),
+                                        )
+                                        .child(
+                                            Button::new("tab-context-close-all")
+                                                .ghost()
+                                                .w_full()
+                                                .justify_start()
+                                                .disabled(close_all_tab_ids.is_empty())
+                                                .label(t!("tab_close_all").to_string())
+                                                .on_click(cx.listener(move |this, _, _, cx| {
+                                                    this.tab_context_menu = None;
+                                                    for tab_id in &close_all_tab_ids {
+                                                        this.close_tab(tab_id.clone(), cx);
+                                                    }
+                                                    cx.notify();
+                                                })),
+                                        )
+                                        .child(div().my_1().h(px(1.)).bg(cx.theme().border))
                                         .child(
                                             Button::new("tab-context-detach")
                                                 .ghost()

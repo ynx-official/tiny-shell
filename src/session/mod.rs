@@ -1322,6 +1322,42 @@ impl TinyShell {
         cx.notify();
     }
 
+    pub(crate) fn disconnect_tab_group(&mut self, group_id: &str, cx: &mut Context<Self>) {
+        let Some(group) = self.tab_groups.iter().find(|group| group.id == group_id) else {
+            return;
+        };
+        let tab_ids: Vec<String> = group
+            .pane_root
+            .tab_ids()
+            .iter()
+            .map(|tab_id| (*tab_id).to_string())
+            .collect();
+
+        if let Some(handle) = self.sftp_handles.remove(group_id) {
+            handle.close();
+        }
+
+        for tab_id in tab_ids {
+            if let Some(tab) = self
+                .tabs
+                .iter_mut()
+                .find(|tab| tab.id == tab_id && tab.kind == TabKind::Ssh)
+            {
+                if tab.connected {
+                    tab.connected = false;
+                    tab.status = rust_i18n::t!("tab_manually_disconnected").into();
+                    tab.disconnected_reason = Some(
+                        rust_i18n::t!("tab_manually_disconnected").to_string(),
+                    );
+                    tab.send_backend(BackendCommand::Close);
+                }
+            }
+        }
+
+        self.status = rust_i18n::t!("tab_manually_disconnected").into();
+        cx.notify();
+    }
+
     pub(crate) fn handle_tab_close(&mut self, id: String) {
         let removed_active_info = self.system_info_tabs.iter().any(|tab| {
             tab.source_tab_id == id
