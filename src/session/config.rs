@@ -24,7 +24,6 @@ pub enum AuthMethod {
     Config,
 }
 
-<<<<<<< HEAD
 /// A user-imported SSH private key managed by tiny-shell.
 ///
 /// The key file content is copied into `inline_content` at import time,
@@ -50,14 +49,14 @@ pub struct ManagedKey {
     /// Import timestamp (unix epoch seconds).
     #[serde(default)]
     pub created_at: i64,
-=======
+}
+
 fn default_protocol() -> String {
     "ssh".to_string()
 }
 
 fn default_baud_rate() -> u32 {
     115200
->>>>>>> e7ca7bdc2316edaa175f8ced4bb432f8508fe048
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

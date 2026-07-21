@@ -297,14 +297,11 @@ impl TinyShell {
         self.editing_session_id = None;
         self.ssh_auth_method = AuthMethod::Password;
         self.ssh_config_selected = None;
-<<<<<<< HEAD
-        self.managed_key_selected = None;
+self.managed_key_selected = None;
         self.managed_key_dialog_selection = None;
         self.editing_managed_key_id = None;
         self.using_custom_key_path = false;
-=======
         self.session_protocol = "ssh".to_string();
->>>>>>> e7ca7bdc2316edaa175f8ced4bb432f8508fe048
         Self::set_input_value(&self.session_name_input, "", window, cx);
         Self::set_input_value(&self.host_input, "", window, cx);
         Self::set_input_value(&self.port_input, "22", window, cx);
@@ -313,13 +310,10 @@ impl TinyShell {
         Self::set_input_value(&self.key_path_input, "", window, cx);
         Self::set_input_value(&self.key_inline_input, "", window, cx);
         Self::set_input_value(&self.passphrase_input, "", window, cx);
-<<<<<<< HEAD
-        Self::set_input_value(&self.key_import_remark_input, "", window, cx);
+Self::set_input_value(&self.key_import_remark_input, "", window, cx);
         Self::set_input_value(&self.key_import_passphrase_input, "", window, cx);
         self.key_import.close();
-=======
         Self::set_input_value(&self.baud_rate_input, "115200", window, cx);
->>>>>>> e7ca7bdc2316edaa175f8ced4bb432f8508fe048
         self.ssh_proxy_type = "none".to_string();
         Self::set_input_value(&self.proxy_host_input, "", window, cx);
         Self::set_input_value(&self.proxy_port_input, "", window, cx);
@@ -336,15 +330,12 @@ impl TinyShell {
         self.editing_session_id = Some(session.id.clone());
         self.session_group_selection = session.group.clone();
         self.ssh_auth_method = session.auth;
-<<<<<<< HEAD
-        // Restore managed key selection or custom path mode.
+// Restore managed key selection or custom path mode.
         self.managed_key_selected = session.managed_key_id.clone();
         self.using_custom_key_path = session.auth == AuthMethod::Key
             && session.managed_key_id.is_none()
             && !session.private_key_path.is_empty();
-=======
         self.session_protocol = session.protocol.clone();
->>>>>>> e7ca7bdc2316edaa175f8ced4bb432f8508fe048
         Self::set_input_value(&self.session_name_input, session.name.clone(), window, cx);
         Self::set_input_value(&self.host_input, session.host.clone(), window, cx);
         Self::set_input_value(&self.port_input, session.port.to_string(), window, cx);
@@ -1298,30 +1289,14 @@ impl TinyShell {
         self.tabs[ix].send_backend(BackendCommand::Close);
 
         if let Some(session) = session {
-<<<<<<< HEAD
-            // SSH tab: spawn new SSH connection
-            let backend = ssh::spawn_ssh_terminal(
-                self.runtime.handle(),
-                tab_id.to_string(),
-                session.clone(),
-                cols,
-                rows,
-                events.clone(),
-            );
-
-            // Swap the backend — the Term's internal listener shares the
-            // same Arc<Mutex<BackendTx>>, so user input is automatically
-            // routed to the new backend. Terminal history is preserved.
-            self.tabs[ix].set_backend(backend);
-=======
-            let tab_kind = self.tabs[ix].kind;
+let tab_kind = self.tabs[ix].kind;
             match tab_kind {
                 crate::terminal::TabKind::Serial => {
                     let backend = crate::backend::serial::spawn_serial_client(
                         self.runtime.handle(),
                         tab_id.to_string(),
                         session.clone(),
-                        self.events_tx.clone(),
+                        events.clone(),
                     );
                     self.tabs[ix].set_backend(crate::terminal::BackendTx::Serial(backend));
                 }
@@ -1332,13 +1307,16 @@ impl TinyShell {
                         session.clone(),
                         cols,
                         rows,
-                        self.events_tx.clone(),
+                        events.clone(),
                     );
+
+                    // Swap the backend — the Term's internal listener shares the
+                    // same Arc<Mutex<BackendTx>>, so user input is automatically
+                    // routed to the new backend. Terminal history is preserved.
                     self.tabs[ix].set_backend(backend);
                 }
                 _ => {}
             }
->>>>>>> e7ca7bdc2316edaa175f8ced4bb432f8508fe048
             self.tabs[ix].connected = false;
             self.tabs[ix].status = "connecting".into();
             self.tabs[ix].disconnected_reason = None;
@@ -1359,31 +1337,18 @@ impl TinyShell {
                     .and_then(|t| t.session.clone());
 
                 if let Some(session) = group_session {
-<<<<<<< HEAD
-                    if let Some(old_handle) = self.sftp_handles.remove(&group_id) {
-                        old_handle.close();
-                    }
-                    self.register_backend_route(group_id.clone(), cx);
-                    let sftp_handle = crate::sftp::spawn_sftp(
-                        self.runtime.handle(),
-                        group_id.clone(),
-                        session,
-                        events.clone(),
-                    );
-                    self.sftp_handles.insert(group_id.clone(), sftp_handle);
-=======
-                    if session.protocol != "serial" {
+if session.protocol != "serial" {
                         if let Some(old_handle) = self.sftp_handles.remove(&group_id) {
                             old_handle.close();
                         }
+                        self.register_backend_route(group_id.clone(), cx);
                         let sftp_handle = crate::sftp::spawn_sftp(
                             self.runtime.handle(),
                             group_id.clone(),
                             session,
-                            self.events_tx.clone(),
+                            events.clone(),
                         );
                         self.sftp_handles.insert(group_id.clone(), sftp_handle);
->>>>>>> e7ca7bdc2316edaa175f8ced4bb432f8508fe048
 
                         if let Some(group) = self.tab_groups.iter_mut().find(|g| g.id == group_id) {
                             if let Some(sftp) = group.sftp.as_mut() {
@@ -1797,6 +1762,15 @@ impl TinyShell {
             .map(|tab| tab.kind)
     }
 
+    pub(crate) fn active_ssh_session(&self) -> Option<(String, Session)> {
+        let active_id = self.active_tab.as_ref()?;
+        let tab = self.tabs.iter().find(|tab| &tab.id == active_id)?;
+        if !tab.connected {
+            return None;
+        }
+        Some((tab.id.clone(), tab.session.clone()?))
+    }
+
     pub(crate) fn active_session_id(&self) -> Option<&str> {
         self.active_tab
             .as_ref()
@@ -1805,9 +1779,7 @@ impl TinyShell {
             .map(|session| session.id.as_str())
     }
 
-<<<<<<< HEAD
-=======
-    pub(crate) fn session_detail(&self, session: &Session) -> String {
+pub(crate) fn session_detail(&self, session: &Session) -> String {
         if session.protocol == "serial" {
             format!("Serial: {}@{}", session.host, session.baud_rate)
         } else {
@@ -1815,7 +1787,6 @@ impl TinyShell {
         }
     }
 
->>>>>>> e7ca7bdc2316edaa175f8ced4bb432f8508fe048
     pub(crate) fn split_current_pane(&mut self, direction: &str, cx: &mut Context<Self>) {
         tracing::info!(
             "[split] direction={} pane_root={:?} focused_path={:?} active_tab={:?} tabs={}",

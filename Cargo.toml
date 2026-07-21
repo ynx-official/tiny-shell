@@ -56,13 +56,11 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 semver = "1"
 sha2 = "0.10"
 
-<<<<<<< HEAD
 [target.'cfg(windows)'.dependencies]
 winreg = "0.55"
-=======
+
 [dev-dependencies]
 libc = "0.2"
->>>>>>> e7ca7bdc2316edaa175f8ced4bb432f8508fe048
 
 [package.metadata.deb]
 maintainer = "tiny-shell contributors"

@@ -449,15 +449,12 @@ pub(crate) struct TinyShell {
     pub(crate) key_path_input: Entity<InputState>,
     pub(crate) key_inline_input: Entity<InputState>,
     pub(crate) passphrase_input: Entity<InputState>,
-<<<<<<< HEAD
-    pub(crate) key_import_remark_input: Entity<InputState>,
+pub(crate) key_import_remark_input: Entity<InputState>,
     pub(crate) key_import_passphrase_input: Entity<InputState>,
     pub(crate) key_import: KeyImportState,
     pub(crate) managed_key_dialog_selection: Option<String>,
-=======
     pub(crate) baud_rate_input: Entity<InputState>,
     pub(crate) session_protocol: String,
->>>>>>> e7ca7bdc2316edaa175f8ced4bb432f8508fe048
     pub(crate) ssh_proxy_type: String,
     pub(crate) proxy_host_input: Entity<InputState>,
     pub(crate) proxy_port_input: Entity<InputState>,
@@ -725,8 +722,7 @@ impl TinyShell {
                 .placeholder("SSH private key passphrase (optional)")
                 .masked(true)
         });
-<<<<<<< HEAD
-        let key_import_remark_input = cx.new(|cx| {
+let key_import_remark_input = cx.new(|cx| {
             InputState::new(window, cx).placeholder(t!("key_import_remark_placeholder").to_string())
         });
         let key_import_passphrase_input = cx.new(|cx| {
@@ -734,9 +730,7 @@ impl TinyShell {
                 .placeholder(t!("key_passphrase").to_string())
                 .masked(true)
         });
-=======
         let baud_rate_input = cx.new(|cx| InputState::new(window, cx).default_value("115200"));
->>>>>>> e7ca7bdc2316edaa175f8ced4bb432f8508fe048
         let proxy_host_input =
             cx.new(|cx| InputState::new(window, cx).placeholder(t!("proxy_host").to_string()));
         let proxy_port_input =
@@ -849,12 +843,9 @@ impl TinyShell {
             cx.subscribe_in(&key_path_input, window, Self::on_input_event),
             cx.subscribe_in(&key_inline_input, window, Self::on_input_event),
             cx.subscribe_in(&passphrase_input, window, Self::on_input_event),
-<<<<<<< HEAD
-            cx.subscribe_in(&key_import_remark_input, window, Self::on_input_event),
+cx.subscribe_in(&key_import_remark_input, window, Self::on_input_event),
             cx.subscribe_in(&key_import_passphrase_input, window, Self::on_input_event),
-=======
             cx.subscribe_in(&baud_rate_input, window, Self::on_input_event),
->>>>>>> e7ca7bdc2316edaa175f8ced4bb432f8508fe048
             cx.subscribe_in(&proxy_host_input, window, Self::on_input_event),
             cx.subscribe_in(&proxy_port_input, window, Self::on_input_event),
             cx.subscribe_in(&proxy_user_input, window, Self::on_input_event),
@@ -940,15 +931,12 @@ impl TinyShell {
             key_path_input,
             key_inline_input,
             passphrase_input,
-<<<<<<< HEAD
-            key_import_remark_input,
+key_import_remark_input,
             key_import_passphrase_input,
             key_import: KeyImportState::default(),
             managed_key_dialog_selection: None,
-=======
             baud_rate_input,
             session_protocol: "ssh".to_string(),
->>>>>>> e7ca7bdc2316edaa175f8ced4bb432f8508fe048
             ssh_proxy_type: "none".to_string(),
             proxy_host_input,
             proxy_port_input,
@@ -1768,34 +1756,20 @@ impl TinyShell {
             return;
         }
 
-<<<<<<< HEAD
-        let events = self.backend_events_sender(cx);
-        for (ix, tab_id, session) in retry_tabs {
-            self.register_backend_route(tab_id.clone(), cx);
-=======
+let events = self.backend_events_sender(cx);
         for (ix, tab_id, session, tab_kind) in retry_tabs {
->>>>>>> e7ca7bdc2316edaa175f8ced4bb432f8508fe048
+            self.register_backend_route(tab_id.clone(), cx);
             // Close old backend
             self.tabs[ix].send_backend(crate::terminal::BackendCommand::Close);
 
             // Spawn new backend
-<<<<<<< HEAD
-            let backend = crate::backend::ssh::spawn_ssh_terminal(
-                self.runtime.handle(),
-                tab_id.clone(),
-                session.clone(),
-                self.tabs[ix].cols,
-                self.tabs[ix].rows,
-                events.clone(),
-            );
-=======
             let backend = match tab_kind {
                 crate::terminal::TabKind::Serial => {
                     let b = crate::backend::serial::spawn_serial_client(
                         self.runtime.handle(),
                         tab_id.clone(),
                         session.clone(),
-                        self.events_tx.clone(),
+                        events.clone(),
                     );
                     crate::terminal::BackendTx::Serial(b)
                 }
@@ -1806,13 +1780,12 @@ impl TinyShell {
                         session.clone(),
                         self.tabs[ix].cols,
                         self.tabs[ix].rows,
-                        self.events_tx.clone(),
+                        events.clone(),
                     );
                     b
                 }
                 _ => continue,
             };
->>>>>>> e7ca7bdc2316edaa175f8ced4bb432f8508fe048
 
             // Replace tab state
             self.tabs[ix].set_backend(backend);
@@ -1835,31 +1808,18 @@ impl TinyShell {
                     .and_then(|t| t.session.clone());
 
                 if let Some(session) = group_session {
-<<<<<<< HEAD
-                    if let Some(old_handle) = self.sftp_handles.remove(&group_id) {
-                        old_handle.close();
-                    }
-                    self.register_backend_route(group_id.clone(), cx);
-                    let sftp_handle = crate::sftp::spawn_sftp(
-                        self.runtime.handle(),
-                        group_id.clone(),
-                        session,
-                        events.clone(),
-                    );
-                    self.sftp_handles.insert(group_id.clone(), sftp_handle);
-=======
-                    if session.protocol != "serial" {
+if session.protocol != "serial" {
                         if let Some(old_handle) = self.sftp_handles.remove(&group_id) {
                             old_handle.close();
                         }
+                        self.register_backend_route(group_id.clone(), cx);
                         let sftp_handle = crate::sftp::spawn_sftp(
                             self.runtime.handle(),
                             group_id.clone(),
                             session,
-                            self.events_tx.clone(),
+                            events.clone(),
                         );
                         self.sftp_handles.insert(group_id.clone(), sftp_handle);
->>>>>>> e7ca7bdc2316edaa175f8ced4bb432f8508fe048
 
                         if let Some(group) = self.tab_groups.iter_mut().find(|g| g.id == group_id) {
                             if let Some(sftp) = group.sftp.as_mut() {
