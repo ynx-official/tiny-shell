@@ -78,7 +78,10 @@ brew update && brew upgrade tiny-shell --cask
 
 ### Windows
 
-从 [Releases 页面](https://github.com/ynx-official/tiny-shell/releases/latest) 下载 `tiny-shell-*-windows-x86_64.zip`，解压后运行 `tiny-shell.exe`。
+从 [Releases 页面](https://github.com/ynx-official/tiny-shell/releases/latest) 选择需要的版本：
+
+- **安装版**：下载 `tiny-shell-*-windows-x86_64-setup.exe`，运行安装向导。支持开始菜单快捷方式、可选桌面快捷方式及系统卸载入口。
+- **便携版**：下载 `tiny-shell-*-windows-x86_64-portable.zip`，解压后直接运行 `tiny-shell.exe`，无需安装。
 
 ### Linux
 

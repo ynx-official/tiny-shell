@@ -78,7 +78,10 @@ Download `tiny-shell-*-macos-*.zip` from the [Releases page](https://github.com/
 
 ### Windows
 
-Download `tiny-shell-*-windows-x86_64.zip` from the [Releases page](https://github.com/ynx-official/tiny-shell/releases/latest), unzip, and run `tiny-shell.exe`.
+Choose either package from the [Releases page](https://github.com/ynx-official/tiny-shell/releases/latest):
+
+- **Installer**: Download `tiny-shell-*-windows-x86_64-setup.exe` and follow the setup wizard. It provides a Start Menu shortcut, an optional desktop shortcut, and a standard uninstall entry.
+- **Portable**: Download `tiny-shell-*-windows-x86_64-portable.zip`, extract it, and run `tiny-shell.exe` without installation.
 
 ### Linux
 

@@ -74,7 +74,17 @@ jobs:
       - name: Build (release)
         run: cargo build  --release --target ${{ matrix.target }}
 
-      - name: Package
+      - name: Ensure Inno Setup is available
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path -LiteralPath $iscc)) {
+            choco install innosetup --no-progress --yes
+          }
+
+      - name: Package (macOS / Linux)
+        if: runner.os != 'Windows'
         shell: bash
         run: |
           set -eu
@@ -135,27 +145,39 @@ jobs:
 
             # Package with ditto (Apple's tool) to preserve signature/metadata
             ditto -c -k --keepParent "$APP" "${STAGE}.zip"
-            echo "ASSET=${STAGE}.zip" >> "$GITHUB_ENV"
-
-          elif [ "${{ runner.os }}" = "Windows" ]; then
-            mkdir "$STAGE"
-            cp "target/${{ matrix.target }}/release/${{ matrix.bin }}" "$STAGE/"
-            7z a "${STAGE}.zip" "$STAGE" >/dev/null
-            echo "ASSET=${STAGE}.zip" >> "$GITHUB_ENV"
+            echo "ASSETS=${STAGE}.zip" >> "$GITHUB_ENV"
 
           else
             # Linux
             mkdir "$STAGE"
             cp "target/${{ matrix.target }}/release/${{ matrix.bin }}" "$STAGE/"
             tar -czf "${STAGE}.tar.gz" "$STAGE"
-            echo "ASSET=${STAGE}.tar.gz" >> "$GITHUB_ENV"
+            echo "ASSETS=${STAGE}.tar.gz" >> "$GITHUB_ENV"
           fi
+
+      - name: Package Windows portable and installer editions
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $version = $env:GITHUB_REF_NAME
+          ./scripts/package-windows.ps1 `
+            -Version $version `
+            -Target "${{ matrix.target }}" `
+            -OutputDir "dist" `
+            -SkipBuild
+
+          $portable = "dist/tiny-shell-$version-windows-x86_64-portable.zip"
+          $installer = "dist/tiny-shell-$version-windows-x86_64-setup.exe"
+          "ASSETS<<EOF" | Out-File -FilePath $env:GITHUB_ENV -Append
+          $portable | Out-File -FilePath $env:GITHUB_ENV -Append
+          $installer | Out-File -FilePath $env:GITHUB_ENV -Append
+          "EOF" | Out-File -FilePath $env:GITHUB_ENV -Append
 
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.name }}
-          path: ${{ env.ASSET }}
+          path: ${{ env.ASSETS }}
 
   publish:
     name: Publish Release

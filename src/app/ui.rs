@@ -1853,33 +1853,13 @@ impl TinyShell {
             .border_color(cx.theme().sidebar_border)
             .bg(cx.theme().sidebar)
             .child(
-                h_flex()
-                    .items_center()
-                    .gap_2()
-                    .child(
-                        div()
-                            .font_weight(FontWeight::BOLD)
-                            .text_size(rems(1.5))
-                            .text_color(cx.theme().primary)
-                            .child("tiny-shell"),
-                    )
-                    .child(
-                        div()
-                            .text_size(rems(0.75))
-                            .text_color(cx.theme().muted_foreground)
-                            .child("WORKSPACE"),
-                    )
-                    .child(div().flex_1())
-                    .child(
-                        Button::new("overview-sidebar-settings")
-                            .ghost()
-                            .icon(IconName::Settings)
-                            .tooltip(t!("settings_open_settings").to_string())
-                            .on_click(cx.listener(|this, _, _window, cx| {
-                                this.home_page = HomePage::Settings;
-                                cx.notify();
-                            })),
-                    ),
+                h_flex().w_full().items_center().justify_center().child(
+                    div()
+                        .font_weight(FontWeight::BOLD)
+                        .text_size(rems(1.5))
+                        .text_color(cx.theme().primary)
+                        .child("tiny-shell"),
+                ),
             )
             .child(
                 v_flex()
@@ -2056,32 +2036,6 @@ impl TinyShell {
                     ),
             )
             .child(div().flex_1())
-            .child(
-                v_flex()
-                    .gap_2()
-                    .pt_4()
-                    .border_t_1()
-                    .border_color(cx.theme().border)
-                    .child(
-                        Button::new("overview-sidebar-new-ssh")
-                            .primary()
-                            .icon(IconName::Plus)
-                            .label(t!("overview_new_connection").to_string())
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.open_new_ssh_dialog(window, cx)
-                            })),
-                    )
-                    .child(
-                        div()
-                            .text_size(rems(0.75))
-                            .text_color(cx.theme().muted_foreground)
-                            .child(format!(
-                                "{} {}",
-                                self.config.sessions().len(),
-                                t!("overview_saved_count")
-                            )),
-                    ),
-            )
     }
 
     pub(crate) fn toggle_sftp_minimized(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -4209,16 +4163,6 @@ impl TinyShell {
                                 let _ = this.config.save();
                                 cx.notify();
                             })),
-                    )
-                    .child(
-                        Button::new("sidebar-settings")
-                            .ghost()
-                            .small()
-                            .icon(IconName::Settings)
-                            .tooltip(t!("settings_open_settings").to_string())
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.show_settings_dialog(window, cx)
-                            })),
                     ),
             )
             .child(
@@ -5273,43 +5217,18 @@ impl TinyShell {
                     .gap_1()
                     .pr(px(6.))
                     .child(
-                        Button::new("split-horizontal")
+                        Button::new("tab-bar-settings")
                             .secondary()
                             .small()
                             .rounded(px(999.))
-                            .icon(IconName::PanelBottom)
-                            .tooltip(t!("settings_split_pane_down").to_string())
+                            .icon(IconName::Settings)
+                            .tooltip(t!("settings_open_settings").to_string())
                             .on_click(cx.listener(|this, _, window, cx| {
                                 window.prevent_default();
                                 cx.stop_propagation();
-                                this.split_current_pane("down", cx);
+                                this.show_settings_dialog(window, cx);
                             })),
-                    )
-                    .child(
-                        Button::new("split-vertical")
-                            .secondary()
-                            .small()
-                            .rounded(px(999.))
-                            .icon(IconName::PanelRight)
-                            .tooltip(t!("settings_split_pane_right").to_string())
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                window.prevent_default();
-                                cx.stop_propagation();
-                                this.split_current_pane("right", cx);
-                            })),
-                    )
-                    .child(
-                        Button::new("new-window")
-                            .secondary()
-                            .small()
-                            .rounded(px(999.))
-                            .icon(IconName::ExternalLink)
-                            .tooltip(t!("settings_new_window").to_string())
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.open_new_window(cx);
-                            })),
-                    )
-                    .child(self.render_search_button(cx)),
+                    ),
             )
     }
 

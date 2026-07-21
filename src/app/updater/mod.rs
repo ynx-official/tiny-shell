@@ -58,6 +58,31 @@ struct GitHubAsset {
     size: u64,
 }
 
+fn select_release_asset<'a>(
+    assets: &'a [GitHubAsset],
+    platform: &str,
+    archive_extension: &str,
+) -> Option<&'a GitHubAsset> {
+    let is_archive = |asset: &&GitHubAsset| {
+        asset.name.contains(platform) && asset.name.ends_with(archive_extension)
+    };
+
+    // Windows releases contain both a setup executable and a portable ZIP.
+    // The updater follows the release naming contract exactly and only accepts
+    // the explicitly identified portable archive.
+    if platform.starts_with("windows-") {
+        assets
+            .iter()
+            .find(|asset| {
+                asset.name.contains(platform)
+                    && asset.name.contains("-portable.")
+                    && asset.name.ends_with(archive_extension)
+            })
+    } else {
+        assets.iter().find(is_archive)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct UpdateInfo {
     pub version: String,
@@ -119,14 +144,7 @@ pub async fn check_for_update() -> anyhow::Result<Option<UpdateInfo>> {
     // Find the asset matching our platform.
     let platform = platform_name();
     let ext = archive_extension();
-    let asset = release
-        .assets
-        .iter()
-        .find(|a| a.name.contains(platform) && a.name.ends_with(ext))
-        .or_else(|| {
-            // Fallback: match any asset containing the platform name
-            release.assets.iter().find(|a| a.name.contains(platform))
-        });
+    let asset = select_release_asset(&release.assets, platform, ext);
 
     let Some(asset) = asset else {
         anyhow::bail!(
@@ -418,4 +436,38 @@ fn install_windows(
 
     tracing::info!("update batch script launched, exiting");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{GitHubAsset, select_release_asset};
+
+    fn asset(name: &str) -> GitHubAsset {
+        GitHubAsset {
+            name: name.to_string(),
+            browser_download_url: format!("https://example.invalid/{name}"),
+            size: 1,
+        }
+    }
+
+    #[test]
+    fn windows_updater_prefers_portable_archive_over_installer() {
+        let assets = vec![
+            asset("tiny-shell-v1.1.0-windows-x86_64-setup.exe"),
+            asset("tiny-shell-v1.1.0-windows-x86_64-portable.zip"),
+        ];
+
+        let selected = select_release_asset(&assets, "windows-x86_64", "zip").unwrap();
+        assert_eq!(
+            selected.name,
+            "tiny-shell-v1.1.0-windows-x86_64-portable.zip"
+        );
+    }
+
+    #[test]
+    fn windows_updater_never_treats_installer_as_archive() {
+        let assets = vec![asset("tiny-shell-v1.1.0-windows-x86_64-setup.exe")];
+
+        assert!(select_release_asset(&assets, "windows-x86_64", "zip").is_none());
+    }
 }

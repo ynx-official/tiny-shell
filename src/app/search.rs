@@ -321,22 +321,6 @@ impl TinyShell {
         Some(map)
     }
 
-    /// Render the search button (used in the tab bar).
-    pub(crate) fn render_search_button(&self, cx: &mut Context<Self>) -> impl gpui::IntoElement {
-        // Wrap in a div so .hover() doesn't conflict with Button's internal hover.
-        div().child(
-            Button::new("search-btn")
-                .ghost()
-                .small()
-                .rounded(px(999.))
-                .icon(IconName::Search)
-                .tooltip(t!("search").to_string())
-                .on_click(cx.listener(|this, _, window, cx| {
-                    this.toggle_search(window, cx);
-                })),
-        )
-    }
-
     /// Render the expanded search bar overlay (when search is active).
     pub(crate) fn render_search_bar(
         &mut self,
