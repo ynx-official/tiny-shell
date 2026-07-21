@@ -945,7 +945,7 @@ impl TinyShell {
         let view = cx.entity();
         div()
             .size_full()
-            .p_2()
+            .p_6()
             .bg(cx.theme().muted.opacity(0.18))
             .child(
                 div()
@@ -1014,12 +1014,11 @@ impl TinyShell {
 
         v_flex()
             .size_full()
-            .p_4()
-            .gap_3()
+            .p_6()
+            .gap_5()
             .child(
                 h_flex()
                     .flex_none()
-                    .h(px(60.))
                     .items_center()
                     .gap_2()
                     .child(
@@ -1033,7 +1032,6 @@ impl TinyShell {
                             )
                             .child(
                                 div()
-                                    .text_size(rems(0.917))
                                     .text_color(cx.theme().muted_foreground)
                                     .child(t!("overview_connections_desc")),
                             ),
@@ -1536,12 +1534,11 @@ impl TinyShell {
 
         v_flex()
             .size_full()
-            .p_4()
-            .gap_3()
+            .p_6()
+            .gap_5()
             .child(
                 h_flex()
                     .flex_none()
-                    .h(px(60.))
                     .items_center()
                     .child(
                         v_flex()
@@ -1554,7 +1551,6 @@ impl TinyShell {
                             )
                             .child(
                                 div()
-                                    .text_size(rems(0.917))
                                     .text_color(cx.theme().muted_foreground)
                                     .child(t!("key_management_desc")),
                             ),
@@ -1777,12 +1773,66 @@ impl TinyShell {
             )
     }
 
+    fn render_overview_nav_item(
+        &self,
+        id: &'static str,
+        page: HomePage,
+        icon: IconName,
+        label: String,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let active = self.home_page == page;
+        let hover_background = if active {
+            cx.theme().tab_active
+        } else {
+            cx.theme().secondary
+        };
+
+        div()
+            .id(id)
+            .w_full()
+            .h(px(42.))
+            .flex_none()
+            .cursor_pointer()
+            .rounded_md()
+            .bg(if active {
+                cx.theme().tab_active
+            } else {
+                cx.theme().sidebar
+            })
+            .text_color(if active {
+                cx.theme().primary
+            } else {
+                cx.theme().foreground
+            })
+            .hover(move |this| this.bg(hover_background))
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.home_page = page;
+                cx.notify();
+            }))
+            .child(
+                h_flex()
+                    .size_full()
+                    .items_center()
+                    .gap_3()
+                    .px_3()
+                    .child(
+                        h_flex()
+                            .w(px(18.))
+                            .flex_none()
+                            .justify_center()
+                            .child(Icon::new(icon).with_size(Size::Small)),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .font_weight(FontWeight::MEDIUM)
+                            .child(label),
+                    ),
+            )
+    }
+
     fn render_overview_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let is_overview = self.home_page == HomePage::Overview;
-        let is_connections = self.home_page == HomePage::Connections;
-        let is_commands = self.home_page == HomePage::Commands;
-        let is_key_manager = self.home_page == HomePage::KeyManager;
-        let is_settings = self.home_page == HomePage::Settings;
         let has_update = matches!(
             self.updater_status,
             Some(crate::app::updater::UpdateStatus::UpdateAvailable(_))
@@ -1843,176 +1893,41 @@ impl TinyShell {
             .child(
                 v_flex()
                     .gap_1()
-                    .child(
-                        div()
-                            .id("overview-sidebar-overview")
-                            .w_full()
-                            .cursor_pointer()
-                            .hover(|this| this.bg(cx.theme().secondary))
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.home_page = HomePage::Overview;
-                                cx.notify();
-                            }))
-                            .child(
-                                h_flex()
-                                    .items_center()
-                                    .gap_3()
-                                    .p_3()
-                                    .rounded_md()
-                                    .bg(if is_overview {
-                                        cx.theme().tab_active
-                                    } else {
-                                        cx.theme().sidebar
-                                    })
-                                    .text_color(if is_overview {
-                                        cx.theme().primary
-                                    } else {
-                                        cx.theme().foreground
-                                    })
-                                    .child(
-                                        Icon::new(IconName::SquareTerminal).with_size(Size::Small),
-                                    )
-                                    .child(
-                                        div().font_weight(FontWeight::MEDIUM).child(t!("overview")),
-                                    ),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .id("overview-sidebar-connections")
-                            .w_full()
-                            .cursor_pointer()
-                            .rounded_md()
-                            .hover(|this| this.bg(cx.theme().secondary))
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.home_page = HomePage::Connections;
-                                cx.notify();
-                            }))
-                            .child(
-                                h_flex()
-                                    .items_center()
-                                    .gap_3()
-                                    .p_3()
-                                    .bg(if is_connections {
-                                        cx.theme().tab_active
-                                    } else {
-                                        cx.theme().sidebar
-                                    })
-                                    .text_color(if is_connections {
-                                        cx.theme().primary
-                                    } else {
-                                        cx.theme().foreground
-                                    })
-                                    .child(Icon::new(IconName::Network).with_size(Size::Small))
-                                    .child(
-                                        div()
-                                            .font_weight(FontWeight::MEDIUM)
-                                            .child(t!("overview_connections")),
-                                    ),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .id("overview-sidebar-commands")
-                            .w_full()
-                            .cursor_pointer()
-                            .rounded_md()
-                            .hover(|this| this.bg(cx.theme().secondary))
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.home_page = HomePage::Commands;
-                                cx.notify();
-                            }))
-                            .child(
-                                h_flex()
-                                    .items_center()
-                                    .gap_3()
-                                    .p_3()
-                                    .bg(if is_commands {
-                                        cx.theme().tab_active
-                                    } else {
-                                        cx.theme().sidebar
-                                    })
-                                    .text_color(if is_commands {
-                                        cx.theme().primary
-                                    } else {
-                                        cx.theme().foreground
-                                    })
-                                    .child(
-                                        Icon::new(IconName::SquareTerminal).with_size(Size::Small),
-                                    )
-                                    .child(
-                                        div()
-                                            .font_weight(FontWeight::MEDIUM)
-                                            .child(t!("command_manager")),
-                                    ),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .id("overview-sidebar-key-management")
-                            .w_full()
-                            .cursor_pointer()
-                            .rounded_md()
-                            .hover(|this| this.bg(cx.theme().secondary))
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.home_page = HomePage::KeyManager;
-                                cx.notify();
-                            }))
-                            .child(
-                                h_flex()
-                                    .items_center()
-                                    .gap_3()
-                                    .p_3()
-                                    .bg(if is_key_manager {
-                                        cx.theme().tab_active
-                                    } else {
-                                        cx.theme().sidebar
-                                    })
-                                    .text_color(if is_key_manager {
-                                        cx.theme().primary
-                                    } else {
-                                        cx.theme().foreground
-                                    })
-                                    .child(Icon::new(IconName::Folder).with_size(Size::Small))
-                                    .child(
-                                        div()
-                                            .font_weight(FontWeight::MEDIUM)
-                                            .child(t!("overview_key_manager")),
-                                    ),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .id("overview-sidebar-settings-link")
-                            .w_full()
-                            .cursor_pointer()
-                            .rounded_md()
-                            .hover(|this| this.bg(cx.theme().secondary))
-                            .on_click(cx.listener(|this, _, _window, cx| {
-                                this.home_page = HomePage::Settings;
-                                cx.notify();
-                            }))
-                            .child(
-                                h_flex()
-                                    .items_center()
-                                    .gap_3()
-                                    .p_3()
-                                    .text_color(if is_settings {
-                                        cx.theme().primary
-                                    } else {
-                                        cx.theme().foreground
-                                    })
-                                    .bg(if is_settings {
-                                        cx.theme().tab_active
-                                    } else {
-                                        cx.theme().sidebar
-                                    })
-                                    .child(Icon::new(IconName::Settings).with_size(Size::Small))
-                                    .child(
-                                        div().font_weight(FontWeight::MEDIUM).child(t!("settings")),
-                                    ),
-                            ),
-                    ),
+                    .child(self.render_overview_nav_item(
+                        "overview-sidebar-overview",
+                        HomePage::Overview,
+                        IconName::SquareTerminal,
+                        t!("overview").to_string(),
+                        cx,
+                    ))
+                    .child(self.render_overview_nav_item(
+                        "overview-sidebar-connections",
+                        HomePage::Connections,
+                        IconName::Network,
+                        t!("overview_connections").to_string(),
+                        cx,
+                    ))
+                    .child(self.render_overview_nav_item(
+                        "overview-sidebar-commands",
+                        HomePage::Commands,
+                        IconName::SquareTerminal,
+                        t!("command_manager").to_string(),
+                        cx,
+                    ))
+                    .child(self.render_overview_nav_item(
+                        "overview-sidebar-key-management",
+                        HomePage::KeyManager,
+                        IconName::Folder,
+                        t!("overview_key_manager").to_string(),
+                        cx,
+                    ))
+                    .child(self.render_overview_nav_item(
+                        "overview-sidebar-settings-link",
+                        HomePage::Settings,
+                        IconName::Settings,
+                        t!("settings").to_string(),
+                        cx,
+                    )),
             )
             .child(div().flex_1())
     }
