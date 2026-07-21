@@ -4,7 +4,7 @@ use gpui::{
     Anchor, AnyElement, Animation, AnimationExt as _, Context, ElementId, Focusable as _,
     FontWeight, Hsla, InteractiveElement as _, IntoElement, MouseButton, MouseDownEvent,
     ParentElement as _, PathBuilder, Pixels, Render, StatefulInteractiveElement as _,
-    Styled as _, Window, canvas, deferred, div, ease_in_out, hsla, point,
+    Styled as _, Window, canvas, deferred, div, ease_out_quint, hsla, point,
     prelude::FluentBuilder as _, px, relative, rems, uniform_list,
 };
 use gpui_component::{
@@ -1869,7 +1869,8 @@ impl TinyShell {
             )
             .with_animation(
                 ElementId::NamedInteger(format!("{}-nav-anim", id).into(), epoch),
-                Animation::new(Duration::from_millis(180)).with_easing(ease_in_out),
+                Animation::new(Duration::from_millis(220))
+                    .with_easing(ease_out_quint()),
                 move |this, delta| {
                     this.bg(lerp_hsla(from_bg, target_bg, delta))
                         .text_color(lerp_hsla(from_text, target_text, delta))
@@ -2391,9 +2392,9 @@ impl TinyShell {
                                 "sftp-content-fade".into(),
                                 self.sftp_minimize_epoch,
                             ),
-                            Animation::new(Duration::from_millis(160))
-                                .with_easing(ease_in_out),
-                            |this, delta| this.opacity(delta),
+                            Animation::new(Duration::from_millis(240))
+                                .with_easing(ease_out_quint()),
+                            |this, delta| this.opacity(delta * delta),
                         ),
                 );
             outer = outer.child(
@@ -2965,8 +2966,9 @@ impl TinyShell {
                         "sftp-content-fade".into(),
                         sftp_minimize_epoch,
                     ),
-                    Animation::new(Duration::from_millis(160)).with_easing(ease_in_out),
-                    |this, delta| this.opacity(delta),
+                    Animation::new(Duration::from_millis(240))
+                        .with_easing(ease_out_quint()),
+                    |this, delta| this.opacity(delta * delta),
                 ),
         );
 
@@ -4538,9 +4540,9 @@ impl TinyShell {
                                                             "ip-popover-fade".into(),
                                                             self.ip_popover_hide_generation,
                                                         ),
-                                                        Animation::new(Duration::from_millis(120))
-                                                            .with_easing(ease_in_out),
-                                                        |this, delta| this.opacity(delta),
+                                                        Animation::new(Duration::from_millis(180))
+                                                            .with_easing(ease_out_quint()),
+                                                        |this, delta| this.opacity(delta * delta),
                                                     )
                                                 )
                                                 .priority(10),
@@ -6244,17 +6246,21 @@ impl Render for TinyShell {
             }
         };
 
-        // Wrap the main content in a fade-in animation that restarts whenever
-        // the active view (home page / terminal tab / system info page) changes.
-        // `main_view_key` acts as the epoch: a different key produces a new
-        // animation ID, so with_animation replays from frame 0.
+        // Wrap the main content in a slide-and-fade animation that restarts
+        // whenever the active view (home page / terminal tab / system info
+        // page) changes. `main_view_key` acts as the epoch: a different key
+        // produces a new animation ID, so with_animation replays from frame 0.
+        // Starting from opacity 0 + a small upward translate gives a real
+        // "page transition" feel instead of a flash.
         let main_content = div()
             .size_full()
+            .overflow_hidden()
             .child(main_content_raw)
             .with_animation(
                 ElementId::NamedInteger("main-content-fade".into(), main_view_key),
-                Animation::new(Duration::from_millis(160)).with_easing(ease_in_out),
-                |this, delta| this.opacity(0.35 + 0.65 * delta),
+                Animation::new(Duration::from_millis(260))
+                    .with_easing(ease_out_quint()),
+                |this, delta| this.opacity(delta * delta),
             );
 
         let workspace = if self.sidebar_collapsed {
@@ -6269,15 +6275,16 @@ impl Render for TinyShell {
                         .child(
                             div()
                                 .size_full()
+                                .overflow_hidden()
                                 .child(self.render_collapsed_sidebar(cx))
                                 .with_animation(
                                     ElementId::NamedInteger(
                                         "sidebar-collapsed-fade".into(),
                                         collapsed_epoch,
                                     ),
-                                    Animation::new(Duration::from_millis(180))
-                                        .with_easing(ease_in_out),
-                                    |this, delta| this.opacity(0.4 + 0.6 * delta),
+                                    Animation::new(Duration::from_millis(260))
+                                        .with_easing(ease_out_quint()),
+                                    |this, delta| this.opacity(delta * delta),
                                 ),
                         ),
                 )
@@ -6316,11 +6323,13 @@ impl Render for TinyShell {
             };
             let sidebar_content = div()
                 .size_full()
+                .overflow_hidden()
                 .child(sidebar_content_raw)
                 .with_animation(
                     ElementId::NamedInteger("sidebar-expanded-fade".into(), sidebar_epoch),
-                    Animation::new(Duration::from_millis(180)).with_easing(ease_in_out),
-                    |this, delta| this.opacity(0.4 + 0.6 * delta),
+                    Animation::new(Duration::from_millis(260))
+                        .with_easing(ease_out_quint()),
+                    |this, delta| this.opacity(delta * delta),
                 );
 
             let sidebar_area = resizable_panel()
@@ -6577,14 +6586,16 @@ impl Render for TinyShell {
                                 )
                                 .with_animation(
                                     ElementId::NamedInteger("sftp-menu-card".into(), menu_epoch),
-                                    Animation::new(Duration::from_millis(120)).with_easing(ease_in_out),
-                                    |this, delta| this.opacity(delta),
+                                    Animation::new(Duration::from_millis(180))
+                                        .with_easing(ease_out_quint()),
+                                    |this, delta| this.opacity(delta * delta),
                                 ),
                         )
                         .with_animation(
                             ElementId::NamedInteger("sftp-menu-scrim".into(), menu_epoch),
-                            Animation::new(Duration::from_millis(100)).with_easing(ease_in_out),
-                            |this, delta| this.opacity(delta),
+                            Animation::new(Duration::from_millis(160))
+                                .with_easing(ease_out_quint()),
+                            |this, delta| this.opacity(delta * 0.5),
                         ),
                 )
             })
@@ -6823,14 +6834,16 @@ impl Render for TinyShell {
                                 )
                                 .with_animation(
                                     ElementId::NamedInteger("tab-menu-card".into(), tab_menu_epoch),
-                                    Animation::new(Duration::from_millis(120)).with_easing(ease_in_out),
-                                    |this, delta| this.opacity(delta),
+                                    Animation::new(Duration::from_millis(180))
+                                        .with_easing(ease_out_quint()),
+                                    |this, delta| this.opacity(delta * delta),
                                 ),
                         )
                         .with_animation(
                             ElementId::NamedInteger("tab-menu-scrim".into(), tab_menu_epoch),
-                            Animation::new(Duration::from_millis(100)).with_easing(ease_in_out),
-                            |this, delta| this.opacity(delta),
+                            Animation::new(Duration::from_millis(160))
+                                .with_easing(ease_out_quint()),
+                            |this, delta| this.opacity(delta * 0.5),
                         ),
                 )
             })
