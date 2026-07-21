@@ -6,8 +6,8 @@ pub mod store;
 use std::collections::{HashMap, HashSet};
 
 use gpui::{
-    AnyWindowHandle, AppContext as _, Context, Entity, KeyDownEvent, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, Pixels, Point, SharedString, Window, px,
+    AnyWindowHandle, App, AppContext as _, Context, Entity, KeyDownEvent, MouseButton,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, SharedString, Window, px,
 };
 use gpui_component::{Theme, WindowExt as _, input::InputState};
 use rust_i18n::t;
@@ -2093,32 +2093,42 @@ impl TinyShell {
     /// Detach a complete tab group to a new window without recreating its
     /// terminal or SFTP backends. Window creation and route handoff form the
     /// prepare step; any failure restores the original group in place.
-    pub(crate) fn detach_group_to_new_window(&mut self, group_id: &str, cx: &mut Context<Self>) {
-        let source_owner_id = self.session_owner_id;
-        let transfer = match self.take_group_transfer(group_id) {
-            Ok(transfer) => transfer,
+    fn detach_group_to_new_window(source: Entity<Self>, group_id: String, cx: &mut App) {
+        let prepared = source.update(cx, |this, _| {
+            this.take_group_transfer(&group_id)
+                .map(|transfer| (transfer, this.session_owner_id, this.session_store.clone()))
+        });
+
+        let (transfer, source_owner_id, session_store) = match prepared {
+            Ok(prepared) => prepared,
             Err(message) => {
-                self.status = message.into();
-                cx.notify();
+                source.update(cx, |this, cx| {
+                    this.status = message.into();
+                    cx.notify();
+                });
                 return;
             }
         };
 
-        match crate::app::startup::open_new_window_with_group(
+        let result = crate::app::startup::open_new_window_with_group(
             transfer,
             source_owner_id,
-            self.session_store.clone(),
+            session_store,
             cx,
-        ) {
-            Ok(()) => {
-                self.status = "tab group detached to new window".into();
+        );
+
+        source.update(cx, |this, cx| {
+            match result {
+                Ok(()) => {
+                    this.status = "tab group detached to new window".into();
+                }
+                Err((message, transfer)) => {
+                    this.restore_group_transfer(transfer, cx);
+                    this.status = format!("failed to detach tab group: {message}").into();
+                }
             }
-            Err((message, transfer)) => {
-                self.restore_group_transfer(transfer, cx);
-                self.status = format!("failed to detach tab group: {message}").into();
-            }
-        }
-        cx.notify();
+            cx.notify();
+        });
     }
 
     // ─── Tab drag, reorder, detach and merge ──────────────────────────
@@ -2492,7 +2502,10 @@ impl TinyShell {
                 }
             }
             DropIntent::Detach { group_id } => {
-                self.detach_group_to_new_window(&group_id, cx);
+                let source = cx.entity();
+                window.defer(cx, move |_window, cx| {
+                    Self::detach_group_to_new_window(source, group_id, cx);
+                });
             }
             DropIntent::None | DropIntent::Cancelled => cx.notify(),
         }
