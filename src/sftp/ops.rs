@@ -291,6 +291,7 @@ impl TinyShell {
         position: Point<Pixels>,
         cx: &mut Context<Self>,
     ) {
+        self.context_menu_epoch = self.context_menu_epoch.wrapping_add(1);
         self.sftp_context_menu = Some(SftpContextMenuState {
             remote_path,
             is_dir,

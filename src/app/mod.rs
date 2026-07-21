@@ -519,6 +519,12 @@ pub(crate) struct TinyShell {
     pub(crate) prev_home_page: HomePage,
     /// Increments each time the home page changes, used as an animation epoch.
     pub(crate) home_page_epoch: u64,
+    /// Increments each time the SFTP panel is minimized or expanded, used as
+    /// an animation epoch for the panel content fade-in.
+    pub(crate) sftp_minimize_epoch: u64,
+    /// Increments each time the sidebar is collapsed or expanded, used as an
+    /// animation epoch for the sidebar content fade-in.
+    pub(crate) sidebar_collapse_epoch: u64,
     pub(crate) connection_group_filter: Option<String>,
     /// Bounds of the visible group rows, used to calculate a drop position.
     pub(crate) connection_group_bounds: HashMap<String, Bounds<Pixels>>,
@@ -546,6 +552,9 @@ pub(crate) struct TinyShell {
     pub(crate) pending_sftp_tree_scroll_path: Option<String>,
     pub(crate) sftp_context_menu: Option<SftpContextMenuState>,
     pub(crate) tab_context_menu: Option<TabContextMenuState>,
+    /// Increments each time a context menu is opened, used as an animation
+    /// epoch so the menu fade-in restarts on every open.
+    pub(crate) context_menu_epoch: u64,
     pub(crate) sftp_creating_folder: bool,
     pub(crate) sftp_new_folder_input: Entity<InputState>,
     pub(crate) sftp_delete_scroll_handle: gpui::ScrollHandle,
@@ -994,6 +1003,8 @@ impl TinyShell {
             home_page: HomePage::default(),
             prev_home_page: HomePage::default(),
             home_page_epoch: 0,
+            sftp_minimize_epoch: 0,
+            sidebar_collapse_epoch: 0,
             connection_group_filter: None,
             connection_group_bounds: HashMap::new(),
             pending_connection_group_drag: None,
@@ -1023,6 +1034,7 @@ impl TinyShell {
             pending_sftp_tree_scroll_path: None,
             sftp_context_menu: None,
             tab_context_menu: None,
+            context_menu_epoch: 0,
             sftp_creating_folder: false,
             sftp_new_folder_input,
             sftp_delete_scroll_handle: gpui::ScrollHandle::new(),
@@ -1282,6 +1294,25 @@ impl TinyShell {
         self.home_page = page;
         self.home_page_epoch = self.home_page_epoch.wrapping_add(1);
         cx.notify();
+    }
+
+    /// A hash of the fields that determine which top-level view is shown in the
+    /// main content area. Used as the animation epoch for the main content
+    /// fade-in: whenever any of these change, the animation ID changes too and
+    /// `with_animation` restarts from frame 0, producing a fresh fade-in.
+    pub(crate) fn main_view_key(&self) -> u64 {
+        let mut hash: u64 = 0;
+        hash = hash.wrapping_mul(31).wrapping_add(self.home_page as u64);
+        hash = hash.wrapping_mul(31).wrapping_add(self.home_page_open as u64);
+        hash = hash
+            .wrapping_mul(31)
+            .wrapping_add(self.active_system_info_tab.is_some() as u64);
+        if let Some(id) = &self.active_tab {
+            for byte in id.bytes() {
+                hash = hash.wrapping_mul(31).wrapping_add(byte as u64);
+            }
+        }
+        hash
     }
 
     pub(crate) fn show_ip_popover(&mut self, cx: &mut Context<Self>) {

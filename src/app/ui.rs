@@ -1980,6 +1980,7 @@ impl TinyShell {
     pub(crate) fn toggle_sftp_minimized(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let state = self.body_panels.clone();
         let minimized = self.sftp_panel_minimized;
+        self.sftp_minimize_epoch = self.sftp_minimize_epoch.wrapping_add(1);
 
         if !minimized {
             let sizes = state.read(cx).sizes();
@@ -2384,6 +2385,15 @@ impl TinyShell {
                                         .text_color(cx.theme().muted_foreground)
                                         .child(t!("open_ssh_tab_sftp")),
                                 ),
+                        )
+                        .with_animation(
+                            ElementId::NamedInteger(
+                                "sftp-content-fade".into(),
+                                self.sftp_minimize_epoch,
+                            ),
+                            Animation::new(Duration::from_millis(160))
+                                .with_easing(ease_in_out),
+                            |this, delta| this.opacity(delta),
                         ),
                 );
             outer = outer.child(
@@ -2540,6 +2550,7 @@ impl TinyShell {
                 }),
             );
 
+        let sftp_minimize_epoch = self.sftp_minimize_epoch;
         outer = outer.child(
             v_flex()
                 .flex_1()
@@ -2948,6 +2959,14 @@ impl TinyShell {
                         .on_click(cx.listener(|this, _, window, cx| {
                             this.toggle_sftp_minimized(window, cx);
                         })),
+                )
+                .with_animation(
+                    ElementId::NamedInteger(
+                        "sftp-content-fade".into(),
+                        sftp_minimize_epoch,
+                    ),
+                    Animation::new(Duration::from_millis(160)).with_easing(ease_in_out),
+                    |this, delta| this.opacity(delta),
                 ),
         );
 
@@ -4513,7 +4532,16 @@ impl TinyShell {
                                                                             )
                                                                     }),
                                                             ),
-                                                    ),
+                                                    )
+                                                    .with_animation(
+                                                        ElementId::NamedInteger(
+                                                            "ip-popover-fade".into(),
+                                                            self.ip_popover_hide_generation,
+                                                        ),
+                                                        Animation::new(Duration::from_millis(120))
+                                                            .with_easing(ease_in_out),
+                                                        |this, delta| this.opacity(delta),
+                                                    )
                                                 )
                                                 .priority(10),
                                             )
@@ -5237,6 +5265,7 @@ impl TinyShell {
                                         .on_mouse_down(
                                             MouseButton::Right,
                                             cx.listener(move |this, event: &MouseDownEvent, _, cx| {
+                                                this.context_menu_epoch = this.context_menu_epoch.wrapping_add(1);
                                                 this.tab_context_menu = Some(
                                                     TabContextMenuState {
                                                         group_id: context_gid.clone(),
@@ -6164,7 +6193,8 @@ impl Render for TinyShell {
         // The file-transfer panel belongs to an active terminal session. Keeping it
         // out of the home workspace avoids showing an empty "remote files" area on
         // Overview and Key Manager pages.
-        let main_content = if self.active_system_info_tab.is_some() {
+        let main_view_key = self.main_view_key();
+        let main_content_raw = if self.active_system_info_tab.is_some() {
             self.render_system_info_page(cx).into_any_element()
         } else if self.active_tab.is_some() && !self.home_page_open {
             let monitoring_contents = v_flex()
@@ -6214,7 +6244,21 @@ impl Render for TinyShell {
             }
         };
 
+        // Wrap the main content in a fade-in animation that restarts whenever
+        // the active view (home page / terminal tab / system info page) changes.
+        // `main_view_key` acts as the epoch: a different key produces a new
+        // animation ID, so with_animation replays from frame 0.
+        let main_content = div()
+            .size_full()
+            .child(main_content_raw)
+            .with_animation(
+                ElementId::NamedInteger("main-content-fade".into(), main_view_key),
+                Animation::new(Duration::from_millis(160)).with_easing(ease_in_out),
+                |this, delta| this.opacity(0.35 + 0.65 * delta),
+            );
+
         let workspace = if self.sidebar_collapsed {
+            let collapsed_epoch = self.sidebar_collapse_epoch;
             h_flex()
                 .size_full()
                 .child(
@@ -6222,7 +6266,20 @@ impl Render for TinyShell {
                         .flex_none()
                         .w(px(COLLAPSED_SIDEBAR_WIDTH))
                         .h_full()
-                        .child(self.render_collapsed_sidebar(cx)),
+                        .child(
+                            div()
+                                .size_full()
+                                .child(self.render_collapsed_sidebar(cx))
+                                .with_animation(
+                                    ElementId::NamedInteger(
+                                        "sidebar-collapsed-fade".into(),
+                                        collapsed_epoch,
+                                    ),
+                                    Animation::new(Duration::from_millis(180))
+                                        .with_easing(ease_in_out),
+                                    |this, delta| this.opacity(0.4 + 0.6 * delta),
+                                ),
+                        ),
                 )
                 .child(
                     div().flex_1().h_full().min_w(px(0.)).child(
@@ -6251,11 +6308,20 @@ impl Render for TinyShell {
                 )
                 .into_any_element()
         } else {
-            let sidebar_content = if self.active_tab.is_some() && !self.home_page_open {
+            let sidebar_epoch = self.sidebar_collapse_epoch;
+            let sidebar_content_raw = if self.active_tab.is_some() && !self.home_page_open {
                 self.sidebar(cx).into_any_element()
             } else {
                 self.render_overview_sidebar(cx).into_any_element()
             };
+            let sidebar_content = div()
+                .size_full()
+                .child(sidebar_content_raw)
+                .with_animation(
+                    ElementId::NamedInteger("sidebar-expanded-fade".into(), sidebar_epoch),
+                    Animation::new(Duration::from_millis(180)).with_easing(ease_in_out),
+                    |this, delta| this.opacity(0.4 + 0.6 * delta),
+                );
 
             let sidebar_area = resizable_panel()
                 .size(px(self
@@ -6322,6 +6388,7 @@ impl Render for TinyShell {
             .on_action(cx.listener(|this, _: &crate::OpenSearch, window, cx| this.toggle_search(window, cx)))
             .on_action(cx.listener(|this, _: &crate::ToggleSidebar, _, cx| {
                 this.sidebar_collapsed = !this.sidebar_collapsed;
+                this.sidebar_collapse_epoch = this.sidebar_collapse_epoch.wrapping_add(1);
                 this.config.set_sidebar_collapsed(this.sidebar_collapsed);
                 this.mark_config_preferences_dirty();
                 cx.notify();
@@ -6435,6 +6502,7 @@ impl Render for TinyShell {
                 } else {
                     t!("download").to_string()
                 };
+                let menu_epoch = self.context_menu_epoch;
                 this.child(
                     div()
                         .absolute()
@@ -6506,7 +6574,17 @@ impl Render for TinyShell {
                                                 )
                                             },
                                         ),
+                                )
+                                .with_animation(
+                                    ElementId::NamedInteger("sftp-menu-card".into(), menu_epoch),
+                                    Animation::new(Duration::from_millis(120)).with_easing(ease_in_out),
+                                    |this, delta| this.opacity(delta),
                                 ),
+                        )
+                        .with_animation(
+                            ElementId::NamedInteger("sftp-menu-scrim".into(), menu_epoch),
+                            Animation::new(Duration::from_millis(100)).with_easing(ease_in_out),
+                            |this, delta| this.opacity(delta),
                         ),
                 )
             })
@@ -6574,6 +6652,7 @@ impl Render for TinyShell {
                 });
                 let disconnect_gid = group_id.clone();
                 let detach_gid = group_id;
+                let tab_menu_epoch = self.context_menu_epoch;
                 this.child(
                     div()
                         .absolute()
@@ -6741,7 +6820,17 @@ impl Render for TinyShell {
                                                     this.detach_tab_to_new_window(cx);
                                                 })),
                                         ),
+                                )
+                                .with_animation(
+                                    ElementId::NamedInteger("tab-menu-card".into(), tab_menu_epoch),
+                                    Animation::new(Duration::from_millis(120)).with_easing(ease_in_out),
+                                    |this, delta| this.opacity(delta),
                                 ),
+                        )
+                        .with_animation(
+                            ElementId::NamedInteger("tab-menu-scrim".into(), tab_menu_epoch),
+                            Animation::new(Duration::from_millis(100)).with_easing(ease_in_out),
+                            |this, delta| this.opacity(delta),
                         ),
                 )
             })
