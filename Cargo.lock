@@ -7704,6 +7704,7 @@ dependencies = [
  "tracing-subscriber",
  "uuid",
  "walkdir",
+ "winreg 0.55.0",
  "winres",
  "zip",
 ]

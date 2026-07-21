@@ -1974,7 +1974,7 @@ impl TinyShell {
         }
         self.config
             .set_sftp_panel_minimized(self.sftp_panel_minimized);
-        let _ = self.config.save();
+        self.mark_config_preferences_dirty();
         cx.notify();
     }
 
@@ -2070,7 +2070,7 @@ impl TinyShell {
         sftp: &terminal::SftpUiState,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let rows = crate::sftp::ops::sftp_tree_rows(sftp)
+        let rows = crate::sftp::ops::sftp_tree_rows(sftp, self.show_hidden_files)
             .into_iter()
             .map(|row| self.render_sftp_tree_row(row, &sftp.current_path, cx))
             .collect::<Vec<_>>();
@@ -2223,6 +2223,22 @@ impl TinyShell {
                         })
                         .on_click(cx.listener(|this, _, window, cx| {
                             this.toggle_follow_terminal_cwd(window, cx);
+                        })),
+                )
+                .child(
+                    Checkbox::new("sftp-show-hidden")
+                        .small()
+                        .label(t!("hidden").to_string())
+                        .checked(self.show_hidden_files)
+                        .tab_stop(false)
+                        .on_click(cx.listener(|this, checked, _, cx| {
+                            if this.show_hidden_files == *checked {
+                                return;
+                            }
+                            this.show_hidden_files = *checked;
+                            this.config.set_show_hidden_files(*checked);
+                            this.mark_config_preferences_dirty();
+                            cx.notify();
                         })),
                 )
                 .child(
@@ -2450,6 +2466,7 @@ impl TinyShell {
             .entries
             .clone()
             .into_iter()
+            .filter(|entry| self.show_hidden_files || !entry.name.starts_with('.'))
             .collect::<Vec<_>>();
         let selected_entries = sftp.selected_entries.clone();
         let all_selected = !entries.is_empty()
@@ -4242,7 +4259,7 @@ impl TinyShell {
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.sidebar_collapsed = true;
                                 this.config.set_sidebar_collapsed(true);
-                                let _ = this.config.save();
+                                this.mark_config_preferences_dirty();
                                 cx.notify();
                             })),
                     ),
@@ -4575,7 +4592,7 @@ impl TinyShell {
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.sidebar_collapsed = false;
                                 this.config.set_sidebar_collapsed(false);
-                                let _ = this.config.save();
+                                this.mark_config_preferences_dirty();
                                 cx.notify();
                             })),
                     ),
@@ -6143,7 +6160,7 @@ impl Render for TinyShell {
             .on_action(cx.listener(|this, _: &crate::ToggleSidebar, _, cx| {
                 this.sidebar_collapsed = !this.sidebar_collapsed;
                 this.config.set_sidebar_collapsed(this.sidebar_collapsed);
-                let _ = this.config.save();
+                this.mark_config_preferences_dirty();
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &crate::ToggleSftpZoom, window, cx| {

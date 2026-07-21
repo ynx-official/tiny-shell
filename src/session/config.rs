@@ -372,6 +372,7 @@ impl Default for ConfigFile {
     }
 }
 
+#[derive(Clone)]
 pub struct ConfigStore {
     path: PathBuf,
     cache: ConfigFile,
@@ -925,6 +926,43 @@ impl ConfigStore {
         self.cache.sftp_panel_minimized = val;
     }
 
+    pub fn show_hidden_files(&self) -> bool {
+        self.cache.show_hidden_files
+    }
+
+    pub fn set_show_hidden_files(&mut self, val: bool) {
+        self.cache.show_hidden_files = val;
+    }
+
+    pub fn merge_interactive_preferences_from(&mut self, source: &ConfigStore) {
+        self.cache.follow_system_theme = source.cache.follow_system_theme;
+        self.cache.theme_mode = source.cache.theme_mode.clone();
+        self.cache.light_theme_name = source.cache.light_theme_name.clone();
+        self.cache.dark_theme_name = source.cache.dark_theme_name.clone();
+        self.cache.locale = source.cache.locale.clone();
+        self.cache.terminal_font_size = source.cache.terminal_font_size;
+        self.cache.ui_font_size = source.cache.ui_font_size;
+        self.cache.right_click_copy_paste = source.cache.right_click_copy_paste;
+        self.cache.keyword_highlight = source.cache.keyword_highlight;
+        self.cache.ui_font_family = source.cache.ui_font_family.clone();
+        self.cache.terminal_font_family = source.cache.terminal_font_family.clone();
+        self.cache.title_bar_style = source.cache.title_bar_style;
+        self.cache.cursor_style = source.cache.cursor_style;
+        self.cache.show_hidden_files = source.cache.show_hidden_files;
+        self.cache.lock_layout = source.cache.lock_layout;
+        self.cache.monitoring_position = source.cache.monitoring_position.clone();
+        self.cache.sidebar_collapsed = source.cache.sidebar_collapsed;
+        self.cache.sftp_panel_minimized = source.cache.sftp_panel_minimized;
+        self.cache.key_bindings = source.cache.key_bindings.clone();
+        self.cache.use_proxy = source.cache.use_proxy;
+        self.cache.read_env_proxy = source.cache.read_env_proxy;
+        self.cache.global_proxy_type = source.cache.global_proxy_type.clone();
+        self.cache.global_proxy_host = source.cache.global_proxy_host.clone();
+        self.cache.global_proxy_port = source.cache.global_proxy_port;
+        self.cache.global_proxy_user = source.cache.global_proxy_user.clone();
+        self.cache.global_proxy_password = source.cache.global_proxy_password.clone();
+    }
+
     pub fn get(&self, id: &str) -> Option<&Session> {
         self.cache.sessions.iter().find(|s| s.id == id)
     }
@@ -1237,7 +1275,13 @@ struct EncryptedConfigEnvelope {
     payload: String,
 }
 
+static HARDWARE_UUID: OnceLock<String> = OnceLock::new();
+
 fn get_hardware_uuid() -> String {
+    HARDWARE_UUID.get_or_init(query_hardware_uuid).clone()
+}
+
+fn query_hardware_uuid() -> String {
     #[cfg(target_os = "macos")]
     {
         if let Ok(output) = std::process::Command::new("ioreg")
@@ -1282,38 +1326,15 @@ fn get_hardware_uuid() -> String {
 
     #[cfg(target_os = "windows")]
     {
-        if let Ok(output) = std::process::Command::new("reg")
-            .args([
-                "query",
-                "HKLM\\SOFTWARE\\Microsoft\\Cryptography",
-                "/v",
-                "MachineGuid",
-            ])
-            .output()
+        use winreg::{RegKey, enums::HKEY_LOCAL_MACHINE};
+
+        if let Ok(key) = RegKey::predef(HKEY_LOCAL_MACHINE)
+            .open_subkey("SOFTWARE\\Microsoft\\Cryptography")
+            && let Ok(guid) = key.get_value::<String, _>("MachineGuid")
         {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            for line in stdout.lines() {
-                if line.contains("MachineGuid") {
-                    if let Some(guid) = line.split_whitespace().last() {
-                        let guid = guid.trim().to_string();
-                        if !guid.is_empty() {
-                            return guid;
-                        }
-                    }
-                }
-            }
-        }
-        if let Ok(output) = std::process::Command::new("wmic")
-            .args(["csproduct", "get", "uuid"])
-            .output()
-        {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            let lines: Vec<&str> = stdout.lines().collect();
-            if lines.len() >= 2 {
-                let uuid = lines[1].trim().to_string();
-                if !uuid.is_empty() {
-                    return uuid;
-                }
+            let guid = guid.trim().to_string();
+            if !guid.is_empty() {
+                return guid;
             }
         }
     }
@@ -1393,6 +1414,22 @@ mod tests {
         let config = ConfigFile::default();
         assert_eq!(config.terminal_font_size, 14.0);
         assert_eq!(config.ui_font_size, 14.0);
+    }
+
+    #[test]
+    fn merging_preferences_preserves_connection_data() {
+        let mut latest = ConfigStore::in_memory();
+        latest.cache.connection_groups = vec!["production".to_string()];
+        let mut source = ConfigStore::in_memory();
+        source.cache.connection_groups = vec!["stale".to_string()];
+        source.set_ui_font_size(18.0);
+        source.set_right_click_copy_paste(true);
+
+        latest.merge_interactive_preferences_from(&source);
+
+        assert_eq!(latest.cache.connection_groups, ["production"]);
+        assert_eq!(latest.ui_font_size(), 18.0);
+        assert!(latest.right_click_copy_paste());
     }
 
     #[test]

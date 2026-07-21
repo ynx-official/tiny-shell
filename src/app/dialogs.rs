@@ -2958,9 +2958,7 @@ impl TinyShell {
                                             this.recording_action = None;
                                             this.keybind_error = None;
                                             this.config.set_key_binding(&action, &new_key);
-                                            if let Err(err) = this.config.save() {
-                                                tracing::error!("failed to save key binding: {err:#}");
-                                            }
+                                            this.mark_config_preferences_dirty();
                                             cx.notify();
                                         });
                                     }
@@ -3133,7 +3131,7 @@ impl TinyShell {
                                                                                         .checked(current_style == crate::session::config::TitleBarStyle::Native)
                                                                                         .on_click(window.listener_for(&view, |this, _, _, cx| {
                                                                                             this.config.set_title_bar_style(crate::session::config::TitleBarStyle::Native);
-                                                                                            let _ = this.config.save();
+                                                                                            this.mark_config_preferences_dirty();
                                                                                             cx.notify();
                                                                                         }))
                                                                                 )
@@ -3142,7 +3140,7 @@ impl TinyShell {
                                                                                         .checked(current_style == crate::session::config::TitleBarStyle::Integrated)
                                                                                         .on_click(window.listener_for(&view, |this, _, _, cx| {
                                                                                             this.config.set_title_bar_style(crate::session::config::TitleBarStyle::Integrated);
-                                                                                            let _ = this.config.save();
+                                                                                            this.mark_config_preferences_dirty();
                                                                                             cx.notify();
                                                                                         }))
                                                                                 );
@@ -3377,7 +3375,7 @@ impl TinyShell {
                                                                     .checked(view.read(cx).config.right_click_copy_paste())
                                                                     .on_click(window.listener_for(&view, |this, checked, _, cx| {
                                                                         this.config.set_right_click_copy_paste(*checked);
-                                                                        let _ = this.config.save();
+                                                                        this.mark_config_preferences_dirty();
                                                                         cx.notify();
                                                                     }))
                                                                     .into_any_element()
@@ -3396,7 +3394,7 @@ impl TinyShell {
                                                                     .checked(view.read(cx).config.keyword_highlight())
                                                                     .on_click(window.listener_for(&view, |this, checked, _, cx| {
                                                                         this.config.set_keyword_highlight(*checked);
-                                                                        let _ = this.config.save();
+                                                                        this.mark_config_preferences_dirty();
                                                                         cx.notify();
                                                                     }))
                                                                     .into_any_element()
@@ -3415,7 +3413,7 @@ impl TinyShell {
                                                                     .checked(view.read(cx).config.lock_layout())
                                                                     .on_click(window.listener_for(&view, |this, checked, _, cx| {
                                                                         this.config.set_lock_layout(*checked);
-                                                                        let _ = this.config.save();
+                                                                        this.mark_config_preferences_dirty();
                                                                         cx.notify();
                                                                     }))
                                                                     .into_any_element()
@@ -3452,7 +3450,7 @@ impl TinyShell {
                                                                                         .checked(pos == "Bottom")
                                                                                         .on_click(window.listener_for(&view, |this, _, _window, cx| {
                                                                                             this.config.set_monitoring_position("Bottom");
-                                                                                            let _ = this.config.save();
+                                                                                            this.mark_config_preferences_dirty();
                                                                                             cx.notify();
                                                                                         }))
                                                                                 )
@@ -3461,7 +3459,7 @@ impl TinyShell {
                                                                                         .checked(pos == "Sidebar")
                                                                                         .on_click(window.listener_for(&view, |this, _, _window, cx| {
                                                                                             this.config.set_monitoring_position("Sidebar");
-                                                                                            let _ = this.config.save();
+                                                                                            this.mark_config_preferences_dirty();
                                                                                             cx.notify();
                                                                                         }))
                                                                                 )
@@ -3470,7 +3468,7 @@ impl TinyShell {
                                                                                         .checked(pos == "Hidden")
                                                                                         .on_click(window.listener_for(&view, |this, _, _window, cx| {
                                                                                             this.config.set_monitoring_position("Hidden");
-                                                                                            let _ = this.config.save();
+                                                                                            this.mark_config_preferences_dirty();
                                                                                             cx.notify();
                                                                                         }))
                                                                                 );
@@ -3789,7 +3787,7 @@ impl TinyShell {
                                                                     .checked(view.read(cx).config.use_proxy())
                                                                     .on_click(window.listener_for(&view, |this, checked, _, cx| {
                                                                         this.config.set_use_proxy(*checked);
-                                                                        let _ = this.config.save();
+                                                                        this.mark_config_preferences_dirty();
                                                                         cx.notify();
                                                                     }))
                                                                     .into_any_element()
@@ -3808,7 +3806,7 @@ impl TinyShell {
                                                                     .checked(view.read(cx).config.read_env_proxy())
                                                                     .on_click(window.listener_for(&view, |this, checked, _, cx| {
                                                                         this.config.set_read_env_proxy(*checked);
-                                                                        let _ = this.config.save();
+                                                                        this.mark_config_preferences_dirty();
                                                                         cx.notify();
                                                                     }))
                                                                     .into_any_element()
@@ -3877,7 +3875,7 @@ impl TinyShell {
                                                                         this.config.set_global_proxy_port(port);
                                                                         this.config.set_global_proxy_user(user);
                                                                         this.config.set_global_proxy_password(password);
-                                                                        let _ = this.config.save();
+                                                                        this.mark_config_preferences_dirty();
                                                                         cx.notify();
                                                                     }))
                                                             )
@@ -4115,6 +4113,7 @@ impl TinyShell {
                             this.keybinds_suspended = false;
                             this.recording_action = None;
                             this.keybind_error = None;
+                            this.persist_config_preferences_async();
                             crate::app::keybinding_recorder::bind_workspace_keys_from_config(
                                 cx,
                                 &this.config,

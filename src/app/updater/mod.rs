@@ -445,7 +445,7 @@ fn install_windows(
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
-        .creation_flags(0x00000008) // CREATE_NO_WINDOW on Windows
+        .creation_flags(0x08000000) // CREATE_NO_WINDOW
         .spawn()
         .context("failed to launch update batch script")?;
 

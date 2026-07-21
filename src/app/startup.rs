@@ -450,6 +450,7 @@ fn open_window_with_initializer(
             }
             view_clone.update(cx, |this, cx| {
                 this.cancel_tab_drag(cx);
+                this.persist_config_preferences();
                 this.save_layout_state(window, cx);
                 this.cleanup_on_window_close();
                 cx.notify();

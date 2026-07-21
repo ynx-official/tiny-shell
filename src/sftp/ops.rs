@@ -167,7 +167,7 @@ impl TinyShell {
         let Some(sftp) = self.active_sftp() else {
             return;
         };
-        let Some(index) = sftp_tree_rows(sftp)
+        let Some(index) = sftp_tree_rows(sftp, self.show_hidden_files)
             .iter()
             .position(|row| row.path == path)
         else {
@@ -567,11 +567,15 @@ impl TinyShell {
     }
 }
 
-pub(crate) fn sftp_tree_rows(sftp: &terminal::SftpUiState) -> Vec<SftpTreeRow> {
+pub(crate) fn sftp_tree_rows(
+    sftp: &terminal::SftpUiState,
+    show_hidden_files: bool,
+) -> Vec<SftpTreeRow> {
     fn append_rows(
         rows: &mut Vec<SftpTreeRow>,
         visited: &mut std::collections::HashSet<String>,
         sftp: &terminal::SftpUiState,
+        show_hidden_files: bool,
         path: &str,
         name: String,
         depth: usize,
@@ -595,11 +599,13 @@ pub(crate) fn sftp_tree_rows(sftp: &terminal::SftpUiState) -> Vec<SftpTreeRow> {
             for entry in entries
                 .iter()
                 .filter(|entry| entry.is_dir)
+                .filter(|entry| show_hidden_files || !entry.name.starts_with('.'))
             {
                 append_rows(
                     rows,
                     visited,
                     sftp,
+                    show_hidden_files,
                     &entry.full_path,
                     entry.name.clone(),
                     depth + 1,
@@ -615,6 +621,7 @@ pub(crate) fn sftp_tree_rows(sftp: &terminal::SftpUiState) -> Vec<SftpTreeRow> {
         &mut rows,
         &mut visited,
         sftp,
+        show_hidden_files,
         &root,
         "/".to_string(),
         0,

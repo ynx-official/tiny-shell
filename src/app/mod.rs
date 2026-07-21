@@ -95,6 +95,8 @@ pub(crate) struct IncomingTabDrag {
 static WINDOW_REGISTRY: OnceLock<Arc<Mutex<Vec<WindowEntry>>>> = OnceLock::new();
 static WINDOW_ACTIVATION_SEQ: AtomicU64 = AtomicU64::new(1);
 static SESSION_OWNER_SEQ: AtomicU64 = AtomicU64::new(1);
+static CONFIG_PREFERENCES_SAVE_SEQ: AtomicU64 = AtomicU64::new(0);
+static CONFIG_PREFERENCES_SAVE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
 pub(crate) fn window_registry() -> Arc<Mutex<Vec<WindowEntry>>> {
     WINDOW_REGISTRY
@@ -543,6 +545,7 @@ pub(crate) struct TinyShell {
     pub(crate) sftp_creating_folder: bool,
     pub(crate) sftp_new_folder_input: Entity<InputState>,
     pub(crate) sftp_delete_scroll_handle: gpui::ScrollHandle,
+    pub(crate) show_hidden_files: bool,
     pub(crate) transfers: Vec<crate::terminal::Transfer>,
     pub(crate) show_transfers_dialog: bool,
     pub(crate) system_status: Option<SharedString>,
@@ -566,6 +569,7 @@ pub(crate) struct TinyShell {
     pub(crate) prev_monitoring_size: Option<Pixels>,
     pub(crate) status: SharedString,
     pub(crate) config: ConfigStore,
+    pub(crate) config_preferences_dirty: bool,
     pub(crate) active_title_bar_style: crate::session::config::TitleBarStyle,
     pub(crate) cursor_style: crate::session::config::CursorStyle,
     pub(crate) system_sampler: Arc<std::sync::Mutex<SharedSystemSampler>>,
@@ -1016,6 +1020,7 @@ impl TinyShell {
             sftp_creating_folder: false,
             sftp_new_folder_input,
             sftp_delete_scroll_handle: gpui::ScrollHandle::new(),
+            show_hidden_files: config.show_hidden_files(),
             transfers: {
                 let mut transfers = config.transfers();
                 for t in transfers.iter_mut() {
@@ -1048,6 +1053,7 @@ impl TinyShell {
             status: "ready".into(),
             active_title_bar_style: config.title_bar_style(),
             config,
+            config_preferences_dirty: false,
             system_sampler,
             recording_action: None,
             active_dialog: None,
@@ -1204,7 +1210,6 @@ impl TinyShell {
 
     pub(crate) fn start_event_pump(&self, cx: &mut Context<Self>) {
         cx.spawn(async move |this, cx| {
-            let mut idle_frames = 0u32;
             let mut last_blink_time = std::time::Instant::now();
             loop {
                 cx.background_executor()
@@ -1227,15 +1232,8 @@ impl TinyShell {
                                 >= std::time::Duration::from_millis(600);
                         if changed || system_sampled || metrics_animated || blink_due {
                             cx.notify();
-                            idle_frames = 0;
                             if blink_due {
                                 last_blink_time = now;
-                            }
-                        } else {
-                            idle_frames += 1;
-                            if idle_frames >= 60 {
-                                cx.notify();
-                                idle_frames = 0;
                             }
                         }
                     })
@@ -1967,6 +1965,50 @@ impl TinyShell {
         }
     }
 
+    pub(crate) fn mark_config_preferences_dirty(&mut self) {
+        self.config_preferences_dirty = true;
+        self.persist_config_preferences_async();
+    }
+
+    pub(crate) fn persist_config_preferences(&mut self) {
+        if !self.config_preferences_dirty {
+            return;
+        }
+        CONFIG_PREFERENCES_SAVE_SEQ.fetch_add(1, Ordering::SeqCst);
+        let lock = CONFIG_PREFERENCES_SAVE_LOCK.get_or_init(|| Mutex::new(()));
+        let Ok(_guard) = lock.lock() else {
+            return;
+        };
+        let mut config = ConfigStore::load().unwrap_or_else(|_| ConfigStore::in_memory());
+        config.merge_interactive_preferences_from(&self.config);
+        match config.save() {
+            Ok(()) => self.config_preferences_dirty = false,
+            Err(err) => tracing::warn!("failed to save preferences: {err:#}"),
+        }
+    }
+
+    pub(crate) fn persist_config_preferences_async(&self) {
+        if !self.config_preferences_dirty {
+            return;
+        }
+        let sequence = CONFIG_PREFERENCES_SAVE_SEQ.fetch_add(1, Ordering::SeqCst) + 1;
+        let source = self.config.clone();
+        std::thread::spawn(move || {
+            let lock = CONFIG_PREFERENCES_SAVE_LOCK.get_or_init(|| Mutex::new(()));
+            let Ok(_guard) = lock.lock() else {
+                return;
+            };
+            if sequence != CONFIG_PREFERENCES_SAVE_SEQ.load(Ordering::SeqCst) {
+                return;
+            }
+            let mut config = ConfigStore::load().unwrap_or_else(|_| ConfigStore::in_memory());
+            config.merge_interactive_preferences_from(&source);
+            if let Err(err) = config.save() {
+                tracing::warn!("failed to save preferences in background: {err:#}");
+            }
+        });
+    }
+
     pub(crate) fn save_layout_state(&self, window: &mut gpui::Window, cx: &gpui::App) {
         if self.is_layout_reset {
             tracing::info!("[ui] layout was reset, skipping save layout state.");
@@ -2061,6 +2103,7 @@ impl TinyShell {
             config.set_layout_state(Some(saved_bounds), Some(workspace_sizes), Some(body_sizes));
             config.set_sidebar_collapsed(self.sidebar_collapsed);
             config.set_sftp_panel_minimized(self.sftp_panel_minimized);
+            config.set_show_hidden_files(self.show_hidden_files);
             let _ = config.save();
         } else {
             tracing::warn!(
