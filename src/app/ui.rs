@@ -1843,6 +1843,10 @@ impl TinyShell {
         let is_commands = self.home_page == HomePage::Commands;
         let is_key_manager = self.home_page == HomePage::KeyManager;
         let is_settings = self.home_page == HomePage::Settings;
+        let has_update = matches!(
+            self.updater_status,
+            Some(crate::app::updater::UpdateStatus::UpdateAvailable(_))
+        );
         v_flex()
             .w_full()
             .h_full()
@@ -1853,13 +1857,48 @@ impl TinyShell {
             .border_color(cx.theme().sidebar_border)
             .bg(cx.theme().sidebar)
             .child(
-                h_flex().w_full().items_center().justify_center().child(
-                    div()
-                        .font_weight(FontWeight::BOLD)
-                        .text_size(rems(1.5))
-                        .text_color(cx.theme().primary)
-                        .child("tiny-shell"),
-                ),
+                h_flex()
+                    .id("overview-brand-version")
+                    .w_full()
+                    .items_center()
+                    .justify_center()
+                    .gap_2()
+                    .cursor_pointer()
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.show_update_dialog(window, cx)
+                    }))
+                    .child(
+                        div()
+                            .font_weight(FontWeight::BOLD)
+                            .text_size(rems(1.5))
+                            .text_color(cx.theme().primary)
+                            .child("tiny-shell"),
+                    )
+                    .child(
+                        div()
+                            .relative()
+                            .px_2()
+                            .py(px(2.))
+                            .rounded_full()
+                            .bg(cx.theme().muted)
+                            .text_size(rems(0.65))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(cx.theme().muted_foreground)
+                            .child(format!("v{}", env!("CARGO_PKG_VERSION")))
+                            .when(has_update, |this| {
+                                this.child(
+                                    div()
+                                        .absolute()
+                                        .top(px(-2.))
+                                        .right(px(-2.))
+                                        .size(px(7.))
+                                        .rounded_full()
+                                        .border_1()
+                                        .border_color(cx.theme().sidebar)
+                                        .bg(hsla(0., 0.82, 0.57, 1.0)),
+                                )
+                            }),
+                    ),
             )
             .child(
                 v_flex()
@@ -4105,6 +4144,10 @@ impl TinyShell {
     }
 
     fn sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let has_update = matches!(
+            self.updater_status,
+            Some(crate::app::updater::UpdateStatus::UpdateAvailable(_))
+        );
         let active_tab = self
             .active_tab
             .as_ref()
@@ -4146,10 +4189,52 @@ impl TinyShell {
                     .child(
                         div()
                             .flex_1()
-                            .text_center()
-                            .font_weight(FontWeight::BOLD)
-                            .text_size(rems(1.25))
-                            .child("tiny-shell"),
+                            .flex()
+                            .justify_center()
+                            .child(
+                                h_flex()
+                                    .id("sidebar-brand-version")
+                                    .items_center()
+                                    .gap_1()
+                                    .cursor_pointer()
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.show_update_dialog(window, cx)
+                                    }))
+                                    .child(
+                                        div()
+                                            .font_weight(FontWeight::BOLD)
+                                            .text_size(rems(1.25))
+                                            .child("tiny-shell"),
+                                    )
+                                    .child(
+                                        div()
+                                            .relative()
+                                            .px_1()
+                                            .py(px(1.))
+                                            .rounded_full()
+                                            .bg(cx.theme().muted)
+                                            .text_size(rems(0.58))
+                                            .font_weight(FontWeight::MEDIUM)
+                                            .text_color(cx.theme().muted_foreground)
+                                            .child(format!(
+                                                "v{}",
+                                                env!("CARGO_PKG_VERSION")
+                                            ))
+                                            .when(has_update, |this| {
+                                                this.child(
+                                                    div()
+                                                        .absolute()
+                                                        .top(px(-2.))
+                                                        .right(px(-2.))
+                                                        .size(px(6.))
+                                                        .rounded_full()
+                                                        .border_1()
+                                                        .border_color(cx.theme().sidebar)
+                                                        .bg(hsla(0., 0.82, 0.57, 1.0)),
+                                                )
+                                            }),
+                                    ),
+                            ),
                     )
                     .child(
                         Button::new("sidebar-collapse-toggle")

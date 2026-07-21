@@ -400,6 +400,7 @@ impl ScrollbarHandle for TerminalScrollbarHandle {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DialogKind {
     Settings,
+    Updater,
     SessionSelector,
     QuickConnectionManager,
     Transfers,

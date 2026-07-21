@@ -1,4 +1,8 @@
-use std::{cell::RefCell, rc::Rc};
+use std::{
+    cell::RefCell,
+    rc::Rc,
+    sync::atomic::{AtomicBool, Ordering},
+};
 
 use gpui::{App, AppContext as _, Bounds, Entity, WindowOptions, point, px, size};
 use gpui_component::Root;
@@ -9,6 +13,8 @@ use crate::session::{
     config::{ConfigStore, Session},
     store::{SessionStore, WindowOwnerId},
 };
+
+static STARTUP_UPDATE_CHECK_STARTED: AtomicBool = AtomicBool::new(false);
 
 pub(crate) fn bind_workspace_keys(cx: &mut gpui::App) {
     let config = ConfigStore::load().unwrap_or_else(|_| ConfigStore::in_memory());
@@ -418,6 +424,9 @@ fn open_window_with_initializer(
 
         crate::app::register_window(window.window_handle(), view.clone());
         let should_activate = initialize(view.clone(), cx);
+        if !STARTUP_UPDATE_CHECK_STARTED.swap(true, Ordering::AcqRel) {
+            view.update(cx, |this, cx| this.check_for_updates(cx));
+        }
 
         tracing::info!("[ui] application window opened");
         if should_activate {

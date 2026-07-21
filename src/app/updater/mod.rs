@@ -84,6 +84,12 @@ fn select_release_asset<'a>(
 }
 
 #[derive(Debug, Clone)]
+pub struct ReleaseInfo {
+    pub version: String,
+    pub notes: String,
+}
+
+#[derive(Debug, Clone)]
 pub struct UpdateInfo {
     pub version: String,
     #[allow(dead_code)]
@@ -94,9 +100,15 @@ pub struct UpdateInfo {
 }
 
 #[derive(Debug, Clone)]
+pub enum UpdateCheckResult {
+    UpToDate(ReleaseInfo),
+    UpdateAvailable(UpdateInfo),
+}
+
+#[derive(Debug, Clone)]
 pub enum UpdateStatus {
     Checking,
-    UpToDate,
+    UpToDate(ReleaseInfo),
     UpdateAvailable(UpdateInfo),
     Downloading,
     #[allow(dead_code)]
@@ -105,8 +117,8 @@ pub enum UpdateStatus {
     Error(String),
 }
 
-/// Check GitHub Releases for a newer version.
-pub async fn check_for_update() -> anyhow::Result<Option<UpdateInfo>> {
+/// Check GitHub Releases and return both availability and release notes.
+pub async fn check_for_update() -> anyhow::Result<UpdateCheckResult> {
     let client = reqwest::Client::builder()
         .user_agent(format!("{}/{}", REPO_NAME, CURRENT_VERSION))
         .build()
@@ -138,7 +150,10 @@ pub async fn check_for_update() -> anyhow::Result<Option<UpdateInfo>> {
         .context("failed to parse latest version")?;
 
     if latest <= current {
-        return Ok(None);
+        return Ok(UpdateCheckResult::UpToDate(ReleaseInfo {
+            version: latest_version.to_string(),
+            notes: release.body,
+        }));
     }
 
     // Find the asset matching our platform.
@@ -154,7 +169,7 @@ pub async fn check_for_update() -> anyhow::Result<Option<UpdateInfo>> {
         );
     };
 
-    Ok(Some(UpdateInfo {
+    Ok(UpdateCheckResult::UpdateAvailable(UpdateInfo {
         version: latest_version.to_string(),
         notes: release.body,
         download_url: asset.browser_download_url.clone(),

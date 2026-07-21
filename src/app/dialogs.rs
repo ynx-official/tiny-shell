@@ -2507,6 +2507,377 @@ impl TinyShell {
                 })
         });
     }
+    pub(crate) fn check_for_updates(&mut self, cx: &mut Context<Self>) {
+        if matches!(
+            self.updater_status,
+            Some(crate::app::updater::UpdateStatus::Checking)
+                | Some(crate::app::updater::UpdateStatus::Downloading)
+        ) {
+            return;
+        }
+
+        self.updater_status = Some(crate::app::updater::UpdateStatus::Checking);
+        cx.notify();
+        let view = cx.entity();
+        cx.spawn({
+            let view = view.clone();
+            |_, cx: &mut gpui::AsyncApp| {
+                let cx = cx.clone();
+                async move {
+                    let (tx, rx) = futures::channel::oneshot::channel();
+                    crate::app::shared_runtime().spawn(async move {
+                        let result = crate::app::updater::check_for_update().await;
+                        let _ = tx.send(result);
+                    });
+                    let result = rx
+                        .await
+                        .unwrap_or_else(|_| Err(anyhow::anyhow!("update check cancelled")));
+                    cx.update(|cx| match result {
+                        Ok(crate::app::updater::UpdateCheckResult::UpdateAvailable(info)) => {
+                            view.update(cx, |this, cx| {
+                                this.updater_status = Some(
+                                    crate::app::updater::UpdateStatus::UpdateAvailable(info),
+                                );
+                                cx.notify();
+                            });
+                        }
+                        Ok(crate::app::updater::UpdateCheckResult::UpToDate(info)) => {
+                            view.update(cx, |this, cx| {
+                                this.updater_status =
+                                    Some(crate::app::updater::UpdateStatus::UpToDate(info));
+                                cx.notify();
+                            });
+                        }
+                        Err(err) => {
+                            view.update(cx, |this, cx| {
+                                this.updater_status = Some(
+                                    crate::app::updater::UpdateStatus::Error(format!("{err:#}")),
+                                );
+                                cx.notify();
+                            });
+                        }
+                    });
+                }
+            }
+        })
+        .detach();
+    }
+
+    pub(crate) fn download_available_update(&mut self, cx: &mut Context<Self>) {
+        let info = match self.updater_status.clone() {
+            Some(crate::app::updater::UpdateStatus::UpdateAvailable(info)) => info,
+            _ => return,
+        };
+        self.updater_status = Some(crate::app::updater::UpdateStatus::Downloading);
+        cx.notify();
+
+        let view = cx.entity();
+        cx.spawn({
+            let view = view.clone();
+            |_, cx: &mut gpui::AsyncApp| {
+                let cx = cx.clone();
+                async move {
+                    let (tx, rx) = futures::channel::oneshot::channel();
+                    crate::app::shared_runtime().spawn(async move {
+                        let result = crate::app::updater::perform_update(&info).await;
+                        let _ = tx.send(result);
+                    });
+                    let result = rx
+                        .await
+                        .unwrap_or_else(|_| Err(anyhow::anyhow!("update download cancelled")));
+                    cx.update(|cx| match result {
+                        Ok(()) => {
+                            view.update(cx, |this, cx| {
+                                this.updater_status =
+                                    Some(crate::app::updater::UpdateStatus::InstallComplete);
+                                cx.notify();
+                            });
+                        }
+                        Err(err) => {
+                            view.update(cx, |this, cx| {
+                                this.updater_status = Some(
+                                    crate::app::updater::UpdateStatus::Error(format!("{err:#}")),
+                                );
+                                cx.notify();
+                            });
+                        }
+                    });
+                }
+            }
+        })
+        .detach();
+    }
+
+    pub(crate) fn show_update_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.active_dialog.is_some() {
+            return;
+        }
+        if self.updater_status.is_none() {
+            self.check_for_updates(cx);
+        }
+        self.active_dialog = Some(crate::app::DialogKind::Updater);
+
+        let view = cx.entity();
+        let notes_scroll_handle = gpui::ScrollHandle::new();
+        window.open_dialog(cx, move |dialog: Dialog, _window, _| {
+            dialog
+                .title(t!("update_dialog_title").to_string())
+                .w(px(600.))
+                .h(px(520.))
+                .overlay_closable(true)
+                .on_close({
+                    let view = view.clone();
+                    move |_, _, cx| {
+                        view.update(cx, |this, cx| {
+                            this.active_dialog = None;
+                            cx.notify();
+                        });
+                    }
+                })
+                .content({
+                    let view = view.clone();
+                    let notes_scroll_handle = notes_scroll_handle.clone();
+                    move |content, window, cx| {
+                        let current_version = env!("CARGO_PKG_VERSION");
+                        let status = view.read(cx).updater_status.clone();
+                        let (title, detail, notes, has_update, is_busy, is_error) = match status {
+                            Some(crate::app::updater::UpdateStatus::Checking) => (
+                                t!("checking_update").to_string(),
+                                format!("{} v{current_version}", t!("update_current_version")),
+                                String::new(),
+                                false,
+                                true,
+                                false,
+                            ),
+                            Some(crate::app::updater::UpdateStatus::UpToDate(info)) => (
+                                t!("update_no_update").to_string(),
+                                format!(
+                                    "{} v{current_version}  ·  {} v{}",
+                                    t!("update_current_version"),
+                                    t!("update_latest_version"),
+                                    info.version
+                                ),
+                                info.notes,
+                                false,
+                                false,
+                                false,
+                            ),
+                            Some(crate::app::updater::UpdateStatus::UpdateAvailable(info)) => (
+                                t!("update_available", version = info.version.clone()).to_string(),
+                                format!(
+                                    "{} v{current_version}  ·  {} v{}",
+                                    t!("update_current_version"),
+                                    t!("update_latest_version"),
+                                    info.version
+                                ),
+                                info.notes,
+                                true,
+                                false,
+                                false,
+                            ),
+                            Some(crate::app::updater::UpdateStatus::Downloading) => (
+                                t!("update_downloading").to_string(),
+                                t!("update_please_wait").to_string(),
+                                String::new(),
+                                false,
+                                true,
+                                false,
+                            ),
+                            Some(crate::app::updater::UpdateStatus::Installing) => (
+                                t!("update_installing").to_string(),
+                                t!("update_please_wait").to_string(),
+                                String::new(),
+                                false,
+                                true,
+                                false,
+                            ),
+                            Some(crate::app::updater::UpdateStatus::InstallComplete) => (
+                                t!("update_install_complete").to_string(),
+                                t!("update_restart_hint").to_string(),
+                                String::new(),
+                                false,
+                                false,
+                                false,
+                            ),
+                            Some(crate::app::updater::UpdateStatus::Error(error)) => (
+                                t!("update_check_failed").to_string(),
+                                error,
+                                String::new(),
+                                false,
+                                false,
+                                true,
+                            ),
+                            None => (
+                                t!("update_no_update").to_string(),
+                                format!("{} v{current_version}", t!("update_current_version")),
+                                String::new(),
+                                false,
+                                false,
+                                false,
+                            ),
+                        };
+
+                        let note_rows = notes
+                            .lines()
+                            .filter_map(|line| {
+                                let line = line.trim();
+                                if line.is_empty() {
+                                    return None;
+                                }
+                                let is_heading = line.starts_with('#');
+                                let text = if is_heading {
+                                    line.trim_start_matches('#').trim().to_string()
+                                } else if let Some(item) = line
+                                    .strip_prefix("- ")
+                                    .or_else(|| line.strip_prefix("* "))
+                                {
+                                    format!("• {item}")
+                                } else {
+                                    line.to_string()
+                                };
+                                Some(
+                                    div()
+                                        .w_full()
+                                        .text_size(if is_heading { rems(0.92) } else { rems(0.8) })
+                                        .when(is_heading, |this| {
+                                            this.font_weight(FontWeight::SEMIBOLD)
+                                        })
+                                        .child(text),
+                                )
+                            })
+                            .collect::<Vec<_>>();
+
+                        content.child(
+                            v_flex()
+                                .size_full()
+                                .gap_3()
+                                .child(
+                                    h_flex()
+                                        .flex_none()
+                                        .items_center()
+                                        .gap_3()
+                                        .p_3()
+                                        .rounded_lg()
+                                        .bg(cx.theme().muted.opacity(0.45))
+                                        .child(
+                                            div()
+                                                .size(px(10.))
+                                                .rounded_full()
+                                                .bg(if is_error {
+                                                    cx.theme().danger
+                                                } else if has_update {
+                                                    cx.theme().primary
+                                                } else {
+                                                    cx.theme().success
+                                                }),
+                                        )
+                                        .child(
+                                            v_flex()
+                                                .min_w(px(0.))
+                                                .gap_1()
+                                                .child(
+                                                    div()
+                                                        .text_size(rems(1.05))
+                                                        .font_weight(FontWeight::SEMIBOLD)
+                                                        .child(title),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .text_size(rems(0.78))
+                                                        .text_color(cx.theme().muted_foreground)
+                                                        .child(detail),
+                                                ),
+                                        ),
+                                )
+                                .child(
+                                    div()
+                                        .flex_none()
+                                        .text_size(rems(0.85))
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .child(t!("update_release_notes").to_string()),
+                                )
+                                .child(
+                                    div()
+                                        .relative()
+                                        .flex_1()
+                                        .min_h(px(0.))
+                                        .rounded_md()
+                                        .border_1()
+                                        .border_color(cx.theme().border)
+                                        .bg(cx.theme().background)
+                                        .child(
+                                            v_flex()
+                                                .id("update-notes-scroll")
+                                                .size_full()
+                                                .track_scroll(&notes_scroll_handle)
+                                                .overflow_y_scroll()
+                                                .p_3()
+                                                .gap_2()
+                                                .when(note_rows.is_empty(), |this| {
+                                                    this.items_center()
+                                                        .justify_center()
+                                                        .text_color(cx.theme().muted_foreground)
+                                                        .child(t!("update_no_release_notes").to_string())
+                                                })
+                                                .children(note_rows),
+                                        )
+                                        .child(
+                                            div()
+                                                .absolute()
+                                                .top_0()
+                                                .right_0()
+                                                .bottom_0()
+                                                .child(
+                                                    Scrollbar::vertical(&notes_scroll_handle)
+                                                        .scrollbar_show(ScrollbarShow::Scrolling),
+                                                ),
+                                        ),
+                                )
+                                .child(
+                                    h_flex()
+                                        .flex_none()
+                                        .justify_end()
+                                        .gap_2()
+                                        .child(
+                                            Button::new("update-release-page")
+                                                .ghost()
+                                                .label(t!("update_release_page").to_string())
+                                                .on_click(|_, _, _| {
+                                                    let _ = open::that(
+                                                        "https://github.com/ynx-official/tiny-shell/releases/latest",
+                                                    );
+                                                }),
+                                        )
+                                        .child(
+                                            Button::new("update-check-again")
+                                                .secondary()
+                                                .disabled(is_busy)
+                                                .label(t!("check_update").to_string())
+                                                .on_click(window.listener_for(
+                                                    &view,
+                                                    |this, _, _, cx| this.check_for_updates(cx),
+                                                )),
+                                        )
+                                        .when(has_update, |this| {
+                                            this.child(
+                                                Button::new("update-download")
+                                                    .primary()
+                                                    .label(t!("update_download").to_string())
+                                                    .on_click(window.listener_for(
+                                                        &view,
+                                                        |this, _, _, cx| {
+                                                            this.download_available_update(cx)
+                                                        },
+                                                    )),
+                                            )
+                                        }),
+                                ),
+                        )
+                    }
+                })
+        });
+    }
+
     pub(crate) fn show_settings_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.active_dialog.is_some() {
             return;
@@ -3564,7 +3935,7 @@ impl TinyShell {
                                                                 Some(crate::app::updater::UpdateStatus::Checking) => {
                                                                     Some(t!("checking_update").to_string())
                                                                 }
-                                                                Some(crate::app::updater::UpdateStatus::UpToDate) => {
+                                                                Some(crate::app::updater::UpdateStatus::UpToDate(_)) => {
                                                                     Some(t!("update_latest").to_string())
                                                                 }
                                                                 Some(crate::app::updater::UpdateStatus::UpdateAvailable(info)) => {
@@ -3644,15 +4015,15 @@ impl TinyShell {
                                                                 });
                                                                 cx.update(|cx| {
                                                                     match result {
-                                                                        Ok(Some(info)) => {
+                                                                        Ok(crate::app::updater::UpdateCheckResult::UpdateAvailable(info)) => {
                                                                             view.update(cx, |this, cx| {
                                                                                 this.updater_status = Some(crate::app::updater::UpdateStatus::UpdateAvailable(info));
                                                                                 cx.notify();
                                                                             });
                                                                         }
-                                                                        Ok(None) => {
+                                                                        Ok(crate::app::updater::UpdateCheckResult::UpToDate(info)) => {
                                                                             view.update(cx, |this, cx| {
-                                                                                this.updater_status = Some(crate::app::updater::UpdateStatus::UpToDate);
+                                                                                this.updater_status = Some(crate::app::updater::UpdateStatus::UpToDate(info));
                                                                                 cx.notify();
                                                                             });
                                                                         }
