@@ -3005,18 +3005,18 @@ impl TinyShell {
                     let selected_entries = sftp.selected_entries.clone();
                     this.when(toolbar_visibility.sync_cwd, |this| {
                         this.child(
-                            Button::new("sftp-sync-cwd")
-                                .ghost()
+                            Checkbox::new("sftp-sync-cwd")
                                 .small()
-                                .selected(sftp.follow_terminal_cwd)
-                                .icon(IconName::SquareTerminal)
                                 .label(t!("sync_cwd").to_string())
-                                .tooltip(if sftp.follow_terminal_cwd {
-                                    t!("sync_cwd_enabled_tooltip").to_string()
-                                } else {
-                                    t!("sync_cwd_tooltip").to_string()
-                                })
-                                .on_click(cx.listener(|this, _, window, cx| {
+                                .checked(sftp.follow_terminal_cwd)
+                                .tab_stop(false)
+                                .on_click(cx.listener(|this, checked, window, cx| {
+                                    if this
+                                        .active_sftp()
+                                        .is_some_and(|sftp| sftp.follow_terminal_cwd == *checked)
+                                    {
+                                        return;
+                                    }
                                     this.toggle_follow_terminal_cwd(window, cx);
                                 })),
                         )

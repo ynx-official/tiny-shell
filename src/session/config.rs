@@ -35,11 +35,11 @@ impl Default for SftpToolbarVisibility {
             sync_cwd: true,
             hidden_files: true,
             refresh: true,
-            new_folder: true,
-            delete: true,
-            upload_file: true,
-            upload_folder: true,
-            download: true,
+            new_folder: false,
+            delete: false,
+            upload_file: false,
+            upload_folder: false,
+            download: false,
         }
     }
 }
