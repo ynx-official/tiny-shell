@@ -896,68 +896,413 @@ impl TinyShell {
     }
 
     fn render_command_manager_page(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let categories = self
+            .config
+            .quick_command_categories()
+            .unwrap_or_default()
+            .to_vec();
+        let selected_category = self
+            .command_category_filter
+            .clone()
+            .filter(|selected| categories.iter().any(|category| category.id == *selected));
+        let commands = categories
+            .iter()
+            .filter(|category| {
+                selected_category
+                    .as_deref()
+                    .is_none_or(|selected| category.id == selected)
+            })
+            .flat_map(|category| {
+                category
+                    .commands
+                    .iter()
+                    .cloned()
+                    .map(|command| (category.id.clone(), category.name.clone(), command))
+            })
+            .collect::<Vec<_>>();
+        let command_count = categories
+            .iter()
+            .map(|category| category.commands.len())
+            .sum::<usize>();
+        let has_commands = !commands.is_empty();
+        let can_run = self.active_tab.is_some();
+
         v_flex()
             .size_full()
             .p_6()
             .gap_5()
             .child(
-                v_flex()
-                    .gap_1()
+                h_flex()
+                    .flex_none()
+                    .items_center()
+                    .gap_2()
                     .child(
-                        div()
-                            .text_size(rems(2.0))
-                            .font_weight(FontWeight::BOLD)
-                            .child(t!("command_manager")),
+                        v_flex()
+                            .gap_1()
+                            .child(
+                                div()
+                                    .text_size(rems(2.0))
+                                    .font_weight(FontWeight::BOLD)
+                                    .child(t!("command_manager")),
+                            )
+                            .child(
+                                div()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(t!("command_manager_desc")),
+                            ),
+                    )
+                    .child(div().flex_1())
+                    .child(
+                        Button::new("command-manager-new-category")
+                            .secondary()
+                            .icon(IconName::FolderOpen)
+                            .label(t!("quick_command_new_category").to_string())
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.show_quick_command_category_dialog(None, window, cx);
+                            })),
                     )
                     .child(
-                        div()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(t!("command_manager_desc")),
+                        Button::new("command-manager-new-command")
+                            .primary()
+                            .icon(IconName::Plus)
+                            .label(t!("quick_command_new").to_string())
+                            .disabled(selected_category.is_none())
+                            .on_click(cx.listener({
+                                let selected_category = selected_category.clone();
+                                move |this, _, window, cx| {
+                                    if let Some(category_id) = selected_category.clone() {
+                                        this.show_quick_command_dialog(
+                                            category_id,
+                                            None,
+                                            window,
+                                            cx,
+                                        );
+                                    }
+                                }
+                            })),
                     ),
             )
             .child(
-                v_flex()
-                    .max_w(px(680.))
-                    .gap_3()
-                    .p_5()
+                h_flex()
+                    .flex_1()
+                    .min_h(px(0.))
+                    .h_full()
+                    .items_stretch()
                     .rounded_md()
                     .border_1()
                     .border_color(cx.theme().border)
-                    .bg(cx.theme().muted)
-                    .child(Icon::new(IconName::SquareTerminal).with_size(Size::Large))
+                    .overflow_hidden()
                     .child(
-                        div()
-                            .text_size(rems(1.167))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child(t!("command_manager_empty_title")),
-                    )
-                    .child(
-                        div()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(t!("command_manager_empty_desc")),
-                    )
-                    .child(
-                        h_flex()
-                            .gap_2()
-                            .pt_2()
+                        v_flex()
+                            .h_full()
+                            .w(px(210.))
+                            .flex_none()
+                            .p_2()
+                            .gap_1()
+                            .border_r_1()
+                            .border_color(cx.theme().border)
+                            .bg(cx.theme().sidebar)
                             .child(
-                                Button::new("commands-open-connections")
-                                    .primary()
-                                    .icon(IconName::Network)
-                                    .label(t!("overview_connections").to_string())
+                                div()
+                                    .id("quick-command-category-all")
+                                    .w_full()
+                                    .cursor_pointer()
+                                    .rounded_md()
+                                    .bg(if selected_category.is_none() {
+                                        cx.theme().tab_active
+                                    } else {
+                                        cx.theme().sidebar
+                                    })
+                                    .hover(|this| this.bg(cx.theme().secondary))
                                     .on_click(cx.listener(|this, _, _, cx| {
-                                        this.home_page = HomePage::Connections;
+                                        this.command_category_filter = None;
                                         cx.notify();
-                                    })),
+                                    }))
+                                    .child(
+                                        h_flex()
+                                            .items_center()
+                                            .gap_2()
+                                            .p_3()
+                                            .child(
+                                                Icon::new(IconName::SquareTerminal)
+                                                    .with_size(Size::Small),
+                                            )
+                                            .child(
+                                                div()
+                                                    .flex_1()
+                                                    .child(t!("quick_command_all")),
+                                            )
+                                            .child(
+                                                div()
+                                                    .text_size(rems(0.8))
+                                                    .text_color(cx.theme().muted_foreground)
+                                                    .child(command_count.to_string()),
+                                            ),
+                                    ),
+                            )
+                            .children(categories.iter().enumerate().map(|(index, category)| {
+                                let category_id_for_select = category.id.clone();
+                                let category_id_for_menu = category.id.clone();
+                                let selected = selected_category.as_deref()
+                                    == Some(category.id.as_str());
+                                div()
+                                    .id(("quick-command-category", index))
+                                    .w_full()
+                                    .cursor_pointer()
+                                    .rounded_md()
+                                    .bg(if selected {
+                                        cx.theme().tab_active
+                                    } else {
+                                        cx.theme().sidebar
+                                    })
+                                    .hover(|this| this.bg(cx.theme().secondary))
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.command_category_filter =
+                                            Some(category_id_for_select.clone());
+                                        cx.notify();
+                                    }))
+                                    .context_menu({
+                                        let view = cx.entity();
+                                        move |menu, window, _| {
+                                            menu.item(
+                                                PopupMenuItem::new(t!("rename").to_string())
+                                                    .on_click(window.listener_for(&view, {
+                                                        let category_id =
+                                                            category_id_for_menu.clone();
+                                                        move |this, _, window, cx| {
+                                                            this.show_quick_command_category_dialog(
+                                                                Some(category_id.clone()),
+                                                                window,
+                                                                cx,
+                                                            );
+                                                        }
+                                                    })),
+                                            )
+                                            .item(
+                                                PopupMenuItem::new(t!("delete").to_string())
+                                                    .on_click(window.listener_for(&view, {
+                                                        let category_id =
+                                                            category_id_for_menu.clone();
+                                                        move |this, _, _, cx| {
+                                                            this.config
+                                                                .remove_quick_command_category(
+                                                                    &category_id,
+                                                                );
+                                                            if this.command_category_filter.as_deref()
+                                                                == Some(category_id.as_str())
+                                                            {
+                                                                this.command_category_filter = None;
+                                                            }
+                                                            this.mark_config_preferences_dirty();
+                                                            cx.notify();
+                                                        }
+                                                    })),
+                                            )
+                                        }
+                                    })
+                                    .child(
+                                        h_flex()
+                                            .items_center()
+                                            .gap_2()
+                                            .p_3()
+                                            .child(
+                                                Icon::new(IconName::Folder)
+                                                    .with_size(Size::Small),
+                                            )
+                                            .child(div().flex_1().child(category.name.clone()))
+                                            .child(
+                                                div()
+                                                    .text_size(rems(0.8))
+                                                    .text_color(cx.theme().muted_foreground)
+                                                    .child(category.commands.len().to_string()),
+                                            )
+                                    )
+                            })),
+                    )
+                    .child(
+                        v_flex()
+                            .flex_1()
+                            .h_full()
+                            .min_w(px(0.))
+                            .bg(cx.theme().background)
+                            .overflow_hidden()
+                            .child(
+                                h_flex()
+                                    .flex_none()
+                                    .items_center()
+                                    .h(px(38.))
+                                    .px_4()
+                                    .gap_3()
+                                    .bg(cx.theme().muted)
+                                    .border_b_1()
+                                    .border_color(cx.theme().border)
+                                    .child(
+                                        div()
+                                            .w(px(180.))
+                                            .text_size(rems(0.833))
+                                            .child(t!("quick_command_name")),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .text_size(rems(0.833))
+                                            .child(t!("quick_command_content")),
+                                    )
+                                    .child(
+                                        div()
+                                            .w(px(180.))
+                                            .text_size(rems(0.833))
+                                            .child(t!("overview_actions")),
+                                    ),
                             )
                             .child(
-                                Button::new("commands-new-connection")
-                                    .secondary()
-                                    .icon(IconName::Plus)
-                                    .label(t!("overview_new_connection").to_string())
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.open_new_ssh_dialog(window, cx);
-                                    })),
+                                v_flex()
+                                    .flex_1()
+                                    .min_h(px(0.))
+                                    .overflow_y_scrollbar()
+                                    .children(commands.into_iter().enumerate().map(
+                                        |(index, (category_id, category_name, command))| {
+                                            let run_command = command.command.clone();
+                                            let edit_category_id = category_id.clone();
+                                            let edit_command_id = command.id.clone();
+                                            let delete_category_id = category_id.clone();
+                                            let delete_command_id = command.id.clone();
+                                            h_flex()
+                                                .id(("quick-command-manager-row", index))
+                                                .flex_none()
+                                                .min_h(px(52.))
+                                                .items_center()
+                                                .gap_3()
+                                                .px_4()
+                                                .border_b_1()
+                                                .border_color(cx.theme().border.opacity(0.55))
+                                                .when(index % 2 == 1, |this| {
+                                                    this.bg(cx.theme().muted.opacity(0.2))
+                                                })
+                                                .child(
+                                                    v_flex()
+                                                        .w(px(180.))
+                                                        .min_w(px(0.))
+                                                        .gap_1()
+                                                        .child(
+                                                            div()
+                                                                .font_weight(FontWeight::MEDIUM)
+                                                                .child(command.name),
+                                                        )
+                                                        .child(
+                                                            div()
+                                                                .text_size(rems(0.75))
+                                                                .text_color(
+                                                                    cx.theme().muted_foreground,
+                                                                )
+                                                                .child(category_name),
+                                                        ),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .id(("quick-command-content", index))
+                                                        .flex_1()
+                                                        .min_w(px(0.))
+                                                        .overflow_hidden()
+                                                        .whitespace_nowrap()
+                                                        .text_ellipsis()
+                                                        .text_size(rems(0.833))
+                                                        .font_family("monospace")
+                                                        .tooltip({
+                                                            let command = run_command.clone();
+                                                            move |window, cx| {
+                                                                gpui_component::tooltip::Tooltip::new(
+                                                                    command.clone(),
+                                                                )
+                                                                .build(window, cx)
+                                                            }
+                                                        })
+                                                        .child(command.command),
+                                                )
+                                                .child(
+                                                    h_flex()
+                                                        .w(px(180.))
+                                                        .justify_end()
+                                                        .gap_1()
+                                                        .child(
+                                                            Button::new((
+                                                                "quick-command-run",
+                                                                index,
+                                                            ))
+                                                            .small()
+                                                            .primary()
+                                                            .icon(IconName::SquareTerminal)
+                                                            .label(t!("run").to_string())
+                                                            .disabled(!can_run)
+                                                            .on_click(cx.listener(
+                                                                move |this, _, window, cx| {
+                                                                    this.send_terminal_input(
+                                                                        format!("{}\r", run_command)
+                                                                            .into_bytes(),
+                                                                        window,
+                                                                        cx,
+                                                                    );
+                                                                    this.home_page_open = false;
+                                                                    cx.notify();
+                                                                },
+                                                            )),
+                                                        )
+                                                        .child(
+                                                            Button::new((
+                                                                "quick-command-edit",
+                                                                index,
+                                                            ))
+                                                            .ghost()
+                                                            .small()
+                                                            .label(t!("edit").to_string())
+                                                            .on_click(cx.listener(
+                                                                move |this, _, window, cx| {
+                                                                    this.show_quick_command_dialog(
+                                                                        edit_category_id.clone(),
+                                                                        Some(edit_command_id.clone()),
+                                                                        window,
+                                                                        cx,
+                                                                    );
+                                                                },
+                                                            )),
+                                                        )
+                                                        .child(
+                                                            Button::new((
+                                                                "quick-command-delete",
+                                                                index,
+                                                            ))
+                                                            .ghost()
+                                                            .small()
+                                                            .icon(IconName::Delete)
+                                                            .on_click(cx.listener(
+                                                                move |this, _, _, cx| {
+                                                                    this.config.remove_quick_command(
+                                                                        &delete_category_id,
+                                                                        &delete_command_id,
+                                                                    );
+                                                                    this.mark_config_preferences_dirty();
+                                                                    cx.notify();
+                                                                },
+                                                            )),
+                                                        ),
+                                                )
+                                        },
+                                    ))
+                                    .when(!has_commands, |this| {
+                                        this.child(
+                                            v_flex()
+                                                .size_full()
+                                                .items_center()
+                                                .justify_center()
+                                                .gap_3()
+                                                .text_color(cx.theme().muted_foreground)
+                                                .child(
+                                                    Icon::new(IconName::SquareTerminal)
+                                                        .with_size(Size::Large),
+                                                )
+                                                .child(t!("command_manager_empty_title")),
+                                        )
+                                    }),
                             ),
                     ),
             )
@@ -2285,88 +2630,21 @@ impl TinyShell {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let categories = [
-            (
-                t!("quick_command_category_common").to_string(),
-                vec![
-                    (t!("quick_command_pwd").to_string(), "pwd".to_string()),
-                    (
-                        t!("quick_command_list_files").to_string(),
-                        "ls -lah".to_string(),
-                    ),
-                    (
-                        t!("quick_command_disk_usage").to_string(),
-                        "df -h".to_string(),
-                    ),
-                    (t!("quick_command_uptime").to_string(), "uptime".to_string()),
-                ],
-            ),
-            (
-                t!("quick_command_category_system").to_string(),
-                vec![
-                    (
-                        t!("quick_command_memory").to_string(),
-                        "free -h".to_string(),
-                    ),
-                    (
-                        t!("quick_command_processes").to_string(),
-                        "ps aux --sort=-%cpu | head -n 20".to_string(),
-                    ),
-                    (
-                        t!("quick_command_ports").to_string(),
-                        "ss -lntup".to_string(),
-                    ),
-                    (
-                        t!("quick_command_recent_logs").to_string(),
-                        "journalctl -n 100 --no-pager".to_string(),
-                    ),
-                ],
-            ),
-            (
-                t!("quick_command_category_docker").to_string(),
-                vec![
-                    (
-                        t!("quick_command_docker_containers").to_string(),
-                        "docker ps -a".to_string(),
-                    ),
-                    (
-                        t!("quick_command_docker_images").to_string(),
-                        "docker images".to_string(),
-                    ),
-                    (
-                        t!("quick_command_docker_stats").to_string(),
-                        "docker stats --no-stream".to_string(),
-                    ),
-                    (
-                        t!("quick_command_docker_disk").to_string(),
-                        "docker system df".to_string(),
-                    ),
-                ],
-            ),
-            (
-                t!("quick_command_category_network").to_string(),
-                vec![
-                    (
-                        t!("quick_command_ip_address").to_string(),
-                        "ip address".to_string(),
-                    ),
-                    (
-                        t!("quick_command_routes").to_string(),
-                        "ip route".to_string(),
-                    ),
-                    (
-                        t!("quick_command_dns").to_string(),
-                        "cat /etc/resolv.conf".to_string(),
-                    ),
-                    (
-                        t!("quick_command_public_ip").to_string(),
-                        "curl -fsSL https://api.ipify.org && echo".to_string(),
-                    ),
-                ],
-            ),
-        ];
-        self.quick_command_category = self.quick_command_category.min(categories.len() - 1);
-        let selected_commands = categories[self.quick_command_category].1.clone();
+        let categories = self
+            .config
+            .quick_command_categories()
+            .unwrap_or_default()
+            .to_vec();
+        if !categories.is_empty() {
+            self.quick_command_category = self.quick_command_category.min(categories.len() - 1);
+        } else {
+            self.quick_command_category = 0;
+        }
+        let selected_commands = categories
+            .get(self.quick_command_category)
+            .map(|category| category.commands.clone())
+            .unwrap_or_default();
+        let has_categories = !categories.is_empty();
 
         v_flex()
             .flex_1()
@@ -2380,18 +2658,31 @@ impl TinyShell {
                     .px_2()
                     .border_b_1()
                     .border_color(cx.theme().border)
-                    .children(categories.iter().enumerate().map(|(index, (label, _))| {
+                    .children(categories.iter().enumerate().map(|(index, category)| {
                         Button::new(("quick-command-category", index))
                             .ghost()
                             .small()
                             .selected(self.quick_command_category == index)
                             .icon(IconName::Folder)
-                            .label(label.clone())
+                            .label(category.name.clone())
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.quick_command_category = index;
                                 cx.notify();
                             }))
-                    })),
+                    }))
+                    .child(div().flex_1())
+                    .child(
+                        Button::new("quick-command-manage")
+                            .ghost()
+                            .small()
+                            .icon(IconName::Settings)
+                            .label(t!("quick_command_manage").to_string())
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.home_page_open = true;
+                                this.home_page = HomePage::Commands;
+                                cx.notify();
+                            })),
+                    ),
             )
             .child(
                 div()
@@ -2399,25 +2690,43 @@ impl TinyShell {
                     .min_h(px(0.))
                     .overflow_y_scrollbar()
                     .p_3()
-                    .child(div().flex().flex_wrap().items_start().gap_2().children(
-                        selected_commands.into_iter().enumerate().map(
-                            |(index, (label, command))| {
-                                Button::new(("quick-command", index))
-                                    .outline()
-                                    .small()
-                                    .icon(IconName::SquareTerminal)
-                                    .label(label)
-                                    .tooltip(command.clone())
-                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                        this.send_terminal_input(
-                                            format!("{}\r", command).into_bytes(),
-                                            window,
-                                            cx,
-                                        );
-                                    }))
-                            },
-                        ),
-                    )),
+                    .child(
+                        div()
+                            .flex()
+                            .flex_wrap()
+                            .items_start()
+                            .gap_2()
+                            .children(selected_commands.into_iter().enumerate().map(
+                                |(index, command)| {
+                                    let command_text = command.command.clone();
+                                    Button::new(("quick-command", index))
+                                        .outline()
+                                        .small()
+                                        .icon(IconName::SquareTerminal)
+                                        .label(command.name)
+                                        .tooltip(command_text.clone())
+                                        .on_click(cx.listener(move |this, _, window, cx| {
+                                            this.send_terminal_input(
+                                                format!("{}\r", command_text).into_bytes(),
+                                                window,
+                                                cx,
+                                            );
+                                        }))
+                                },
+                            ))
+                            .when(!has_categories, |this| {
+                                this.child(
+                                    v_flex()
+                                        .w_full()
+                                        .items_center()
+                                        .justify_center()
+                                        .gap_2()
+                                        .py_5()
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child(t!("command_manager_empty_title")),
+                                )
+                            }),
+                    ),
             )
             .into_any_element()
     }

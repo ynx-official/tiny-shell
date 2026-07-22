@@ -40,7 +40,7 @@ use rust_i18n::t;
 use tokio::runtime::Runtime;
 
 use crate::{
-    session::config::{AuthMethod, ConfigStore, ManagedKey},
+    session::config::{AuthMethod, ConfigStore, ManagedKey, QuickCommandCategory},
     session::ssh_config::SshConfigEntry,
     system::{SharedSystemSampler, SystemSampler, SystemSnapshot},
     terminal::{self, BackendCommand, BackendEvent, TabKind, TerminalTab},
@@ -411,6 +411,8 @@ pub(crate) enum DialogKind {
     ManagedKeyImport,
     ConnectionGroup,
     ConnectionGroupMove,
+    QuickCommandCategory,
+    QuickCommand,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -436,6 +438,47 @@ pub(crate) enum ProcessView {
     Memory,
     Cpu,
     Activity,
+}
+
+fn is_legacy_seeded_quick_commands(categories: &[QuickCommandCategory]) -> bool {
+    const COMMANDS: [&[&str]; 4] = [
+        &["pwd", "ls -lah", "df -h", "uptime"],
+        &[
+            "free -h",
+            "ps aux --sort=-%cpu | head -n 20",
+            "ss -lntup",
+            "journalctl -n 100 --no-pager",
+        ],
+        &[
+            "docker ps -a",
+            "docker images",
+            "docker stats --no-stream",
+            "docker system df",
+        ],
+        &[
+            "ip address",
+            "ip route",
+            "cat /etc/resolv.conf",
+            "curl -fsSL https://api.ipify.org && echo",
+        ],
+    ];
+    let names_match = categories
+        .iter()
+        .map(|category| category.name.as_str())
+        .eq(["常用", "系统", "Docker", "网络"])
+        || categories
+            .iter()
+            .map(|category| category.name.as_str())
+            .eq(["Common", "System", "Docker", "Network"]);
+    names_match
+        && categories.len() == COMMANDS.len()
+        && categories.iter().zip(COMMANDS).all(|(category, expected)| {
+            category
+                .commands
+                .iter()
+                .map(|command| command.command.as_str())
+                .eq(expected.iter().copied())
+        })
 }
 
 #[derive(Default)]
@@ -523,6 +566,7 @@ pub(crate) struct TinyShell {
     pub(crate) home_page_open: bool,
     pub(crate) home_page: HomePage,
     pub(crate) connection_group_filter: Option<String>,
+    pub(crate) command_category_filter: Option<String>,
     /// Bounds of the visible group rows, used to calculate a drop position.
     pub(crate) connection_group_bounds: HashMap<String, Bounds<Pixels>>,
     pub(crate) pending_connection_group_drag: Option<(String, Point<Pixels>)>,
@@ -759,7 +803,7 @@ impl TinyShell {
             cx.new(|cx| InputState::new(window, cx).placeholder(t!("search").to_string()));
         let quick_connection_search_input =
             cx.new(|cx| InputState::new(window, cx).placeholder(t!("search").to_string()));
-        let config = ConfigStore::load().unwrap_or_else(|err| {
+        let mut config = ConfigStore::load().unwrap_or_else(|err| {
             tracing::warn!("failed to load config: {err:#}");
             ConfigStore::in_memory()
         });
@@ -918,6 +962,15 @@ impl TinyShell {
         }
         rust_i18n::set_locale(&active_locale);
         gpui_component::set_locale(&active_locale);
+        let reset_legacy_seed = config
+            .quick_command_categories()
+            .is_some_and(is_legacy_seeded_quick_commands);
+        if config.quick_command_categories().is_none() || reset_legacy_seed {
+            config.set_quick_command_categories(Vec::new());
+            if let Err(err) = config.save() {
+                tracing::warn!("failed to initialize quick commands: {err:#}");
+            }
+        }
         let ui_font_family: SharedString = config.ui_font_family().into();
         let terminal_font_family: SharedString = config.terminal_font_family().into();
         let sftp_panel_view = if config.sftp_panel_view() == "commands" {
@@ -1003,6 +1056,7 @@ impl TinyShell {
             home_page_open: true,
             home_page: HomePage::default(),
             connection_group_filter: None,
+            command_category_filter: None,
             connection_group_bounds: HashMap::new(),
             pending_connection_group_drag: None,
             dragging_connection_group: None,

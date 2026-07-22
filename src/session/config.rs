@@ -51,6 +51,21 @@ pub struct SftpFooterVisibility {
     pub panel_toggle: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QuickCommand {
+    pub id: String,
+    pub name: String,
+    pub command: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QuickCommandCategory {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub commands: Vec<QuickCommand>,
+}
+
 impl Default for SftpFooterVisibility {
     fn default() -> Self {
         Self {
@@ -289,6 +304,8 @@ pub struct ConfigFile {
     #[serde(default)]
     pub sftp_footer_visibility: SftpFooterVisibility,
     #[serde(default)]
+    pub quick_command_categories: Option<Vec<QuickCommandCategory>>,
+    #[serde(default)]
     pub sftp_external_editor: String,
     #[serde(default)]
     pub key_bindings: std::collections::HashMap<String, String>,
@@ -409,6 +426,7 @@ impl Default for ConfigFile {
             sftp_panel_view: default_sftp_panel_view(),
             sftp_toolbar_visibility: SftpToolbarVisibility::default(),
             sftp_footer_visibility: SftpFooterVisibility::default(),
+            quick_command_categories: None,
             sftp_external_editor: String::new(),
             key_bindings: std::collections::HashMap::new(),
             sync_endpoint: String::new(),
@@ -1010,6 +1028,66 @@ impl ConfigStore {
         self.cache.sftp_footer_visibility = visibility;
     }
 
+    pub fn quick_command_categories(&self) -> Option<&[QuickCommandCategory]> {
+        self.cache.quick_command_categories.as_deref()
+    }
+
+    pub fn set_quick_command_categories(&mut self, categories: Vec<QuickCommandCategory>) {
+        self.cache.quick_command_categories = Some(categories);
+    }
+
+    pub fn upsert_quick_command_category(&mut self, category: QuickCommandCategory) {
+        let categories = self
+            .cache
+            .quick_command_categories
+            .get_or_insert_with(Vec::new);
+        if let Some(existing) = categories.iter_mut().find(|item| item.id == category.id) {
+            *existing = category;
+        } else {
+            categories.push(category);
+        }
+    }
+
+    pub fn remove_quick_command_category(&mut self, category_id: &str) {
+        self.cache
+            .quick_command_categories
+            .get_or_insert_with(Vec::new)
+            .retain(|category| category.id != category_id);
+    }
+
+    pub fn upsert_quick_command(&mut self, category_id: &str, command: QuickCommand) {
+        let Some(category) = self
+            .cache
+            .quick_command_categories
+            .get_or_insert_with(Vec::new)
+            .iter_mut()
+            .find(|category| category.id == category_id)
+        else {
+            return;
+        };
+        if let Some(existing) = category
+            .commands
+            .iter_mut()
+            .find(|item| item.id == command.id)
+        {
+            *existing = command;
+        } else {
+            category.commands.push(command);
+        }
+    }
+
+    pub fn remove_quick_command(&mut self, category_id: &str, command_id: &str) {
+        if let Some(category) = self
+            .cache
+            .quick_command_categories
+            .get_or_insert_with(Vec::new)
+            .iter_mut()
+            .find(|category| category.id == category_id)
+        {
+            category.commands.retain(|command| command.id != command_id);
+        }
+    }
+
     pub fn sftp_external_editor(&self) -> &str {
         &self.cache.sftp_external_editor
     }
@@ -1048,6 +1126,7 @@ impl ConfigStore {
         self.cache.sftp_panel_view = source.cache.sftp_panel_view.clone();
         self.cache.sftp_toolbar_visibility = source.cache.sftp_toolbar_visibility;
         self.cache.sftp_footer_visibility = source.cache.sftp_footer_visibility;
+        self.cache.quick_command_categories = source.cache.quick_command_categories.clone();
         self.cache.sftp_external_editor = source.cache.sftp_external_editor.clone();
         self.cache.key_bindings = source.cache.key_bindings.clone();
         self.cache.use_proxy = source.cache.use_proxy;
@@ -1526,6 +1605,38 @@ mod tests {
         assert_eq!(latest.cache.connection_groups, ["production"]);
         assert_eq!(latest.ui_font_size(), 18.0);
         assert!(latest.right_click_copy_paste());
+    }
+
+    #[test]
+    fn quick_command_categories_and_commands_support_crud() {
+        let mut store = ConfigStore::in_memory();
+        let category = QuickCommandCategory {
+            id: "category-1".to_string(),
+            name: "System".to_string(),
+            commands: Vec::new(),
+        };
+        store.set_quick_command_categories(vec![category]);
+        store.upsert_quick_command(
+            "category-1",
+            QuickCommand {
+                id: "command-1".to_string(),
+                name: "Uptime".to_string(),
+                command: "uptime".to_string(),
+            },
+        );
+
+        let categories = store.quick_command_categories().unwrap();
+        assert_eq!(categories.len(), 1);
+        assert_eq!(categories[0].commands[0].command, "uptime");
+
+        store.remove_quick_command("category-1", "command-1");
+        assert!(
+            store.quick_command_categories().unwrap()[0]
+                .commands
+                .is_empty()
+        );
+        store.remove_quick_command_category("category-1");
+        assert!(store.quick_command_categories().unwrap().is_empty());
     }
 
     #[test]

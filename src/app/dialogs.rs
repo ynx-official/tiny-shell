@@ -18,7 +18,9 @@ use gpui_component::{
 use rust_i18n::t;
 
 use crate::{
-    TinyShell, app::ssh_key_import::KeyImportValidation, session::config::AuthMethod,
+    TinyShell,
+    app::ssh_key_import::KeyImportValidation,
+    session::config::{AuthMethod, QuickCommand, QuickCommandCategory},
     system::format_bytes,
 };
 
@@ -319,6 +321,215 @@ impl TinyShell {
                                 ),
                         )
                     }
+                })
+        });
+    }
+
+    pub(crate) fn show_quick_command_category_dialog(
+        &mut self,
+        category_id: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.active_dialog.is_some() {
+            return;
+        }
+        let existing = category_id.as_deref().and_then(|category_id| {
+            self.config
+                .quick_command_categories()
+                .and_then(|categories| categories.iter().find(|item| item.id == category_id))
+                .cloned()
+        });
+        let input = cx.new(|cx| {
+            gpui_component::input::InputState::new(window, cx).default_value(
+                existing
+                    .as_ref()
+                    .map(|item| item.name.as_str())
+                    .unwrap_or_default(),
+            )
+        });
+        self.active_dialog = Some(crate::app::DialogKind::QuickCommandCategory);
+        let view = cx.entity();
+        let submit_input = input.clone();
+        window.open_dialog(cx, move |dialog: Dialog, _window, _| {
+            let submit_input = submit_input.clone();
+            let content_input = input.clone();
+            let existing = existing.clone();
+            dialog
+                .title(t!("quick_command_category_dialog_title").to_string())
+                .w(px(420.))
+                .on_close({
+                    let view = view.clone();
+                    move |_, _, cx| {
+                        view.update(cx, |this, cx| {
+                            this.active_dialog = None;
+                            cx.notify();
+                        });
+                    }
+                })
+                .on_ok({
+                    let view = view.clone();
+                    move |_, window, cx| {
+                        let name = submit_input.read(cx).value().trim().to_string();
+                        if name.is_empty() {
+                            view.update(cx, |this, cx| {
+                                this.status = t!("quick_command_category_name_required").into();
+                                cx.notify();
+                            });
+                            return false;
+                        }
+                        view.update(cx, |this, cx| {
+                            let category =
+                                existing.clone().unwrap_or_else(|| QuickCommandCategory {
+                                    id: uuid::Uuid::new_v4().to_string(),
+                                    name: String::new(),
+                                    commands: Vec::new(),
+                                });
+                            let category = QuickCommandCategory { name, ..category };
+                            this.command_category_filter = Some(category.id.clone());
+                            this.config.upsert_quick_command_category(category);
+                            this.mark_config_preferences_dirty();
+                            this.active_dialog = None;
+                            cx.notify();
+                        });
+                        window.close_dialog(cx);
+                        true
+                    }
+                })
+                .content(move |content, _, cx| {
+                    content.child(
+                        v_flex()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(t!("quick_command_category_name")),
+                            )
+                            .child(Input::new(&content_input).w_full()),
+                    )
+                })
+        });
+    }
+
+    pub(crate) fn show_quick_command_dialog(
+        &mut self,
+        category_id: String,
+        command_id: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.active_dialog.is_some() {
+            return;
+        }
+        let existing = self
+            .config
+            .quick_command_categories()
+            .and_then(|categories| categories.iter().find(|item| item.id == category_id))
+            .and_then(|category| {
+                command_id.as_deref().and_then(|command_id| {
+                    category.commands.iter().find(|item| item.id == command_id)
+                })
+            })
+            .cloned();
+        let name_input = cx.new(|cx| {
+            gpui_component::input::InputState::new(window, cx).default_value(
+                existing
+                    .as_ref()
+                    .map(|item| item.name.as_str())
+                    .unwrap_or_default(),
+            )
+        });
+        let command_input = cx.new(|cx| {
+            gpui_component::input::InputState::new(window, cx).default_value(
+                existing
+                    .as_ref()
+                    .map(|item| item.command.as_str())
+                    .unwrap_or_default(),
+            )
+        });
+        self.active_dialog = Some(crate::app::DialogKind::QuickCommand);
+        let view = cx.entity();
+        let submit_name = name_input.clone();
+        let submit_command = command_input.clone();
+        window.open_dialog(cx, move |dialog: Dialog, _window, _| {
+            let submit_name = submit_name.clone();
+            let submit_command = submit_command.clone();
+            let content_name = name_input.clone();
+            let content_command = command_input.clone();
+            let existing = existing.clone();
+            let category_id = category_id.clone();
+            dialog
+                .title(t!("quick_command_dialog_title").to_string())
+                .w(px(520.))
+                .on_close({
+                    let view = view.clone();
+                    move |_, _, cx| {
+                        view.update(cx, |this, cx| {
+                            this.active_dialog = None;
+                            cx.notify();
+                        });
+                    }
+                })
+                .on_ok({
+                    let view = view.clone();
+                    move |_, window, cx| {
+                        let name = submit_name.read(cx).value().trim().to_string();
+                        let command_text = submit_command.read(cx).value().trim().to_string();
+                        if name.is_empty() || command_text.is_empty() {
+                            view.update(cx, |this, cx| {
+                                this.status = t!("quick_command_fields_required").into();
+                                cx.notify();
+                            });
+                            return false;
+                        }
+                        view.update(cx, |this, cx| {
+                            let command = existing.clone().unwrap_or_else(|| QuickCommand {
+                                id: uuid::Uuid::new_v4().to_string(),
+                                name: String::new(),
+                                command: String::new(),
+                            });
+                            this.config.upsert_quick_command(
+                                &category_id,
+                                QuickCommand {
+                                    name,
+                                    command: command_text,
+                                    ..command
+                                },
+                            );
+                            this.command_category_filter = Some(category_id.clone());
+                            this.mark_config_preferences_dirty();
+                            this.active_dialog = None;
+                            cx.notify();
+                        });
+                        window.close_dialog(cx);
+                        true
+                    }
+                })
+                .content(move |content, _, cx| {
+                    content.child(
+                        v_flex()
+                            .gap_3()
+                            .child(
+                                v_flex()
+                                    .gap_1()
+                                    .child(
+                                        div()
+                                            .text_color(cx.theme().muted_foreground)
+                                            .child(t!("quick_command_name")),
+                                    )
+                                    .child(Input::new(&content_name).w_full()),
+                            )
+                            .child(
+                                v_flex()
+                                    .gap_1()
+                                    .child(
+                                        div()
+                                            .text_color(cx.theme().muted_foreground)
+                                            .child(t!("quick_command_content")),
+                                    )
+                                    .child(Input::new(&content_command).w_full()),
+                            ),
+                    )
                 })
         });
     }
