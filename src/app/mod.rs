@@ -709,6 +709,7 @@ pub(crate) struct ConnectionProgress {
 pub(crate) struct SftpContextMenuState {
     pub(crate) remote_path: Option<String>,
     pub(crate) is_dir: bool,
+    pub(crate) permissions: Option<u32>,
     pub(crate) position: Point<Pixels>,
 }
 

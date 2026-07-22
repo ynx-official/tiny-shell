@@ -7,6 +7,7 @@ pub(crate) struct SftpTreeRow {
     pub name: String,
     pub depth: usize,
     pub expanded: bool,
+    pub permissions: Option<u32>,
 }
 
 use crate::{
@@ -289,6 +290,7 @@ impl TinyShell {
         &mut self,
         remote_path: Option<String>,
         is_dir: bool,
+        permissions: Option<u32>,
         position: Point<Pixels>,
         cx: &mut Context<Self>,
     ) {
@@ -296,6 +298,7 @@ impl TinyShell {
         self.sftp_context_menu = Some(SftpContextMenuState {
             remote_path,
             is_dir,
+            permissions,
             position,
         });
         cx.notify();
@@ -425,8 +428,13 @@ impl TinyShell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.sftp_context_menu = None;
-        self.upload_sftp_files(window, cx);
+        let remote_dir = self
+            .sftp_context_menu
+            .take()
+            .and_then(|menu| menu.is_dir.then_some(menu.remote_path).flatten())
+            .or_else(|| self.active_sftp().map(|sftp| sftp.current_path.clone()))
+            .unwrap_or_else(|| "/".into());
+        self.upload_sftp_files_to(remote_dir, window, cx);
     }
 
     pub(crate) fn trigger_sftp_context_pack_download(
@@ -530,7 +538,13 @@ impl TinyShell {
             return;
         };
         if let Some(remote_path) = menu.remote_path {
-            self.show_sftp_permissions_dialog(remote_path, menu.is_dir, window, cx);
+            self.show_sftp_permissions_dialog(
+                remote_path,
+                menu.is_dir,
+                menu.permissions,
+                window,
+                cx,
+            );
         }
     }
 
@@ -592,13 +606,22 @@ impl TinyShell {
     }
 
     pub(crate) fn upload_sftp_files(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(handle) = self.active_sftp_handle().cloned() else {
-            return;
-        };
         let remote_dir = self
             .active_sftp()
             .map(|sftp| sftp.current_path.clone())
             .unwrap_or_else(|| "/".into());
+        self.upload_sftp_files_to(remote_dir, window, cx);
+    }
+
+    fn upload_sftp_files_to(
+        &mut self,
+        remote_dir: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(handle) = self.active_sftp_handle().cloned() else {
+            return;
+        };
         let path_prompt = cx.prompt_for_paths(PathPromptOptions {
             files: true,
             directories: false,
@@ -794,26 +817,22 @@ pub(crate) fn sftp_tree_rows(
         visited: &mut std::collections::HashSet<String>,
         sftp: &terminal::SftpUiState,
         show_hidden_files: bool,
-        path: &str,
-        name: String,
-        depth: usize,
+        mut row: SftpTreeRow,
     ) {
-        if depth > 32 || !visited.insert(path.to_string()) {
+        if row.depth > 32 || !visited.insert(row.path.clone()) {
             return;
         }
-        let expanded = path == "/" || sftp.expanded_directories.contains(path);
-        rows.push(SftpTreeRow {
-            path: path.to_string(),
-            name,
-            depth,
-            expanded,
-        });
+        row.expanded = row.path == "/" || sftp.expanded_directories.contains(&row.path);
+        let path = row.path.clone();
+        let depth = row.depth;
+        let expanded = row.expanded;
+        rows.push(row);
 
         if !expanded {
             return;
         }
 
-        if let Some(entries) = sftp.directory_entries.get(path) {
+        if let Some(entries) = sftp.directory_entries.get(&path) {
             for entry in entries
                 .iter()
                 .filter(|entry| entry.is_dir)
@@ -824,9 +843,13 @@ pub(crate) fn sftp_tree_rows(
                     visited,
                     sftp,
                     show_hidden_files,
-                    &entry.full_path,
-                    entry.name.clone(),
-                    depth + 1,
+                    SftpTreeRow {
+                        path: entry.full_path.clone(),
+                        name: entry.name.clone(),
+                        depth: depth + 1,
+                        expanded: false,
+                        permissions: Some(entry.permissions),
+                    },
                 );
             }
         }
@@ -840,9 +863,13 @@ pub(crate) fn sftp_tree_rows(
         &mut visited,
         sftp,
         show_hidden_files,
-        &root,
-        "/".to_string(),
-        0,
+        SftpTreeRow {
+            path: root,
+            name: "/".to_string(),
+            depth: 0,
+            expanded: true,
+            permissions: None,
+        },
     );
     rows
 }

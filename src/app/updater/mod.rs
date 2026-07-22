@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use anyhow::Context;
 use futures::StreamExt;
+use semver::Version;
 use serde::Deserialize;
 
 #[cfg(windows)]
@@ -10,6 +11,37 @@ use std::os::windows::process::CommandExt;
 const REPO_OWNER: &str = "ynx-official";
 const REPO_NAME: &str = "tiny-shell";
 const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+fn parse_version(version: &str) -> anyhow::Result<Version> {
+    let normalized = version
+        .trim()
+        .strip_prefix(['v', 'V'])
+        .unwrap_or(version.trim());
+
+    Version::parse(normalized).with_context(|| format!("failed to parse version '{version}'"))
+}
+
+fn is_newer_version(current: &str, latest: &str) -> anyhow::Result<bool> {
+    let current_version = parse_version(current)?;
+    let latest_version = parse_version(latest)?;
+    let current_segments = [
+        current_version.major.to_string(),
+        current_version.minor.to_string(),
+        current_version.patch.to_string(),
+    ];
+    let latest_segments = [
+        latest_version.major.to_string(),
+        latest_version.minor.to_string(),
+        latest_version.patch.to_string(),
+    ];
+
+    // Release numbers follow the project's textual segment ordering instead
+    // of SemVer's numeric ordering: "2" > "11" and "21" > "2".
+    Ok(match latest_segments.cmp(&current_segments) {
+        std::cmp::Ordering::Equal => latest_version > current_version,
+        ordering => ordering.is_gt(),
+    })
+}
 
 /// Maps the cargo target triple to the release asset naming convention used in
 /// release.yml.
@@ -136,19 +168,11 @@ pub async fn check_for_update() -> anyhow::Result<UpdateCheckResult> {
         .await
         .context("failed to parse release JSON")?;
 
-    let latest_version = release
-        .tag_name
-        .strip_prefix('v')
-        .unwrap_or(&release.tag_name);
+    let latest_version = release.tag_name.trim();
 
-    let current =
-        semver::Version::parse(CURRENT_VERSION).context("failed to parse current version")?;
-    let latest =
-        semver::Version::parse(latest_version).context("failed to parse latest version")?;
-
-    if latest <= current {
+    if !is_newer_version(CURRENT_VERSION, latest_version)? {
         return Ok(UpdateCheckResult::UpToDate(ReleaseInfo {
-            version: latest_version.to_string(),
+            version: parse_version(latest_version)?.to_string(),
             notes: release.body,
         }));
     }
@@ -167,7 +191,7 @@ pub async fn check_for_update() -> anyhow::Result<UpdateCheckResult> {
     };
 
     Ok(UpdateCheckResult::UpdateAvailable(UpdateInfo {
-        version: latest_version.to_string(),
+        version: parse_version(latest_version)?.to_string(),
         notes: release.body,
         download_url: asset.browser_download_url.clone(),
         size: asset.size,
@@ -460,7 +484,7 @@ fn install_windows(
 
 #[cfg(test)]
 mod tests {
-    use super::{GitHubAsset, select_release_asset};
+    use super::{GitHubAsset, is_newer_version, select_release_asset};
 
     fn asset(name: &str) -> GitHubAsset {
         GitHubAsset {
@@ -489,5 +513,19 @@ mod tests {
         let assets = vec![asset("tiny-shell-v1.1.0-windows-x86_64-setup.exe")];
 
         assert!(select_release_asset(&assets, "windows-x86_64", "zip").is_none());
+    }
+
+    #[test]
+    fn compares_version_segments_using_release_order() {
+        assert!(is_newer_version("v1.0.1", "v1.0.2").unwrap());
+        assert!(is_newer_version("v1.0.11", "v1.0.2").unwrap());
+        assert!(is_newer_version("v1.0.2", "v1.0.21").unwrap());
+        assert!(!is_newer_version("v1.0.21", "v1.0.2").unwrap());
+        assert!(!is_newer_version("v1.0.11", "v1.0.11").unwrap());
+    }
+
+    #[test]
+    fn accepts_common_release_tag_formatting() {
+        assert!(is_newer_version(" 1.0.1 ", " V1.0.2 ").unwrap());
     }
 }

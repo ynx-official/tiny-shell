@@ -52,6 +52,14 @@ pub struct RemoteEntry {
     pub is_dir: bool,
     pub size: u64,
     pub modified: u32,
+    pub permissions: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PermissionApplyTarget {
+    FilesAndDirectories,
+    FilesOnly,
+    DirectoriesOnly,
 }
 
 #[allow(dead_code)]
@@ -86,6 +94,8 @@ pub enum SftpCommand {
     SetPermissions {
         remote_path: String,
         mode: u32,
+        recursive: bool,
+        apply_to: PermissionApplyTarget,
     },
     DeletePaths(Vec<String>),
     QuickDeletePaths(Vec<String>),
@@ -989,11 +999,19 @@ async fn run_sftp(
                     }
                 }
             }
-            SftpCommand::SetPermissions { remote_path, mode } => {
+            SftpCommand::SetPermissions {
+                remote_path,
+                mode,
+                recursive,
+                apply_to,
+            } => {
                 let remote_path = resolve_remote_path(&remote_path, &home);
-                let mut attributes = FileAttributes::empty();
-                attributes.permissions = Some(mode);
-                match sftp.set_metadata(&remote_path, attributes).await {
+                let result = if recursive {
+                    set_permissions_recursive(&sftp, remote_path.clone(), mode, apply_to).await
+                } else {
+                    set_path_permissions(&sftp, &remote_path, mode).await
+                };
+                match result {
                     Ok(()) => {
                         let _ = events.send(BackendEvent::SftpStatus {
                             tab_id: tab_id.clone(),
@@ -1209,6 +1227,57 @@ fn recursive_delete<'a>(
                     .await
                     .with_context(|| format!("Failed to delete {path}"))?;
             }
+        }
+        Ok(())
+    })
+}
+
+async fn set_path_permissions(sftp: &SftpSession, path: &str, mode: u32) -> Result<()> {
+    let mut attributes = FileAttributes::empty();
+    attributes.permissions = Some(mode);
+    sftp.set_metadata(path, attributes)
+        .await
+        .with_context(|| format!("chmod {mode:o} {path}"))
+}
+
+fn set_permissions_recursive<'a>(
+    sftp: &'a SftpSession,
+    path: String,
+    mode: u32,
+    apply_to: PermissionApplyTarget,
+) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
+    Box::pin(async move {
+        let metadata = sftp
+            .metadata(&path)
+            .await
+            .with_context(|| format!("metadata {path}"))?;
+        let is_dir = metadata
+            .permissions
+            .map(|permissions| (permissions & 0o170_000) == 0o040_000)
+            .unwrap_or(false);
+        let should_apply = match apply_to {
+            PermissionApplyTarget::FilesAndDirectories => true,
+            PermissionApplyTarget::FilesOnly => !is_dir,
+            PermissionApplyTarget::DirectoriesOnly => is_dir,
+        };
+        if should_apply {
+            set_path_permissions(sftp, &path, mode).await?;
+        }
+        if !is_dir {
+            return Ok(());
+        }
+
+        for entry in sftp
+            .read_dir(&path)
+            .await
+            .with_context(|| format!("read_dir {path}"))?
+        {
+            let name = entry.file_name();
+            if name == "." || name == ".." {
+                continue;
+            }
+            set_permissions_recursive(sftp, crate::sftp::join_remote(&path, &name), mode, apply_to)
+                .await?;
         }
         Ok(())
     })
@@ -1506,6 +1575,7 @@ async fn list_dir_impl(sftp: &SftpSession, path: &str) -> Result<Vec<RemoteEntry
                 is_dir,
                 size,
                 modified,
+                permissions,
             }
         })
         .collect::<Vec<_>>();

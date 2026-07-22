@@ -2354,6 +2354,8 @@ impl TinyShell {
     ) -> AnyElement {
         let path = row.path.clone();
         let toggle_path = path.clone();
+        let context_path = path.clone();
+        let view = cx.entity();
         let is_current = current_path == path;
         let theme = cx.theme().clone();
         let folder_icon = if row.expanded {
@@ -2406,6 +2408,18 @@ impl TinyShell {
                     this.select_sftp_tree_directory(path.clone(), cx);
                 }),
             )
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(move |this, event: &MouseDownEvent, _, cx| {
+                    this.open_sftp_context_menu(
+                        Some(context_path.clone()),
+                        true,
+                        row.permissions,
+                        event.position,
+                        cx,
+                    );
+                }),
+            )
             .child(tree_toggle)
             .child(
                 Icon::new(folder_icon)
@@ -2430,6 +2444,9 @@ impl TinyShell {
                     .when(is_current, |style| style.font_weight(FontWeight::MEDIUM))
                     .child(row.name),
             )
+            .context_menu(move |menu, window, cx| {
+                Self::build_sftp_tree_context_menu(menu, view.clone(), window, cx)
+            })
             .into_any_element()
     }
 
@@ -3300,6 +3317,7 @@ impl TinyShell {
                                                     this.open_sftp_context_menu(
                                                         None,
                                                         false,
+                                                        None,
                                                         event.position,
                                                         cx,
                                                     );
@@ -3396,6 +3414,7 @@ impl TinyShell {
                                                             this.open_sftp_context_menu(
                                                                 Some(remote_path.clone()),
                                                                 entry.is_dir,
+                                                                Some(entry.permissions),
                                                                 event.position,
                                                                 cx,
                                                             );
@@ -6533,6 +6552,117 @@ impl TinyShell {
                 }))
                 .into_any_element(),
         }
+    }
+
+    fn build_sftp_tree_context_menu(
+        menu: PopupMenu,
+        view: gpui::Entity<TinyShell>,
+        window: &mut Window,
+        cx: &mut Context<PopupMenu>,
+    ) -> PopupMenu {
+        let has_target = view
+            .read(cx)
+            .sftp_context_menu
+            .as_ref()
+            .is_some_and(|target| target.remote_path.is_some());
+        let can_mutate_target = view
+            .read(cx)
+            .sftp_context_menu
+            .as_ref()
+            .and_then(|target| target.remote_path.as_deref())
+            .is_some_and(|path| path != "/");
+
+        menu.item(
+            PopupMenuItem::new(t!("refresh").to_string()).on_click(window.listener_for(
+                &view,
+                |this, _, _, cx| {
+                    let target = this
+                        .sftp_context_menu
+                        .take()
+                        .and_then(|menu| menu.remote_path);
+                    if let Some(path) = target {
+                        if let Some(handle) = this.active_sftp_handle() {
+                            handle.list_directory_tree(path.clone());
+                        }
+                        if this
+                            .active_sftp()
+                            .is_some_and(|sftp| sftp.current_path == path)
+                        {
+                            this.refresh_sftp(cx);
+                        } else {
+                            cx.notify();
+                        }
+                    }
+                },
+            )),
+        )
+        .separator()
+        .item(
+            PopupMenuItem::new(t!("sftp_new_folder").to_string())
+                .disabled(!has_target)
+                .on_click(window.listener_for(&view, |this, _, window, cx| {
+                    if let Some(path) = this
+                        .sftp_context_menu
+                        .as_ref()
+                        .and_then(|menu| menu.remote_path.clone())
+                    {
+                        this.navigate_sftp(path, cx);
+                    }
+                    this.trigger_sftp_context_new_folder(window, cx);
+                })),
+        )
+        .item(
+            PopupMenuItem::new(t!("sftp_rename").to_string())
+                .disabled(!can_mutate_target)
+                .on_click(window.listener_for(&view, |this, _, window, cx| {
+                    this.trigger_sftp_context_rename(window, cx);
+                })),
+        )
+        .item(
+            PopupMenuItem::new(t!("delete").to_string())
+                .disabled(!can_mutate_target)
+                .on_click(window.listener_for(&view, |this, _, window, cx| {
+                    this.trigger_sftp_context_delete(false, window, cx);
+                })),
+        )
+        .item(
+            PopupMenuItem::new(t!("sftp_quick_delete").to_string())
+                .disabled(!can_mutate_target)
+                .on_click(window.listener_for(&view, |this, _, window, cx| {
+                    this.trigger_sftp_context_delete(true, window, cx);
+                })),
+        )
+        .separator()
+        .item(
+            PopupMenuItem::new(t!("sftp_copy_path").to_string())
+                .disabled(!has_target)
+                .on_click(window.listener_for(&view, |this, _, _, cx| {
+                    this.trigger_sftp_context_copy_path(cx);
+                })),
+        )
+        .separator()
+        .item(
+            PopupMenuItem::new(t!("download").to_string())
+                .disabled(!has_target)
+                .on_click(window.listener_for(&view, |this, _, window, cx| {
+                    this.trigger_sftp_context_download(window, cx);
+                })),
+        )
+        .item(
+            PopupMenuItem::new(t!("upload").to_string())
+                .disabled(!has_target)
+                .on_click(window.listener_for(&view, |this, _, window, cx| {
+                    this.trigger_sftp_context_upload(window, cx);
+                })),
+        )
+        .separator()
+        .item(
+            PopupMenuItem::new(t!("sftp_file_permissions").to_string())
+                .disabled(!has_target)
+                .on_click(window.listener_for(&view, |this, _, window, cx| {
+                    this.trigger_sftp_context_permissions(window, cx);
+                })),
+        )
     }
 
     fn build_sftp_context_menu(
