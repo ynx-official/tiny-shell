@@ -515,6 +515,16 @@ pub(crate) struct TinyShell {
     /// The Home workspace is a first-class tab alongside terminal groups.
     pub(crate) home_page_open: bool,
     pub(crate) home_page: HomePage,
+    /// The previously selected home page, used to animate nav transitions.
+    pub(crate) prev_home_page: HomePage,
+    /// Increments each time the home page changes, used as an animation epoch.
+    pub(crate) home_page_epoch: u64,
+    /// Increments each time the SFTP panel is minimized or expanded, used as
+    /// an animation epoch for the panel content fade-in.
+    pub(crate) sftp_minimize_epoch: u64,
+    /// Increments each time the sidebar is collapsed or expanded, used as an
+    /// animation epoch for the sidebar content fade-in.
+    pub(crate) sidebar_collapse_epoch: u64,
     pub(crate) connection_group_filter: Option<String>,
     /// Bounds of the visible group rows, used to calculate a drop position.
     pub(crate) connection_group_bounds: HashMap<String, Bounds<Pixels>>,
@@ -536,9 +546,21 @@ pub(crate) struct TinyShell {
     pub(crate) connection_scroll_handle: gpui::ScrollHandle,
     pub(crate) group_picker_scroll_handle: gpui::ScrollHandle,
     pub(crate) connection_progress: Option<ConnectionProgress>,
+    /// Increments each time a connection progress overlay is shown, used as
+    /// an animation epoch so the overlay fade-in restarts on every open.
+    pub(crate) connection_progress_epoch: u64,
     pub(crate) pending_sftp_path_sync: Option<String>,
     pub(crate) pending_sftp_tree_scroll_path: Option<String>,
     pub(crate) sftp_context_menu: Option<SftpContextMenuState>,
+    pub(crate) tab_context_menu: Option<TabContextMenuState>,
+    pub(crate) ip_popover_visible: bool,
+    pub(crate) ip_popover_hide_generation: u64,
+    /// Increments each time a context menu is opened, used as an animation
+    /// epoch so the menu fade-in restarts on every open.
+    pub(crate) context_menu_epoch: u64,
+    /// Increments each time a tab becomes disconnected, used as an animation
+    /// epoch so the reconnect bar fade-in restarts on every disconnect.
+    pub(crate) disconnect_epoch: u64,
     pub(crate) sftp_creating_folder: bool,
     pub(crate) sftp_new_folder_input: Entity<InputState>,
     pub(crate) sftp_delete_scroll_handle: gpui::ScrollHandle,
@@ -596,6 +618,9 @@ pub(crate) struct TinyShell {
     pub(crate) search_input: Entity<InputState>,
     pub(crate) quick_connection_search_input: Entity<InputState>,
     pub(crate) search_active: bool,
+    /// Increments each time the search bar is opened, used as an animation
+    /// epoch so the search bar fade-in restarts on every open.
+    pub(crate) search_epoch: u64,
     pub(crate) search_query: String,
     pub(crate) search_matches: Vec<(i32, i32)>,
     pub(crate) search_current: usize,
@@ -643,6 +668,11 @@ pub(crate) struct ConnectionProgress {
 pub(crate) struct SftpContextMenuState {
     pub(crate) remote_path: Option<String>,
     pub(crate) is_dir: bool,
+    pub(crate) position: Point<Pixels>,
+}
+
+pub(crate) struct TabContextMenuState {
+    pub(crate) group_id: String,
     pub(crate) position: Point<Pixels>,
 }
 
@@ -979,6 +1009,10 @@ impl TinyShell {
             active_system_info_tab: None,
             home_page_open: true,
             home_page: HomePage::default(),
+            prev_home_page: HomePage::default(),
+            home_page_epoch: 0,
+            sftp_minimize_epoch: 0,
+            sidebar_collapse_epoch: 0,
             connection_group_filter: None,
             connection_group_bounds: HashMap::new(),
             pending_connection_group_drag: None,
@@ -1002,9 +1036,15 @@ impl TinyShell {
             connection_scroll_handle: gpui::ScrollHandle::new(),
             group_picker_scroll_handle: gpui::ScrollHandle::new(),
             connection_progress: None,
+            connection_progress_epoch: 0,
             pending_sftp_path_sync: Some("/".into()),
             pending_sftp_tree_scroll_path: None,
             sftp_context_menu: None,
+            tab_context_menu: None,
+            ip_popover_visible: false,
+            ip_popover_hide_generation: 0,
+            context_menu_epoch: 0,
+            disconnect_epoch: 0,
             sftp_creating_folder: false,
             sftp_new_folder_input,
             sftp_delete_scroll_handle: gpui::ScrollHandle::new(),
@@ -1064,6 +1104,7 @@ impl TinyShell {
             search_input,
             quick_connection_search_input,
             search_active: false,
+            search_epoch: 0,
             search_query: String::new(),
             search_matches: Vec::new(),
             search_current: 0,
@@ -1252,6 +1293,62 @@ impl TinyShell {
         changed |= advance(&mut self.animated_mem_percent, self.system.mem_percent);
         changed |= advance(&mut self.animated_swap_percent, self.system.swap_percent);
         changed
+    }
+
+    /// Switch the active home page, recording the previous selection and
+    /// bumping the animation epoch so the nav item transition can re-run.
+    pub(crate) fn set_home_page(&mut self, page: HomePage, cx: &mut Context<Self>) {
+        if self.home_page == page {
+            return;
+        }
+        self.prev_home_page = self.home_page;
+        self.home_page = page;
+        self.home_page_epoch = self.home_page_epoch.wrapping_add(1);
+        cx.notify();
+    }
+
+    /// A hash of the fields that determine which top-level view is shown in the
+    /// main content area. Used as the animation epoch for the main content
+    /// fade-in: whenever any of these change, the animation ID changes too and
+    /// `with_animation` restarts from frame 0, producing a fresh fade-in.
+    pub(crate) fn main_view_key(&self) -> u64 {
+        let mut hash: u64 = 0;
+        hash = hash.wrapping_mul(31).wrapping_add(self.home_page as u64);
+        hash = hash.wrapping_mul(31).wrapping_add(self.home_page_open as u64);
+        hash = hash
+            .wrapping_mul(31)
+            .wrapping_add(self.active_system_info_tab.is_some() as u64);
+        if let Some(id) = &self.active_tab {
+            for byte in id.bytes() {
+                hash = hash.wrapping_mul(31).wrapping_add(byte as u64);
+            }
+        }
+        hash
+    }
+
+    pub(crate) fn show_ip_popover(&mut self, cx: &mut Context<Self>) {
+        self.ip_popover_hide_generation = self.ip_popover_hide_generation.wrapping_add(1);
+        if !self.ip_popover_visible {
+            self.ip_popover_visible = true;
+            cx.notify();
+        }
+    }
+
+    pub(crate) fn schedule_ip_popover_hide(&mut self, cx: &mut Context<Self>) {
+        self.ip_popover_hide_generation = self.ip_popover_hide_generation.wrapping_add(1);
+        let generation = self.ip_popover_hide_generation;
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(Duration::from_millis(350))
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                if this.ip_popover_hide_generation == generation && this.ip_popover_visible {
+                    this.ip_popover_visible = false;
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
     }
 
     pub(crate) fn drain_backend_events(&mut self, cx: &mut Context<Self>) -> bool {
@@ -1456,6 +1553,7 @@ impl TinyShell {
                         tab.connected = false;
                         tab.status = reason.clone();
                         tab.disconnected_reason = Some(reason.clone());
+                        self.disconnect_epoch = self.disconnect_epoch.wrapping_add(1);
                     }
                     if self.system_tab_id.as_deref() == Some(tab_id.as_str()) {
                         self.system_status = Some(reason.clone().into());
@@ -1468,6 +1566,8 @@ impl TinyShell {
                                 .set_offset(gpui::point(px(0.), px(-99999.0)));
                             progress.title = t!("connection_failed").into();
                             progress.failed = true;
+                            self.connection_progress_epoch =
+                                self.connection_progress_epoch.wrapping_add(1);
                         }
                     }
                     self.status = reason.into();
@@ -1771,6 +1871,7 @@ impl TinyShell {
             }
         }
 
+        self.connection_progress_epoch = self.connection_progress_epoch.wrapping_add(1);
         self.connection_progress = Some(ConnectionProgress {
             tab_id: progress.tab_id.clone(),
             title: t!("connecting").into(),
