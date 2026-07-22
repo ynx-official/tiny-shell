@@ -12,7 +12,7 @@ use gpui_component::{
     checkbox::Checkbox,
     h_flex,
     input::Input,
-    menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenuItem},
+    menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenu, PopupMenuItem},
     progress::Progress,
     scroll::{ScrollableElement as _, Scrollbar, ScrollbarShow},
     tab::{Tab, TabBar},
@@ -24,7 +24,7 @@ use std::collections::{HashMap, HashSet};
 use crate::{
     PaneLayout, TinyShell,
     app::constants::{COLLAPSED_SIDEBAR_WIDTH, SIDEBAR_WIDTH, TERMINAL_KEY_CONTEXT},
-    app::{HomePage, ProcessView, TabContextMenuState},
+    app::{HomePage, ProcessView},
     sftp::format_mtime,
     sftp::ops::is_editable_text_file,
     system::format_bytes,
@@ -2593,6 +2593,23 @@ impl TinyShell {
                         .flex_1()
                         .relative()
                         .min_h(px(0.))
+                        .on_mouse_down(
+                            MouseButton::Right,
+                            cx.listener(|this, event: &MouseDownEvent, _, cx| {
+                                let target_was_set_by_row = this
+                                    .sftp_context_menu
+                                    .as_ref()
+                                    .is_some_and(|menu| menu.position == event.position);
+                                if !target_was_set_by_row {
+                                    this.open_sftp_context_menu(
+                                        None,
+                                        false,
+                                        event.position,
+                                        cx,
+                                    );
+                                }
+                            }),
+                        )
                         .child({
                             let entries = entries.clone();
                             let selected_entries = selected_entries.clone();
@@ -2658,6 +2675,12 @@ impl TinyShell {
                                                                         entry.full_path.clone(),
                                                                         cx,
                                                                     );
+                                                                } else if let Some(handle) =
+                                                                    this.active_sftp_handle()
+                                                                {
+                                                                    handle.edit_file(
+                                                                        entry.full_path.clone(),
+                                                                    );
                                                                 }
                                                             }
                                                         }
@@ -2674,7 +2697,7 @@ impl TinyShell {
                                                                 cx,
                                                             );
                                                             this.open_sftp_context_menu(
-                                                                remote_path.clone(),
+                                                                Some(remote_path.clone()),
                                                                 entry.is_dir,
                                                                 event.position,
                                                                 cx,
@@ -2690,10 +2713,6 @@ impl TinyShell {
                                                         .justify_center()
                                                         .on_mouse_down(
                                                             MouseButton::Left,
-                                                            |_, _, cx| cx.stop_propagation(),
-                                                        )
-                                                        .on_mouse_down(
-                                                            MouseButton::Right,
                                                             |_, _, cx| cx.stop_propagation(),
                                                         )
                                                         .child(
@@ -2786,7 +2805,18 @@ impl TinyShell {
                                     Scrollbar::vertical(&self.remote_files_scroll_handle)
                                         .scrollbar_show(ScrollbarShow::Always),
                                 ),
-                        ),
+                        )
+                        .context_menu({
+                            let view = view.clone();
+                            move |menu, window, cx| {
+                                Self::build_sftp_context_menu(
+                                    menu,
+                                    view.clone(),
+                                    window,
+                                    cx,
+                                )
+                            }
+                        }),
                                 ),
                         ),
                 ),
@@ -5163,7 +5193,19 @@ impl TinyShell {
                                                         .rounded_full()
                                                         .bg(dot_color),
                                                 )
-                                                .child(div().min_w(px(0.)).child(label)),
+                                                .child(div().min_w(px(0.)).child(label))
+                                                .context_menu({
+                                                    let view = view.clone();
+                                                    move |menu, window, cx| {
+                                                        Self::build_tab_context_menu(
+                                                            menu,
+                                                            view.clone(),
+                                                            context_gid.clone(),
+                                                            window,
+                                                            cx,
+                                                        )
+                                                    }
+                                                }),
                                         )
                                         .on_click(cx.listener(move |this, _, window, cx| {
                                             this.activate_group(gid.clone(), window, cx)
@@ -5190,18 +5232,6 @@ impl TinyShell {
                                                         }
                                                     },
                                                 )),
-                                        )
-                                        .on_mouse_down(
-                                            MouseButton::Right,
-                                            cx.listener(move |this, event: &MouseDownEvent, _, cx| {
-                                                this.tab_context_menu = Some(
-                                                    TabContextMenuState {
-                                                        group_id: context_gid.clone(),
-                                                        position: event.position,
-                                                    },
-                                                );
-                                                cx.notify();
-                                            }),
                                         )
                                 },
                             )
@@ -5940,6 +5970,358 @@ impl TinyShell {
                 .into_any_element(),
         }
     }
+
+    fn build_sftp_context_menu(
+        mut menu: PopupMenu,
+        view: gpui::Entity<TinyShell>,
+        window: &mut Window,
+        cx: &mut Context<PopupMenu>,
+    ) -> PopupMenu {
+        let target = view.read(cx).sftp_context_menu.clone();
+        let has_target = target
+            .as_ref()
+            .is_some_and(|target| target.remote_path.is_some());
+        let is_file = target
+            .as_ref()
+            .is_some_and(|target| target.remote_path.is_some() && !target.is_dir);
+        let editable = target
+            .as_ref()
+            .and_then(|target| target.remote_path.as_deref())
+            .is_some_and(is_editable_text_file);
+        let external_editor_set = !view.read(cx).config.sftp_external_editor().is_empty();
+
+        menu = menu
+            .item(
+                PopupMenuItem::new(t!("refresh").to_string()).on_click(window.listener_for(
+                    &view,
+                    |this, _, _, cx| {
+                        this.sftp_context_menu = None;
+                        this.refresh_sftp(cx);
+                    },
+                )),
+            )
+            .separator()
+            .item(
+                PopupMenuItem::new(t!("sftp_open").to_string())
+                    .disabled(!has_target)
+                    .on_click(window.listener_for(&view, |this, _, _, cx| {
+                        this.trigger_sftp_context_open(cx);
+                    })),
+            );
+
+        menu = if is_file {
+            menu.submenu(t!("sftp_open_with").to_string(), window, cx, {
+                let view = view.clone();
+                move |submenu, window, _| {
+                    submenu
+                        .item(
+                            PopupMenuItem::new(t!("sftp_text_editor").to_string())
+                                .disabled(!editable)
+                                .on_click(window.listener_for(&view, |this, _, _, cx| {
+                                    this.trigger_sftp_context_internal_editor(cx);
+                                })),
+                        )
+                        .item(
+                            PopupMenuItem::new(t!("sftp_system_association").to_string())
+                                .on_click(window.listener_for(&view, |this, _, _, cx| {
+                                    this.trigger_sftp_context_system_open(cx);
+                                })),
+                        )
+                }
+            })
+        } else {
+            menu.item(PopupMenuItem::new(t!("sftp_open_with").to_string()).disabled(true))
+        };
+
+        menu = if is_file {
+            menu.submenu(
+                t!("sftp_select_text_editor").to_string(),
+                window,
+                cx,
+                {
+                    let view = view.clone();
+                    move |submenu, window, _| {
+                        submenu
+                            .item(
+                                PopupMenuItem::new(t!("sftp_internal_editor").to_string())
+                                    .disabled(!editable)
+                                    .on_click(window.listener_for(&view, |this, _, _, cx| {
+                                        this.trigger_sftp_context_internal_editor(cx);
+                                    })),
+                            )
+                            .item(
+                                PopupMenuItem::new(t!("sftp_external_editor").to_string())
+                                    .disabled(!external_editor_set)
+                                    .on_click(window.listener_for(&view, |this, _, _, cx| {
+                                        this.trigger_sftp_context_external_editor(cx);
+                                    })),
+                            )
+                            .separator()
+                            .item(
+                                PopupMenuItem::new(t!("sftp_set_external_editor").to_string())
+                                    .on_click(window.listener_for(&view, |this, _, window, cx| {
+                                        this.choose_sftp_external_editor(window, cx);
+                                    })),
+                            )
+                    }
+                },
+            )
+        } else {
+            menu.item(
+                PopupMenuItem::new(t!("sftp_select_text_editor").to_string()).disabled(true),
+            )
+        };
+
+        menu.separator()
+            .item(
+                PopupMenuItem::new(t!("sftp_copy_path").to_string())
+                    .disabled(!has_target)
+                    .on_click(window.listener_for(&view, |this, _, _, cx| {
+                        this.trigger_sftp_context_copy_path(cx);
+                    })),
+            )
+            .separator()
+            .item(
+                PopupMenuItem::new(t!("download").to_string())
+                    .disabled(!has_target)
+                    .on_click(window.listener_for(&view, |this, _, window, cx| {
+                        this.trigger_sftp_context_download(window, cx);
+                    })),
+            )
+            .item(
+                PopupMenuItem::new(t!("upload").to_string()).on_click(window.listener_for(
+                    &view,
+                    |this, _, window, cx| {
+                        this.trigger_sftp_context_upload(window, cx);
+                    },
+                )),
+            )
+            .separator()
+            .item(
+                PopupMenuItem::new(t!("sftp_pack_transfer").to_string())
+                    .disabled(!has_target)
+                    .on_click(window.listener_for(&view, |this, _, window, cx| {
+                        this.trigger_sftp_context_pack_download(window, cx);
+                    })),
+            )
+            .separator()
+            .submenu(t!("sftp_new").to_string(), window, cx, {
+                let view = view.clone();
+                move |submenu, window, _| {
+                    submenu
+                        .item(
+                            PopupMenuItem::new(t!("sftp_new_file").to_string()).on_click(
+                                window.listener_for(&view, |this, _, window, cx| {
+                                    this.trigger_sftp_context_new_file(window, cx);
+                                }),
+                            ),
+                        )
+                        .item(
+                            PopupMenuItem::new(t!("sftp_new_folder").to_string()).on_click(
+                                window.listener_for(&view, |this, _, window, cx| {
+                                    this.trigger_sftp_context_new_folder(window, cx);
+                                }),
+                            ),
+                        )
+                }
+            })
+            .separator()
+            .item(
+                PopupMenuItem::new(t!("sftp_rename").to_string())
+                    .disabled(!has_target)
+                    .on_click(window.listener_for(&view, |this, _, window, cx| {
+                        this.trigger_sftp_context_rename(window, cx);
+                    })),
+            )
+            .item(
+                PopupMenuItem::new(t!("delete").to_string())
+                    .disabled(!has_target)
+                    .on_click(window.listener_for(&view, |this, _, window, cx| {
+                        this.trigger_sftp_context_delete(false, window, cx);
+                    })),
+            )
+            .item(
+                PopupMenuItem::new(t!("sftp_quick_delete").to_string())
+                    .disabled(!has_target)
+                    .on_click(window.listener_for(&view, |this, _, window, cx| {
+                        this.trigger_sftp_context_delete(true, window, cx);
+                    })),
+            )
+            .item(
+                PopupMenuItem::new(t!("sftp_file_permissions").to_string())
+                    .disabled(!has_target)
+                    .on_click(window.listener_for(&view, |this, _, window, cx| {
+                        this.trigger_sftp_context_permissions(window, cx);
+                    })),
+            )
+    }
+
+    fn build_tab_context_menu(
+        menu: PopupMenu,
+        view: gpui::Entity<TinyShell>,
+        group_id: String,
+        window: &mut Window,
+        cx: &mut Context<PopupMenu>,
+    ) -> PopupMenu {
+        let (
+            duplicate_session,
+            reconnect_tab_ids,
+            reconnect_all_tab_ids,
+            is_connected_ssh,
+            close_tab_id,
+            close_other_tab_ids,
+            close_all_tab_ids,
+        ) = {
+            let this = view.read(cx);
+            let group_tab_ids: Vec<String> = this
+                .tab_groups
+                .iter()
+                .find(|group| group.id == group_id)
+                .map(|group| {
+                    group
+                        .pane_root
+                        .tab_ids()
+                        .iter()
+                        .map(|tab_id| (*tab_id).to_string())
+                        .collect()
+                })
+                .unwrap_or_default();
+            let close_tab_id = group_tab_ids.first().cloned();
+            let close_other_tab_ids: Vec<String> = this
+                .tab_groups
+                .iter()
+                .filter(|group| group.id != group_id)
+                .filter_map(|group| group.pane_root.tab_ids().first().copied())
+                .map(String::from)
+                .collect();
+            let close_all_tab_ids: Vec<String> = this
+                .tab_groups
+                .iter()
+                .filter_map(|group| group.pane_root.tab_ids().first().copied())
+                .map(String::from)
+                .collect();
+            let duplicate_session = group_tab_ids.iter().find_map(|tab_id| {
+                this.tabs
+                    .iter()
+                    .find(|tab| tab.id == *tab_id && tab.kind == TabKind::Ssh)
+                    .and_then(|tab| tab.session.clone())
+            });
+            let reconnect_tab_ids: Vec<String> = group_tab_ids
+                .iter()
+                .filter(|tab_id| {
+                    this.tabs.iter().any(|tab| {
+                        tab.id == **tab_id
+                            && tab.kind == TabKind::Ssh
+                            && !tab.connected
+                            && tab.disconnected_reason.is_some()
+                    })
+                })
+                .cloned()
+                .collect();
+            let reconnect_all_tab_ids: Vec<String> = this
+                .tabs
+                .iter()
+                .filter(|tab| {
+                    tab.kind == TabKind::Ssh
+                        && !tab.connected
+                        && tab.disconnected_reason.is_some()
+                })
+                .map(|tab| tab.id.clone())
+                .collect();
+            let is_connected_ssh = group_tab_ids.iter().any(|tab_id| {
+                this.tabs.iter().any(|tab| {
+                    tab.id == *tab_id && tab.kind == TabKind::Ssh && tab.connected
+                })
+            });
+            (
+                duplicate_session,
+                reconnect_tab_ids,
+                reconnect_all_tab_ids,
+                is_connected_ssh,
+                close_tab_id,
+                close_other_tab_ids,
+                close_all_tab_ids,
+            )
+        };
+
+        menu.item(
+            PopupMenuItem::new(t!("tab_copy_label").to_string())
+                .disabled(duplicate_session.is_none())
+                .on_click(window.listener_for(&view, move |this, _, _, cx| {
+                    if let Some(session) = duplicate_session.clone() {
+                        this.open_ssh_session(session, cx);
+                    }
+                })),
+        )
+        .item(
+            PopupMenuItem::new(t!("tab_connect").to_string())
+                .disabled(reconnect_tab_ids.is_empty())
+                .on_click(window.listener_for(&view, move |this, _, _, cx| {
+                    for tab_id in &reconnect_tab_ids {
+                        this.retry_disconnected_tab(tab_id, cx);
+                    }
+                    cx.notify();
+                })),
+        )
+        .item(
+            PopupMenuItem::new(t!("tab_connect_all").to_string())
+                .disabled(reconnect_all_tab_ids.is_empty())
+                .on_click(window.listener_for(&view, move |this, _, _, cx| {
+                    for tab_id in &reconnect_all_tab_ids {
+                        this.retry_disconnected_tab(tab_id, cx);
+                    }
+                    cx.notify();
+                })),
+        )
+        .separator()
+        .item(
+            PopupMenuItem::new(t!("tab_disconnect").to_string())
+                .disabled(!is_connected_ssh)
+                .on_click(window.listener_for(&view, {
+                    let group_id = group_id.clone();
+                    move |this, _, _, cx| {
+                        this.disconnect_tab_group(&group_id, cx);
+                    }
+                })),
+        )
+        .separator()
+        .item(
+            PopupMenuItem::new(t!("tab_close").to_string())
+                .disabled(close_tab_id.is_none())
+                .on_click(window.listener_for(&view, move |this, _, _, cx| {
+                    if let Some(tab_id) = close_tab_id.clone() {
+                        this.close_tab(tab_id, cx);
+                    }
+                })),
+        )
+        .item(
+            PopupMenuItem::new(t!("tab_close_others").to_string())
+                .disabled(close_other_tab_ids.is_empty())
+                .on_click(window.listener_for(&view, move |this, _, _, cx| {
+                    for tab_id in &close_other_tab_ids {
+                        this.close_tab(tab_id.clone(), cx);
+                    }
+                    cx.notify();
+                })),
+        )
+        .item(
+            PopupMenuItem::new(t!("tab_close_all").to_string())
+                .disabled(close_all_tab_ids.is_empty())
+                .on_click(window.listener_for(&view, move |this, _, _, cx| {
+                    for tab_id in &close_all_tab_ids {
+                        this.close_tab(tab_id.clone(), cx);
+                    }
+                    cx.notify();
+                })),
+        )
+        .separator()
+        .item(PopupMenuItem::new(t!("settings_detach_tab").to_string()).on_click(
+            window.listener_for(&view, move |this, _, window, cx| {
+                this.activate_group(group_id.clone(), window, cx);
+                this.detach_tab_to_new_window(cx);
+            }),
+        ))
+    }
 }
 
 impl Render for TinyShell {
@@ -6266,322 +6648,6 @@ impl Render for TinyShell {
             )
             .children(Root::render_dialog_layer(window, cx))
             .children(Root::render_sheet_layer(window, cx))
-            .when_some(self.sftp_context_menu.clone(), |this, menu| {
-                let label = if menu.is_dir {
-                    t!("download_folder").to_string()
-                } else {
-                    t!("download").to_string()
-                };
-                this.child(
-                    div()
-                        .absolute()
-                        .top_0()
-                        .left_0()
-                        .right_0()
-                        .bottom_0()
-                        .on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(|this, _, _, cx| {
-                                this.dismiss_sftp_context_menu(cx);
-                            }),
-                        )
-                        .on_mouse_down(
-                            MouseButton::Right,
-                            cx.listener(|this, _, _, cx| {
-                                this.dismiss_sftp_context_menu(cx);
-                            }),
-                        )
-                        .child(
-                            div()
-                                .absolute()
-                                .left(menu.position.x)
-                                .top(menu.position.y)
-                                .w(px(172.))
-                                .p_1()
-                                .rounded_md()
-                                .border_1()
-                                .border_color(cx.theme().border)
-                                .bg(cx.theme().popover)
-                                .shadow_lg()
-                                .on_mouse_down(MouseButton::Left, |_, window, cx| {
-                                    window.prevent_default();
-                                    cx.stop_propagation();
-                                })
-                                .on_mouse_down(MouseButton::Right, |_, window, cx| {
-                                    window.prevent_default();
-                                    cx.stop_propagation();
-                                })
-                                .child(
-                                    v_flex()
-                                        .w_full()
-                                        .child(
-                                            Button::new("sftp-context-download")
-                                                .ghost()
-                                                .w_full()
-                                                .justify_start()
-                                                .label(label)
-                                                .on_click(cx.listener(|this, _, window, cx| {
-                                                    this.trigger_sftp_context_download(window, cx);
-                                                })),
-                                        )
-                                        .when(
-                                            !menu.is_dir
-                                                && is_editable_text_file(&menu.remote_path),
-                                            |this| {
-                                                this.child(
-                                                    Button::new("sftp-context-edit")
-                                                        .ghost()
-                                                        .w_full()
-                                                        .justify_start()
-                                                        .label(t!("edit_file"))
-                                                        .tooltip(
-                                                            t!("edit_file_tooltip").to_string(),
-                                                        )
-                                                        .on_click(cx.listener(|this, _, _, cx| {
-                                                            this.trigger_sftp_context_edit(cx);
-                                                        })),
-                                                )
-                                            },
-                                        ),
-                                ),
-                        ),
-                )
-            })
-            .when_some(self.tab_context_menu.clone(), |this, menu| {
-                let group_id = menu.group_id.clone();
-                let group_tab_ids: Vec<String> = self
-                    .tab_groups
-                    .iter()
-                    .find(|group| group.id == group_id)
-                    .map(|group| {
-                        group
-                            .pane_root
-                            .tab_ids()
-                            .iter()
-                            .map(|tab_id| (*tab_id).to_string())
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                let close_tab_id = group_tab_ids.first().cloned();
-                let close_other_tab_ids: Vec<String> = self
-                    .tab_groups
-                    .iter()
-                    .filter(|group| group.id != group_id)
-                    .filter_map(|group| group.pane_root.tab_ids().first().copied())
-                    .map(String::from)
-                    .collect();
-                let close_all_tab_ids: Vec<String> = self
-                    .tab_groups
-                    .iter()
-                    .filter_map(|group| group.pane_root.tab_ids().first().copied())
-                    .map(String::from)
-                    .collect();
-                let duplicate_session = group_tab_ids.iter().find_map(|tab_id| {
-                    self.tabs
-                        .iter()
-                        .find(|tab| tab.id == *tab_id && tab.kind == TabKind::Ssh)
-                        .and_then(|tab| tab.session.clone())
-                });
-                let reconnect_tab_ids: Vec<String> = group_tab_ids
-                    .iter()
-                    .filter(|tab_id| {
-                        self.tabs.iter().any(|tab| {
-                            tab.id == **tab_id
-                                && tab.kind == TabKind::Ssh
-                                && !tab.connected
-                                && tab.disconnected_reason.is_some()
-                        })
-                    })
-                    .cloned()
-                    .collect();
-                let reconnect_all_tab_ids: Vec<String> = self
-                    .tabs
-                    .iter()
-                    .filter(|tab| {
-                        tab.kind == TabKind::Ssh
-                            && !tab.connected
-                            && tab.disconnected_reason.is_some()
-                    })
-                    .map(|tab| tab.id.clone())
-                    .collect();
-                let is_connected_ssh = group_tab_ids.iter().any(|tab_id| {
-                    self.tabs.iter().any(|tab| {
-                        tab.id == *tab_id && tab.kind == TabKind::Ssh && tab.connected
-                    })
-                });
-                let disconnect_gid = group_id.clone();
-                let detach_gid = group_id;
-                this.child(
-                    div()
-                        .absolute()
-                        .top_0()
-                        .left_0()
-                        .right_0()
-                        .bottom_0()
-                        .on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(|this, _, _, cx| {
-                                this.tab_context_menu = None;
-                                cx.notify();
-                            }),
-                        )
-                        .on_mouse_down(
-                            MouseButton::Right,
-                            cx.listener(|this, _, _, cx| {
-                                this.tab_context_menu = None;
-                                cx.notify();
-                            }),
-                        )
-                        .child(
-                            div()
-                                .absolute()
-                                .left(menu.position.x)
-                                .top(menu.position.y)
-                                .w(px(200.))
-                                .p_1()
-                                .rounded_md()
-                                .border_1()
-                                .border_color(cx.theme().border)
-                                .bg(cx.theme().popover)
-                                .shadow_lg()
-                                .on_mouse_down(MouseButton::Left, |_, window, cx| {
-                                    window.prevent_default();
-                                    cx.stop_propagation();
-                                })
-                                .on_mouse_down(MouseButton::Right, |_, window, cx| {
-                                    window.prevent_default();
-                                    cx.stop_propagation();
-                                })
-                                .child(
-                                    v_flex()
-                                        .w_full()
-                                        .child(
-                                            Button::new("tab-context-copy-label")
-                                                .ghost()
-                                                .w_full()
-                                                .justify_start()
-                                                .disabled(duplicate_session.is_none())
-                                                .label(t!("tab_copy_label").to_string())
-                                                .on_click(cx.listener(move |this, _, _, cx| {
-                                                    this.tab_context_menu = None;
-                                                    if let Some(session) = duplicate_session.clone() {
-                                                        this.open_ssh_session(session, cx);
-                                                    } else {
-                                                        cx.notify();
-                                                    }
-                                                })),
-                                        )
-                                        .child(
-                                            Button::new("tab-context-connect")
-                                                .ghost()
-                                                .w_full()
-                                                .justify_start()
-                                                .disabled(reconnect_tab_ids.is_empty())
-                                                .label(t!("tab_connect").to_string())
-                                                .on_click(cx.listener(move |this, _, _, cx| {
-                                                    this.tab_context_menu = None;
-                                                    for tab_id in &reconnect_tab_ids {
-                                                        this.retry_disconnected_tab(tab_id, cx);
-                                                    }
-                                                    cx.notify();
-                                                })),
-                                        )
-                                        .child(
-                                            Button::new("tab-context-connect-all")
-                                                .ghost()
-                                                .w_full()
-                                                .justify_start()
-                                                .disabled(reconnect_all_tab_ids.is_empty())
-                                                .label(t!("tab_connect_all").to_string())
-                                                .on_click(cx.listener(move |this, _, _, cx| {
-                                                    this.tab_context_menu = None;
-                                                    for tab_id in &reconnect_all_tab_ids {
-                                                        this.retry_disconnected_tab(tab_id, cx);
-                                                    }
-                                                    cx.notify();
-                                                })),
-                                        )
-                                        .child(div().my_1().h(px(1.)).bg(cx.theme().border))
-                                        .child(
-                                            Button::new("tab-context-disconnect")
-                                                .ghost()
-                                                .w_full()
-                                                .justify_start()
-                                                .disabled(!is_connected_ssh)
-                                                .label(t!("tab_disconnect").to_string())
-                                                .on_click(cx.listener(move |this, _, _, cx| {
-                                                    this.tab_context_menu = None;
-                                                    this.disconnect_tab_group(&disconnect_gid, cx);
-                                                })),
-                                        )
-                                        .child(div().my_1().h(px(1.)).bg(cx.theme().border))
-                                        .child(
-                                            Button::new("tab-context-close")
-                                                .ghost()
-                                                .w_full()
-                                                .justify_start()
-                                                .disabled(close_tab_id.is_none())
-                                                .label(t!("tab_close").to_string())
-                                                .on_click(cx.listener(move |this, _, _, cx| {
-                                                    this.tab_context_menu = None;
-                                                    if let Some(tab_id) = close_tab_id.clone() {
-                                                        this.close_tab(tab_id, cx);
-                                                    } else {
-                                                        cx.notify();
-                                                    }
-                                                })),
-                                        )
-                                        .child(
-                                            Button::new("tab-context-close-others")
-                                                .ghost()
-                                                .w_full()
-                                                .justify_start()
-                                                .disabled(close_other_tab_ids.is_empty())
-                                                .label(t!("tab_close_others").to_string())
-                                                .on_click(cx.listener(move |this, _, _, cx| {
-                                                    this.tab_context_menu = None;
-                                                    for tab_id in &close_other_tab_ids {
-                                                        this.close_tab(tab_id.clone(), cx);
-                                                    }
-                                                    cx.notify();
-                                                })),
-                                        )
-                                        .child(
-                                            Button::new("tab-context-close-all")
-                                                .ghost()
-                                                .w_full()
-                                                .justify_start()
-                                                .disabled(close_all_tab_ids.is_empty())
-                                                .label(t!("tab_close_all").to_string())
-                                                .on_click(cx.listener(move |this, _, _, cx| {
-                                                    this.tab_context_menu = None;
-                                                    for tab_id in &close_all_tab_ids {
-                                                        this.close_tab(tab_id.clone(), cx);
-                                                    }
-                                                    cx.notify();
-                                                })),
-                                        )
-                                        .child(div().my_1().h(px(1.)).bg(cx.theme().border))
-                                        .child(
-                                            Button::new("tab-context-detach")
-                                                .ghost()
-                                                .w_full()
-                                                .justify_start()
-                                                .label(t!("settings_detach_tab").to_string())
-                                                .on_click(cx.listener(move |this, _, window, cx| {
-                                                    this.tab_context_menu = None;
-                                                    this.activate_group(
-                                                        detach_gid.clone(),
-                                                        window,
-                                                        cx,
-                                                    );
-                                                    this.detach_tab_to_new_window(cx);
-                                                })),
-                                        ),
-                                ),
-                        ),
-                )
-            })
             .when_some(
                 self.connection_progress
                     .clone()

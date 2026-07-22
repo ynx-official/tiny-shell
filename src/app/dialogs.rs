@@ -1,5 +1,5 @@
 use gpui::{
-    Anchor, Context, Focusable as _, FontWeight, InteractiveElement as _, IntoElement, MouseButton,
+    Anchor, AppContext as _, Context, Focusable as _, FontWeight, InteractiveElement as _, IntoElement, MouseButton,
     ParentElement as _, SharedString, StatefulInteractiveElement as _, Styled as _, Window, div,
     prelude::FluentBuilder as _, px, rems,
 };
@@ -2504,6 +2504,273 @@ impl TinyShell {
                                     }
                                 }),
                         )
+                })
+        });
+    }
+
+    pub(crate) fn show_sftp_create_dialog(
+        &mut self,
+        is_dir: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let view = cx.entity();
+        let base_path = self
+            .active_sftp()
+            .map(|sftp| sftp.current_path.clone())
+            .unwrap_or_else(|| "/".to_string());
+        let input = cx.new(|cx| {
+            gpui_component::input::InputState::new(window, cx).placeholder(if is_dir {
+                t!("sftp_new_folder_name").to_string()
+            } else {
+                t!("sftp_new_file_name").to_string()
+            })
+        });
+        let submit_input = input.clone();
+        window.open_dialog(cx, move |dialog: Dialog, _window, _| {
+            let submit_input = submit_input.clone();
+            let content_input = input.clone();
+            dialog
+                .title(if is_dir {
+                    t!("sftp_new_folder").to_string()
+                } else {
+                    t!("sftp_new_file").to_string()
+                })
+                .w(px(420.))
+                .on_ok({
+                    let view = view.clone();
+                    let base_path = base_path.clone();
+                    move |_, window, cx| {
+                        let name = submit_input.read(cx).value().trim().to_string();
+                        if name.is_empty() || name.contains('/') || name.contains('\\') {
+                            view.update(cx, |this, cx| {
+                                this.status = t!("sftp_invalid_name").into();
+                                cx.notify();
+                            });
+                            return false;
+                        }
+                        view.update(cx, |this, cx| {
+                            if let Some(handle) = this.active_sftp_handle() {
+                                let path = crate::sftp::join_remote(&base_path, &name);
+                                let command = if is_dir {
+                                    crate::sftp::SftpCommand::CreateDir(path)
+                                } else {
+                                    crate::sftp::SftpCommand::CreateFile(path)
+                                };
+                                let _ = handle.commands.send(command);
+                            }
+                            cx.notify();
+                        });
+                        window.close_dialog(cx);
+                        true
+                    }
+                })
+                .content(move |content, _, _| {
+                    content.child(Input::new(&content_input).w_full())
+                })
+        });
+    }
+
+    pub(crate) fn show_sftp_rename_dialog(
+        &mut self,
+        remote_path: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let view = cx.entity();
+        let old_name = remote_path
+            .trim_end_matches('/')
+            .rsplit('/')
+            .next()
+            .unwrap_or_default()
+            .to_string();
+        let parent = crate::sftp::parent_dir(&remote_path).unwrap_or_else(|| "/".to_string());
+        let input = cx.new(|cx| {
+            gpui_component::input::InputState::new(window, cx).default_value(old_name)
+        });
+        let submit_input = input.clone();
+        window.open_dialog(cx, move |dialog: Dialog, _window, _| {
+            let submit_input = submit_input.clone();
+            let content_input = input.clone();
+            dialog
+                .title(t!("sftp_rename").to_string())
+                .w(px(420.))
+                .on_ok({
+                    let view = view.clone();
+                    let remote_path = remote_path.clone();
+                    let parent = parent.clone();
+                    move |_, window, cx| {
+                        let name = submit_input.read(cx).value().trim().to_string();
+                        if name.is_empty() || name.contains('/') || name.contains('\\') {
+                            view.update(cx, |this, cx| {
+                                this.status = t!("sftp_invalid_name").into();
+                                cx.notify();
+                            });
+                            return false;
+                        }
+                        view.update(cx, |this, cx| {
+                            if let Some(handle) = this.active_sftp_handle() {
+                                let _ = handle.commands.send(
+                                    crate::sftp::SftpCommand::RenamePath {
+                                        old_path: remote_path.clone(),
+                                        new_path: crate::sftp::join_remote(&parent, &name),
+                                    },
+                                );
+                            }
+                            cx.notify();
+                        });
+                        window.close_dialog(cx);
+                        true
+                    }
+                })
+                .content(move |content, _, _| {
+                    content.child(Input::new(&content_input).w_full())
+                })
+        });
+    }
+
+    pub(crate) fn show_sftp_permissions_dialog(
+        &mut self,
+        remote_path: String,
+        is_dir: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let view = cx.entity();
+        let input = cx.new(|cx| {
+            gpui_component::input::InputState::new(window, cx)
+                .default_value(if is_dir { "755" } else { "644" })
+                .placeholder("755")
+        });
+        let submit_input = input.clone();
+        window.open_dialog(cx, move |dialog: Dialog, _window, _| {
+            let submit_input = submit_input.clone();
+            let content_input = input.clone();
+            dialog
+                .title(t!("sftp_file_permissions").to_string())
+                .w(px(420.))
+                .on_ok({
+                    let view = view.clone();
+                    let remote_path = remote_path.clone();
+                    move |_, window, cx| {
+                        let value = submit_input.read(cx).value().trim().to_string();
+                        let Ok(mode) = u32::from_str_radix(&value, 8) else {
+                            view.update(cx, |this, cx| {
+                                this.status = t!("sftp_invalid_permissions").into();
+                                cx.notify();
+                            });
+                            return false;
+                        };
+                        if value.len() < 3 || value.len() > 4 || mode > 0o7777 {
+                            view.update(cx, |this, cx| {
+                                this.status = t!("sftp_invalid_permissions").into();
+                                cx.notify();
+                            });
+                            return false;
+                        }
+                        view.update(cx, |this, cx| {
+                            if let Some(handle) = this.active_sftp_handle() {
+                                let _ = handle.commands.send(
+                                    crate::sftp::SftpCommand::SetPermissions {
+                                        remote_path: remote_path.clone(),
+                                        mode,
+                                    },
+                                );
+                            }
+                            cx.notify();
+                        });
+                        window.close_dialog(cx);
+                        true
+                    }
+                })
+                .content(move |content, _, cx| {
+                    content.child(
+                        v_flex()
+                            .gap_2()
+                            .child(Input::new(&content_input).w_full())
+                            .child(
+                                div()
+                                    .text_size(rems(0.833))
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(t!("sftp_permissions_hint").to_string()),
+                            ),
+                    )
+                })
+        });
+    }
+
+    pub(crate) fn show_sftp_delete_paths_confirm_dialog(
+        &mut self,
+        paths: Vec<String>,
+        quick: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let view = cx.entity();
+        let submit_paths = paths.clone();
+        window.open_dialog(cx, move |dialog: Dialog, _window, _| {
+            dialog
+                .title(if quick {
+                    t!("sftp_quick_delete_title").to_string()
+                } else {
+                    t!("confirm_delete").to_string()
+                })
+                .w(px(520.))
+                .on_ok({
+                    let view = view.clone();
+                    let submit_paths = submit_paths.clone();
+                    move |_, window, cx| {
+                        view.update(cx, |this, cx| {
+                            if let Some(handle) = this.active_sftp_handle() {
+                                let command = if quick {
+                                    crate::sftp::SftpCommand::QuickDeletePaths(
+                                        submit_paths.clone(),
+                                    )
+                                } else {
+                                    crate::sftp::SftpCommand::DeletePaths(submit_paths.clone())
+                                };
+                                let _ = handle.commands.send(command);
+                            }
+                            if let Some(sftp) = this.active_sftp_mut() {
+                                sftp.selected_entries.clear();
+                            }
+                            cx.notify();
+                        });
+                        window.close_dialog(cx);
+                        true
+                    }
+                })
+                .content({
+                    let paths = paths.clone();
+                    move |content, _, cx| {
+                        let mut body = v_flex().gap_3().child(
+                            div().child(
+                                t!("confirm_delete_desc", count = paths.len()).to_string(),
+                            ),
+                        );
+                        if quick {
+                            body = body.child(
+                                div()
+                                    .w_full()
+                                    .p_3()
+                                    .rounded_md()
+                                    .border_1()
+                                    .border_color(cx.theme().danger)
+                                    .bg(cx.theme().danger.opacity(0.12))
+                                    .text_color(cx.theme().danger)
+                                    .child(t!("sftp_quick_delete_warning").to_string()),
+                            );
+                        }
+                        body = body.child(
+                            v_flex().gap_1().children(paths.iter().map(|path| {
+                                div()
+                                    .text_size(rems(0.833))
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(path.clone())
+                            })),
+                        );
+                        content.child(body)
+                    }
                 })
         });
     }

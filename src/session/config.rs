@@ -239,6 +239,8 @@ pub struct ConfigFile {
     #[serde(default)]
     pub sftp_panel_minimized: bool,
     #[serde(default)]
+    pub sftp_external_editor: String,
+    #[serde(default)]
     pub key_bindings: std::collections::HashMap<String, String>,
     #[serde(default)]
     pub sync_endpoint: String,
@@ -350,6 +352,7 @@ impl Default for ConfigFile {
             monitoring_position: default_monitoring_position(),
             sidebar_collapsed: false,
             sftp_panel_minimized: false,
+            sftp_external_editor: String::new(),
             key_bindings: std::collections::HashMap::new(),
             sync_endpoint: String::new(),
             sync_username: String::new(),
@@ -926,6 +929,14 @@ impl ConfigStore {
         self.cache.sftp_panel_minimized = val;
     }
 
+    pub fn sftp_external_editor(&self) -> &str {
+        &self.cache.sftp_external_editor
+    }
+
+    pub fn set_sftp_external_editor(&mut self, value: String) {
+        self.cache.sftp_external_editor = value;
+    }
+
     pub fn show_hidden_files(&self) -> bool {
         self.cache.show_hidden_files
     }
@@ -953,6 +964,7 @@ impl ConfigStore {
         self.cache.monitoring_position = source.cache.monitoring_position.clone();
         self.cache.sidebar_collapsed = source.cache.sidebar_collapsed;
         self.cache.sftp_panel_minimized = source.cache.sftp_panel_minimized;
+        self.cache.sftp_external_editor = source.cache.sftp_external_editor.clone();
         self.cache.key_bindings = source.cache.key_bindings.clone();
         self.cache.use_proxy = source.cache.use_proxy;
         self.cache.read_env_proxy = source.cache.read_env_proxy;

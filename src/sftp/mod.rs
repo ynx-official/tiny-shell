@@ -75,9 +75,24 @@ pub enum SftpCommand {
     },
     EditFile {
         remote_path: String,
+        editor: Option<String>,
     },
     CreateDir(String),
+    CreateFile(String),
+    RenamePath {
+        old_path: String,
+        new_path: String,
+    },
+    SetPermissions {
+        remote_path: String,
+        mode: u32,
+    },
     DeletePaths(Vec<String>),
+    QuickDeletePaths(Vec<String>),
+    PackDownload {
+        remote_paths: Vec<String>,
+        local_zip: String,
+    },
     UploadEditedFile {
         local_path: String,
         remote_path: String,
@@ -202,7 +217,17 @@ impl SftpHandle {
     }
 
     pub fn edit_file(&self, remote_path: String) {
-        let _ = self.commands.send(SftpCommand::EditFile { remote_path });
+        let _ = self.commands.send(SftpCommand::EditFile {
+            remote_path,
+            editor: None,
+        });
+    }
+
+    pub fn edit_file_with(&self, remote_path: String, editor: String) {
+        let _ = self.commands.send(SftpCommand::EditFile {
+            remote_path,
+            editor: Some(editor),
+        });
     }
 
     /// 下载文件内容到内存,供内置编辑器使用。
@@ -607,7 +632,10 @@ async fn run_sftp(
                     let _ = commands_tx_clone.send(SftpCommand::TransferFinished(id));
                 });
             }
-            SftpCommand::EditFile { remote_path } => {
+            SftpCommand::EditFile {
+                remote_path,
+                editor,
+            } => {
                 let id = uuid::Uuid::new_v4().to_string();
                 let config = match crate::session::config::ConfigStore::load() {
                     Ok(config) => config,
@@ -663,7 +691,12 @@ async fn run_sftp(
                         return;
                     }
 
-                    if let Err(err) = open::that(&local_path) {
+                    let open_result = if let Some(editor) = editor {
+                        open::with_detached(&local_path, editor)
+                    } else {
+                        open::that_detached(&local_path)
+                    };
+                    if let Err(err) = open_result {
                         let _ = events_clone.send(BackendEvent::SftpStatus {
                             tab_id: tab_id_clone.clone(),
                             text: format!("Failed to open editor: {err:#}"),
@@ -905,6 +938,82 @@ async fn run_sftp(
                     }
                 }
             }
+            SftpCommand::CreateFile(path) => {
+                let actual_path = resolve_remote_path(&path, &home);
+                let result = async {
+                    let mut file = sftp
+                        .create(&actual_path)
+                        .await
+                        .with_context(|| format!("create remote file {actual_path}"))?;
+                    file.flush()
+                        .await
+                        .with_context(|| format!("flush remote file {actual_path}"))?;
+                    Ok::<(), anyhow::Error>(())
+                }
+                .await;
+                match result {
+                    Ok(()) => {
+                        let _ = events.send(BackendEvent::SftpStatus {
+                            tab_id: tab_id.clone(),
+                            text: t!("sftp_create_file_success", name = base_name(&actual_path))
+                                .to_string(),
+                        });
+                        let _ = commands_tx.send(SftpCommand::ListDir(remote_parent(&actual_path)));
+                    }
+                    Err(err) => {
+                        let _ = events.send(BackendEvent::SftpStatus {
+                            tab_id: tab_id.clone(),
+                            text: t!("sftp_create_file_failed", err = format!("{err:#}"))
+                                .to_string(),
+                        });
+                    }
+                }
+            }
+            SftpCommand::RenamePath { old_path, new_path } => {
+                let old_path = resolve_remote_path(&old_path, &home);
+                let new_path = resolve_remote_path(&new_path, &home);
+                match sftp.rename(&old_path, &new_path).await {
+                    Ok(()) => {
+                        let _ = events.send(BackendEvent::SftpStatus {
+                            tab_id: tab_id.clone(),
+                            text: t!("sftp_rename_success", name = base_name(&new_path)).to_string(),
+                        });
+                        let _ = commands_tx.send(SftpCommand::ListDir(remote_parent(&new_path)));
+                    }
+                    Err(err) => {
+                        let _ = events.send(BackendEvent::SftpStatus {
+                            tab_id: tab_id.clone(),
+                            text: t!("sftp_rename_failed", err = format!("{err:#}")).to_string(),
+                        });
+                    }
+                }
+            }
+            SftpCommand::SetPermissions { remote_path, mode } => {
+                let remote_path = resolve_remote_path(&remote_path, &home);
+                let mut attributes = FileAttributes::empty();
+                attributes.permissions = Some(mode);
+                match sftp.set_metadata(&remote_path, attributes).await {
+                    Ok(()) => {
+                        let _ = events.send(BackendEvent::SftpStatus {
+                            tab_id: tab_id.clone(),
+                            text: t!(
+                                "sftp_permissions_success",
+                                mode = format!("{mode:o}"),
+                                name = base_name(&remote_path)
+                            )
+                            .to_string(),
+                        });
+                        let _ = commands_tx.send(SftpCommand::ListDir(remote_parent(&remote_path)));
+                    }
+                    Err(err) => {
+                        let _ = events.send(BackendEvent::SftpStatus {
+                            tab_id: tab_id.clone(),
+                            text: t!("sftp_permissions_failed", err = format!("{err:#}"))
+                                .to_string(),
+                        });
+                    }
+                }
+            }
             SftpCommand::DeletePaths(paths) => {
                 tracing::info!("[sftp] batch deleting {} paths", paths.len());
                 let _ = events.send(BackendEvent::SftpStatus {
@@ -953,6 +1062,103 @@ async fn run_sftp(
                         let _ = commands_tx.send(SftpCommand::ListDir("/".to_string()));
                     }
                 }
+            }
+            SftpCommand::QuickDeletePaths(paths) => {
+                let resolved_paths: Vec<String> = paths
+                    .iter()
+                    .map(|path| resolve_remote_path(path, &home))
+                    .collect();
+                let command = format!(
+                    "rm -rf -- {}",
+                    resolved_paths
+                        .iter()
+                        .map(|path| shell_quote(path))
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                );
+                match exec_remote_command(&handle, &command).await {
+                    Ok(()) => {
+                        let _ = events.send(BackendEvent::SftpStatus {
+                            tab_id: tab_id.clone(),
+                            text: t!("delete_success", count = paths.len()).to_string(),
+                        });
+                    }
+                    Err(err) => {
+                        let _ = events.send(BackendEvent::SftpStatus {
+                            tab_id: tab_id.clone(),
+                            text: t!("delete_failed", err = format!("{err:#}")).to_string(),
+                        });
+                    }
+                }
+                if let Some(first) = resolved_paths.first() {
+                    let _ = commands_tx.send(SftpCommand::ListDir(remote_parent(first)));
+                }
+            }
+            SftpCommand::PackDownload {
+                remote_paths,
+                local_zip,
+            } => {
+                let id = Uuid::new_v4().to_string();
+                let flag = TransferStateFlag::new();
+                active_transfers.insert(id.clone(), TransferStateFlag(flag.0.clone()));
+                let info = crate::terminal::TransferInfo {
+                    id: id.clone(),
+                    name: base_name(&local_zip),
+                    source: remote_paths.join(", "),
+                    target: local_zip.clone(),
+                    kind: crate::terminal::TransferType::Download,
+                    total_bytes: None,
+                };
+                let _ = events.send(BackendEvent::TransferStarted {
+                    tab_id: tab_id.clone(),
+                    info,
+                });
+
+                let handle_clone = handle.clone();
+                let events_clone = events.clone();
+                let tab_id_clone = tab_id.clone();
+                let commands_tx_clone = commands_tx.clone();
+                let tmp_dir = crate::session::config::ConfigStore::load()
+                    .ok()
+                    .and_then(|config| config.tmp_dir())
+                    .unwrap_or_else(std::env::temp_dir);
+                tokio::spawn(async move {
+                    let result = pack_remote_paths_to_zip(
+                        &handle_clone,
+                        &remote_paths,
+                        Path::new(&local_zip),
+                        &tmp_dir,
+                        &flag,
+                        &events_clone,
+                        &tab_id_clone,
+                        &id,
+                    )
+                    .await;
+                    match result {
+                        Ok(()) => {
+                            let _ = events_clone.send(BackendEvent::SftpStatus {
+                                tab_id: tab_id_clone.clone(),
+                                text: t!("sftp_pack_download_success", path = local_zip).to_string(),
+                            });
+                        }
+                        Err(err) => {
+                            let error = format!("{err:#}");
+                            let _ = events_clone.send(BackendEvent::SftpStatus {
+                                tab_id: tab_id_clone.clone(),
+                                text: t!("sftp_pack_download_failed", err = error.clone())
+                                    .to_string(),
+                            });
+                            let _ = events_clone.send(BackendEvent::TransferProgress {
+                                tab_id: tab_id_clone,
+                                id: id.clone(),
+                                transferred: 0,
+                                total: None,
+                                state: crate::terminal::TransferState::Failed(error),
+                            });
+                        }
+                    }
+                    let _ = commands_tx_clone.send(SftpCommand::TransferFinished(id));
+                });
             }
         }
     }
@@ -2000,6 +2206,140 @@ async fn create_remote_archive(
     Ok(())
 }
 
+async fn create_remote_paths_archive(
+    handle: &russh::client::Handle<SftpClientHandler>,
+    remote_paths: &[String],
+    remote_archive: &str,
+) -> Result<()> {
+    let first = remote_paths
+        .first()
+        .context("cannot archive an empty path selection")?;
+    let parent = remote_parent(first);
+    if remote_paths
+        .iter()
+        .any(|path| remote_parent(path) != parent)
+    {
+        return Err(anyhow!("selected paths must share the same parent directory"));
+    }
+    let names = remote_paths
+        .iter()
+        .map(|path| shell_quote(&base_name(path)))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let command = format!(
+        "tar -C {} -czf {} -- {}",
+        shell_quote(&parent),
+        shell_quote(remote_archive),
+        names
+    );
+    exec_remote_command(handle, &command)
+        .await
+        .with_context(|| format!("archive {} remote paths", remote_paths.len()))
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn pack_remote_paths_to_zip(
+    handle: &russh::client::Handle<SftpClientHandler>,
+    remote_paths: &[String],
+    local_zip: &Path,
+    tmp_dir: &Path,
+    flag: &TransferStateFlag,
+    events: &std::sync::mpsc::Sender<BackendEvent>,
+    tab_id: &str,
+    id: &str,
+) -> Result<()> {
+    let work_id = Uuid::new_v4();
+    let remote_archive = format!("/tmp/tiny-shell-pack-{work_id}.tar.gz");
+    let local_archive = tmp_dir.join(format!("tiny-shell-pack-{work_id}.tar.gz"));
+    let extract_dir = tmp_dir.join(format!("tiny-shell-pack-{work_id}"));
+    tokio::fs::create_dir_all(tmp_dir)
+        .await
+        .with_context(|| format!("create {}", tmp_dir.display()))?;
+
+    create_remote_paths_archive(handle, remote_paths, &remote_archive).await?;
+    let operation = async {
+        let channel = handle
+            .channel_open_session()
+            .await
+            .context("open SFTP channel for packed download")?;
+        channel
+            .request_subsystem(true, "sftp")
+            .await
+            .context("request SFTP subsystem for packed download")?;
+        let sftp = SftpSession::new(channel.into_stream())
+            .await
+            .context("create SFTP session for packed download")?;
+        download_file_impl(
+            &sftp,
+            &remote_archive,
+            &local_archive,
+            flag,
+            events,
+            tab_id,
+            id,
+        )
+        .await?;
+        tokio::fs::create_dir_all(&extract_dir)
+            .await
+            .with_context(|| format!("create {}", extract_dir.display()))?;
+        extract_archive_to(&local_archive, &extract_dir).await?;
+
+        if let Some(parent) = local_zip.parent() {
+            tokio::fs::create_dir_all(parent)
+                .await
+                .with_context(|| format!("create {}", parent.display()))?;
+        }
+        let zip_source = extract_dir.clone();
+        let zip_target = local_zip.to_path_buf();
+        tokio::task::spawn_blocking(move || create_zip_from_directory(&zip_source, &zip_target))
+            .await
+            .context("join ZIP creation task")??;
+        Ok::<(), anyhow::Error>(())
+    }
+    .await;
+
+    if let Err(err) = remove_remote_path(handle, &remote_archive).await {
+        tracing::warn!("failed to clean remote packed archive: {err:#}");
+    }
+    let _ = tokio::fs::remove_file(&local_archive).await;
+    let _ = tokio::fs::remove_dir_all(&extract_dir).await;
+    operation
+}
+
+fn create_zip_from_directory(source: &Path, target: &Path) -> Result<()> {
+    let file = fs::File::create(target)
+        .with_context(|| format!("create ZIP {}", target.display()))?;
+    let mut archive = zip::ZipWriter::new(file);
+    let options = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated);
+    for entry in WalkDir::new(source) {
+        let entry = entry.with_context(|| format!("walk {}", source.display()))?;
+        let path = entry.path();
+        let relative = path
+            .strip_prefix(source)
+            .with_context(|| format!("strip ZIP root from {}", path.display()))?;
+        if relative.as_os_str().is_empty() {
+            continue;
+        }
+        let name = relative.to_string_lossy().replace('\\', "/");
+        if entry.file_type().is_dir() {
+            archive
+                .add_directory(format!("{name}/"), options)
+                .with_context(|| format!("add ZIP directory {name}"))?;
+        } else {
+            archive
+                .start_file(&name, options)
+                .with_context(|| format!("add ZIP file {name}"))?;
+            let mut input = fs::File::open(path)
+                .with_context(|| format!("open ZIP source {}", path.display()))?;
+            std::io::copy(&mut input, &mut archive)
+                .with_context(|| format!("write ZIP file {name}"))?;
+        }
+    }
+    archive.finish().context("finish ZIP archive")?;
+    Ok(())
+}
+
 async fn remove_remote_path(
     handle: &russh::client::Handle<SftpClientHandler>,
     remote_path: &str,
@@ -2080,6 +2420,16 @@ fn remote_parent(path: &str) -> String {
                 }
             })
             .unwrap_or_else(|| "/".to_string())
+    }
+}
+
+fn resolve_remote_path(path: &str, home: &str) -> String {
+    if path == "~" {
+        home.to_string()
+    } else if let Some(rest) = path.strip_prefix("~/") {
+        join_remote(home, rest)
+    } else {
+        path.to_string()
     }
 }
 
@@ -2227,5 +2577,39 @@ impl Handler for SftpClientHandler {
         _server_public_key: &russh::keys::ssh_key::PublicKey,
     ) -> Result<bool, Self::Error> {
         Ok(true)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn creates_zip_with_nested_files() {
+        let root = std::env::temp_dir().join(format!("tiny-shell-zip-test-{}", Uuid::new_v4()));
+        let source = root.join("source");
+        let nested = source.join("folder");
+        fs::create_dir_all(&nested).unwrap();
+        fs::write(source.join("root.txt"), b"root").unwrap();
+        fs::write(nested.join("nested.txt"), b"nested").unwrap();
+        let target = root.join("archive.zip");
+
+        create_zip_from_directory(&source, &target).unwrap();
+
+        let file = fs::File::open(&target).unwrap();
+        let mut archive = ZipArchive::new(file).unwrap();
+        assert!(archive.by_name("root.txt").is_ok());
+        assert!(archive.by_name("folder/nested.txt").is_ok());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn resolves_home_relative_remote_paths() {
+        assert_eq!(resolve_remote_path("~", "/home/test"), "/home/test");
+        assert_eq!(
+            resolve_remote_path("~/logs/app.log", "/home/test"),
+            "/home/test/logs/app.log"
+        );
+        assert_eq!(resolve_remote_path("/var/log", "/home/test"), "/var/log");
     }
 }

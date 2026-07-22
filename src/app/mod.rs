@@ -541,7 +541,6 @@ pub(crate) struct TinyShell {
     pub(crate) pending_sftp_path_sync: Option<String>,
     pub(crate) pending_sftp_tree_scroll_path: Option<String>,
     pub(crate) sftp_context_menu: Option<SftpContextMenuState>,
-    pub(crate) tab_context_menu: Option<TabContextMenuState>,
     pub(crate) sftp_creating_folder: bool,
     pub(crate) sftp_new_folder_input: Entity<InputState>,
     pub(crate) sftp_delete_scroll_handle: gpui::ScrollHandle,
@@ -644,14 +643,8 @@ pub(crate) struct ConnectionProgress {
 
 #[derive(Clone)]
 pub(crate) struct SftpContextMenuState {
-    pub(crate) remote_path: String,
+    pub(crate) remote_path: Option<String>,
     pub(crate) is_dir: bool,
-    pub(crate) position: Point<Pixels>,
-}
-
-#[derive(Clone)]
-pub(crate) struct TabContextMenuState {
-    pub(crate) group_id: String,
     pub(crate) position: Point<Pixels>,
 }
 
@@ -1016,7 +1009,6 @@ impl TinyShell {
             pending_sftp_path_sync: Some("/".into()),
             pending_sftp_tree_scroll_path: None,
             sftp_context_menu: None,
-            tab_context_menu: None,
             sftp_creating_folder: false,
             sftp_new_folder_input,
             sftp_delete_scroll_handle: gpui::ScrollHandle::new(),

@@ -1,4 +1,5 @@
 use gpui::{Context, PathPromptOptions, Pixels, Point, Window};
+use rust_i18n::t;
 
 #[derive(Clone)]
 pub(crate) struct SftpTreeRow {
@@ -9,7 +10,7 @@ pub(crate) struct SftpTreeRow {
 }
 
 use crate::{
-    TinyShell, SftpContextMenuState,
+    SftpContextMenuState, TinyShell,
     sftp::{RemoteEntry, SftpHandle},
     terminal,
 };
@@ -286,7 +287,7 @@ impl TinyShell {
 
     pub(crate) fn open_sftp_context_menu(
         &mut self,
-        remote_path: String,
+        remote_path: Option<String>,
         is_dir: bool,
         position: Point<Pixels>,
         cx: &mut Context<Self>,
@@ -313,19 +314,226 @@ impl TinyShell {
         let Some(menu) = self.sftp_context_menu.take() else {
             return;
         };
-        self.download_sftp_entry(menu.remote_path, window, cx);
+        let Some(remote_path) = menu.remote_path else {
+            return;
+        };
+        self.download_sftp_entry(remote_path, window, cx);
         cx.notify();
     }
 
-    pub(crate) fn trigger_sftp_context_edit(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn trigger_sftp_context_open(&mut self, cx: &mut Context<Self>) {
         let Some(menu) = self.sftp_context_menu.take() else {
             return;
         };
-        if let Some(handle) = self.active_sftp_handle() {
-            tracing::info!("[sftp] triggering edit for file: '{}'", menu.remote_path);
-            handle.edit_file(menu.remote_path);
+        let Some(remote_path) = menu.remote_path else {
+            return;
+        };
+        if menu.is_dir {
+            self.navigate_sftp(remote_path, cx);
+        } else if is_editable_text_file(&remote_path) {
+            self.open_file_in_editor(remote_path, cx);
+        } else if let Some(handle) = self.active_sftp_handle() {
+            handle.edit_file(remote_path);
         }
         cx.notify();
+    }
+
+    pub(crate) fn trigger_sftp_context_internal_editor(&mut self, cx: &mut Context<Self>) {
+        let Some(menu) = self.sftp_context_menu.take() else {
+            return;
+        };
+        if let Some(remote_path) = menu.remote_path {
+            self.open_file_in_editor(remote_path, cx);
+        }
+    }
+
+    pub(crate) fn trigger_sftp_context_system_open(&mut self, cx: &mut Context<Self>) {
+        let Some(menu) = self.sftp_context_menu.take() else {
+            return;
+        };
+        if let Some(remote_path) = menu.remote_path
+            && let Some(handle) = self.active_sftp_handle()
+        {
+            handle.edit_file(remote_path);
+        }
+        cx.notify();
+    }
+
+    pub(crate) fn trigger_sftp_context_external_editor(&mut self, cx: &mut Context<Self>) {
+        let Some(menu) = self.sftp_context_menu.take() else {
+            return;
+        };
+        let editor = self.config.sftp_external_editor().to_string();
+        if editor.is_empty() {
+            self.status = t!("sftp_external_editor_not_set").into();
+            cx.notify();
+            return;
+        }
+        if let Some(remote_path) = menu.remote_path
+            && let Some(handle) = self.active_sftp_handle()
+        {
+            handle.edit_file_with(remote_path, editor);
+        }
+        cx.notify();
+    }
+
+    pub(crate) fn choose_sftp_external_editor(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.sftp_context_menu = None;
+        let prompt = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: Some(t!("sftp_select_external_editor").to_string().into()),
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            if let Ok(Ok(Some(mut paths))) = prompt.await
+                && let Some(path) = paths.pop()
+            {
+                this.update(cx, |this, cx| {
+                    this.config
+                        .set_sftp_external_editor(path.to_string_lossy().to_string());
+                    if let Err(err) = this.config.save() {
+                        this.status = format!("failed to save external editor: {err:#}").into();
+                    } else {
+                        this.status = t!("sftp_external_editor_saved").into();
+                    }
+                    cx.notify();
+                })?;
+            }
+            Ok::<(), anyhow::Error>(())
+        })
+        .detach();
+    }
+
+    pub(crate) fn trigger_sftp_context_copy_path(&mut self, cx: &mut Context<Self>) {
+        let Some(menu) = self.sftp_context_menu.take() else {
+            return;
+        };
+        if let Some(remote_path) = menu.remote_path {
+            cx.write_to_clipboard(gpui::ClipboardItem::new_string(remote_path));
+        }
+        cx.notify();
+    }
+
+    pub(crate) fn trigger_sftp_context_upload(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.sftp_context_menu = None;
+        self.upload_sftp_files(window, cx);
+    }
+
+    pub(crate) fn trigger_sftp_context_pack_download(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(menu) = self.sftp_context_menu.take() else {
+            return;
+        };
+        let remote_paths = self.sftp_context_paths(&menu);
+        if remote_paths.is_empty() {
+            return;
+        }
+        let suggested_name = if remote_paths.len() == 1 {
+            format!("{}.zip", remote_paths[0].trim_end_matches('/').rsplit('/').next().unwrap_or("archive"))
+        } else {
+            "selection.zip".to_string()
+        };
+        let prompt = cx.prompt_for_new_path(std::path::Path::new("."), Some(&suggested_name));
+        let Some(handle) = self.active_sftp_handle().cloned() else {
+            return;
+        };
+        cx.spawn_in(window, async move |this, cx| {
+            if let Ok(Ok(Some(path))) = prompt.await {
+                let _ = handle.commands.send(crate::sftp::SftpCommand::PackDownload {
+                    remote_paths,
+                    local_zip: path.to_string_lossy().to_string(),
+                });
+                this.update(cx, |this, cx| {
+                    this.show_transfers_dialog = true;
+                    cx.notify();
+                })?;
+            }
+            Ok::<(), anyhow::Error>(())
+        })
+        .detach();
+    }
+
+    pub(crate) fn trigger_sftp_context_new_file(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.sftp_context_menu = None;
+        self.show_sftp_create_dialog(false, window, cx);
+    }
+
+    pub(crate) fn trigger_sftp_context_new_folder(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.sftp_context_menu = None;
+        self.show_sftp_create_dialog(true, window, cx);
+    }
+
+    pub(crate) fn trigger_sftp_context_rename(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(menu) = self.sftp_context_menu.take() else {
+            return;
+        };
+        if let Some(remote_path) = menu.remote_path {
+            self.show_sftp_rename_dialog(remote_path, window, cx);
+        }
+    }
+
+    pub(crate) fn trigger_sftp_context_delete(
+        &mut self,
+        quick: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(menu) = self.sftp_context_menu.take() else {
+            return;
+        };
+        let paths = self.sftp_context_paths(&menu);
+        if !paths.is_empty() {
+            self.show_sftp_delete_paths_confirm_dialog(paths, quick, window, cx);
+        }
+    }
+
+    pub(crate) fn trigger_sftp_context_permissions(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(menu) = self.sftp_context_menu.take() else {
+            return;
+        };
+        if let Some(remote_path) = menu.remote_path {
+            self.show_sftp_permissions_dialog(remote_path, menu.is_dir, window, cx);
+        }
+    }
+
+    fn sftp_context_paths(&self, menu: &SftpContextMenuState) -> Vec<String> {
+        let Some(remote_path) = menu.remote_path.as_ref() else {
+            return Vec::new();
+        };
+        if let Some(sftp) = self.active_sftp()
+            && sftp.selected_entries.contains(remote_path)
+        {
+            return sftp.selected_entries.iter().cloned().collect();
+        }
+        vec![remote_path.clone()]
     }
 
     pub(crate) fn download_sftp_entry(
