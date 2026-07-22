@@ -1,6 +1,8 @@
 remote_files: "REMOTE FILES"
 quick_commands: "QUICK COMMANDS"
 sftp_footer_panel_toggle: "Expand/Collapse Panel"
+sftp_latency: "Ping Latency"
+sftp_latency_value: "Ping Latency: %{latency} ms"
 quick_command_all: "All Commands"
 quick_command_new_category: "New Category"
 quick_command_new: "New Command"

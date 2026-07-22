@@ -47,6 +47,7 @@ impl Default for SftpToolbarVisibility {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SftpFooterVisibility {
+    pub latency: bool,
     pub transfers: bool,
     pub panel_toggle: bool,
 }
@@ -69,6 +70,7 @@ pub struct QuickCommandCategory {
 impl Default for SftpFooterVisibility {
     fn default() -> Self {
         Self {
+            latency: true,
             transfers: true,
             panel_toggle: true,
         }

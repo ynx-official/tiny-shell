@@ -75,6 +75,7 @@ pub struct PreviewData {
 pub enum SftpCommand {
     ListDir(String),
     ListDirectoryTree(String),
+    MeasureLatency,
     #[allow(dead_code)]
     Preview(String),
     Download {
@@ -209,6 +210,10 @@ impl SftpHandle {
         let _ = self.commands.send(SftpCommand::ListDirectoryTree(path));
     }
 
+    pub fn measure_latency(&self) {
+        let _ = self.commands.send(SftpCommand::MeasureLatency);
+    }
+
     #[allow(dead_code)]
     pub fn preview(&self, path: String) {
         let _ = self.commands.send(SftpCommand::Preview(path));
@@ -327,10 +332,20 @@ async fn run_sftp(
         .await
         .context("sftp handshake")?;
 
-    let home = sftp
-        .canonicalize(".")
-        .await
-        .unwrap_or_else(|_| "/".to_string());
+    let latency_started = Instant::now();
+    let home_result = sftp.canonicalize(".").await;
+    let latency_ms = home_result.as_ref().ok().map(|_| {
+        latency_started
+            .elapsed()
+            .as_millis()
+            .min(u128::from(u64::MAX)) as u64
+    });
+    let home = home_result.unwrap_or_else(|_| "/".to_string());
+
+    let _ = events.send(BackendEvent::SftpLatency {
+        tab_id: tab_id.clone(),
+        latency_ms,
+    });
 
     let _ = events.send(BackendEvent::SftpHome {
         tab_id: tab_id.clone(),
@@ -386,6 +401,18 @@ async fn run_sftp(
             }
             SftpCommand::TransferFinished(id) => {
                 active_transfers.remove(&id);
+            }
+            SftpCommand::MeasureLatency => {
+                let started = Instant::now();
+                let latency_ms = sftp
+                    .canonicalize(".")
+                    .await
+                    .ok()
+                    .map(|_| started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64);
+                let _ = events.send(BackendEvent::SftpLatency {
+                    tab_id: tab_id.clone(),
+                    latency_ms,
+                });
             }
             SftpCommand::ListDir(path) => {
                 let actual_path = if path == "~" {

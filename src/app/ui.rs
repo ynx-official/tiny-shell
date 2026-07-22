@@ -49,6 +49,7 @@ enum SftpToolbarItem {
 
 #[derive(Clone, Copy)]
 enum SftpFooterItem {
+    Latency,
     Transfers,
     PanelToggle,
 }
@@ -2562,6 +2563,7 @@ impl TinyShell {
     fn toggle_sftp_footer_item(&mut self, item: SftpFooterItem, cx: &mut Context<Self>) {
         let mut visibility = self.config.sftp_footer_visibility();
         match item {
+            SftpFooterItem::Latency => visibility.latency = !visibility.latency,
             SftpFooterItem::Transfers => visibility.transfers = !visibility.transfers,
             SftpFooterItem::PanelToggle => visibility.panel_toggle = !visibility.panel_toggle,
         }
@@ -2637,6 +2639,11 @@ impl TinyShell {
     ) -> PopupMenu {
         let visibility = view.read(cx).config.sftp_footer_visibility();
         let items = [
+            (
+                SftpFooterItem::Latency,
+                t!("sftp_latency").to_string(),
+                visibility.latency,
+            ),
             (
                 SftpFooterItem::Transfers,
                 t!("transfers").to_string(),
@@ -2772,6 +2779,7 @@ impl TinyShell {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let visibility = self.config.sftp_footer_visibility();
+        let latency = self.active_sftp().and_then(|sftp| sftp.latency_ms);
         let view = cx.entity();
         h_flex()
             .flex_none()
@@ -2782,6 +2790,23 @@ impl TinyShell {
             .border_color(cx.theme().border)
             .bg(cx.theme().tab_bar)
             .child(div().flex_1())
+            .when(visibility.latency, |this| {
+                this.child(
+                    h_flex()
+                        .items_center()
+                        .gap_1()
+                        .mr_2()
+                        .text_size(rems(0.833))
+                        .text_color(cx.theme().muted_foreground)
+                        .child(Icon::new(IconName::Network).with_size(Size::Small))
+                        .child(t!(
+                            "sftp_latency_value",
+                            latency = latency
+                                .map(|latency| latency.to_string())
+                                .unwrap_or_else(|| "--".to_string())
+                        )),
+                )
+            })
             .when(visibility.transfers, |this| {
                 this.child(
                     Button::new("open-transfers")

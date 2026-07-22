@@ -1121,6 +1121,7 @@ impl TinyShell {
                 home_dir: String::new(),
                 follow_terminal_cwd: false,
                 initial_terminal_cwd_synced: false,
+                latency_ms: None,
             }),
         });
         self.active_group = Some(group_id.clone());

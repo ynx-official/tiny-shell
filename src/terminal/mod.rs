@@ -72,6 +72,10 @@ pub enum BackendEvent {
         tab_id: String,
         text: String,
     },
+    SftpLatency {
+        tab_id: String,
+        latency_ms: Option<u64>,
+    },
     /// 文件内容与远程版本信息已下载，供内置编辑器使用。
     SftpFileContent {
         tab_id: String,
@@ -223,6 +227,7 @@ pub struct SftpUiState {
     pub home_dir: String,
     pub follow_terminal_cwd: bool,
     pub initial_terminal_cwd_synced: bool,
+    pub latency_ms: Option<u64>,
 }
 
 impl TerminalTab {

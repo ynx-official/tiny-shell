@@ -1,6 +1,8 @@
 remote_files: "远程文件"
 quick_commands: "常用命令"
 sftp_footer_panel_toggle: "面板展开/收起"
+sftp_latency: "Ping 延迟"
+sftp_latency_value: "Ping 延迟: %{latency} ms"
 quick_command_all: "全部命令"
 quick_command_new_category: "新建分类"
 quick_command_new: "新建命令"

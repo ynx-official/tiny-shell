@@ -656,6 +656,7 @@ pub(crate) struct TinyShell {
     pub(crate) selected_network_interface: Option<String>,
     pub(crate) network_interface_histories: HashMap<String, NetworkHistory>,
     pub(crate) last_system_sample: Instant,
+    pub(crate) last_sftp_latency_sample: Instant,
 
     pub(crate) search_input: Entity<InputState>,
     pub(crate) quick_connection_search_input: Entity<InputState>,
@@ -1144,6 +1145,7 @@ impl TinyShell {
             selected_network_interface: None,
             network_interface_histories: HashMap::new(),
             last_system_sample: Instant::now(),
+            last_sftp_latency_sample: Instant::now(),
 
             search_input,
             quick_connection_search_input,
@@ -1292,6 +1294,7 @@ impl TinyShell {
                     .update(cx, |this, cx| {
                         let changed = this.drain_backend_events(cx);
                         let system_sampled = this.sample_system_if_due();
+                        this.sample_sftp_latency_if_due();
                         let metrics_animated = this.animate_resource_metrics();
                         this.sync_theme_if_due(cx);
                         let is_blinking = matches!(
@@ -1435,6 +1438,13 @@ impl TinyShell {
                     }
                     if self.active_group.as_ref() == Some(&tab_id) {
                         self.status = text.into();
+                    }
+                }
+                BackendEvent::SftpLatency { tab_id, latency_ms } => {
+                    if let Some(group) = self.tab_groups.iter_mut().find(|group| group.id == tab_id)
+                        && let Some(sftp) = group.sftp.as_mut()
+                    {
+                        sftp.latency_ms = latency_ms;
                     }
                 }
                 BackendEvent::SftpFileContent {
@@ -1697,6 +1707,19 @@ impl TinyShell {
             return true;
         }
         false
+    }
+
+    fn sample_sftp_latency_if_due(&mut self) {
+        if self.last_sftp_latency_sample.elapsed() < Duration::from_secs(5) {
+            return;
+        }
+        self.last_sftp_latency_sample = Instant::now();
+        if !self.config.sftp_footer_visibility().latency {
+            return;
+        }
+        if let Some(handle) = self.active_sftp_handle() {
+            handle.measure_latency();
+        }
     }
 
     fn record_network_interface_histories(&mut self, snapshot: &SystemSnapshot) {
