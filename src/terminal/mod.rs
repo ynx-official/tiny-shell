@@ -494,6 +494,11 @@ impl TerminalTab {
         self.term.selection = None;
     }
 
+    pub fn clear_scrollback(&mut self) {
+        self.processor.advance(&mut self.term, b"\x1b[3J");
+        self.clear_selection();
+    }
+
     pub fn selection_text(&self) -> Option<String> {
         self.term
             .selection_to_string()

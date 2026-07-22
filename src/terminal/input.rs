@@ -306,40 +306,13 @@ impl TinyShell {
         cx.notify();
     }
 
-    pub(crate) fn on_terminal_right_click(
-        &mut self,
-        _event: &MouseDownEvent,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if !self.config.right_click_copy_paste() {
+    pub(crate) fn clear_active_terminal_scrollback(&mut self, cx: &mut Context<Self>) {
+        let Some(active_id) = self.active_tab.as_ref() else {
             return;
-        }
-
-        let mut handled = false;
-        if let Some(text) = self.active_terminal_selection_text() {
-            if !text.is_empty() {
-                cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
-
-                let active_id = self.active_tab.clone();
-                if let Some(active_id) = active_id {
-                    if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == active_id) {
-                        tab.clear_selection();
-                    }
-                }
-                cx.notify();
-                handled = true;
-            }
-        }
-
-        if !handled {
-            if let Some(clipboard_item) = cx.read_from_clipboard() {
-                if let Some(text) = clipboard_item.text() {
-                    if !text.is_empty() {
-                        self.paste_into_terminal(&text, window, cx);
-                    }
-                }
-            }
+        };
+        if let Some(tab) = self.tabs.iter_mut().find(|tab| &tab.id == active_id) {
+            tab.clear_scrollback();
+            cx.notify();
         }
     }
 

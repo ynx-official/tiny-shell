@@ -264,8 +264,6 @@ pub struct ConfigFile {
     #[serde(default = "default_ui_font_size")]
     pub ui_font_size: f32,
     #[serde(default)]
-    pub right_click_copy_paste: bool,
-    #[serde(default)]
     pub keyword_highlight: bool,
     #[serde(default = "default_ui_font_family")]
     pub ui_font_family: String,
@@ -407,7 +405,6 @@ impl Default for ConfigFile {
             locale: default_locale(),
             terminal_font_size: default_terminal_font_size(),
             ui_font_size: default_ui_font_size(),
-            right_click_copy_paste: false,
             keyword_highlight: false,
             ui_font_family: default_ui_font_family(),
             terminal_font_family: default_terminal_font_family(),
@@ -895,14 +892,6 @@ impl ConfigStore {
         self.cache.ui_font_family = family.to_string();
     }
 
-    pub fn right_click_copy_paste(&self) -> bool {
-        self.cache.right_click_copy_paste
-    }
-
-    pub fn set_right_click_copy_paste(&mut self, val: bool) {
-        self.cache.right_click_copy_paste = val;
-    }
-
     pub fn keyword_highlight(&self) -> bool {
         self.cache.keyword_highlight
     }
@@ -1114,7 +1103,6 @@ impl ConfigStore {
         self.cache.locale = source.cache.locale.clone();
         self.cache.terminal_font_size = source.cache.terminal_font_size;
         self.cache.ui_font_size = source.cache.ui_font_size;
-        self.cache.right_click_copy_paste = source.cache.right_click_copy_paste;
         self.cache.keyword_highlight = source.cache.keyword_highlight;
         self.cache.ui_font_family = source.cache.ui_font_family.clone();
         self.cache.terminal_font_family = source.cache.terminal_font_family.clone();
@@ -1600,13 +1588,10 @@ mod tests {
         let mut source = ConfigStore::in_memory();
         source.cache.connection_groups = vec!["stale".to_string()];
         source.set_ui_font_size(18.0);
-        source.set_right_click_copy_paste(true);
-
         latest.merge_interactive_preferences_from(&source);
 
         assert_eq!(latest.cache.connection_groups, ["production"]);
         assert_eq!(latest.ui_font_size(), 18.0);
-        assert!(latest.right_click_copy_paste());
     }
 
     #[test]

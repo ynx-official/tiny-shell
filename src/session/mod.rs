@@ -1606,19 +1606,6 @@ impl TinyShell {
                     }
                 }
             }
-            if self.config.right_click_copy_paste() {
-                if let Some(text) = self.active_terminal_selection_text() {
-                    if !text.is_empty() {
-                        cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
-                        if let Some(active_id) = &self.active_tab {
-                            if let Some(tab) = self.tabs.iter_mut().find(|tab| &tab.id == active_id)
-                            {
-                                tab.clear_selection();
-                            }
-                        }
-                    }
-                }
-            }
             self.begin_terminal_selection(event, cx);
         }
         cx.notify();

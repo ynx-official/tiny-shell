@@ -4448,25 +4448,6 @@ impl TinyShell {
                                                 .title(t!("settings_group_other").to_string())
                                                 .item(
                                                     SettingItem::new(
-                                                        t!("right_click_copy_paste").to_string(),
-                                                        SettingField::render({
-                                                            let view = view_clone_for_general.clone();
-                                                            move |_, window, cx| {
-                                                                Switch::new("right-click-copy-paste")
-                                                                    .small()
-                                                                    .checked(view.read(cx).config.right_click_copy_paste())
-                                                                    .on_click(window.listener_for(&view, |this, checked, _, cx| {
-                                                                        this.config.set_right_click_copy_paste(*checked);
-                                                                        this.mark_config_preferences_dirty();
-                                                                        cx.notify();
-                                                                    }))
-                                                                    .into_any_element()
-                                                            }
-                                                        })
-                                                    ).description(t!("copy_paste_hint").to_string())
-                                                )
-                                                .item(
-                                                    SettingItem::new(
                                                         t!("keyword_highlight").to_string(),
                                                         SettingField::render({
                                                             let view = view_clone_for_general.clone();

@@ -5997,6 +5997,8 @@ impl TinyShell {
         let has_active = self.active_tab.is_some();
         let pane_tree = self.pane_root.clone();
         let view = cx.entity();
+        let bounds_view = view.clone();
+        let menu_view = view.clone();
 
         v_flex()
             .size_full()
@@ -6012,7 +6014,7 @@ impl TinyShell {
                     .rounded_lg()
                     .bg(cx.theme().background)
                     .on_prepaint(move |bounds, _window, cx| {
-                        view.update(cx, |this, cx| {
+                        bounds_view.update(cx, |this, cx| {
                             if this.terminal_panel_bounds != Some(bounds) {
                                 this.terminal_panel_bounds = Some(bounds);
                                 cx.notify();
@@ -6023,10 +6025,6 @@ impl TinyShell {
                     .track_focus(&self.focus_handle)
                     .key_context(TERMINAL_KEY_CONTEXT)
                     .on_mouse_down(MouseButton::Left, cx.listener(Self::focus_terminal))
-                    .on_mouse_down(
-                        MouseButton::Right,
-                        cx.listener(Self::on_terminal_right_click),
-                    )
                     .on_mouse_move(cx.listener(Self::on_terminal_mouse_move))
                     .on_mouse_up(MouseButton::Left, cx.listener(Self::on_terminal_mouse_up))
                     .on_key_down(cx.listener(Self::on_terminal_key_down))
@@ -6037,6 +6035,9 @@ impl TinyShell {
                         Self::render_pane_tree(self, &pane_tree, &[], cx).into_any_element()
                     } else {
                         self.render_home_page(cx).into_any_element()
+                    })
+                    .context_menu(move |menu, window, cx| {
+                        Self::build_terminal_context_menu(menu, menu_view.clone(), window, cx)
                     }),
             )
             // Keep terminal input in the terminal itself, while making the
@@ -6919,6 +6920,54 @@ impl TinyShell {
                     .on_click(window.listener_for(&view, |this, _, window, cx| {
                         this.trigger_sftp_context_permissions(window, cx);
                     })),
+            )
+    }
+
+    fn build_terminal_context_menu(
+        menu: PopupMenu,
+        view: gpui::Entity<TinyShell>,
+        window: &mut Window,
+        cx: &mut Context<PopupMenu>,
+    ) -> PopupMenu {
+        let selection = view.read(cx).active_terminal_selection_text();
+        let has_selection = selection.is_some();
+        let has_clipboard_text = cx
+            .read_from_clipboard()
+            .and_then(|item| item.text())
+            .is_some_and(|text| !text.is_empty());
+
+        menu.action_context(view.read(cx).focus_handle.clone())
+            .item(
+                PopupMenuItem::new(t!("terminal_copy").to_string())
+                    .disabled(!has_selection)
+                    .action(Box::new(crate::Copy)),
+            )
+            .item(
+                PopupMenuItem::new(t!("terminal_paste").to_string())
+                    .disabled(!has_clipboard_text)
+                    .action(Box::new(crate::Paste)),
+            )
+            .item(
+                PopupMenuItem::new(t!("terminal_paste_selection").to_string())
+                    .disabled(!has_selection)
+                    .on_click(window.listener_for(&view, move |this, _, window, cx| {
+                        if let Some(text) = selection.as_deref() {
+                            this.paste_into_terminal(text, window, cx);
+                        }
+                    })),
+            )
+            .separator()
+            .item(
+                PopupMenuItem::new(t!("terminal_find").to_string())
+                    .action(Box::new(crate::OpenSearch)),
+            )
+            .separator()
+            .item(
+                PopupMenuItem::new(t!("terminal_clear_scrollback").to_string()).on_click(
+                    window.listener_for(&view, |this, _, _, cx| {
+                        this.clear_active_terminal_scrollback(cx);
+                    }),
+                ),
             )
     }
 
