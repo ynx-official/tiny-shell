@@ -2,8 +2,8 @@ use crate::app::resizable::{h_resizable, resizable_panel, v_resizable};
 use gpui::{
     Anchor, AnyElement, Context, ElementId, Focusable as _, FontWeight, Hsla,
     InteractiveElement as _, IntoElement, MouseButton, MouseDownEvent, ParentElement as _,
-    PathBuilder, Pixels, Render, StatefulInteractiveElement as _, Styled as _, Window, canvas,
-    deferred, div, hsla, point, prelude::FluentBuilder as _, px, relative, rems, uniform_list,
+    PathBuilder, Pixels, Render, StatefulInteractiveElement as _, Styled as _, Window, canvas, div,
+    hsla, point, prelude::FluentBuilder as _, px, relative, rems, uniform_list,
 };
 use gpui_component::{
     ActiveTheme, Disableable as _, ElementExt, Icon, IconName, InteractiveElementExt as _, Root,
@@ -11,6 +11,7 @@ use gpui_component::{
     button::{Button, ButtonVariants as _},
     checkbox::Checkbox,
     h_flex,
+    hover_card::HoverCard,
     input::Input,
     menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenu, PopupMenuItem},
     progress::Progress,
@@ -19,7 +20,10 @@ use gpui_component::{
     v_flex,
 };
 use rust_i18n::t;
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    time::Duration,
+};
 
 use crate::{
     PaneLayout, TinyShell,
@@ -4312,21 +4316,14 @@ impl TinyShell {
                                     .text_size(rems(0.8))
                                     .child(t!("server_ip")),
                             )
-                            .child(
-                                h_flex()
+                            .child({
+                                let trigger_ip = primary_ip.clone();
+                                let trigger = h_flex()
                                     .id("sidebar-ip-list")
                                     .flex_1()
                                     .min_w(px(0.))
                                     .items_center()
                                     .gap_1()
-                                    .relative()
-                                    .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
-                                        if *hovered {
-                                            this.show_ip_popover(cx);
-                                        } else {
-                                            this.schedule_ip_popover_hide(cx);
-                                        }
-                                    }))
                                     .child(
                                         div()
                                             .id("sidebar-primary-ip")
@@ -4337,174 +4334,161 @@ impl TinyShell {
                                             .text_ellipsis()
                                             .cursor_pointer()
                                             .text_size(rems(0.8))
-                                            .on_click({
-                                                let ip = primary_ip.clone();
-                                                cx.listener(move |_this, _, _, cx| {
-                                                    cx.write_to_clipboard(
-                                                        gpui::ClipboardItem::new_string(ip.clone()),
-                                                    );
-                                                })
+                                            .on_click(move |_, _, cx| {
+                                                cx.write_to_clipboard(
+                                                    gpui::ClipboardItem::new_string(
+                                                        trigger_ip.clone(),
+                                                    ),
+                                                );
                                             })
                                             .child(primary_ip),
-                                    )
-                                    .when(
-                                        self.ip_popover_visible && ip_address_entries.len() > 1,
-                                        |this| {
-                                            this.child(
-                                                deferred(
+                                    );
+
+                                if ip_address_entries.len() > 1 {
+                                    let popover_entries = ip_address_entries.clone();
+                                    HoverCard::new("sidebar-ip-hover-card")
+                                        .anchor(Anchor::TopRight)
+                                        .open_delay(Duration::ZERO)
+                                        .close_delay(Duration::from_millis(350))
+                                        .trigger(trigger)
+                                        .content(move |_, _, cx| {
+                                            v_flex()
+                                                .w(px(300.))
+                                                .gap_1()
+                                                .child(
+                                                    h_flex()
+                                                        .px_1()
+                                                        .pb_1()
+                                                        .items_center()
+                                                        .justify_between()
+                                                        .child(
+                                                            div()
+                                                                .text_size(rems(0.72))
+                                                                .font_weight(FontWeight::SEMIBOLD)
+                                                                .child(t!("ip_address")),
+                                                        )
+                                                        .child(
+                                                            div()
+                                                                .text_size(rems(0.62))
+                                                                .text_color(
+                                                                    cx.theme().muted_foreground,
+                                                                )
+                                                                .child(t!("click_to_copy")),
+                                                        ),
+                                                )
+                                                .child(
                                                     v_flex()
-                                                    .id("sidebar-ip-popover")
-                                                    .absolute()
-                                                    .top(px(22.))
-                                                    .left(px(-56.))
-                                                    .right_0()
-                                                    .p_2()
-                                                    .gap_1()
-                                                    .rounded_lg()
-                                                    .border_1()
-                                                    .border_color(cx.theme().border)
-                                                    .bg(cx.theme().background)
-                                                    .shadow_lg()
-                                                    .occlude()
-                                                    .on_hover(cx.listener(
-                                                        |this, hovered: &bool, _, cx| {
-                                                            if *hovered {
-                                                                this.show_ip_popover(cx);
-                                                            } else {
-                                                                this.schedule_ip_popover_hide(cx);
-                                                            }
-                                                        },
-                                                    ))
-                                                    .child(
-                                                        h_flex()
-                                                            .px_1()
-                                                            .pb_1()
-                                                            .items_center()
-                                                            .justify_between()
-                                                            .child(
-                                                                div()
-                                                                    .text_size(rems(0.72))
-                                                                    .font_weight(
-                                                                        FontWeight::SEMIBOLD,
-                                                                    )
-                                                                    .child(t!("ip_address")),
-                                                            )
-                                                            .child(
-                                                                div()
-                                                                    .text_size(rems(0.62))
-                                                                    .text_color(
-                                                                        cx.theme()
-                                                                            .muted_foreground,
-                                                                    )
-                                                                    .child(t!("click_to_copy")),
-                                                            ),
-                                                    )
-                                                    .child(
-                                                        v_flex()
-                                                            .rounded_md()
-                                                            .border_1()
-                                                            .border_color(cx.theme().border)
-                                                            .overflow_hidden()
-                                                            .child(
-                                                                h_flex()
-                                                                    .h(px(26.))
-                                                                    .px_2()
-                                                                    .items_center()
-                                                                    .bg(cx.theme().muted)
-                                                                    .text_size(rems(0.64))
-                                                                    .text_color(
-                                                                        cx.theme()
-                                                                            .muted_foreground,
-                                                                    )
-                                                                    .child(
-                                                                        div()
-                                                                            .w(px(68.))
-                                                                            .flex_none()
-                                                                            .child(t!(
-                                                                                "network_interface"
-                                                                            )),
-                                                                    )
-                                                                    .child(
-                                                                        div()
-                                                                            .flex_1()
-                                                                            .child(t!("ip_address")),
-                                                                    ),
-                                                            )
-                                                            .children(
-                                                                ip_address_entries
-                                                                    .clone()
-                                                                    .into_iter()
-                                                                    .enumerate()
-                                                                    .map(|(index, entry)| {
-                                                                        let copied_ip =
-                                                                            entry.address.clone();
-                                                                        let tooltip = format!(
-                                                                            "{}\n{}",
-                                                                            entry.interface,
-                                                                            entry.address
-                                                                        );
-                                                                        h_flex()
-                                                                            .id((
-                                                                                "sidebar-copy-ip",
-                                                                                index,
-                                                                            ))
-                                                                            .h(px(30.))
-                                                                            .px_2()
-                                                                            .items_center()
-                                                                            .cursor_pointer()
-                                                                            .text_size(rems(0.68))
-                                                                            .border_t_1()
-                                                                            .border_color(
-                                                                                cx.theme()
-                                                                                    .border
-                                                                                    .opacity(0.5),
+                                                        .rounded_md()
+                                                        .border_1()
+                                                        .border_color(cx.theme().border)
+                                                        .overflow_hidden()
+                                                        .child(
+                                                            h_flex()
+                                                                .h(px(26.))
+                                                                .px_2()
+                                                                .items_center()
+                                                                .bg(cx.theme().muted)
+                                                                .text_size(rems(0.64))
+                                                                .text_color(
+                                                                    cx.theme().muted_foreground,
+                                                                )
+                                                                .child(
+                                                                    div()
+                                                                        .w(px(68.))
+                                                                        .flex_none()
+                                                                        .child(t!(
+                                                                            "network_interface"
+                                                                        )),
+                                                                )
+                                                                .child(
+                                                                    div()
+                                                                        .flex_1()
+                                                                        .child(t!("ip_address")),
+                                                                ),
+                                                        )
+                                                        .children(
+                                                            popover_entries
+                                                                .clone()
+                                                                .into_iter()
+                                                                .enumerate()
+                                                                .map(|(index, entry)| {
+                                                                    let copied_ip =
+                                                                        entry.address.clone();
+                                                                    let tooltip = format!(
+                                                                        "{}\n{}",
+                                                                        entry.interface,
+                                                                        entry.address
+                                                                    );
+                                                                    h_flex()
+                                                                        .id((
+                                                                            "sidebar-copy-ip",
+                                                                            index,
+                                                                        ))
+                                                                        .h(px(30.))
+                                                                        .px_2()
+                                                                        .items_center()
+                                                                        .cursor_pointer()
+                                                                        .text_size(rems(0.68))
+                                                                        .border_t_1()
+                                                                        .border_color(
+                                                                            cx.theme()
+                                                                                .border
+                                                                                .opacity(0.5),
+                                                                        )
+                                                                        .hover(|this| {
+                                                                            this.bg(
+                                                                                cx.theme().muted,
                                                                             )
-                                                                            .hover(|this| {
-                                                                                this.bg(cx.theme().muted)
-                                                                            })
-                                                                            .tooltip(move |window, cx| {
+                                                                        })
+                                                                        .tooltip(
+                                                                            move |window, cx| {
                                                                                 gpui_component::tooltip::Tooltip::new(
                                                                                     tooltip.clone(),
                                                                                 )
                                                                                 .build(window, cx)
-                                                                            })
-                                                                            .on_click(cx.listener(
-                                                                                move |_this, _, _, cx| {
-                                                                                    cx.write_to_clipboard(
-                                                                                        gpui::ClipboardItem::new_string(
-                                                                                            copied_ip.clone(),
-                                                                                        ),
-                                                                                    );
-                                                                                },
-                                                                            ))
-                                                                            .child(
-                                                                                div()
-                                                                                    .w(px(68.))
-                                                                                    .flex_none()
-                                                                                    .min_w(px(0.))
-                                                                                    .overflow_hidden()
-                                                                                    .whitespace_nowrap()
-                                                                                    .text_ellipsis()
-                                                                                    .child(entry.interface),
-                                                                            )
-                                                                            .child(
-                                                                                div()
-                                                                                    .flex_1()
-                                                                                    .min_w(px(0.))
-                                                                                    .overflow_hidden()
-                                                                                    .whitespace_nowrap()
-                                                                                    .text_ellipsis()
-                                                                                    .child(entry.address),
-                                                                            )
-                                                                    }),
-                                                            ),
-                                                    ),
+                                                                            },
+                                                                        )
+                                                                        .on_click(
+                                                                            move |_, _, cx| {
+                                                                                cx.write_to_clipboard(
+                                                                                    gpui::ClipboardItem::new_string(
+                                                                                        copied_ip.clone(),
+                                                                                    ),
+                                                                                );
+                                                                            },
+                                                                        )
+                                                                        .child(
+                                                                            div()
+                                                                                .w(px(68.))
+                                                                                .flex_none()
+                                                                                .min_w(px(0.))
+                                                                                .overflow_hidden()
+                                                                                .whitespace_nowrap()
+                                                                                .text_ellipsis()
+                                                                                .child(
+                                                                                    entry.interface,
+                                                                                ),
+                                                                        )
+                                                                        .child(
+                                                                            div()
+                                                                                .flex_1()
+                                                                                .min_w(px(0.))
+                                                                                .overflow_hidden()
+                                                                                .whitespace_nowrap()
+                                                                                .text_ellipsis()
+                                                                                .child(
+                                                                                    entry.address,
+                                                                                ),
+                                                                        )
+                                                                }),
+                                                        ),
                                                 )
-                                                .priority(10),
-                                            )
-                                        },
-                                    ),
-                            ),
+                                        })
+                                        .into_any_element()
+                                } else {
+                                    trigger.into_any_element()
+                                }
+                            }),
                     )
                     .child(
                         h_flex()
