@@ -196,7 +196,12 @@ impl TinyShell {
         self.send_terminal_input(b"\x1b[Z".to_vec(), window, cx);
     }
 
-    fn send_terminal_input(&mut self, bytes: Vec<u8>, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn send_terminal_input(
+        &mut self,
+        bytes: Vec<u8>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(active_id) = self.active_tab.clone() else {
             return;
         };

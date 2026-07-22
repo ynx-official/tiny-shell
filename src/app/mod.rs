@@ -424,6 +424,13 @@ pub(crate) enum HomePage {
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum SftpPanelView {
+    #[default]
+    Files,
+    Commands,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) enum ProcessView {
     #[default]
     Memory,
@@ -515,16 +522,6 @@ pub(crate) struct TinyShell {
     /// The Home workspace is a first-class tab alongside terminal groups.
     pub(crate) home_page_open: bool,
     pub(crate) home_page: HomePage,
-    /// The previously selected home page, used to animate nav transitions.
-    pub(crate) prev_home_page: HomePage,
-    /// Increments each time the home page changes, used as an animation epoch.
-    pub(crate) home_page_epoch: u64,
-    /// Increments each time the SFTP panel is minimized or expanded, used as
-    /// an animation epoch for the panel content fade-in.
-    pub(crate) sftp_minimize_epoch: u64,
-    /// Increments each time the sidebar is collapsed or expanded, used as an
-    /// animation epoch for the sidebar content fade-in.
-    pub(crate) sidebar_collapse_epoch: u64,
     pub(crate) connection_group_filter: Option<String>,
     /// Bounds of the visible group rows, used to calculate a drop position.
     pub(crate) connection_group_bounds: HashMap<String, Bounds<Pixels>>,
@@ -552,9 +549,6 @@ pub(crate) struct TinyShell {
     pub(crate) pending_sftp_path_sync: Option<String>,
     pub(crate) pending_sftp_tree_scroll_path: Option<String>,
     pub(crate) sftp_context_menu: Option<SftpContextMenuState>,
-    pub(crate) tab_context_menu: Option<TabContextMenuState>,
-    pub(crate) ip_popover_visible: bool,
-    pub(crate) ip_popover_hide_generation: u64,
     /// Increments each time a context menu is opened, used as an animation
     /// epoch so the menu fade-in restarts on every open.
     pub(crate) context_menu_epoch: u64,
@@ -583,6 +577,8 @@ pub(crate) struct TinyShell {
     /// Source drag currently hovering over this window.
     pub(crate) incoming_tab_drag: Option<IncomingTabDrag>,
     pub(crate) terminal_marked_text: Option<String>,
+    pub(crate) sftp_panel_view: SftpPanelView,
+    pub(crate) quick_command_category: usize,
     pub(crate) sftp_panel_minimized: bool,
     pub(crate) sidebar_collapsed: bool,
     pub(crate) collapsed_saved_scroll_handle: gpui::ScrollHandle,
@@ -669,11 +665,6 @@ pub(crate) struct ConnectionProgress {
 pub(crate) struct SftpContextMenuState {
     pub(crate) remote_path: Option<String>,
     pub(crate) is_dir: bool,
-    pub(crate) position: Point<Pixels>,
-}
-
-pub(crate) struct TabContextMenuState {
-    pub(crate) group_id: String,
     pub(crate) position: Point<Pixels>,
 }
 
@@ -929,6 +920,11 @@ impl TinyShell {
         gpui_component::set_locale(&active_locale);
         let ui_font_family: SharedString = config.ui_font_family().into();
         let terminal_font_family: SharedString = config.terminal_font_family().into();
+        let sftp_panel_view = if config.sftp_panel_view() == "commands" {
+            SftpPanelView::Commands
+        } else {
+            SftpPanelView::Files
+        };
         let last_sidebar_width = Some(px(config
             .workspace_panels()
             .and_then(|s| s.first().copied())
@@ -1006,10 +1002,6 @@ impl TinyShell {
             active_system_info_tab: None,
             home_page_open: true,
             home_page: HomePage::default(),
-            prev_home_page: HomePage::default(),
-            home_page_epoch: 0,
-            sftp_minimize_epoch: 0,
-            sidebar_collapse_epoch: 0,
             connection_group_filter: None,
             connection_group_bounds: HashMap::new(),
             pending_connection_group_drag: None,
@@ -1037,9 +1029,6 @@ impl TinyShell {
             pending_sftp_path_sync: Some("/".into()),
             pending_sftp_tree_scroll_path: None,
             sftp_context_menu: None,
-            tab_context_menu: None,
-            ip_popover_visible: false,
-            ip_popover_hide_generation: 0,
             context_menu_epoch: 0,
             disconnect_epoch: 0,
             sftp_creating_folder: false,
@@ -1071,6 +1060,8 @@ impl TinyShell {
             drag_split_origin: None,
             tab_drag: tab_drag::TabDragState::default(),
             incoming_tab_drag: None,
+            sftp_panel_view,
+            quick_command_category: 0,
             sftp_panel_minimized: config.sftp_panel_minimized(),
             sidebar_collapsed: config.sidebar_collapsed(),
             collapsed_saved_scroll_handle: gpui::ScrollHandle::new(),
@@ -1290,62 +1281,6 @@ impl TinyShell {
         changed |= advance(&mut self.animated_mem_percent, self.system.mem_percent);
         changed |= advance(&mut self.animated_swap_percent, self.system.swap_percent);
         changed
-    }
-
-    /// Switch the active home page, recording the previous selection and
-    /// bumping the animation epoch so the nav item transition can re-run.
-    pub(crate) fn set_home_page(&mut self, page: HomePage, cx: &mut Context<Self>) {
-        if self.home_page == page {
-            return;
-        }
-        self.prev_home_page = self.home_page;
-        self.home_page = page;
-        self.home_page_epoch = self.home_page_epoch.wrapping_add(1);
-        cx.notify();
-    }
-
-    /// A hash of the fields that determine which top-level view is shown in the
-    /// main content area. Used as the animation epoch for the main content
-    /// fade-in: whenever any of these change, the animation ID changes too and
-    /// `with_animation` restarts from frame 0, producing a fresh fade-in.
-    pub(crate) fn main_view_key(&self) -> u64 {
-        let mut hash: u64 = 0;
-        hash = hash.wrapping_mul(31).wrapping_add(self.home_page as u64);
-        hash = hash.wrapping_mul(31).wrapping_add(self.home_page_open as u64);
-        hash = hash
-            .wrapping_mul(31)
-            .wrapping_add(self.active_system_info_tab.is_some() as u64);
-        if let Some(id) = &self.active_tab {
-            for byte in id.bytes() {
-                hash = hash.wrapping_mul(31).wrapping_add(byte as u64);
-            }
-        }
-        hash
-    }
-
-    pub(crate) fn show_ip_popover(&mut self, cx: &mut Context<Self>) {
-        self.ip_popover_hide_generation = self.ip_popover_hide_generation.wrapping_add(1);
-        if !self.ip_popover_visible {
-            self.ip_popover_visible = true;
-            cx.notify();
-        }
-    }
-
-    pub(crate) fn schedule_ip_popover_hide(&mut self, cx: &mut Context<Self>) {
-        self.ip_popover_hide_generation = self.ip_popover_hide_generation.wrapping_add(1);
-        let generation = self.ip_popover_hide_generation;
-        cx.spawn(async move |this, cx| {
-            cx.background_executor()
-                .timer(Duration::from_millis(350))
-                .await;
-            let _ = this.update(cx, |this, cx| {
-                if this.ip_popover_hide_generation == generation && this.ip_popover_visible {
-                    this.ip_popover_visible = false;
-                    cx.notify();
-                }
-            });
-        })
-        .detach();
     }
 
     pub(crate) fn drain_backend_events(&mut self, cx: &mut Context<Self>) -> bool {

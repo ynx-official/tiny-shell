@@ -28,12 +28,30 @@ use std::{
 use crate::{
     PaneLayout, TinyShell,
     app::constants::{COLLAPSED_SIDEBAR_WIDTH, SIDEBAR_WIDTH, TERMINAL_KEY_CONTEXT},
-    app::{HomePage, ProcessView},
+    app::{HomePage, ProcessView, SftpPanelView},
     sftp::format_mtime,
     sftp::ops::is_editable_text_file,
     system::format_bytes,
     terminal::{self, TabKind},
 };
+
+#[derive(Clone, Copy)]
+enum SftpToolbarItem {
+    SyncCwd,
+    HiddenFiles,
+    Refresh,
+    NewFolder,
+    Delete,
+    UploadFile,
+    UploadFolder,
+    Download,
+}
+
+#[derive(Clone, Copy)]
+enum SftpFooterItem {
+    Transfers,
+    PanelToggle,
+}
 
 fn format_uptime(seconds: u64) -> String {
     if seconds == 0 {
@@ -2133,12 +2151,422 @@ impl TinyShell {
             .into_any_element()
     }
 
-    fn render_sftp_panel(
+    fn set_sftp_panel_view(&mut self, view: SftpPanelView, cx: &mut Context<Self>) {
+        if self.sftp_panel_view == view {
+            return;
+        }
+        self.sftp_panel_view = view;
+        self.config.set_sftp_panel_view(match view {
+            SftpPanelView::Files => "files",
+            SftpPanelView::Commands => "commands",
+        });
+        self.mark_config_preferences_dirty();
+        cx.notify();
+    }
+
+    fn toggle_sftp_toolbar_item(&mut self, item: SftpToolbarItem, cx: &mut Context<Self>) {
+        let mut visibility = self.config.sftp_toolbar_visibility();
+        match item {
+            SftpToolbarItem::SyncCwd => visibility.sync_cwd = !visibility.sync_cwd,
+            SftpToolbarItem::HiddenFiles => visibility.hidden_files = !visibility.hidden_files,
+            SftpToolbarItem::Refresh => visibility.refresh = !visibility.refresh,
+            SftpToolbarItem::NewFolder => visibility.new_folder = !visibility.new_folder,
+            SftpToolbarItem::Delete => visibility.delete = !visibility.delete,
+            SftpToolbarItem::UploadFile => visibility.upload_file = !visibility.upload_file,
+            SftpToolbarItem::UploadFolder => visibility.upload_folder = !visibility.upload_folder,
+            SftpToolbarItem::Download => visibility.download = !visibility.download,
+        }
+        self.config.set_sftp_toolbar_visibility(visibility);
+        self.mark_config_preferences_dirty();
+        cx.notify();
+    }
+
+    fn toggle_sftp_footer_item(&mut self, item: SftpFooterItem, cx: &mut Context<Self>) {
+        let mut visibility = self.config.sftp_footer_visibility();
+        match item {
+            SftpFooterItem::Transfers => visibility.transfers = !visibility.transfers,
+            SftpFooterItem::PanelToggle => visibility.panel_toggle = !visibility.panel_toggle,
+        }
+        self.config.set_sftp_footer_visibility(visibility);
+        self.mark_config_preferences_dirty();
+        cx.notify();
+    }
+
+    fn build_sftp_toolbar_visibility_menu(
+        mut menu: PopupMenu,
+        view: gpui::Entity<TinyShell>,
+        window: &mut Window,
+        cx: &mut Context<PopupMenu>,
+    ) -> PopupMenu {
+        let visibility = view.read(cx).config.sftp_toolbar_visibility();
+        let items = [
+            (
+                SftpToolbarItem::SyncCwd,
+                t!("sync_cwd").to_string(),
+                visibility.sync_cwd,
+            ),
+            (
+                SftpToolbarItem::HiddenFiles,
+                t!("hidden").to_string(),
+                visibility.hidden_files,
+            ),
+            (
+                SftpToolbarItem::Refresh,
+                t!("refresh").to_string(),
+                visibility.refresh,
+            ),
+            (
+                SftpToolbarItem::NewFolder,
+                t!("new_folder").to_string(),
+                visibility.new_folder,
+            ),
+            (
+                SftpToolbarItem::Delete,
+                t!("delete_selected").to_string(),
+                visibility.delete,
+            ),
+            (
+                SftpToolbarItem::UploadFile,
+                t!("upload_file").to_string(),
+                visibility.upload_file,
+            ),
+            (
+                SftpToolbarItem::UploadFolder,
+                t!("upload_folder").to_string(),
+                visibility.upload_folder,
+            ),
+            (
+                SftpToolbarItem::Download,
+                t!("download").to_string(),
+                visibility.download,
+            ),
+        ];
+        for (item, label, checked) in items {
+            menu = menu.item(PopupMenuItem::new(label).checked(checked).on_click(
+                window.listener_for(&view, move |this, _, _, cx| {
+                    this.toggle_sftp_toolbar_item(item, cx);
+                }),
+            ));
+        }
+        menu
+    }
+
+    fn build_sftp_footer_visibility_menu(
+        mut menu: PopupMenu,
+        view: gpui::Entity<TinyShell>,
+        window: &mut Window,
+        cx: &mut Context<PopupMenu>,
+    ) -> PopupMenu {
+        let visibility = view.read(cx).config.sftp_footer_visibility();
+        let items = [
+            (
+                SftpFooterItem::Transfers,
+                t!("transfers").to_string(),
+                visibility.transfers,
+            ),
+            (
+                SftpFooterItem::PanelToggle,
+                t!("sftp_footer_panel_toggle").to_string(),
+                visibility.panel_toggle,
+            ),
+        ];
+        for (item, label, checked) in items {
+            menu = menu.item(PopupMenuItem::new(label).checked(checked).on_click(
+                window.listener_for(&view, move |this, _, _, cx| {
+                    this.toggle_sftp_footer_item(item, cx);
+                }),
+            ));
+        }
+        menu
+    }
+
+    fn render_quick_commands(
         &mut self,
         _window: &mut Window,
         cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let categories = [
+            (
+                t!("quick_command_category_common").to_string(),
+                vec![
+                    (t!("quick_command_pwd").to_string(), "pwd".to_string()),
+                    (
+                        t!("quick_command_list_files").to_string(),
+                        "ls -lah".to_string(),
+                    ),
+                    (
+                        t!("quick_command_disk_usage").to_string(),
+                        "df -h".to_string(),
+                    ),
+                    (t!("quick_command_uptime").to_string(), "uptime".to_string()),
+                ],
+            ),
+            (
+                t!("quick_command_category_system").to_string(),
+                vec![
+                    (
+                        t!("quick_command_memory").to_string(),
+                        "free -h".to_string(),
+                    ),
+                    (
+                        t!("quick_command_processes").to_string(),
+                        "ps aux --sort=-%cpu | head -n 20".to_string(),
+                    ),
+                    (
+                        t!("quick_command_ports").to_string(),
+                        "ss -lntup".to_string(),
+                    ),
+                    (
+                        t!("quick_command_recent_logs").to_string(),
+                        "journalctl -n 100 --no-pager".to_string(),
+                    ),
+                ],
+            ),
+            (
+                t!("quick_command_category_docker").to_string(),
+                vec![
+                    (
+                        t!("quick_command_docker_containers").to_string(),
+                        "docker ps -a".to_string(),
+                    ),
+                    (
+                        t!("quick_command_docker_images").to_string(),
+                        "docker images".to_string(),
+                    ),
+                    (
+                        t!("quick_command_docker_stats").to_string(),
+                        "docker stats --no-stream".to_string(),
+                    ),
+                    (
+                        t!("quick_command_docker_disk").to_string(),
+                        "docker system df".to_string(),
+                    ),
+                ],
+            ),
+            (
+                t!("quick_command_category_network").to_string(),
+                vec![
+                    (
+                        t!("quick_command_ip_address").to_string(),
+                        "ip address".to_string(),
+                    ),
+                    (
+                        t!("quick_command_routes").to_string(),
+                        "ip route".to_string(),
+                    ),
+                    (
+                        t!("quick_command_dns").to_string(),
+                        "cat /etc/resolv.conf".to_string(),
+                    ),
+                    (
+                        t!("quick_command_public_ip").to_string(),
+                        "curl -fsSL https://api.ipify.org && echo".to_string(),
+                    ),
+                ],
+            ),
+        ];
+        self.quick_command_category = self.quick_command_category.min(categories.len() - 1);
+        let selected_commands = categories[self.quick_command_category].1.clone();
+
+        v_flex()
+            .flex_1()
+            .min_h(px(0.))
+            .child(
+                h_flex()
+                    .flex_none()
+                    .h(px(36.))
+                    .items_center()
+                    .gap_1()
+                    .px_2()
+                    .border_b_1()
+                    .border_color(cx.theme().border)
+                    .children(categories.iter().enumerate().map(|(index, (label, _))| {
+                        Button::new(("quick-command-category", index))
+                            .ghost()
+                            .small()
+                            .selected(self.quick_command_category == index)
+                            .icon(IconName::Folder)
+                            .label(label.clone())
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.quick_command_category = index;
+                                cx.notify();
+                            }))
+                    })),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_h(px(0.))
+                    .overflow_y_scrollbar()
+                    .p_3()
+                    .child(div().flex().flex_wrap().items_start().gap_2().children(
+                        selected_commands.into_iter().enumerate().map(
+                            |(index, (label, command))| {
+                                Button::new(("quick-command", index))
+                                    .outline()
+                                    .small()
+                                    .icon(IconName::SquareTerminal)
+                                    .label(label)
+                                    .tooltip(command.clone())
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.send_terminal_input(
+                                            format!("{}\r", command).into_bytes(),
+                                            window,
+                                            cx,
+                                        );
+                                    }))
+                            },
+                        ),
+                    )),
+            )
+            .into_any_element()
+    }
+
+    fn render_sftp_footer(
+        &self,
+        dl_summary: Option<(String, String, f32)>,
+        ul_summary: Option<(String, String, f32)>,
+        has_transfers: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let visibility = self.config.sftp_footer_visibility();
+        let view = cx.entity();
+        h_flex()
+            .flex_none()
+            .h(px(24.))
+            .px_3()
+            .items_center()
+            .border_t_1()
+            .border_color(cx.theme().border)
+            .bg(cx.theme().tab_bar)
+            .child(div().flex_1())
+            .when(visibility.transfers, |this| {
+                this.child(
+                    Button::new("open-transfers")
+                        .ghost()
+                        .small()
+                        .when(has_transfers, |this| {
+                            let mut content = h_flex().items_center().gap_2();
+                            if let Some((ref label, ref pct_display, pct)) = dl_summary {
+                                content = content.child(
+                                    h_flex()
+                                        .items_center()
+                                        .gap_1()
+                                        .child(
+                                            Icon::new(IconName::ArrowDown)
+                                                .with_size(Size::Small)
+                                                .text_color(cx.theme().primary),
+                                        )
+                                        .child(
+                                            div()
+                                                .text_size(rems(0.833))
+                                                .text_color(cx.theme().primary)
+                                                .italic()
+                                                .child(label.clone()),
+                                        )
+                                        .child(
+                                            Progress::new("sftp-status-dl")
+                                                .with_size(px(4.))
+                                                .value(pct)
+                                                .color(cx.theme().primary)
+                                                .w(px(50.0)),
+                                        )
+                                        .child(
+                                            div()
+                                                .text_size(rems(0.833))
+                                                .text_color(cx.theme().primary)
+                                                .italic()
+                                                .child(pct_display.clone()),
+                                        ),
+                                );
+                            }
+                            if let Some((ref label, ref pct_display, pct)) = ul_summary {
+                                if dl_summary.is_some() {
+                                    content = content.child(div().w(px(6.)));
+                                }
+                                content = content.child(
+                                    h_flex()
+                                        .items_center()
+                                        .gap_1()
+                                        .child(
+                                            Icon::new(IconName::ArrowUp)
+                                                .with_size(Size::Small)
+                                                .text_color(cx.theme().primary),
+                                        )
+                                        .child(
+                                            div()
+                                                .text_size(rems(0.833))
+                                                .text_color(cx.theme().primary)
+                                                .italic()
+                                                .child(label.clone()),
+                                        )
+                                        .child(
+                                            Progress::new("sftp-status-ul")
+                                                .with_size(px(4.))
+                                                .value(pct)
+                                                .color(cx.theme().primary)
+                                                .w(px(50.0)),
+                                        )
+                                        .child(
+                                            div()
+                                                .text_size(rems(0.833))
+                                                .text_color(cx.theme().primary)
+                                                .italic()
+                                                .child(pct_display.clone()),
+                                        ),
+                                );
+                            }
+                            this.child(content)
+                        })
+                        .when(!has_transfers, |this| {
+                            this.icon(IconName::ArrowDown)
+                                .label(t!("transfers").to_string())
+                        })
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.show_transfers_dialog(window, cx);
+                        })),
+                )
+            })
+            .when(
+                visibility.panel_toggle || self.sftp_panel_minimized,
+                |this| {
+                    this.child(
+                        Button::new("sftp-minimize-toggle")
+                            .ghost()
+                            .small()
+                            .icon(if self.sftp_panel_minimized {
+                                IconName::ChevronUp
+                            } else {
+                                IconName::ChevronDown
+                            })
+                            .label(if self.sftp_panel_minimized {
+                                t!("panel_expand").to_string()
+                            } else {
+                                t!("panel_minimize").to_string()
+                            })
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.toggle_sftp_minimized(window, cx);
+                            })),
+                    )
+                },
+            )
+            .context_menu({
+                let view = view.clone();
+                move |menu, window, cx| {
+                    Self::build_sftp_footer_visibility_menu(menu, view.clone(), window, cx)
+                }
+            })
+            .into_any_element()
+    }
+
+    fn render_sftp_panel(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let active_sftp = self.active_sftp();
+        let toolbar_visibility = self.config.sftp_toolbar_visibility();
+        let view = cx.entity();
 
         // Compute active download progress for status bar and minimized header
         let build_summary = |kind: crate::terminal::TransferType| -> Option<(String, String, f32)> {
@@ -2205,121 +2633,168 @@ impl TinyShell {
             .border_color(cx.theme().border)
             .bg(cx.theme().tab_bar)
             .child(
-                div()
-                    .text_size(rems(1.0))
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(cx.theme().primary)
-                    .child(t!("remote_files")),
+                Button::new("sftp-view-files")
+                    .ghost()
+                    .small()
+                    .selected(self.sftp_panel_view == SftpPanelView::Files)
+                    .icon(IconName::FolderOpen)
+                    .label(t!("remote_files").to_string())
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.set_sftp_panel_view(SftpPanelView::Files, cx);
+                    })),
+            )
+            .child(
+                Button::new("sftp-view-commands")
+                    .ghost()
+                    .small()
+                    .selected(self.sftp_panel_view == SftpPanelView::Commands)
+                    .icon(IconName::SquareTerminal)
+                    .label(t!("quick_commands").to_string())
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.set_sftp_panel_view(SftpPanelView::Commands, cx);
+                    })),
             )
             .child(div().flex_1())
-            .when_some(active_sftp, |this, sftp| {
-                let selected_entries = sftp.selected_entries.clone();
-                this.child(
-                    Button::new("sftp-sync-cwd")
-                        .ghost()
-                        .small()
-                        .selected(sftp.follow_terminal_cwd)
-                        .icon(IconName::SquareTerminal)
-                        .label(t!("sync_cwd").to_string())
-                        .tooltip(if sftp.follow_terminal_cwd {
-                            t!("sync_cwd_enabled_tooltip").to_string()
-                        } else {
-                            t!("sync_cwd_tooltip").to_string()
-                        })
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.toggle_follow_terminal_cwd(window, cx);
-                        })),
-                )
-                .child(
-                    Checkbox::new("sftp-show-hidden")
-                        .small()
-                        .label(t!("hidden").to_string())
-                        .checked(self.show_hidden_files)
-                        .tab_stop(false)
-                        .on_click(cx.listener(|this, checked, _, cx| {
-                            if this.show_hidden_files == *checked {
-                                return;
-                            }
-                            this.show_hidden_files = *checked;
-                            this.config.set_show_hidden_files(*checked);
-                            this.mark_config_preferences_dirty();
-                            cx.notify();
-                        })),
-                )
-                .child(
-                    Button::new("sftp-refresh")
-                        .ghost()
-                        .small()
-                        .icon(IconName::ArrowRight)
-                        .label(t!("refresh").to_string())
-                        .on_click(cx.listener(|this, _, _, cx| this.refresh_sftp(cx))),
-                )
-                .child(
-                    Button::new("sftp-new-folder")
-                        .ghost()
-                        .small()
-                        .icon(IconName::Folder)
-                        .label(t!("new_folder").to_string())
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.sftp_creating_folder = true;
-                            this.sftp_new_folder_input.update(cx, |input, cx| {
-                                input.set_value("", window, cx);
-                                input.focus_handle(cx).focus(window, cx);
-                            });
-                            cx.notify();
-                        })),
-                )
-                .child(
-                    Button::new("sftp-delete-selected")
-                        .ghost()
-                        .small()
-                        .icon(IconName::Close)
-                        .label(if selected_entries.is_empty() {
-                            t!("delete_selected").to_string()
-                        } else {
-                            format!("{} ({})", t!("delete_selected"), selected_entries.len())
-                        })
-                        .disabled(selected_entries.is_empty())
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.show_delete_confirm_dialog(window, cx);
-                        })),
-                )
-                .child(
-                    Button::new("sftp-upload-file")
-                        .ghost()
-                        .small()
-                        .icon(IconName::Plus)
-                        .label(t!("upload_file").to_string())
-                        .on_click(
-                            cx.listener(|this, _, window, cx| this.upload_sftp_files(window, cx)),
-                        ),
-                )
-                .child(
-                    Button::new("sftp-upload-folder")
-                        .ghost()
-                        .small()
-                        .icon(IconName::Folder)
-                        .label(t!("upload_folder").to_string())
-                        .on_click(
-                            cx.listener(|this, _, window, cx| this.upload_sftp_folder(window, cx)),
-                        ),
-                )
-                .child(
-                    Button::new("sftp-download-selected")
-                        .ghost()
-                        .small()
-                        .icon(IconName::ArrowDown)
-                        .label(if selected_entries.is_empty() {
-                            t!("download").to_string()
-                        } else {
-                            t!("download_count", count = selected_entries.len()).to_string()
-                        })
-                        .disabled(selected_entries.is_empty())
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.download_selected_sftp_entries(window, cx);
-                        })),
-                )
+            .when_some(
+                (self.sftp_panel_view == SftpPanelView::Files)
+                    .then_some(active_sftp)
+                    .flatten(),
+                |this, sftp| {
+                    let selected_entries = sftp.selected_entries.clone();
+                    this.when(toolbar_visibility.sync_cwd, |this| {
+                        this.child(
+                            Button::new("sftp-sync-cwd")
+                                .ghost()
+                                .small()
+                                .selected(sftp.follow_terminal_cwd)
+                                .icon(IconName::SquareTerminal)
+                                .label(t!("sync_cwd").to_string())
+                                .tooltip(if sftp.follow_terminal_cwd {
+                                    t!("sync_cwd_enabled_tooltip").to_string()
+                                } else {
+                                    t!("sync_cwd_tooltip").to_string()
+                                })
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.toggle_follow_terminal_cwd(window, cx);
+                                })),
+                        )
+                    })
+                    .when(toolbar_visibility.hidden_files, |this| {
+                        this.child(
+                            Checkbox::new("sftp-show-hidden")
+                                .small()
+                                .label(t!("hidden").to_string())
+                                .checked(self.show_hidden_files)
+                                .tab_stop(false)
+                                .on_click(cx.listener(|this, checked, _, cx| {
+                                    if this.show_hidden_files == *checked {
+                                        return;
+                                    }
+                                    this.show_hidden_files = *checked;
+                                    this.config.set_show_hidden_files(*checked);
+                                    this.mark_config_preferences_dirty();
+                                    cx.notify();
+                                })),
+                        )
+                    })
+                    .when(toolbar_visibility.refresh, |this| {
+                        this.child(
+                            Button::new("sftp-refresh")
+                                .ghost()
+                                .small()
+                                .icon(IconName::ArrowRight)
+                                .label(t!("refresh").to_string())
+                                .on_click(cx.listener(|this, _, _, cx| this.refresh_sftp(cx))),
+                        )
+                    })
+                    .when(toolbar_visibility.new_folder, |this| {
+                        this.child(
+                            Button::new("sftp-new-folder")
+                                .ghost()
+                                .small()
+                                .icon(IconName::Folder)
+                                .label(t!("new_folder").to_string())
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.sftp_creating_folder = true;
+                                    this.sftp_new_folder_input.update(cx, |input, cx| {
+                                        input.set_value("", window, cx);
+                                        input.focus_handle(cx).focus(window, cx);
+                                    });
+                                    cx.notify();
+                                })),
+                        )
+                    })
+                    .when(toolbar_visibility.delete, |this| {
+                        this.child(
+                            Button::new("sftp-delete-selected")
+                                .ghost()
+                                .small()
+                                .icon(IconName::Close)
+                                .label(if selected_entries.is_empty() {
+                                    t!("delete_selected").to_string()
+                                } else {
+                                    format!(
+                                        "{} ({})",
+                                        t!("delete_selected"),
+                                        selected_entries.len()
+                                    )
+                                })
+                                .disabled(selected_entries.is_empty())
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.show_delete_confirm_dialog(window, cx);
+                                })),
+                        )
+                    })
+                    .when(toolbar_visibility.upload_file, |this| {
+                        this.child(
+                            Button::new("sftp-upload-file")
+                                .ghost()
+                                .small()
+                                .icon(IconName::Plus)
+                                .label(t!("upload_file").to_string())
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.upload_sftp_files(window, cx)
+                                })),
+                        )
+                    })
+                    .when(toolbar_visibility.upload_folder, |this| {
+                        this.child(
+                            Button::new("sftp-upload-folder")
+                                .ghost()
+                                .small()
+                                .icon(IconName::Folder)
+                                .label(t!("upload_folder").to_string())
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.upload_sftp_folder(window, cx)
+                                })),
+                        )
+                    })
+                    .when(toolbar_visibility.download, |this| {
+                        this.child(
+                            Button::new("sftp-download-selected")
+                                .ghost()
+                                .small()
+                                .icon(IconName::ArrowDown)
+                                .label(if selected_entries.is_empty() {
+                                    t!("download").to_string()
+                                } else {
+                                    t!("download_count", count = selected_entries.len()).to_string()
+                                })
+                                .disabled(selected_entries.is_empty())
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.download_selected_sftp_entries(window, cx);
+                                })),
+                        )
+                    })
+                },
+            )
+            .context_menu({
+                let view = view.clone();
+                move |menu, window, cx| {
+                    Self::build_sftp_toolbar_visibility_menu(menu, view.clone(), window, cx)
+                }
             });
+
         let Some(sftp) = active_sftp else {
             let mut outer = v_flex()
                 .gap_0()
@@ -2346,125 +2821,28 @@ impl TinyShell {
                                 ),
                         ),
                 );
-            outer = outer.child(
-                h_flex()
-                    .flex_none()
-                    .h(px(24.))
-                    .px_3()
-                    .items_center()
-                    .border_t_1()
-                    .border_color(cx.theme().border)
-                    .bg(cx.theme().tab_bar)
-                    .child(div().flex_1())
-                    .child(
-                        Button::new("open-transfers")
-                            .ghost()
-                            .small()
-                            .when(has_transfers, |this| {
-                                let mut content = h_flex().items_center().gap_2();
-                                if let Some((ref label, ref pct_display, pct)) = dl_summary {
-                                    content = content.child(
-                                        h_flex()
-                                            .items_center()
-                                            .gap_1()
-                                            .child(
-                                                Icon::new(IconName::ArrowDown)
-                                                    .with_size(Size::Small)
-                                                    .text_color(cx.theme().primary),
-                                            )
-                                            .child(
-                                                div()
-                                                    .text_size(rems(0.833))
-                                                    .text_color(cx.theme().primary)
-                                                    .italic()
-                                                    .child(label.clone()),
-                                            )
-                                            .child(
-                                                Progress::new("sftp-status-dl")
-                                                    .with_size(px(4.))
-                                                    .value(pct)
-                                                    .color(cx.theme().primary)
-                                                    .w(px(50.0)),
-                                            )
-                                            .child(
-                                                div()
-                                                    .text_size(rems(0.833))
-                                                    .text_color(cx.theme().primary)
-                                                    .italic()
-                                                    .child(pct_display.clone()),
-                                            ),
-                                    );
-                                }
-                                if let Some((ref label, ref pct_display, pct)) = ul_summary {
-                                    if dl_summary.is_some() {
-                                        content = content.child(div().w(px(6.)));
-                                    }
-                                    content = content.child(
-                                        h_flex()
-                                            .items_center()
-                                            .gap_1()
-                                            .child(
-                                                Icon::new(IconName::ArrowUp)
-                                                    .with_size(Size::Small)
-                                                    .text_color(cx.theme().primary),
-                                            )
-                                            .child(
-                                                div()
-                                                    .text_size(rems(0.833))
-                                                    .text_color(cx.theme().primary)
-                                                    .italic()
-                                                    .child(label.clone()),
-                                            )
-                                            .child(
-                                                Progress::new("sftp-status-ul")
-                                                    .with_size(px(4.))
-                                                    .value(pct)
-                                                    .color(cx.theme().primary)
-                                                    .w(px(50.0)),
-                                            )
-                                            .child(
-                                                div()
-                                                    .text_size(rems(0.833))
-                                                    .text_color(cx.theme().primary)
-                                                    .italic()
-                                                    .child(pct_display.clone()),
-                                            ),
-                                    );
-                                }
-                                this.child(content)
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.show_transfers_dialog(window, cx);
-                                    }))
-                            })
-                            .when(!has_transfers, |this| {
-                                this.icon(IconName::ArrowDown)
-                                    .label(t!("transfers").to_string())
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.show_transfers_dialog(window, cx);
-                                    }))
-                            }),
-                    )
-                    .child(
-                        Button::new("sftp-minimize-toggle")
-                            .ghost()
-                            .small()
-                            .icon(if self.sftp_panel_minimized {
-                                IconName::ChevronUp
-                            } else {
-                                IconName::ChevronDown
-                            })
-                            .label(if self.sftp_panel_minimized {
-                                t!("panel_expand").to_string()
-                            } else {
-                                t!("panel_minimize").to_string()
-                            })
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.toggle_sftp_minimized(window, cx);
-                            })),
-                    ),
-            );
+            outer = outer.child(self.render_sftp_footer(dl_summary, ul_summary, has_transfers, cx));
             return outer.into_any_element();
         };
+
+        if self.sftp_panel_view == SftpPanelView::Commands {
+            let footer = self.render_sftp_footer(dl_summary, ul_summary, has_transfers, cx);
+            return v_flex()
+                .gap_0()
+                .border_color(cx.theme().border)
+                .bg(cx.theme().background)
+                .flex_1()
+                .child(
+                    v_flex()
+                        .flex_1()
+                        .min_h(px(0.))
+                        .when(self.sftp_panel_minimized, |this| this.hidden())
+                        .child(header)
+                        .child(self.render_quick_commands(window, cx)),
+                )
+                .child(footer)
+                .into_any_element();
+        }
 
         let selected_path = sftp.selected_path.clone();
         let entries = sftp
@@ -2833,120 +3211,7 @@ impl TinyShell {
                         ),
                 ),
         );
-        outer = outer.child(
-            h_flex()
-                .flex_none()
-                .h(px(24.))
-                .px_3()
-                .items_center()
-                .border_t_1()
-                .border_color(cx.theme().border)
-                .bg(cx.theme().tab_bar)
-                .child(div().flex_1())
-                .child(
-                    Button::new("open-transfers")
-                        .ghost()
-                        .small()
-                        .when(has_transfers, |this| {
-                            let mut content = h_flex().items_center().gap_2();
-                            if let Some((ref label, ref pct_display, pct)) = dl_summary {
-                                content = content.child(
-                                    h_flex()
-                                        .items_center()
-                                        .gap_1()
-                                        .child(
-                                            Icon::new(IconName::ArrowDown)
-                                                .with_size(Size::Small)
-                                                .text_color(cx.theme().primary),
-                                        )
-                                        .child(
-                                            div()
-                                                .text_size(rems(0.833))
-                                                .text_color(cx.theme().primary)
-                                                .italic()
-                                                .child(label.clone()),
-                                        )
-                                        .child(
-                                            Progress::new("sftp-status-dl")
-                                                .with_size(px(4.))
-                                                .value(pct)
-                                                .color(cx.theme().primary)
-                                                .w(px(50.0)),
-                                        )
-                                        .child(
-                                            div()
-                                                .text_size(rems(0.833))
-                                                .text_color(cx.theme().primary)
-                                                .italic()
-                                                .child(pct_display.clone()),
-                                        ),
-                                );
-                            }
-                            if let Some((ref label, ref pct_display, pct)) = ul_summary {
-                                if dl_summary.is_some() {
-                                    content = content.child(div().w(px(6.)));
-                                }
-                                content = content.child(
-                                    h_flex()
-                                        .items_center()
-                                        .gap_1()
-                                        .child(
-                                            Icon::new(IconName::ArrowUp)
-                                                .with_size(Size::Small)
-                                                .text_color(cx.theme().primary),
-                                        )
-                                        .child(
-                                            div()
-                                                .text_size(rems(0.833))
-                                                .text_color(cx.theme().primary)
-                                                .italic()
-                                                .child(label.clone()),
-                                        )
-                                        .child(
-                                            Progress::new("sftp-status-ul")
-                                                .with_size(px(4.))
-                                                .value(pct)
-                                                .color(cx.theme().primary)
-                                                .w(px(50.0)),
-                                        )
-                                        .child(
-                                            div()
-                                                .text_size(rems(0.833))
-                                                .text_color(cx.theme().primary)
-                                                .italic()
-                                                .child(pct_display.clone()),
-                                        ),
-                                );
-                            }
-                            this.child(content)
-                        })
-                        .when(!has_transfers, |this| {
-                            this.icon(IconName::ArrowDown)
-                                .label(t!("transfers").to_string())
-                        })
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.show_transfers_dialog(window, cx);
-                        })),
-                )
-                .child(
-                    Button::new("sftp-minimize-toggle")
-                        .ghost()
-                        .small()
-                        .icon(if self.sftp_panel_minimized {
-                            IconName::ChevronUp
-                        } else {
-                            IconName::ChevronDown
-                        })
-                        .label(if self.sftp_panel_minimized {
-                            t!("panel_expand").to_string()
-                        } else {
-                            t!("panel_minimize").to_string()
-                        })
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.toggle_sftp_minimized(window, cx);
-                        })),
-                ),
-        );
+        outer = outer.child(self.render_sftp_footer(dl_summary, ul_summary, has_transfers, cx));
 
         outer.into_any_element()
     }

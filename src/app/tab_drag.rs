@@ -32,10 +32,6 @@ pub(crate) struct TabDragState<I, T> {
     reorder_index: Option<usize>,
     outside: bool,
     merge_target: Option<DragTarget<I, T>>,
-    /// Increments each time a drag overlay (cancel hint or merge hint) becomes
-    /// visible, used as an animation epoch so the overlay fade-in restarts
-    /// every time it is shown.
-    drag_overlay_epoch: u64,
 }
 
 impl<I, T> Default for TabDragState<I, T> {
@@ -47,7 +43,6 @@ impl<I, T> Default for TabDragState<I, T> {
             reorder_index: None,
             outside: false,
             merge_target: None,
-            drag_overlay_epoch: 0,
         }
     }
 }
@@ -103,12 +98,6 @@ impl<I: PartialEq, T> TabDragState<I, T> {
         }
         let previous = self.merge_target.take().map(|target| target.payload);
         self.merge_target = target;
-        // Bump the overlay epoch only when an overlay becomes visible
-        // (i.e. the new target is Some). Hiding the overlay does not need
-        // to restart an animation since it is removed from the tree.
-        if self.merge_target.is_some() {
-            self.drag_overlay_epoch = self.drag_overlay_epoch.wrapping_add(1);
-        }
         TargetUpdate::Changed { previous }
     }
 
@@ -133,18 +122,7 @@ impl<I: PartialEq, T> TabDragState<I, T> {
             return false;
         }
         self.outside = outside;
-        // Bump the overlay epoch only when the cancel overlay becomes visible.
-        if self.outside {
-            self.drag_overlay_epoch = self.drag_overlay_epoch.wrapping_add(1);
-        }
         true
-    }
-
-    /// Returns the current overlay animation epoch. Callers should pass this
-    /// as the `NamedInteger` epoch when rendering a drag overlay so the
-    /// fade-in restarts every time the overlay appears.
-    pub(crate) fn drag_overlay_epoch(&self) -> u64 {
-        self.drag_overlay_epoch
     }
 
     pub(crate) fn finish(&mut self) -> DropIntent<T> {

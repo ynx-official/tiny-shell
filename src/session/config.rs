@@ -16,6 +16,50 @@ use rand::{RngCore, rngs::OsRng};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SftpToolbarVisibility {
+    pub sync_cwd: bool,
+    pub hidden_files: bool,
+    pub refresh: bool,
+    pub new_folder: bool,
+    pub delete: bool,
+    pub upload_file: bool,
+    pub upload_folder: bool,
+    pub download: bool,
+}
+
+impl Default for SftpToolbarVisibility {
+    fn default() -> Self {
+        Self {
+            sync_cwd: true,
+            hidden_files: true,
+            refresh: true,
+            new_folder: true,
+            delete: true,
+            upload_file: true,
+            upload_folder: true,
+            download: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SftpFooterVisibility {
+    pub transfers: bool,
+    pub panel_toggle: bool,
+}
+
+impl Default for SftpFooterVisibility {
+    fn default() -> Self {
+        Self {
+            transfers: true,
+            panel_toggle: true,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum AuthMethod {
@@ -238,6 +282,12 @@ pub struct ConfigFile {
     pub sidebar_collapsed: bool,
     #[serde(default)]
     pub sftp_panel_minimized: bool,
+    #[serde(default = "default_sftp_panel_view")]
+    pub sftp_panel_view: String,
+    #[serde(default)]
+    pub sftp_toolbar_visibility: SftpToolbarVisibility,
+    #[serde(default)]
+    pub sftp_footer_visibility: SftpFooterVisibility,
     #[serde(default)]
     pub sftp_external_editor: String,
     #[serde(default)]
@@ -288,6 +338,10 @@ fn default_global_proxy_type() -> String {
 
 fn default_monitoring_position() -> String {
     "Sidebar".to_string()
+}
+
+fn default_sftp_panel_view() -> String {
+    "files".to_string()
 }
 
 fn default_s3_region() -> String {
@@ -352,6 +406,9 @@ impl Default for ConfigFile {
             monitoring_position: default_monitoring_position(),
             sidebar_collapsed: false,
             sftp_panel_minimized: false,
+            sftp_panel_view: default_sftp_panel_view(),
+            sftp_toolbar_visibility: SftpToolbarVisibility::default(),
+            sftp_footer_visibility: SftpFooterVisibility::default(),
             sftp_external_editor: String::new(),
             key_bindings: std::collections::HashMap::new(),
             sync_endpoint: String::new(),
@@ -929,6 +986,30 @@ impl ConfigStore {
         self.cache.sftp_panel_minimized = val;
     }
 
+    pub fn sftp_panel_view(&self) -> &str {
+        &self.cache.sftp_panel_view
+    }
+
+    pub fn set_sftp_panel_view(&mut self, view: &str) {
+        self.cache.sftp_panel_view = view.to_string();
+    }
+
+    pub fn sftp_toolbar_visibility(&self) -> SftpToolbarVisibility {
+        self.cache.sftp_toolbar_visibility
+    }
+
+    pub fn set_sftp_toolbar_visibility(&mut self, visibility: SftpToolbarVisibility) {
+        self.cache.sftp_toolbar_visibility = visibility;
+    }
+
+    pub fn sftp_footer_visibility(&self) -> SftpFooterVisibility {
+        self.cache.sftp_footer_visibility
+    }
+
+    pub fn set_sftp_footer_visibility(&mut self, visibility: SftpFooterVisibility) {
+        self.cache.sftp_footer_visibility = visibility;
+    }
+
     pub fn sftp_external_editor(&self) -> &str {
         &self.cache.sftp_external_editor
     }
@@ -964,6 +1045,9 @@ impl ConfigStore {
         self.cache.monitoring_position = source.cache.monitoring_position.clone();
         self.cache.sidebar_collapsed = source.cache.sidebar_collapsed;
         self.cache.sftp_panel_minimized = source.cache.sftp_panel_minimized;
+        self.cache.sftp_panel_view = source.cache.sftp_panel_view.clone();
+        self.cache.sftp_toolbar_visibility = source.cache.sftp_toolbar_visibility;
+        self.cache.sftp_footer_visibility = source.cache.sftp_footer_visibility;
         self.cache.sftp_external_editor = source.cache.sftp_external_editor.clone();
         self.cache.key_bindings = source.cache.key_bindings.clone();
         self.cache.use_proxy = source.cache.use_proxy;
