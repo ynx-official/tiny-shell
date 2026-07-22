@@ -613,7 +613,7 @@ impl TinyShell {
         self.upload_sftp_files_to(remote_dir, window, cx);
     }
 
-    fn upload_sftp_files_to(
+    pub(crate) fn upload_sftp_files_to(
         &mut self,
         remote_dir: String,
         window: &mut Window,

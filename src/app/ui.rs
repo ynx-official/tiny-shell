@@ -1,9 +1,9 @@
 use crate::app::resizable::{h_resizable, resizable_panel, v_resizable};
 use gpui::{
-    Anchor, AnyElement, Context, ElementId, Focusable as _, FontWeight, Hsla,
-    InteractiveElement as _, IntoElement, MouseButton, MouseDownEvent, ParentElement as _,
-    PathBuilder, Pixels, Render, StatefulInteractiveElement as _, Styled as _, Window, canvas, div,
-    hsla, point, prelude::FluentBuilder as _, px, relative, rems, uniform_list,
+    Anchor, AnyElement, Context, ElementId, FontWeight, Hsla, InteractiveElement as _, IntoElement,
+    MouseButton, MouseDownEvent, ParentElement as _, PathBuilder, Pixels, Render,
+    StatefulInteractiveElement as _, Styled as _, Window, canvas, div, hsla, point,
+    prelude::FluentBuilder as _, px, relative, rems, uniform_list,
 };
 use gpui_component::{
     ActiveTheme, Disableable as _, ElementExt, Icon, IconName, InteractiveElementExt as _, Root,
@@ -2109,6 +2109,11 @@ impl TinyShell {
                                                                 window,
                                                                 cx,
                                                             );
+                                                            crate::app::input_focus::defer_focus_input_at_end(
+                                                                this.key_inline_input.clone(),
+                                                                window,
+                                                                cx,
+                                                            );
                                                             cx.notify();
                                                         })
                                                     })
@@ -2355,6 +2360,7 @@ impl TinyShell {
         let path = row.path.clone();
         let toggle_path = path.clone();
         let context_path = path.clone();
+        let context_permissions = row.permissions;
         let view = cx.entity();
         let is_current = current_path == path;
         let theme = cx.theme().clone();
@@ -2388,6 +2394,7 @@ impl TinyShell {
         };
 
         h_flex()
+            .id(format!("sftp-tree-row-{context_path}"))
             .w_full()
             .h(px(30.))
             .pl(px(5. + row.depth as f32 * 15.))
@@ -2406,18 +2413,6 @@ impl TinyShell {
                 MouseButton::Left,
                 cx.listener(move |this, _, _, cx| {
                     this.select_sftp_tree_directory(path.clone(), cx);
-                }),
-            )
-            .on_mouse_down(
-                MouseButton::Right,
-                cx.listener(move |this, event: &MouseDownEvent, _, cx| {
-                    this.open_sftp_context_menu(
-                        Some(context_path.clone()),
-                        true,
-                        row.permissions,
-                        event.position,
-                        cx,
-                    );
                 }),
             )
             .child(tree_toggle)
@@ -2445,7 +2440,14 @@ impl TinyShell {
                     .child(row.name),
             )
             .context_menu(move |menu, window, cx| {
-                Self::build_sftp_tree_context_menu(menu, view.clone(), window, cx)
+                Self::build_sftp_tree_context_menu(
+                    menu,
+                    view.clone(),
+                    context_path.clone(),
+                    context_permissions,
+                    window,
+                    cx,
+                )
             })
             .into_any_element()
     }
@@ -2459,14 +2461,14 @@ impl TinyShell {
             .into_iter()
             .map(|row| self.render_sftp_tree_row(row, &sftp.current_path, cx))
             .collect::<Vec<_>>();
+        let empty_context_path = sftp.current_path.clone();
+        let view = cx.entity();
 
         v_flex()
             .w(px(236.))
             .h_full()
             .flex_none()
             .min_h(px(0.))
-            .border_r_1()
-            .border_color(cx.theme().border)
             .bg(cx.theme().background)
             .child(
                 h_flex()
@@ -2475,8 +2477,6 @@ impl TinyShell {
                     .flex_none()
                     .items_center()
                     .gap_1()
-                    .border_b_1()
-                    .border_color(cx.theme().border)
                     .text_size(rems(0.85))
                     .text_color(cx.theme().muted_foreground)
                     .child(Icon::new(IconName::FolderOpen).with_size(Size::Small))
@@ -2495,7 +2495,23 @@ impl TinyShell {
                             .overflow_y_scroll()
                             .p_1()
                             .gap(px(1.))
-                            .children(rows),
+                            .children(rows)
+                            .child(
+                                div()
+                                    .id("sftp-tree-empty-area")
+                                    .w_full()
+                                    .min_h(px(36.))
+                                    .flex_1()
+                                    .context_menu(move |menu, window, cx| {
+                                        Self::build_sftp_tree_empty_context_menu(
+                                            menu,
+                                            view.clone(),
+                                            empty_context_path.clone(),
+                                            window,
+                                            cx,
+                                        )
+                                    }),
+                            ),
                     )
                     .child(
                         div()
@@ -3044,8 +3060,12 @@ impl TinyShell {
                                     this.sftp_creating_folder = true;
                                     this.sftp_new_folder_input.update(cx, |input, cx| {
                                         input.set_value("", window, cx);
-                                        input.focus_handle(cx).focus(window, cx);
                                     });
+                                    crate::app::input_focus::defer_focus_input_at_end(
+                                        this.sftp_new_folder_input.clone(),
+                                        window,
+                                        cx,
+                                    );
                                     cx.notify();
                                 })),
                         )
@@ -6557,111 +6577,144 @@ impl TinyShell {
     fn build_sftp_tree_context_menu(
         menu: PopupMenu,
         view: gpui::Entity<TinyShell>,
+        remote_path: String,
+        permissions: Option<u32>,
         window: &mut Window,
-        cx: &mut Context<PopupMenu>,
+        _cx: &mut Context<PopupMenu>,
     ) -> PopupMenu {
-        let has_target = view
-            .read(cx)
-            .sftp_context_menu
-            .as_ref()
-            .is_some_and(|target| target.remote_path.is_some());
-        let can_mutate_target = view
-            .read(cx)
-            .sftp_context_menu
-            .as_ref()
-            .and_then(|target| target.remote_path.as_deref())
-            .is_some_and(|path| path != "/");
+        let can_mutate_target = remote_path != "/";
 
         menu.item(
-            PopupMenuItem::new(t!("refresh").to_string()).on_click(window.listener_for(
+            PopupMenuItem::new(t!("refresh").to_string()).on_click(window.listener_for(&view, {
+                let remote_path = remote_path.clone();
+                move |this, _, _, cx| {
+                    if let Some(handle) = this.active_sftp_handle() {
+                        handle.list_directory_tree(remote_path.clone());
+                    }
+                    if this
+                        .active_sftp()
+                        .is_some_and(|sftp| sftp.current_path == remote_path)
+                    {
+                        this.refresh_sftp(cx);
+                    } else {
+                        cx.notify();
+                    }
+                }
+            })),
+        )
+        .separator()
+        .item(
+            PopupMenuItem::new(t!("sftp_new_folder").to_string()).on_click(window.listener_for(
                 &view,
-                |this, _, _, cx| {
-                    let target = this
-                        .sftp_context_menu
-                        .take()
-                        .and_then(|menu| menu.remote_path);
-                    if let Some(path) = target {
-                        if let Some(handle) = this.active_sftp_handle() {
-                            handle.list_directory_tree(path.clone());
-                        }
-                        if this
-                            .active_sftp()
-                            .is_some_and(|sftp| sftp.current_path == path)
-                        {
-                            this.refresh_sftp(cx);
-                        } else {
-                            cx.notify();
-                        }
+                {
+                    let remote_path = remote_path.clone();
+                    move |this, _, window, cx| {
+                        this.navigate_sftp(remote_path.clone(), cx);
+                        this.show_sftp_create_dialog(true, window, cx);
+                    }
+                },
+            )),
+        )
+        .item(
+            PopupMenuItem::new(t!("sftp_rename").to_string())
+                .disabled(!can_mutate_target)
+                .on_click(window.listener_for(&view, {
+                    let remote_path = remote_path.clone();
+                    move |this, _, window, cx| {
+                        this.show_sftp_rename_dialog(remote_path.clone(), window, cx);
+                    }
+                })),
+        )
+        .item(
+            PopupMenuItem::new(t!("delete").to_string())
+                .disabled(!can_mutate_target)
+                .on_click(window.listener_for(&view, {
+                    let remote_path = remote_path.clone();
+                    move |this, _, window, cx| {
+                        this.show_sftp_delete_paths_confirm_dialog(
+                            vec![remote_path.clone()],
+                            false,
+                            window,
+                            cx,
+                        );
+                    }
+                })),
+        )
+        .item(
+            PopupMenuItem::new(t!("sftp_quick_delete").to_string())
+                .disabled(!can_mutate_target)
+                .on_click(window.listener_for(&view, {
+                    let remote_path = remote_path.clone();
+                    move |this, _, window, cx| {
+                        this.show_sftp_delete_paths_confirm_dialog(
+                            vec![remote_path.clone()],
+                            true,
+                            window,
+                            cx,
+                        );
+                    }
+                })),
+        )
+        .separator()
+        .item(
+            PopupMenuItem::new(t!("sftp_copy_path").to_string()).on_click(window.listener_for(
+                &view,
+                {
+                    let remote_path = remote_path.clone();
+                    move |_, _, _, cx| {
+                        cx.write_to_clipboard(gpui::ClipboardItem::new_string(remote_path.clone()));
                     }
                 },
             )),
         )
         .separator()
         .item(
-            PopupMenuItem::new(t!("sftp_new_folder").to_string())
-                .disabled(!has_target)
-                .on_click(window.listener_for(&view, |this, _, window, cx| {
-                    if let Some(path) = this
-                        .sftp_context_menu
-                        .as_ref()
-                        .and_then(|menu| menu.remote_path.clone())
-                    {
-                        this.navigate_sftp(path, cx);
-                    }
-                    this.trigger_sftp_context_new_folder(window, cx);
-                })),
+            PopupMenuItem::new(t!("download").to_string()).on_click(window.listener_for(&view, {
+                let remote_path = remote_path.clone();
+                move |this, _, window, cx| {
+                    this.download_sftp_entry(remote_path.clone(), window, cx);
+                }
+            })),
         )
         .item(
-            PopupMenuItem::new(t!("sftp_rename").to_string())
-                .disabled(!can_mutate_target)
-                .on_click(window.listener_for(&view, |this, _, window, cx| {
-                    this.trigger_sftp_context_rename(window, cx);
-                })),
-        )
-        .item(
-            PopupMenuItem::new(t!("delete").to_string())
-                .disabled(!can_mutate_target)
-                .on_click(window.listener_for(&view, |this, _, window, cx| {
-                    this.trigger_sftp_context_delete(false, window, cx);
-                })),
-        )
-        .item(
-            PopupMenuItem::new(t!("sftp_quick_delete").to_string())
-                .disabled(!can_mutate_target)
-                .on_click(window.listener_for(&view, |this, _, window, cx| {
-                    this.trigger_sftp_context_delete(true, window, cx);
-                })),
+            PopupMenuItem::new(t!("upload").to_string()).on_click(window.listener_for(&view, {
+                let remote_path = remote_path.clone();
+                move |this, _, window, cx| {
+                    this.upload_sftp_files_to(remote_path.clone(), window, cx);
+                }
+            })),
         )
         .separator()
         .item(
-            PopupMenuItem::new(t!("sftp_copy_path").to_string())
-                .disabled(!has_target)
-                .on_click(window.listener_for(&view, |this, _, _, cx| {
-                    this.trigger_sftp_context_copy_path(cx);
-                })),
+            PopupMenuItem::new(t!("sftp_file_permissions").to_string()).on_click(
+                window.listener_for(&view, move |this, _, window, cx| {
+                    this.show_sftp_permissions_dialog(
+                        remote_path.clone(),
+                        true,
+                        permissions,
+                        window,
+                        cx,
+                    );
+                }),
+            ),
         )
-        .separator()
-        .item(
-            PopupMenuItem::new(t!("download").to_string())
-                .disabled(!has_target)
-                .on_click(window.listener_for(&view, |this, _, window, cx| {
-                    this.trigger_sftp_context_download(window, cx);
-                })),
-        )
-        .item(
-            PopupMenuItem::new(t!("upload").to_string())
-                .disabled(!has_target)
-                .on_click(window.listener_for(&view, |this, _, window, cx| {
-                    this.trigger_sftp_context_upload(window, cx);
-                })),
-        )
-        .separator()
-        .item(
-            PopupMenuItem::new(t!("sftp_file_permissions").to_string())
-                .disabled(!has_target)
-                .on_click(window.listener_for(&view, |this, _, window, cx| {
-                    this.trigger_sftp_context_permissions(window, cx);
-                })),
+    }
+
+    fn build_sftp_tree_empty_context_menu(
+        menu: PopupMenu,
+        view: gpui::Entity<TinyShell>,
+        remote_path: String,
+        window: &mut Window,
+        _cx: &mut Context<PopupMenu>,
+    ) -> PopupMenu {
+        menu.item(
+            PopupMenuItem::new(t!("sftp_new_folder").to_string()).on_click(window.listener_for(
+                &view,
+                move |this, _, window, cx| {
+                    this.navigate_sftp(remote_path.clone(), cx);
+                    this.show_sftp_create_dialog(true, window, cx);
+                },
+            )),
         )
     }
 

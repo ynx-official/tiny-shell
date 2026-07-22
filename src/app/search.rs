@@ -1,9 +1,9 @@
 use std::{collections::HashMap, time::Duration};
 
 use gpui::{
-    Animation, AnimationExt as _, Context, ElementId, Focusable as _, Hsla,
-    InteractiveElement as _, IntoElement, MouseButton, ParentElement as _, Styled as _, Window,
-    div, ease_out_quint, prelude::FluentBuilder as _, px, rems,
+    Animation, AnimationExt as _, Context, ElementId, Hsla, InteractiveElement as _, IntoElement,
+    MouseButton, ParentElement as _, Styled as _, Window, div, ease_out_quint,
+    prelude::FluentBuilder as _, px, rems,
 };
 use gpui_component::{
     ActiveTheme as _, Disableable as _, ElementExt as _, IconName, Sizable as _,
@@ -31,11 +31,7 @@ impl TinyShell {
         // current render cycle completes, avoiding focus being stolen back
         // by the terminal panel's track_focus.
         let search_input = self.search_input.clone();
-        cx.on_next_frame(window, move |_this, window, cx| {
-            search_input.update(cx, |state, cx| {
-                state.focus_handle(cx).focus(window, cx);
-            });
-        });
+        crate::app::input_focus::defer_focus_input_at_end(search_input, window, cx);
         cx.notify();
     }
 
@@ -55,11 +51,7 @@ impl TinyShell {
     /// preventing the terminal panel's track_focus from stealing focus back.
     fn refocus_search_input(&self, window: &mut Window, cx: &mut Context<Self>) {
         let search_input = self.search_input.clone();
-        cx.on_next_frame(window, move |_this, window, cx| {
-            search_input.update(cx, |state, cx| {
-                state.focus_handle(cx).focus(window, cx);
-            });
-        });
+        crate::app::input_focus::defer_focus_input_at_end(search_input, window, cx);
     }
 
     pub(crate) fn perform_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {

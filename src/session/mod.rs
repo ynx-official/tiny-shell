@@ -400,6 +400,11 @@ impl TinyShell {
         };
         self.editing_managed_key_id = Some(key_id);
         Self::set_input_value(&self.key_import_remark_input, key.name.clone(), window, cx);
+        crate::app::input_focus::defer_focus_input_at_end(
+            self.key_import_remark_input.clone(),
+            window,
+            cx,
+        );
         cx.notify();
     }
 
