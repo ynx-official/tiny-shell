@@ -442,7 +442,14 @@ impl TinyShell {
             return;
         }
         let suggested_name = if remote_paths.len() == 1 {
-            format!("{}.zip", remote_paths[0].trim_end_matches('/').rsplit('/').next().unwrap_or("archive"))
+            format!(
+                "{}.zip",
+                remote_paths[0]
+                    .trim_end_matches('/')
+                    .rsplit('/')
+                    .next()
+                    .unwrap_or("archive")
+            )
         } else {
             "selection.zip".to_string()
         };
@@ -452,10 +459,12 @@ impl TinyShell {
         };
         cx.spawn_in(window, async move |this, cx| {
             if let Ok(Ok(Some(path))) = prompt.await {
-                let _ = handle.commands.send(crate::sftp::SftpCommand::PackDownload {
-                    remote_paths,
-                    local_zip: path.to_string_lossy().to_string(),
-                });
+                let _ = handle
+                    .commands
+                    .send(crate::sftp::SftpCommand::PackDownload {
+                        remote_paths,
+                        local_zip: path.to_string_lossy().to_string(),
+                    });
                 this.update(cx, |this, cx| {
                     this.show_transfers_dialog = true;
                     cx.notify();
@@ -858,6 +867,9 @@ mod tests {
             "/root/data"
         );
         assert_eq!(TinyShell::normalize_sftp_path("/data/", "/root"), "/data");
-        assert_eq!(TinyShell::normalize_sftp_path("data/logs", "/root"), "/data/logs");
+        assert_eq!(
+            TinyShell::normalize_sftp_path("data/logs", "/root"),
+            "/data/logs"
+        );
     }
 }

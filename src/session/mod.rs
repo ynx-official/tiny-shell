@@ -16,7 +16,7 @@ use uuid::Uuid;
 use self::config::{AuthMethod, ManagedKey, Session};
 
 use crate::{
-    TinyShell, PaneLayout, SelectorEntry, TabGroup,
+    PaneLayout, SelectorEntry, TabGroup, TinyShell,
     app::{
         IncomingTabDrag, SystemInfoTab,
         constants::{DEFAULT_COLS, DEFAULT_ROWS},
@@ -735,11 +735,15 @@ impl TinyShell {
         cx.notify();
     }
 
-    pub(crate) fn delete_selected_managed_key(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn delete_selected_managed_key(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(key_id) = self.managed_key_dialog_selection.clone() else {
             return;
         };
-        self.delete_managed_key(key_id, cx);
+        self.request_managed_key_deletion(key_id, window, cx);
     }
 
     /// Switch the connection form back to managed-key mode.
@@ -1347,9 +1351,8 @@ impl TinyShell {
                 if tab.connected {
                     tab.connected = false;
                     tab.status = rust_i18n::t!("tab_manually_disconnected").into();
-                    tab.disconnected_reason = Some(
-                        rust_i18n::t!("tab_manually_disconnected").to_string(),
-                    );
+                    tab.disconnected_reason =
+                        Some(rust_i18n::t!("tab_manually_disconnected").to_string());
                     tab.send_backend(BackendCommand::Close);
                 }
             }

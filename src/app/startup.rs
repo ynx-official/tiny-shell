@@ -97,7 +97,12 @@ pub(crate) fn init_logging() {
     use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
     let log_dir = directories::BaseDirs::new()
-        .map(|dirs| dirs.home_dir().join(".config").join("tiny-shell").join("log"))
+        .map(|dirs| {
+            dirs.home_dir()
+                .join(".config")
+                .join("tiny-shell")
+                .join("log")
+        })
         .unwrap_or_else(|| std::path::PathBuf::from("."));
 
     std::fs::create_dir_all(&log_dir).ok();

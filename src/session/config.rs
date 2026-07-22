@@ -1340,8 +1340,8 @@ fn query_hardware_uuid() -> String {
     {
         use winreg::{RegKey, enums::HKEY_LOCAL_MACHINE};
 
-        if let Ok(key) = RegKey::predef(HKEY_LOCAL_MACHINE)
-            .open_subkey("SOFTWARE\\Microsoft\\Cryptography")
+        if let Ok(key) =
+            RegKey::predef(HKEY_LOCAL_MACHINE).open_subkey("SOFTWARE\\Microsoft\\Cryptography")
             && let Ok(guid) = key.get_value::<String, _>("MachineGuid")
         {
             let guid = guid.trim().to_string();

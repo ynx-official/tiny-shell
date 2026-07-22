@@ -51,7 +51,7 @@ chacha20poly1305 = "0.10"
 hmac = "0.12"
 hex = "0.4"
 rand = "0.8"
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
 semver = "1"
 sha2 = "0.10"
 

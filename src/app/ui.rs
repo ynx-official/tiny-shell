@@ -1653,9 +1653,14 @@ impl TinyShell {
                                     .border_color(cx.theme().border)
                                     .hover(|this| this.bg(cx.theme().muted))
                                     .child(if is_editing {
-                                        div()
+                                        h_flex()
                                             .flex_1()
-                                            .child(Input::new(&rename_input).small())
+                                            .items_center()
+                                            .gap_2()
+                                            .child(
+                                                Icon::new(IconName::Folder).with_size(Size::Small),
+                                            )
+                                            .child(Input::new(&rename_input).small().flex_1())
                                             .into_any_element()
                                     } else {
                                         h_flex()
@@ -1727,6 +1732,7 @@ impl TinyShell {
                                                 Button::new(format!("key-manager-rename-{key_id}"))
                                                     .ghost()
                                                     .small()
+                                                    .icon(IconName::Replace)
                                                     .label(t!("key_rename").to_string())
                                                     .on_click({
                                                         let key_id = key_id.clone();
@@ -1749,11 +1755,13 @@ impl TinyShell {
                                                     .ghost()
                                                     .small()
                                                     .icon(IconName::Delete)
+                                                    .label(t!("key_delete").to_string())
                                                     .on_click({
                                                         let key_id = key_id.clone();
-                                                        cx.listener(move |this, _, _, cx| {
-                                                            this.delete_managed_key(
+                                                        cx.listener(move |this, _, window, cx| {
+                                                            this.request_managed_key_deletion(
                                                                 key_id.clone(),
+                                                                window,
                                                                 cx,
                                                             )
                                                         })
@@ -1827,12 +1835,7 @@ impl TinyShell {
                             .justify_center()
                             .child(Icon::new(icon).with_size(Size::Small)),
                     )
-                    .child(
-                        div()
-                            .flex_1()
-                            .font_weight(FontWeight::MEDIUM)
-                            .child(label),
-                    ),
+                    .child(div().flex_1().font_weight(FontWeight::MEDIUM).child(label)),
             )
     }
 
@@ -1885,11 +1888,9 @@ impl TinyShell {
                                         .absolute()
                                         .top(px(-2.))
                                         .right(px(-2.))
-                                        .size(px(7.))
+                                        .size(px(6.))
                                         .rounded_full()
-                                        .border_1()
-                                        .border_color(cx.theme().sidebar)
-                                        .bg(hsla(0., 0.82, 0.57, 1.0)),
+                                        .bg(cx.theme().danger),
                                 )
                             }),
                     ),
@@ -2540,112 +2541,117 @@ impl TinyShell {
                                 .child(
                                     h_flex()
                                         .h(px(26.))
-                        .px_3()
-                        .items_center()
-                        .gap_2()
-                        .border_b_1()
-                        .border_color(cx.theme().border)
-                        .bg(cx.theme().muted.opacity(0.8))
-                        .child(
-                            h_flex()
-                                .w(px(24.))
-                                .flex_none()
-                                .items_center()
-                                .justify_center()
-                                .child(
-                                    Checkbox::new("sftp-select-all")
-                                        .checked(all_selected)
-                                        .on_click(cx.listener(move |this, checked, _, cx| {
-                                            this.toggle_all_sftp_entries(*checked, cx);
-                                        })),
-                                ),
-                        )
-                        .child(
-                            h_flex()
-                                .flex_1()
-                                .min_w(px(0.))
-                                .items_center()
-                                .gap_2()
-                                .child(div().w(icon_col_width).flex_none())
+                                        .px_3()
+                                        .items_center()
+                                        .gap_2()
+                                        .border_b_1()
+                                        .border_color(cx.theme().border)
+                                        .bg(cx.theme().muted.opacity(0.8))
+                                        .child(
+                                            h_flex()
+                                                .w(px(24.))
+                                                .flex_none()
+                                                .items_center()
+                                                .justify_center()
+                                                .child(
+                                                    Checkbox::new("sftp-select-all")
+                                                        .checked(all_selected)
+                                                        .on_click(cx.listener(
+                                                            move |this, checked, _, cx| {
+                                                                this.toggle_all_sftp_entries(
+                                                                    *checked, cx,
+                                                                );
+                                                            },
+                                                        )),
+                                                ),
+                                        )
+                                        .child(
+                                            h_flex()
+                                                .flex_1()
+                                                .min_w(px(0.))
+                                                .items_center()
+                                                .gap_2()
+                                                .child(div().w(icon_col_width).flex_none())
+                                                .child(
+                                                    div()
+                                                        .flex_1()
+                                                        .text_size(rems(0.917))
+                                                        .text_color(cx.theme().muted_foreground)
+                                                        .child(t!("name")),
+                                                ),
+                                        )
+                                        .child(
+                                            div()
+                                                .w(size_col_width)
+                                                .flex_none()
+                                                .text_size(rems(0.917))
+                                                .text_color(cx.theme().muted_foreground)
+                                                .child(t!("size")),
+                                        )
+                                        .child(
+                                            div()
+                                                .w(modified_col_width)
+                                                .flex_none()
+                                                .text_size(rems(0.917))
+                                                .text_color(cx.theme().muted_foreground)
+                                                .child(t!("modified")),
+                                        ),
+                                )
                                 .child(
                                     div()
                                         .flex_1()
-                                        .text_size(rems(0.917))
-                                        .text_color(cx.theme().muted_foreground)
-                                        .child(t!("name")),
-                                ),
-                        )
-                        .child(
-                            div()
-                                .w(size_col_width)
-                                .flex_none()
-                                .text_size(rems(0.917))
-                                .text_color(cx.theme().muted_foreground)
-                                .child(t!("size")),
-                        )
-                        .child(
-                            div()
-                                .w(modified_col_width)
-                                .flex_none()
-                                .text_size(rems(0.917))
-                                .text_color(cx.theme().muted_foreground)
-                                .child(t!("modified")),
-                        ),
-                )
-                .child(
-                    div()
-                        .flex_1()
-                        .relative()
-                        .min_h(px(0.))
-                        .on_mouse_down(
-                            MouseButton::Right,
-                            cx.listener(|this, event: &MouseDownEvent, _, cx| {
-                                let target_was_set_by_row = this
-                                    .sftp_context_menu
-                                    .as_ref()
-                                    .is_some_and(|menu| menu.position == event.position);
-                                if !target_was_set_by_row {
-                                    this.open_sftp_context_menu(
-                                        None,
-                                        false,
-                                        event.position,
-                                        cx,
-                                    );
-                                }
-                            }),
-                        )
-                        .child({
-                            let entries = entries.clone();
-                            let selected_entries = selected_entries.clone();
-                            let selected_path = selected_path.clone();
-                            let view = view.clone();
-                            let theme = cx.theme().clone();
-                            uniform_list(
-                                "sftp-entries-list",
-                                entries.len(),
-                                move |range, window, _cx| {
-                                    range
-                                        .into_iter()
-                                        .filter_map(|ix| {
-                                            let entry = entries.get(ix)?;
-                                            let entry = entry.clone();
-                                            let is_checked =
-                                                selected_entries.contains(&entry.full_path);
-                                            let is_selected = selected_path.as_deref()
-                                                == Some(entry.full_path.as_str());
-                                            let name_color = if entry.is_dir {
-                                                theme.primary
-                                            } else {
-                                                theme.foreground
-                                            };
-                                            let bg = if is_selected {
-                                                theme.secondary
-                                            } else if ix % 2 == 0 {
-                                                theme.background
-                                            } else {
-                                                theme.muted.opacity(0.5)
-                                            };
-                                            Some(
+                                        .relative()
+                                        .min_h(px(0.))
+                                        .on_mouse_down(
+                                            MouseButton::Right,
+                                            cx.listener(|this, event: &MouseDownEvent, _, cx| {
+                                                let target_was_set_by_row =
+                                                    this.sftp_context_menu.as_ref().is_some_and(
+                                                        |menu| menu.position == event.position,
+                                                    );
+                                                if !target_was_set_by_row {
+                                                    this.open_sftp_context_menu(
+                                                        None,
+                                                        false,
+                                                        event.position,
+                                                        cx,
+                                                    );
+                                                }
+                                            }),
+                                        )
+                                        .child({
+                                            let entries = entries.clone();
+                                            let selected_entries = selected_entries.clone();
+                                            let selected_path = selected_path.clone();
+                                            let view = view.clone();
+                                            let theme = cx.theme().clone();
+                                            uniform_list(
+                                                "sftp-entries-list",
+                                                entries.len(),
+                                                move |range, window, _cx| {
+                                                    range
+                                                        .into_iter()
+                                                        .filter_map(|ix| {
+                                                            let entry = entries.get(ix)?;
+                                                            let entry = entry.clone();
+                                                            let is_checked = selected_entries
+                                                                .contains(&entry.full_path);
+                                                            let is_selected = selected_path
+                                                                .as_deref()
+                                                                == Some(entry.full_path.as_str());
+                                                            let name_color = if entry.is_dir {
+                                                                theme.primary
+                                                            } else {
+                                                                theme.foreground
+                                                            };
+                                                            let bg = if is_selected {
+                                                                theme.secondary
+                                                            } else if ix % 2 == 0 {
+                                                                theme.background
+                                                            } else {
+                                                                theme.muted.opacity(0.5)
+                                                            };
+                                                            Some(
                                             h_flex()
                                                 .w_full()
                                                 .h(px(28.))
@@ -2791,36 +2797,38 @@ impl TinyShell {
                                                 .child(div().w(px(12.)).flex_none())
                                                 .into_any_element(),
                                         )
+                                                        })
+                                                        .collect::<Vec<_>>()
+                                                },
+                                            )
+                                            .size_full()
+                                            .track_scroll(&self.remote_files_scroll_handle)
                                         })
-                                        .collect::<Vec<_>>()
-                                },
-                            )
-                            .size_full()
-                            .track_scroll(&self.remote_files_scroll_handle)
-                        })
-                        .child(
-                            div()
-                                .absolute()
-                                .top_0()
-                                .right_0()
-                                .bottom_0()
-                                .w(px(16.))
-                                .child(
-                                    Scrollbar::vertical(&self.remote_files_scroll_handle)
-                                        .scrollbar_show(ScrollbarShow::Always),
-                                ),
-                        )
-                        .context_menu({
-                            let view = view.clone();
-                            move |menu, window, cx| {
-                                Self::build_sftp_context_menu(
-                                    menu,
-                                    view.clone(),
-                                    window,
-                                    cx,
-                                )
-                            }
-                        }),
+                                        .child(
+                                            div()
+                                                .absolute()
+                                                .top_0()
+                                                .right_0()
+                                                .bottom_0()
+                                                .w(px(16.))
+                                                .child(
+                                                    Scrollbar::vertical(
+                                                        &self.remote_files_scroll_handle,
+                                                    )
+                                                    .scrollbar_show(ScrollbarShow::Always),
+                                                ),
+                                        )
+                                        .context_menu({
+                                            let view = view.clone();
+                                            move |menu, window, cx| {
+                                                Self::build_sftp_context_menu(
+                                                    menu,
+                                                    view.clone(),
+                                                    window,
+                                                    cx,
+                                                )
+                                            }
+                                        }),
                                 ),
                         ),
                 ),
@@ -4276,9 +4284,7 @@ impl TinyShell {
                                                         .right(px(-2.))
                                                         .size(px(6.))
                                                         .rounded_full()
-                                                        .border_1()
-                                                        .border_color(cx.theme().sidebar)
-                                                        .bg(hsla(0., 0.82, 0.57, 1.0)),
+                                                        .bg(cx.theme().danger),
                                                 )
                                             }),
                                     ),
@@ -6006,10 +6012,11 @@ impl TinyShell {
                                 })),
                         )
                         .item(
-                            PopupMenuItem::new(t!("sftp_system_association").to_string())
-                                .on_click(window.listener_for(&view, |this, _, _, cx| {
+                            PopupMenuItem::new(t!("sftp_system_association").to_string()).on_click(
+                                window.listener_for(&view, |this, _, _, cx| {
                                     this.trigger_sftp_context_system_open(cx);
-                                })),
+                                }),
+                            ),
                         )
                 }
             })
@@ -6018,42 +6025,35 @@ impl TinyShell {
         };
 
         menu = if is_file {
-            menu.submenu(
-                t!("sftp_select_text_editor").to_string(),
-                window,
-                cx,
-                {
-                    let view = view.clone();
-                    move |submenu, window, _| {
-                        submenu
-                            .item(
-                                PopupMenuItem::new(t!("sftp_internal_editor").to_string())
-                                    .disabled(!editable)
-                                    .on_click(window.listener_for(&view, |this, _, _, cx| {
-                                        this.trigger_sftp_context_internal_editor(cx);
-                                    })),
-                            )
-                            .item(
-                                PopupMenuItem::new(t!("sftp_external_editor").to_string())
-                                    .disabled(!external_editor_set)
-                                    .on_click(window.listener_for(&view, |this, _, _, cx| {
-                                        this.trigger_sftp_context_external_editor(cx);
-                                    })),
-                            )
-                            .separator()
-                            .item(
-                                PopupMenuItem::new(t!("sftp_set_external_editor").to_string())
-                                    .on_click(window.listener_for(&view, |this, _, window, cx| {
-                                        this.choose_sftp_external_editor(window, cx);
-                                    })),
-                            )
-                    }
-                },
-            )
+            menu.submenu(t!("sftp_select_text_editor").to_string(), window, cx, {
+                let view = view.clone();
+                move |submenu, window, _| {
+                    submenu
+                        .item(
+                            PopupMenuItem::new(t!("sftp_internal_editor").to_string())
+                                .disabled(!editable)
+                                .on_click(window.listener_for(&view, |this, _, _, cx| {
+                                    this.trigger_sftp_context_internal_editor(cx);
+                                })),
+                        )
+                        .item(
+                            PopupMenuItem::new(t!("sftp_external_editor").to_string())
+                                .disabled(!external_editor_set)
+                                .on_click(window.listener_for(&view, |this, _, _, cx| {
+                                    this.trigger_sftp_context_external_editor(cx);
+                                })),
+                        )
+                        .separator()
+                        .item(
+                            PopupMenuItem::new(t!("sftp_set_external_editor").to_string())
+                                .on_click(window.listener_for(&view, |this, _, window, cx| {
+                                    this.choose_sftp_external_editor(window, cx);
+                                })),
+                        )
+                }
+            })
         } else {
-            menu.item(
-                PopupMenuItem::new(t!("sftp_select_text_editor").to_string()).disabled(true),
-            )
+            menu.item(PopupMenuItem::new(t!("sftp_select_text_editor").to_string()).disabled(true))
         };
 
         menu.separator()
@@ -6206,16 +6206,14 @@ impl TinyShell {
                 .tabs
                 .iter()
                 .filter(|tab| {
-                    tab.kind == TabKind::Ssh
-                        && !tab.connected
-                        && tab.disconnected_reason.is_some()
+                    tab.kind == TabKind::Ssh && !tab.connected && tab.disconnected_reason.is_some()
                 })
                 .map(|tab| tab.id.clone())
                 .collect();
             let is_connected_ssh = group_tab_ids.iter().any(|tab_id| {
-                this.tabs.iter().any(|tab| {
-                    tab.id == *tab_id && tab.kind == TabKind::Ssh && tab.connected
-                })
+                this.tabs
+                    .iter()
+                    .any(|tab| tab.id == *tab_id && tab.kind == TabKind::Ssh && tab.connected)
             });
             (
                 duplicate_session,
@@ -6299,12 +6297,14 @@ impl TinyShell {
                 })),
         )
         .separator()
-        .item(PopupMenuItem::new(t!("settings_detach_tab").to_string()).on_click(
-            window.listener_for(&view, move |this, _, window, cx| {
-                this.activate_group(group_id.clone(), window, cx);
-                this.detach_tab_to_new_window(cx);
-            }),
-        ))
+        .item(
+            PopupMenuItem::new(t!("settings_detach_tab").to_string()).on_click(
+                window.listener_for(&view, move |this, _, window, cx| {
+                    this.activate_group(group_id.clone(), window, cx);
+                    this.detach_tab_to_new_window(cx);
+                }),
+            ),
+        )
     }
 }
 

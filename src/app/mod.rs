@@ -578,7 +578,8 @@ pub(crate) struct TinyShell {
     pub(crate) dragging_splitter: Option<(Vec<usize>, usize)>, // (parent_path, child_index)
     pub(crate) drag_split_origin: Option<gpui::Point<Pixels>>,
     // Tab drag state
-    pub(crate) tab_drag: tab_drag::TabDragState<AnyWindowHandle, (AnyWindowHandle, Entity<TinyShell>)>,
+    pub(crate) tab_drag:
+        tab_drag::TabDragState<AnyWindowHandle, (AnyWindowHandle, Entity<TinyShell>)>,
     /// Source drag currently hovering over this window.
     pub(crate) incoming_tab_drag: Option<IncomingTabDrag>,
     pub(crate) terminal_marked_text: Option<String>,
@@ -870,11 +871,7 @@ impl TinyShell {
             cx.subscribe_in(&sftp_path_input, window, Self::on_input_event),
             cx.subscribe_in(&sftp_new_folder_input, window, Self::on_input_event),
             cx.subscribe_in(&search_input, window, Self::on_input_event),
-            cx.subscribe_in(
-                &quick_connection_search_input,
-                window,
-                Self::on_input_event,
-            ),
+            cx.subscribe_in(&quick_connection_search_input, window, Self::on_input_event),
             cx.subscribe_in(&sync_endpoint_input, window, Self::on_input_event),
             cx.subscribe_in(&sync_username_input, window, Self::on_input_event),
             cx.subscribe_in(&sync_webdav_password_input, window, Self::on_input_event),
@@ -1619,10 +1616,8 @@ impl TinyShell {
                             }
                         }
                     }
-                    if let Some(terminal_tab_id) = self
-                        .active_tab
-                        .clone()
-                        .filter(|terminal_tab_id| {
+                    if let Some(terminal_tab_id) =
+                        self.active_tab.clone().filter(|terminal_tab_id| {
                             self.tab_groups.iter().any(|group| {
                                 group.id == tab_id && group.pane_root.contains(terminal_tab_id)
                             })

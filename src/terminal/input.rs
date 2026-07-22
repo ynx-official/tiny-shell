@@ -8,7 +8,7 @@ use gpui::{
 };
 
 use crate::{
-    TinyShell, TerminalBacktabKey, TerminalTabKey,
+    TerminalBacktabKey, TerminalTabKey, TinyShell,
     terminal::{BackendCommand, encode_key},
 };
 

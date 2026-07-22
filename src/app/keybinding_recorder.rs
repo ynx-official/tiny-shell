@@ -379,17 +379,13 @@ impl KeybindingsPage {
                     .as_ref()
                     .is_some_and(|(id, _)| id == action.id);
                 let error_msg = if has_error {
-                    state
-                        .keybind_error
-                        .as_ref()
-                        .map(|(_, msg)| msg.clone())
+                    state.keybind_error.as_ref().map(|(_, msg)| msg.clone())
                 } else {
                     None
                 };
 
-                let keystroke = {
-                    configured_keystroke(&state.config, action.id).unwrap_or_default()
-                };
+                let keystroke =
+                    { configured_keystroke(&state.config, action.id).unwrap_or_default() };
 
                 let btn_label = if recording {
                     t!("press_new_key").to_string()

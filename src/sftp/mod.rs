@@ -976,7 +976,8 @@ async fn run_sftp(
                     Ok(()) => {
                         let _ = events.send(BackendEvent::SftpStatus {
                             tab_id: tab_id.clone(),
-                            text: t!("sftp_rename_success", name = base_name(&new_path)).to_string(),
+                            text: t!("sftp_rename_success", name = base_name(&new_path))
+                                .to_string(),
                         });
                         let _ = commands_tx.send(SftpCommand::ListDir(remote_parent(&new_path)));
                     }
@@ -1138,7 +1139,8 @@ async fn run_sftp(
                         Ok(()) => {
                             let _ = events_clone.send(BackendEvent::SftpStatus {
                                 tab_id: tab_id_clone.clone(),
-                                text: t!("sftp_pack_download_success", path = local_zip).to_string(),
+                                text: t!("sftp_pack_download_success", path = local_zip)
+                                    .to_string(),
                             });
                         }
                         Err(err) => {
@@ -2219,7 +2221,9 @@ async fn create_remote_paths_archive(
         .iter()
         .any(|path| remote_parent(path) != parent)
     {
-        return Err(anyhow!("selected paths must share the same parent directory"));
+        return Err(anyhow!(
+            "selected paths must share the same parent directory"
+        ));
     }
     let names = remote_paths
         .iter()
@@ -2307,8 +2311,8 @@ async fn pack_remote_paths_to_zip(
 }
 
 fn create_zip_from_directory(source: &Path, target: &Path) -> Result<()> {
-    let file = fs::File::create(target)
-        .with_context(|| format!("create ZIP {}", target.display()))?;
+    let file =
+        fs::File::create(target).with_context(|| format!("create ZIP {}", target.display()))?;
     let mut archive = zip::ZipWriter::new(file);
     let options = zip::write::SimpleFileOptions::default()
         .compression_method(zip::CompressionMethod::Deflated);
