@@ -94,6 +94,12 @@ fn lerp_hsla(from: Hsla, to: Hsla, delta: f32) -> Hsla {
     }
 }
 
+fn animation_key(value: &str) -> u64 {
+    value.bytes().fold(0_u64, |key, byte| {
+        key.wrapping_mul(31).wrapping_add(byte as u64)
+    })
+}
+
 fn smooth_monitoring_series(values: &[f32]) -> Vec<f32> {
     let Some((&first, rest)) = values.split_first() else {
         return Vec::new();
@@ -1771,6 +1777,7 @@ impl TinyShell {
             .collect();
         sessions.sort_by(|left, right| right.last_used.cmp(&left.last_used));
         let has_sessions = !sessions.is_empty();
+        let connection_filter_epoch = selected_group.as_deref().map(animation_key).unwrap_or(0);
 
         v_flex()
             .size_full()
@@ -2255,6 +2262,14 @@ impl TinyShell {
                             ),
                     ),
             )
+            .with_animation(
+                ElementId::NamedInteger(
+                    "connection-manager-filter".into(),
+                    connection_filter_epoch,
+                ),
+                Animation::new(Duration::from_millis(200)).with_easing(ease_out_quint()),
+                |this, delta| this.opacity(delta * delta),
+            )
     }
 
     /// Render a stable tree: group creation order defines sibling order while
@@ -2417,7 +2432,12 @@ impl TinyShell {
                                                 Icon::new(IconName::Folder).with_size(Size::Small),
                                             )
                                             .child(Input::new(&rename_input).small().flex_1())
-                                            .into_any_element()
+        .with_animation(
+            ElementId::NamedInteger("settings-content-fade".into(), self.main_view_key()),
+            Animation::new(Duration::from_millis(200)).with_easing(gpui::ease_out_quint()),
+            |this, delta| this.opacity(delta * delta),
+        )
+        .into_any_element()
                                     } else {
                                         h_flex()
                                             .flex_1()
@@ -3515,6 +3535,18 @@ impl TinyShell {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let active_sftp = self.active_sftp();
+        let sftp_content_epoch = active_sftp
+            .as_ref()
+            .map(|sftp| {
+                animation_key(&sftp.current_path)
+                    .wrapping_add(sftp.entries.len() as u64)
+                    .wrapping_add(match self.sftp_panel_view {
+                        SftpPanelView::Files => 0,
+                        SftpPanelView::Commands => 1,
+                    })
+            })
+            .unwrap_or(self.sftp_panel_view as u64)
+            .wrapping_add(self.sftp_minimize_epoch);
         let toolbar_visibility = self.config.sftp_toolbar_visibility();
         let view = cx.entity();
 
@@ -3725,7 +3757,7 @@ impl TinyShell {
                 );
             return outer
                 .with_animation(
-                    ElementId::NamedInteger("sftp-content-fade".into(), self.sftp_minimize_epoch),
+                    ElementId::NamedInteger("sftp-content-fade".into(), sftp_content_epoch),
                     Animation::new(Duration::from_millis(220)).with_easing(ease_out_quint()),
                     |this, delta| this.opacity(delta * delta),
                 )
@@ -3750,7 +3782,7 @@ impl TinyShell {
                         .child(self.render_quick_commands(window, cx)),
                 )
                 .with_animation(
-                    ElementId::NamedInteger("sftp-content-fade".into(), self.sftp_minimize_epoch),
+                    ElementId::NamedInteger("sftp-content-fade".into(), sftp_content_epoch),
                     Animation::new(Duration::from_millis(220)).with_easing(ease_out_quint()),
                     |this, delta| this.opacity(delta * delta),
                 )
@@ -4131,7 +4163,7 @@ impl TinyShell {
         );
         outer
             .with_animation(
-                ElementId::NamedInteger("sftp-content-fade".into(), self.sftp_minimize_epoch),
+                ElementId::NamedInteger("sftp-content-fade".into(), sftp_content_epoch),
                 Animation::new(Duration::from_millis(220)).with_easing(ease_out_quint()),
                 |this, delta| this.opacity(delta * delta),
             )
@@ -4679,6 +4711,7 @@ impl TinyShell {
             .map(|interface| interface.name.clone())
             .collect::<Vec<_>>();
         let process_view = self.process_view;
+        let process_view_epoch = process_view as u64;
         let mut displayed_processes = self.system.processes.clone();
         match process_view {
             ProcessView::Memory => displayed_processes
@@ -4869,7 +4902,16 @@ impl TinyShell {
                                         this.process_view = ProcessView::Memory;
                                         cx.notify();
                                     }))
-                                    .child(t!("process_memory")),
+                                    .child(t!("process_memory"))
+                                    .with_animation(
+                                        ElementId::NamedInteger(
+                                            "process-view-transition".into(),
+                                            process_view_epoch,
+                                        ),
+                                        Animation::new(Duration::from_millis(180))
+                                            .with_easing(ease_out_quint()),
+                                        |this, delta| this.opacity(0.45 + 0.55 * delta),
+                                    ),
                             )
                             .child(
                                 div()
@@ -4902,7 +4944,16 @@ impl TinyShell {
                                         this.process_view = ProcessView::Cpu;
                                         cx.notify();
                                     }))
-                                    .child(t!("cpu")),
+                                    .child(t!("cpu"))
+                                    .with_animation(
+                                        ElementId::NamedInteger(
+                                            "process-view-transition".into(),
+                                            process_view_epoch,
+                                        ),
+                                        Animation::new(Duration::from_millis(180))
+                                            .with_easing(ease_out_quint()),
+                                        |this, delta| this.opacity(0.45 + 0.55 * delta),
+                                    ),
                             )
                             .child(
                                 div()
@@ -4935,7 +4986,16 @@ impl TinyShell {
                                         this.process_view = ProcessView::Activity;
                                         cx.notify();
                                     }))
-                                    .child(t!("process_command")),
+                                    .child(t!("process_command"))
+                                    .with_animation(
+                                        ElementId::NamedInteger(
+                                            "process-view-transition".into(),
+                                            process_view_epoch,
+                                        ),
+                                        Animation::new(Duration::from_millis(180))
+                                            .with_easing(ease_out_quint()),
+                                        |this, delta| this.opacity(0.45 + 0.55 * delta),
+                                    ),
                             ),
                     )
                     .children(displayed_processes.into_iter().enumerate().map(

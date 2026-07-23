@@ -1,7 +1,8 @@
 use gpui::{
-    Anchor, AppContext as _, Context, Entity, FontWeight, InteractiveElement as _, IntoElement,
-    MouseButton, ParentElement as _, Render, SharedString, StatefulInteractiveElement as _,
-    Styled as _, Window, div, prelude::FluentBuilder as _, px, rems,
+    Anchor, Animation, AnimationExt as _, AppContext as _, Context, ElementId, Entity, FontWeight,
+    InteractiveElement as _, IntoElement, MouseButton, ParentElement as _, Render, SharedString,
+    StatefulInteractiveElement as _, Styled as _, Window, div, prelude::FluentBuilder as _, px,
+    rems,
 };
 use gpui_component::{
     ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, Size, WindowExt as _,
@@ -17,6 +18,7 @@ use gpui_component::{
     switch::Switch,
     v_flex,
 };
+use std::time::Duration;
 
 #[derive(Clone)]
 struct QuickCommandDialogInputs {
@@ -2933,6 +2935,14 @@ impl TinyShell {
                                     .map(|tot| t.transferred as f64 / tot as f64 * 100.0)
                                     .unwrap_or(0.0),
                             };
+                            let state_epoch = match &t.state {
+                                crate::terminal::TransferState::Running => 0,
+                                crate::terminal::TransferState::Paused => 1,
+                                crate::terminal::TransferState::Interrupted(_) => 2,
+                                crate::terminal::TransferState::Completed => 3,
+                                crate::terminal::TransferState::Failed(_) => 4,
+                                crate::terminal::TransferState::Zombie(_) => 5,
+                            };
 
                             v_flex()
                                 .gap_1()
@@ -3003,6 +3013,15 @@ impl TinyShell {
                                                 .w_full(),
                                         )
                                     },
+                                )
+                                .with_animation(
+                                    ElementId::NamedInteger(
+                                        format!("transfer-state-{}", t.info.id).into(),
+                                        state_epoch,
+                                    ),
+                                    Animation::new(Duration::from_millis(180))
+                                        .with_easing(gpui::ease_out_quint()),
+                                    |this, delta| this.opacity(delta * delta),
                                 )
                         }));
 
@@ -5161,6 +5180,11 @@ impl TinyShell {
                                 )
                                 )
                         )
+        .with_animation(
+            ElementId::NamedInteger("settings-content-fade".into(), self.main_view_key()),
+            Animation::new(Duration::from_millis(200)).with_easing(gpui::ease_out_quint()),
+            |this, delta| this.opacity(delta * delta),
+        )
         .into_any_element()
     }
 
