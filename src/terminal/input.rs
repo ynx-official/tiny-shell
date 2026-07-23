@@ -8,7 +8,7 @@ use gpui::{
 };
 
 use crate::{
-    TinyShell, TerminalBacktabKey, TerminalTabKey,
+    TerminalBacktabKey, TerminalTabKey, TinyShell,
     terminal::{BackendCommand, encode_key},
 };
 
@@ -120,15 +120,6 @@ impl TinyShell {
             && !event.keystroke.modifiers.alt
             && !event.keystroke.modifiers.platform
         {
-            if let Some(progress) = &self.connection_progress {
-                if progress.failed {
-                    self.retry_connection_progress(cx);
-                    window.prevent_default();
-                    cx.stop_propagation();
-                    return;
-                }
-            }
-
             let active_id = self.active_tab.clone();
             if let Some(active_id) = active_id {
                 let is_disconnected = self
@@ -196,7 +187,12 @@ impl TinyShell {
         self.send_terminal_input(b"\x1b[Z".to_vec(), window, cx);
     }
 
-    fn send_terminal_input(&mut self, bytes: Vec<u8>, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn send_terminal_input(
+        &mut self,
+        bytes: Vec<u8>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(active_id) = self.active_tab.clone() else {
             return;
         };
@@ -301,40 +297,13 @@ impl TinyShell {
         cx.notify();
     }
 
-    pub(crate) fn on_terminal_right_click(
-        &mut self,
-        _event: &MouseDownEvent,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if !self.config.right_click_copy_paste() {
+    pub(crate) fn clear_active_terminal(&mut self, cx: &mut Context<Self>) {
+        let Some(active_id) = self.active_tab.as_ref() else {
             return;
-        }
-
-        let mut handled = false;
-        if let Some(text) = self.active_terminal_selection_text() {
-            if !text.is_empty() {
-                cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
-
-                let active_id = self.active_tab.clone();
-                if let Some(active_id) = active_id {
-                    if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == active_id) {
-                        tab.clear_selection();
-                    }
-                }
-                cx.notify();
-                handled = true;
-            }
-        }
-
-        if !handled {
-            if let Some(clipboard_item) = cx.read_from_clipboard() {
-                if let Some(text) = clipboard_item.text() {
-                    if !text.is_empty() {
-                        self.paste_into_terminal(&text, window, cx);
-                    }
-                }
-            }
+        };
+        if let Some(tab) = self.tabs.iter_mut().find(|tab| &tab.id == active_id) {
+            tab.clear_contents();
+            cx.notify();
         }
     }
 

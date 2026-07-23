@@ -2,8 +2,8 @@ use crate::app::resizable::{h_resizable, resizable_panel, v_resizable};
 use gpui::{
     Anchor, AnyElement, Context, ElementId, Focusable as _, FontWeight, Hsla,
     InteractiveElement as _, IntoElement, MouseButton, MouseDownEvent, ParentElement as _,
-    PathBuilder, Pixels, Render, StatefulInteractiveElement as _, Styled as _, Window, canvas,
-    deferred, div, hsla, point, prelude::FluentBuilder as _, px, relative, rems, uniform_list,
+    PathBuilder, Pixels, Render, StatefulInteractiveElement as _, Styled as _, Window, canvas, div,
+    hsla, point, prelude::FluentBuilder as _, px, relative, rems, uniform_list,
 };
 use gpui_component::{
     ActiveTheme, Disableable as _, ElementExt, Icon, IconName, InteractiveElementExt as _, Root,
@@ -11,25 +11,48 @@ use gpui_component::{
     button::{Button, ButtonVariants as _},
     checkbox::Checkbox,
     h_flex,
+    hover_card::HoverCard,
     input::Input,
-    menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenuItem},
+    menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenu, PopupMenuItem},
     progress::Progress,
     scroll::{ScrollableElement as _, Scrollbar, ScrollbarShow},
     tab::{Tab, TabBar},
     v_flex,
 };
 use rust_i18n::t;
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    time::Duration,
+};
 
 use crate::{
     PaneLayout, TinyShell,
     app::constants::{COLLAPSED_SIDEBAR_WIDTH, SIDEBAR_WIDTH, TERMINAL_KEY_CONTEXT},
-    app::{HomePage, ProcessView, TabContextMenuState},
+    app::{HomePage, ProcessView, SftpPanelView},
     sftp::format_mtime,
     sftp::ops::is_editable_text_file,
     system::format_bytes,
     terminal::{self, TabKind},
 };
+
+#[derive(Clone, Copy)]
+enum SftpToolbarItem {
+    SyncCwd,
+    HiddenFiles,
+    Refresh,
+    NewFolder,
+    Delete,
+    UploadFile,
+    UploadFolder,
+    Download,
+}
+
+#[derive(Clone, Copy)]
+enum SftpFooterItem {
+    Latency,
+    Transfers,
+    PanelToggle,
+}
 
 fn format_uptime(seconds: u64) -> String {
     if seconds == 0 {
@@ -873,71 +896,787 @@ impl TinyShell {
             )
     }
 
+    fn quick_command_parameter_indices(command: &str) -> Vec<usize> {
+        (1..=5)
+            .filter(|index| command.contains(&format!("[p{index}]")))
+            .collect()
+    }
+
+    fn select_quick_command(
+        &mut self,
+        category_id: String,
+        command_id: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.selected_quick_command = Some((category_id, command_id));
+        for input in &self.quick_command_parameter_inputs {
+            input.update(cx, |input, cx| input.set_value("", window, cx));
+        }
+        cx.notify();
+    }
+
+    fn execute_quick_command(
+        &mut self,
+        category_id: String,
+        command_id: String,
+        return_to_terminal: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.selected_quick_command.as_ref() != Some(&(category_id.clone(), command_id.clone()))
+        {
+            self.select_quick_command(category_id.clone(), command_id.clone(), window, cx);
+        }
+        let command = self
+            .config
+            .quick_command_categories()
+            .and_then(|categories| {
+                categories
+                    .iter()
+                    .find(|category| category.id == category_id)
+            })
+            .and_then(|category| {
+                category
+                    .commands
+                    .iter()
+                    .find(|command| command.id == command_id)
+            })
+            .cloned();
+        let Some(command) = command else {
+            return;
+        };
+        let parameter_indices = Self::quick_command_parameter_indices(&command.command);
+        let mut resolved = command.command.clone();
+        for index in parameter_indices {
+            let value = self.quick_command_parameter_inputs[index - 1]
+                .read(cx)
+                .value()
+                .trim()
+                .to_string();
+            if value.is_empty() {
+                self.status = t!("quick_command_parameter_required", index = index).into();
+                self.quick_command_parameter_inputs[index - 1]
+                    .read(cx)
+                    .focus_handle(cx)
+                    .focus(window, cx);
+                cx.notify();
+                return;
+            }
+            resolved = resolved.replace(&format!("[p{index}]"), &value);
+        }
+        self.send_terminal_input(format!("{resolved}\r").into_bytes(), window, cx);
+        if return_to_terminal {
+            self.home_page_open = false;
+        }
+        cx.notify();
+    }
+
+    fn render_quick_command_detail(
+        &self,
+        return_to_terminal: bool,
+        resizable_width: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let categories = self.config.quick_command_categories().unwrap_or_default();
+        let selected =
+            self.selected_quick_command
+                .as_ref()
+                .and_then(|(category_id, command_id)| {
+                    categories
+                        .iter()
+                        .find(|category| category.id == *category_id)
+                        .and_then(|category| {
+                            category
+                                .commands
+                                .iter()
+                                .find(|command| command.id == *command_id)
+                                .map(|command| (category, command))
+                        })
+                });
+        let Some((category, command)) = selected else {
+            return v_flex()
+                .self_stretch()
+                .min_h(px(0.))
+                .when(resizable_width, |this| this.w_full())
+                .when(!resizable_width, |this| this.w(px(360.)).flex_none())
+                .overflow_hidden()
+                .items_center()
+                .justify_center()
+                .gap_2()
+                .border_l_1()
+                .border_color(cx.theme().border)
+                .bg(cx.theme().muted.opacity(0.12))
+                .text_color(cx.theme().muted_foreground)
+                .child(Icon::new(IconName::SquareTerminal).with_size(Size::Large))
+                .child(t!("quick_command_select_hint"))
+                .into_any_element();
+        };
+        let category_id = category.id.clone();
+        let command_id = command.id.clone();
+        let edit_category_id = category.id.clone();
+        let edit_command_id = command.id.clone();
+        let parameter_indices = Self::quick_command_parameter_indices(&command.command);
+
+        v_flex()
+            .self_stretch()
+            .min_h(px(0.))
+            .when(resizable_width, |this| this.w_full())
+            .when(!resizable_width, |this| this.w(px(360.)).flex_none())
+            .overflow_hidden()
+            .border_l_1()
+            .border_color(cx.theme().border)
+            .bg(cx.theme().background)
+            .child(
+                h_flex()
+                    .h(px(38.))
+                    .flex_none()
+                    .items_center()
+                    .px_4()
+                    .border_b_1()
+                    .border_color(cx.theme().border)
+                    .bg(cx.theme().muted)
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child(t!("quick_command_details"))
+                    .child(div().flex_1())
+                    .child(
+                        Button::new("quick-command-detail-close")
+                            .ghost()
+                            .small()
+                            .icon(IconName::Close)
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.selected_quick_command = None;
+                                cx.notify();
+                            })),
+                    ),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_h(px(0.))
+                    .child(
+                        v_flex()
+                            .size_full()
+                            .overflow_y_scrollbar()
+                            .p_4()
+                            .gap_4()
+                            .child(
+                                h_flex()
+                                    .items_center()
+                                    .gap_3()
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_w(px(0.))
+                                            .overflow_hidden()
+                                            .whitespace_nowrap()
+                                            .text_ellipsis()
+                                            .text_size(rems(1.1))
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .child(command.name.clone()),
+                                    )
+                                    .child(
+                                        h_flex()
+                                            .flex_none()
+                                            .items_center()
+                                            .gap_1()
+                                            .px_2()
+                                            .py_1()
+                                            .rounded_md()
+                                            .bg(cx.theme().muted)
+                                            .text_size(rems(0.78))
+                                            .text_color(cx.theme().muted_foreground)
+                                            .child(
+                                                Icon::new(IconName::Folder).with_size(Size::XSmall),
+                                            )
+                                            .child(category.name.clone()),
+                                    ),
+                            )
+                            .when(!command.remark.is_empty(), |this| {
+                                this.child(
+                                    v_flex()
+                                        .gap_1()
+                                        .child(
+                                            div()
+                                                .text_size(rems(0.78))
+                                                .font_weight(FontWeight::SEMIBOLD)
+                                                .child(t!("quick_command_remark")),
+                                        )
+                                        .child(
+                                            div()
+                                                .text_size(rems(0.85))
+                                                .text_color(cx.theme().muted_foreground)
+                                                .child(command.remark.clone()),
+                                        ),
+                                )
+                            })
+                            .child(
+                                v_flex()
+                                    .gap_1()
+                                    .child(
+                                        div()
+                                            .text_size(rems(0.78))
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .child(t!("quick_command_content")),
+                                    )
+                                    .child(
+                                        div()
+                                            .w_full()
+                                            .p_3()
+                                            .rounded_md()
+                                            .border_1()
+                                            .border_color(cx.theme().border)
+                                            .bg(cx.theme().muted.opacity(0.22))
+                                            .font_family("monospace")
+                                            .text_size(rems(0.82))
+                                            .child(command.command.clone()),
+                                    ),
+                            )
+                            .when(!parameter_indices.is_empty(), |this| {
+                                this.child(
+                                    v_flex()
+                                        .gap_2()
+                                        .child(
+                                            div()
+                                                .text_size(rems(0.78))
+                                                .font_weight(FontWeight::SEMIBOLD)
+                                                .child(t!("quick_command_parameters")),
+                                        )
+                                        .children(parameter_indices.iter().map(|index| {
+                                            v_flex()
+                                                .gap_1()
+                                                .child(
+                                                    div()
+                                                        .text_size(rems(0.75))
+                                                        .text_color(cx.theme().muted_foreground)
+                                                        .child(format!("[p{index}]")),
+                                                )
+                                                .child(Input::new(
+                                                    &self.quick_command_parameter_inputs
+                                                        [*index - 1],
+                                                ))
+                                        })),
+                                )
+                            }),
+                    )
+                    .overflow_hidden(),
+            )
+            .child(
+                h_flex()
+                    .flex_none()
+                    .justify_end()
+                    .gap_2()
+                    .p_3()
+                    .border_t_1()
+                    .border_color(cx.theme().border)
+                    .child(
+                        Button::new("quick-command-detail-edit")
+                            .secondary()
+                            .icon(IconName::Settings)
+                            .label(t!("edit").to_string())
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.show_quick_command_dialog(
+                                    edit_category_id.clone(),
+                                    Some(edit_command_id.clone()),
+                                    window,
+                                    cx,
+                                );
+                            })),
+                    )
+                    .child(
+                        Button::new("quick-command-detail-send")
+                            .primary()
+                            .icon(IconName::SquareTerminal)
+                            .label(t!("send").to_string())
+                            .disabled(self.active_tab.is_none())
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.execute_quick_command(
+                                    category_id.clone(),
+                                    command_id.clone(),
+                                    return_to_terminal,
+                                    window,
+                                    cx,
+                                );
+                            })),
+                    ),
+            )
+            .into_any_element()
+    }
+
     fn render_command_manager_page(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let categories = self
+            .config
+            .quick_command_categories()
+            .unwrap_or_default()
+            .to_vec();
+        let selected_category = self
+            .command_category_filter
+            .clone()
+            .filter(|selected| categories.iter().any(|category| category.id == *selected));
+        let commands = categories
+            .iter()
+            .filter(|category| {
+                selected_category
+                    .as_deref()
+                    .is_none_or(|selected| category.id == selected)
+            })
+            .flat_map(|category| {
+                category
+                    .commands
+                    .iter()
+                    .cloned()
+                    .map(|command| (category.id.clone(), category.name.clone(), command))
+            })
+            .collect::<Vec<_>>();
+        let command_count = categories
+            .iter()
+            .map(|category| category.commands.len())
+            .sum::<usize>();
+        let has_commands = !commands.is_empty();
         v_flex()
             .size_full()
             .p_6()
             .gap_5()
             .child(
-                v_flex()
-                    .gap_1()
+                h_flex()
+                    .flex_none()
+                    .items_center()
+                    .gap_2()
                     .child(
-                        div()
-                            .text_size(rems(2.0))
-                            .font_weight(FontWeight::BOLD)
-                            .child(t!("command_manager")),
+                        v_flex()
+                            .gap_1()
+                            .child(
+                                div()
+                                    .text_size(rems(2.0))
+                                    .font_weight(FontWeight::BOLD)
+                                    .child(t!("command_manager")),
+                            )
+                            .child(
+                                div()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(t!("command_manager_desc")),
+                            ),
+                    )
+                    .child(div().flex_1())
+                    .child(
+                        Button::new("command-manager-new-category")
+                            .secondary()
+                            .icon(IconName::FolderOpen)
+                            .label(t!("quick_command_new_category").to_string())
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.show_quick_command_category_dialog(None, window, cx);
+                            })),
                     )
                     .child(
-                        div()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(t!("command_manager_desc")),
+                        Button::new("command-manager-new-command")
+                            .primary()
+                            .icon(IconName::Plus)
+                            .label(t!("quick_command_new").to_string())
+                            .disabled(selected_category.is_none())
+                            .on_click(cx.listener({
+                                let selected_category = selected_category.clone();
+                                move |this, _, window, cx| {
+                                    if let Some(category_id) = selected_category.clone() {
+                                        this.show_quick_command_dialog(
+                                            category_id,
+                                            None,
+                                            window,
+                                            cx,
+                                        );
+                                    }
+                                }
+                            })),
                     ),
             )
             .child(
-                v_flex()
-                    .max_w(px(680.))
-                    .gap_3()
-                    .p_5()
+                h_flex()
+                    .flex_1()
+                    .min_h(px(0.))
+                    .h_full()
+                    .items_stretch()
                     .rounded_md()
                     .border_1()
                     .border_color(cx.theme().border)
-                    .bg(cx.theme().muted)
-                    .child(Icon::new(IconName::SquareTerminal).with_size(Size::Large))
+                    .overflow_hidden()
                     .child(
-                        div()
-                            .text_size(rems(1.167))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child(t!("command_manager_empty_title")),
-                    )
-                    .child(
-                        div()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(t!("command_manager_empty_desc")),
-                    )
-                    .child(
-                        h_flex()
-                            .gap_2()
-                            .pt_2()
+                        v_flex()
+                            .h_full()
+                            .w(px(210.))
+                            .flex_none()
+                            .p_2()
+                            .gap_1()
+                            .border_r_1()
+                            .border_color(cx.theme().border)
+                            .bg(cx.theme().sidebar)
                             .child(
-                                Button::new("commands-open-connections")
-                                    .primary()
-                                    .icon(IconName::Network)
-                                    .label(t!("overview_connections").to_string())
+                                div()
+                                    .id("quick-command-category-all")
+                                    .w_full()
+                                    .cursor_pointer()
+                                    .rounded_md()
+                                    .bg(if selected_category.is_none() {
+                                        cx.theme().tab_active
+                                    } else {
+                                        cx.theme().sidebar
+                                    })
+                                    .hover(|this| this.bg(cx.theme().secondary))
                                     .on_click(cx.listener(|this, _, _, cx| {
-                                        this.home_page = HomePage::Connections;
+                                        this.command_category_filter = None;
+                                        this.selected_quick_command = None;
                                         cx.notify();
-                                    })),
+                                    }))
+                                    .child(
+                                        h_flex()
+                                            .items_center()
+                                            .gap_2()
+                                            .p_3()
+                                            .child(
+                                                Icon::new(IconName::SquareTerminal)
+                                                    .with_size(Size::Small),
+                                            )
+                                            .child(
+                                                div()
+                                                    .flex_1()
+                                                    .child(t!("quick_command_all")),
+                                            )
+                                            .child(
+                                                div()
+                                                    .text_size(rems(0.8))
+                                                    .text_color(cx.theme().muted_foreground)
+                                                    .child(command_count.to_string()),
+                                            ),
+                                    ),
+                            )
+                            .children(categories.iter().enumerate().map(|(index, category)| {
+                                let category_id_for_select = category.id.clone();
+                                let category_id_for_menu = category.id.clone();
+                                let selected = selected_category.as_deref()
+                                    == Some(category.id.as_str());
+                                div()
+                                    .id(("quick-command-category", index))
+                                    .w_full()
+                                    .cursor_pointer()
+                                    .rounded_md()
+                                    .bg(if selected {
+                                        cx.theme().tab_active
+                                    } else {
+                                        cx.theme().sidebar
+                                    })
+                                    .hover(|this| this.bg(cx.theme().secondary))
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.command_category_filter =
+                                            Some(category_id_for_select.clone());
+                                        this.selected_quick_command = None;
+                                        cx.notify();
+                                    }))
+                                    .context_menu({
+                                        let view = cx.entity();
+                                        move |menu, window, _| {
+                                            menu.item(
+                                                PopupMenuItem::new(t!("rename").to_string())
+                                                    .on_click(window.listener_for(&view, {
+                                                        let category_id =
+                                                            category_id_for_menu.clone();
+                                                        move |this, _, window, cx| {
+                                                            this.show_quick_command_category_dialog(
+                                                                Some(category_id.clone()),
+                                                                window,
+                                                                cx,
+                                                            );
+                                                        }
+                                                    })),
+                                            )
+                                            .item(
+                                                PopupMenuItem::new(t!("delete").to_string())
+                                                    .on_click(window.listener_for(&view, {
+                                                        let category_id =
+                                                            category_id_for_menu.clone();
+                                                        move |this, _, _, cx| {
+                                                            this.config
+                                                                .remove_quick_command_category(
+                                                                    &category_id,
+                                                                );
+                                                            if this.command_category_filter.as_deref()
+                                                                == Some(category_id.as_str())
+                                                            {
+                                                                this.command_category_filter = None;
+                                                            }
+                                                            if this
+                                                                .selected_quick_command
+                                                                .as_ref()
+                                                                .is_some_and(|(selected_category, _)| {
+                                                                    selected_category == &category_id
+                                                                })
+                                                            {
+                                                                this.selected_quick_command = None;
+                                                            }
+                                                            this.mark_config_preferences_dirty();
+                                                            cx.notify();
+                                                        }
+                                                    })),
+                                            )
+                                        }
+                                    })
+                                    .child(
+                                        h_flex()
+                                            .items_center()
+                                            .gap_2()
+                                            .p_3()
+                                            .child(
+                                                Icon::new(IconName::Folder)
+                                                    .with_size(Size::Small),
+                                            )
+                                            .child(div().flex_1().child(category.name.clone()))
+                                            .child(
+                                                div()
+                                                    .text_size(rems(0.8))
+                                                    .text_color(cx.theme().muted_foreground)
+                                                    .child(category.commands.len().to_string()),
+                                            )
+                                    )
+                            })),
+                    )
+                    .child(
+                        v_flex()
+                            .flex_1()
+                            .h_full()
+                            .min_w(px(0.))
+                            .bg(cx.theme().background)
+                            .overflow_hidden()
+                            .child(
+                                h_flex()
+                                    .flex_none()
+                                    .items_center()
+                                    .h(px(38.))
+                                    .px_4()
+                                    .gap_3()
+                                    .bg(cx.theme().muted)
+                                    .border_b_1()
+                                    .border_color(cx.theme().border)
+                                    .child(
+                                        div()
+                                            .w(px(180.))
+                                            .text_size(rems(0.833))
+                                            .child(t!("quick_command_name")),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .text_size(rems(0.833))
+                                            .child(t!("quick_command_content")),
+                                    ),
                             )
                             .child(
-                                Button::new("commands-new-connection")
-                                    .secondary()
-                                    .icon(IconName::Plus)
-                                    .label(t!("overview_new_connection").to_string())
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.open_new_ssh_dialog(window, cx);
-                                    })),
+                                v_flex()
+                                    .flex_1()
+                                    .min_h(px(0.))
+                                    .overflow_y_scrollbar()
+                                    .children(commands.into_iter().enumerate().map(
+                                        |(index, (category_id, category_name, command))| {
+                                            let run_command = command.command.clone();
+                                            let select_category_id = category_id.clone();
+                                            let select_command_id = command.id.clone();
+                                            let selected = self.selected_quick_command.as_ref()
+                                                == Some(&(category_id.clone(), command.id.clone()));
+                                            let menu_category_id = category_id.clone();
+                                            let menu_command = command.clone();
+                                            let categories_for_menu = categories.clone();
+                                            h_flex()
+                                                .id(("quick-command-manager-row", index))
+                                                .flex_none()
+                                                .min_h(px(52.))
+                                                .items_center()
+                                                .gap_3()
+                                                .px_4()
+                                                .cursor_pointer()
+                                                .border_b_1()
+                                                .border_color(cx.theme().border.opacity(0.55))
+                                                .when(selected, |this| {
+                                                    this.bg(cx.theme().tab_active)
+                                                })
+                                                .when(!selected && index % 2 == 1, |this| {
+                                                    this.bg(cx.theme().muted.opacity(0.2))
+                                                })
+                                                .hover(|this| this.bg(cx.theme().secondary))
+                                                .on_mouse_down(
+                                                    MouseButton::Left,
+                                                    cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                                                        if event.click_count >= 2 {
+                                                            this.execute_quick_command(
+                                                                select_category_id.clone(),
+                                                                select_command_id.clone(),
+                                                                true,
+                                                                window,
+                                                                cx,
+                                                            );
+                                                        } else {
+                                                            this.select_quick_command(
+                                                                select_category_id.clone(),
+                                                                select_command_id.clone(),
+                                                                window,
+                                                                cx,
+                                                            );
+                                                        }
+                                                    }),
+                                                )
+                                                .context_menu({
+                                                    let view = cx.entity();
+                                                    move |mut menu, window, cx| {
+                                                        menu = menu
+                                                            .item(
+                                                                PopupMenuItem::new(t!("edit").to_string())
+                                                                    .on_click(window.listener_for(&view, {
+                                                                        let category_id = menu_category_id.clone();
+                                                                        let command_id = menu_command.id.clone();
+                                                                        let dialog_view = view.clone();
+                                                                        move |_this, _, window, cx| {
+                                                                            cx.stop_propagation();
+                                                                            let category_id = category_id.clone();
+                                                                            let command_id = command_id.clone();
+                                                                            let dialog_view = dialog_view.clone();
+                                                                            window.defer(cx, move |window, cx| {
+                                                                                dialog_view.update(cx, |this, cx| {
+                                                                                    this.show_quick_command_dialog(
+                                                                                        category_id,
+                                                                                        Some(command_id),
+                                                                                        window,
+                                                                                        cx,
+                                                                                    );
+                                                                                });
+                                                                            });
+                                                                        }
+                                                                    })),
+                                                            )
+                                                            .item(
+                                                                PopupMenuItem::new(t!("clone").to_string())
+                                                                    .on_click(window.listener_for(&view, {
+                                                                        let category_id = menu_category_id.clone();
+                                                                        let command = menu_command.clone();
+                                                                        move |this, _, _, cx| {
+                                                                            let mut duplicate = command.clone();
+                                                                            duplicate.id = uuid::Uuid::new_v4().to_string();
+                                                                            duplicate.name = t!("quick_command_copy_name", name = duplicate.name).to_string();
+                                                                            this.config.upsert_quick_command(&category_id, duplicate);
+                                                                            this.mark_config_preferences_dirty();
+                                                                            cx.notify();
+                                                                        }
+                                                                    })),
+                                                            );
+                                                        menu = menu.submenu(
+                                                            t!("quick_command_move_to").to_string(),
+                                                            window,
+                                                            cx,
+                                                            {
+                                                                let view = view.clone();
+                                                                let source_category_id = menu_category_id.clone();
+                                                                let command_id = menu_command.id.clone();
+                                                                let categories = categories_for_menu.clone();
+                                                                move |mut submenu, window, _| {
+                                                                    for category in &categories {
+                                                                        if category.id == source_category_id {
+                                                                            continue;
+                                                                        }
+                                                                        let target_category_id = category.id.clone();
+                                                                        let source_category_id = source_category_id.clone();
+                                                                        let command_id = command_id.clone();
+                                                                        submenu = submenu.item(
+                                                                            PopupMenuItem::new(category.name.clone())
+                                                                                .on_click(window.listener_for(&view, move |this, _, _, cx| {
+                                                                                    this.config.move_quick_command(
+                                                                                        &source_category_id,
+                                                                                        &target_category_id,
+                                                                                        &command_id,
+                                                                                    );
+                                                                                    this.selected_quick_command = Some((target_category_id.clone(), command_id.clone()));
+                                                                                    this.command_category_filter = Some(target_category_id.clone());
+                                                                                    this.mark_config_preferences_dirty();
+                                                                                    cx.notify();
+                                                                                })),
+                                                                        );
+                                                                    }
+                                                                    submenu
+                                                                }
+                                                            },
+                                                        );
+                                                        menu.separator().item(
+                                                            PopupMenuItem::new(t!("delete").to_string())
+                                                                .on_click(window.listener_for(&view, {
+                                                                    let category_id = menu_category_id.clone();
+                                                                    let command_id = menu_command.id.clone();
+                                                                    move |this, _, _, cx| {
+                                                                        this.config.remove_quick_command(&category_id, &command_id);
+                                                                        if this.selected_quick_command.as_ref()
+                                                                            == Some(&(category_id.clone(), command_id.clone()))
+                                                                        {
+                                                                            this.selected_quick_command = None;
+                                                                        }
+                                                                        this.mark_config_preferences_dirty();
+                                                                        cx.notify();
+                                                                    }
+                                                                })),
+                                                        )
+                                                    }
+                                                })
+                                                .child(
+                                                    v_flex()
+                                                        .w(px(180.))
+                                                        .min_w(px(0.))
+                                                        .gap_1()
+                                                        .child(
+                                                            div()
+                                                                .font_weight(FontWeight::MEDIUM)
+                                                                .child(command.name),
+                                                        )
+                                                        .child(
+                                                            div()
+                                                                .text_size(rems(0.75))
+                                                                .text_color(
+                                                                    cx.theme().muted_foreground,
+                                                                )
+                                                                .child(category_name),
+                                                        ),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .id(("quick-command-content", index))
+                                                        .flex_1()
+                                                        .min_w(px(0.))
+                                                        .overflow_hidden()
+                                                        .whitespace_nowrap()
+                                                        .text_ellipsis()
+                                                        .text_size(rems(0.833))
+                                                        .font_family("monospace")
+                                                        .tooltip({
+                                                            let command = run_command.clone();
+                                                            move |window, cx| {
+                                                                gpui_component::tooltip::Tooltip::new(
+                                                                    command.clone(),
+                                                                )
+                                                                .build(window, cx)
+                                                            }
+                                                        })
+                                                        .child(command.command),
+                                                )
+                                        },
+                                    ))
+                                    .when(!has_commands, |this| {
+                                        this.child(
+                                            v_flex()
+                                                .size_full()
+                                                .items_center()
+                                                .justify_center()
+                                                .gap_3()
+                                                .text_color(cx.theme().muted_foreground)
+                                                .child(
+                                                    Icon::new(IconName::SquareTerminal)
+                                                        .with_size(Size::Large),
+                                                )
+                                                .child(t!("command_manager_empty_title")),
+                                        )
+                                    }),
                             ),
-                    ),
+                    )
+                    .child(self.render_quick_command_detail(true, false, cx)),
             )
     }
 
@@ -1649,9 +2388,14 @@ impl TinyShell {
                                     .border_color(cx.theme().border)
                                     .hover(|this| this.bg(cx.theme().muted))
                                     .child(if is_editing {
-                                        div()
+                                        h_flex()
                                             .flex_1()
-                                            .child(Input::new(&rename_input).small())
+                                            .items_center()
+                                            .gap_2()
+                                            .child(
+                                                Icon::new(IconName::Folder).with_size(Size::Small),
+                                            )
+                                            .child(Input::new(&rename_input).small().flex_1())
                                             .into_any_element()
                                     } else {
                                         h_flex()
@@ -1723,6 +2467,7 @@ impl TinyShell {
                                                 Button::new(format!("key-manager-rename-{key_id}"))
                                                     .ghost()
                                                     .small()
+                                                    .icon(IconName::Replace)
                                                     .label(t!("key_rename").to_string())
                                                     .on_click({
                                                         let key_id = key_id.clone();
@@ -1736,6 +2481,11 @@ impl TinyShell {
                                                                 window,
                                                                 cx,
                                                             );
+                                                            crate::app::input_focus::defer_focus_input_at_end(
+                                                                this.key_inline_input.clone(),
+                                                                window,
+                                                                cx,
+                                                            );
                                                             cx.notify();
                                                         })
                                                     })
@@ -1745,11 +2495,13 @@ impl TinyShell {
                                                     .ghost()
                                                     .small()
                                                     .icon(IconName::Delete)
+                                                    .label(t!("key_delete").to_string())
                                                     .on_click({
                                                         let key_id = key_id.clone();
-                                                        cx.listener(move |this, _, _, cx| {
-                                                            this.delete_managed_key(
+                                                        cx.listener(move |this, _, window, cx| {
+                                                            this.request_managed_key_deletion(
                                                                 key_id.clone(),
+                                                                window,
                                                                 cx,
                                                             )
                                                         })
@@ -1823,12 +2575,7 @@ impl TinyShell {
                             .justify_center()
                             .child(Icon::new(icon).with_size(Size::Small)),
                     )
-                    .child(
-                        div()
-                            .flex_1()
-                            .font_weight(FontWeight::MEDIUM)
-                            .child(label),
-                    ),
+                    .child(div().flex_1().font_weight(FontWeight::MEDIUM).child(label)),
             )
     }
 
@@ -1862,7 +2609,7 @@ impl TinyShell {
                             .font_weight(FontWeight::BOLD)
                             .text_size(rems(1.5))
                             .text_color(cx.theme().primary)
-                            .child("tiny-shell"),
+                            .child(t!("app_name")),
                     )
                     .child(
                         div()
@@ -1881,11 +2628,9 @@ impl TinyShell {
                                         .absolute()
                                         .top(px(-2.))
                                         .right(px(-2.))
-                                        .size(px(7.))
+                                        .size(px(6.))
                                         .rounded_full()
-                                        .border_1()
-                                        .border_color(cx.theme().sidebar)
-                                        .bg(hsla(0., 0.82, 0.57, 1.0)),
+                                        .bg(cx.theme().danger),
                                 )
                             }),
                     ),
@@ -1986,6 +2731,9 @@ impl TinyShell {
     ) -> AnyElement {
         let path = row.path.clone();
         let toggle_path = path.clone();
+        let context_path = path.clone();
+        let context_permissions = row.permissions;
+        let view = cx.entity();
         let is_current = current_path == path;
         let theme = cx.theme().clone();
         let folder_icon = if row.expanded {
@@ -2018,6 +2766,7 @@ impl TinyShell {
         };
 
         h_flex()
+            .id(format!("sftp-tree-row-{context_path}"))
             .w_full()
             .h(px(30.))
             .pl(px(5. + row.depth as f32 * 15.))
@@ -2062,6 +2811,16 @@ impl TinyShell {
                     .when(is_current, |style| style.font_weight(FontWeight::MEDIUM))
                     .child(row.name),
             )
+            .context_menu(move |menu, window, cx| {
+                Self::build_sftp_tree_context_menu(
+                    menu,
+                    view.clone(),
+                    context_path.clone(),
+                    context_permissions,
+                    window,
+                    cx,
+                )
+            })
             .into_any_element()
     }
 
@@ -2074,14 +2833,14 @@ impl TinyShell {
             .into_iter()
             .map(|row| self.render_sftp_tree_row(row, &sftp.current_path, cx))
             .collect::<Vec<_>>();
+        let empty_context_path = sftp.current_path.clone();
+        let view = cx.entity();
 
         v_flex()
             .w(px(236.))
             .h_full()
             .flex_none()
             .min_h(px(0.))
-            .border_r_1()
-            .border_color(cx.theme().border)
             .bg(cx.theme().background)
             .child(
                 h_flex()
@@ -2090,8 +2849,6 @@ impl TinyShell {
                     .flex_none()
                     .items_center()
                     .gap_1()
-                    .border_b_1()
-                    .border_color(cx.theme().border)
                     .text_size(rems(0.85))
                     .text_color(cx.theme().muted_foreground)
                     .child(Icon::new(IconName::FolderOpen).with_size(Size::Small))
@@ -2110,7 +2867,23 @@ impl TinyShell {
                             .overflow_y_scroll()
                             .p_1()
                             .gap(px(1.))
-                            .children(rows),
+                            .children(rows)
+                            .child(
+                                div()
+                                    .id("sftp-tree-empty-area")
+                                    .w_full()
+                                    .min_h(px(36.))
+                                    .flex_1()
+                                    .context_menu(move |menu, window, cx| {
+                                        Self::build_sftp_tree_empty_context_menu(
+                                            menu,
+                                            view.clone(),
+                                            empty_context_path.clone(),
+                                            window,
+                                            cx,
+                                        )
+                                    }),
+                            ),
                     )
                     .child(
                         div()
@@ -2128,680 +2901,455 @@ impl TinyShell {
             .into_any_element()
     }
 
-    fn render_sftp_panel(
+    fn set_sftp_panel_view(&mut self, view: SftpPanelView, cx: &mut Context<Self>) {
+        if self.sftp_panel_view == view {
+            return;
+        }
+        self.sftp_panel_view = view;
+        self.selected_quick_command = None;
+        self.config.set_sftp_panel_view(match view {
+            SftpPanelView::Files => "files",
+            SftpPanelView::Commands => "commands",
+        });
+        self.mark_config_preferences_dirty();
+        cx.notify();
+    }
+
+    fn toggle_sftp_toolbar_item(&mut self, item: SftpToolbarItem, cx: &mut Context<Self>) {
+        let mut visibility = self.config.sftp_toolbar_visibility();
+        match item {
+            SftpToolbarItem::SyncCwd => visibility.sync_cwd = !visibility.sync_cwd,
+            SftpToolbarItem::HiddenFiles => visibility.hidden_files = !visibility.hidden_files,
+            SftpToolbarItem::Refresh => visibility.refresh = !visibility.refresh,
+            SftpToolbarItem::NewFolder => visibility.new_folder = !visibility.new_folder,
+            SftpToolbarItem::Delete => visibility.delete = !visibility.delete,
+            SftpToolbarItem::UploadFile => visibility.upload_file = !visibility.upload_file,
+            SftpToolbarItem::UploadFolder => visibility.upload_folder = !visibility.upload_folder,
+            SftpToolbarItem::Download => visibility.download = !visibility.download,
+        }
+        self.config.set_sftp_toolbar_visibility(visibility);
+        self.mark_config_preferences_dirty();
+        cx.notify();
+    }
+
+    fn toggle_sftp_footer_item(&mut self, item: SftpFooterItem, cx: &mut Context<Self>) {
+        let mut visibility = self.config.sftp_footer_visibility();
+        match item {
+            SftpFooterItem::Latency => visibility.latency = !visibility.latency,
+            SftpFooterItem::Transfers => visibility.transfers = !visibility.transfers,
+            SftpFooterItem::PanelToggle => visibility.panel_toggle = !visibility.panel_toggle,
+        }
+        self.config.set_sftp_footer_visibility(visibility);
+        self.mark_config_preferences_dirty();
+        cx.notify();
+    }
+
+    fn build_sftp_toolbar_visibility_menu(
+        mut menu: PopupMenu,
+        view: gpui::Entity<TinyShell>,
+        window: &mut Window,
+        cx: &mut Context<PopupMenu>,
+    ) -> PopupMenu {
+        let visibility = view.read(cx).config.sftp_toolbar_visibility();
+        let items = [
+            (
+                SftpToolbarItem::SyncCwd,
+                t!("sync_cwd").to_string(),
+                visibility.sync_cwd,
+            ),
+            (
+                SftpToolbarItem::HiddenFiles,
+                t!("hidden").to_string(),
+                visibility.hidden_files,
+            ),
+            (
+                SftpToolbarItem::Refresh,
+                t!("refresh").to_string(),
+                visibility.refresh,
+            ),
+            (
+                SftpToolbarItem::NewFolder,
+                t!("new_folder").to_string(),
+                visibility.new_folder,
+            ),
+            (
+                SftpToolbarItem::Delete,
+                t!("delete_selected").to_string(),
+                visibility.delete,
+            ),
+            (
+                SftpToolbarItem::UploadFile,
+                t!("upload_file").to_string(),
+                visibility.upload_file,
+            ),
+            (
+                SftpToolbarItem::UploadFolder,
+                t!("upload_folder").to_string(),
+                visibility.upload_folder,
+            ),
+            (
+                SftpToolbarItem::Download,
+                t!("download").to_string(),
+                visibility.download,
+            ),
+        ];
+        for (item, label, checked) in items {
+            menu = menu.item(PopupMenuItem::new(label).checked(checked).on_click(
+                window.listener_for(&view, move |this, _, _, cx| {
+                    this.toggle_sftp_toolbar_item(item, cx);
+                }),
+            ));
+        }
+        menu
+    }
+
+    fn build_sftp_footer_visibility_menu(
+        mut menu: PopupMenu,
+        view: gpui::Entity<TinyShell>,
+        window: &mut Window,
+        cx: &mut Context<PopupMenu>,
+    ) -> PopupMenu {
+        let visibility = view.read(cx).config.sftp_footer_visibility();
+        let items = [
+            (
+                SftpFooterItem::Latency,
+                t!("sftp_latency").to_string(),
+                visibility.latency,
+            ),
+            (
+                SftpFooterItem::Transfers,
+                t!("transfers").to_string(),
+                visibility.transfers,
+            ),
+            (
+                SftpFooterItem::PanelToggle,
+                t!("sftp_footer_panel_toggle").to_string(),
+                visibility.panel_toggle,
+            ),
+        ];
+        for (item, label, checked) in items {
+            menu = menu.item(PopupMenuItem::new(label).checked(checked).on_click(
+                window.listener_for(&view, move |this, _, _, cx| {
+                    this.toggle_sftp_footer_item(item, cx);
+                }),
+            ));
+        }
+        menu
+    }
+
+    fn render_quick_commands(
         &mut self,
         _window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        let active_sftp = self.active_sftp();
-
-        // Compute active download progress for status bar and minimized header
-        let build_summary = |kind: crate::terminal::TransferType| -> Option<(String, String, f32)> {
-            let active: Vec<&crate::terminal::Transfer> = self
-                .transfers
-                .iter()
-                .filter(|t| {
-                    matches!(
-                        t.state,
-                        crate::terminal::TransferState::Running
-                            | crate::terminal::TransferState::Paused
-                    ) && t.info.kind == kind
-                })
-                .collect();
-            if active.is_empty() {
-                return None;
-            }
-            Some(if active.len() == 1 {
-                let t = &active[0];
-                let pct = t.total.and_then(|total| {
-                    if total > 0 {
-                        Some((t.transferred as f64 / total as f64 * 100.0) as f32)
-                    } else {
-                        None
-                    }
+    ) -> AnyElement {
+        let categories = self
+            .config
+            .quick_command_categories()
+            .unwrap_or_default()
+            .to_vec();
+        if !categories.is_empty() {
+            self.quick_command_category = self.quick_command_category.min(categories.len() - 1);
+        } else {
+            self.quick_command_category = 0;
+        }
+        let selected_commands = categories
+            .get(self.quick_command_category)
+            .map(|category| category.commands.clone())
+            .unwrap_or_default();
+        let selected_category_id = categories
+            .get(self.quick_command_category)
+            .map(|category| category.id.clone());
+        let quick_command_detail_visible =
+            self.selected_quick_command
+                .as_ref()
+                .is_some_and(|(category_id, command_id)| {
+                    selected_category_id.as_deref() == Some(category_id.as_str())
+                        && selected_commands
+                            .iter()
+                            .any(|command| command.id == *command_id)
                 });
-                match pct {
-                    Some(pct) => (t.info.name.clone(), format!("{:.0}%", pct), pct),
-                    None => (t.info.name.clone(), "-".to_string(), 0.0),
-                }
-            } else {
-                let total_transferred: u64 = active.iter().map(|t| t.transferred).sum();
-                let total_total: u64 = active.iter().filter_map(|t| t.total).sum();
-                let pct = if total_total > 0 {
-                    Some((total_transferred as f64 / total_total as f64 * 100.0) as f32)
-                } else {
-                    None
-                };
-                let label = match kind {
-                    crate::terminal::TransferType::Download => {
-                        t!("files_downloading", count = active.len()).to_string()
-                    }
-                    crate::terminal::TransferType::Upload => {
-                        t!("files_uploading", count = active.len()).to_string()
-                    }
-                };
-                match pct {
-                    Some(pct) => (label, format!("{:.0}%", pct), pct),
-                    None => (label, "-".to_string(), 0.0),
-                }
-            })
-        };
-        let dl_summary = build_summary(crate::terminal::TransferType::Download);
-        let ul_summary = build_summary(crate::terminal::TransferType::Upload);
-        let has_transfers = dl_summary.is_some() || ul_summary.is_some();
+        let has_categories = !categories.is_empty();
 
-        let header = h_flex()
-            .flex_none()
-            .h(px(34.))
-            .px_2()
-            .items_center()
-            .gap_2()
-            .border_b_1()
-            .border_color(cx.theme().border)
-            .bg(cx.theme().tab_bar)
+        v_flex()
+            .flex_1()
+            .min_h(px(0.))
             .child(
-                div()
-                    .text_size(rems(1.0))
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(cx.theme().primary)
-                    .child(t!("remote_files")),
-            )
-            .child(div().flex_1())
-            .when_some(active_sftp, |this, sftp| {
-                let selected_entries = sftp.selected_entries.clone();
-                this.child(
-                    Button::new("sftp-sync-cwd")
-                        .ghost()
-                        .small()
-                        .selected(sftp.follow_terminal_cwd)
-                        .icon(IconName::SquareTerminal)
-                        .label(t!("sync_cwd").to_string())
-                        .tooltip(if sftp.follow_terminal_cwd {
-                            t!("sync_cwd_enabled_tooltip").to_string()
-                        } else {
-                            t!("sync_cwd_tooltip").to_string()
-                        })
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.toggle_follow_terminal_cwd(window, cx);
-                        })),
-                )
-                .child(
-                    Checkbox::new("sftp-show-hidden")
-                        .small()
-                        .label(t!("hidden").to_string())
-                        .checked(self.show_hidden_files)
-                        .tab_stop(false)
-                        .on_click(cx.listener(|this, checked, _, cx| {
-                            if this.show_hidden_files == *checked {
-                                return;
-                            }
-                            this.show_hidden_files = *checked;
-                            this.config.set_show_hidden_files(*checked);
-                            this.mark_config_preferences_dirty();
-                            cx.notify();
-                        })),
-                )
-                .child(
-                    Button::new("sftp-refresh")
-                        .ghost()
-                        .small()
-                        .icon(IconName::ArrowRight)
-                        .label(t!("refresh").to_string())
-                        .on_click(cx.listener(|this, _, _, cx| this.refresh_sftp(cx))),
-                )
-                .child(
-                    Button::new("sftp-new-folder")
-                        .ghost()
-                        .small()
-                        .icon(IconName::Folder)
-                        .label(t!("new_folder").to_string())
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.sftp_creating_folder = true;
-                            this.sftp_new_folder_input.update(cx, |input, cx| {
-                                input.set_value("", window, cx);
-                                input.focus_handle(cx).focus(window, cx);
-                            });
-                            cx.notify();
-                        })),
-                )
-                .child(
-                    Button::new("sftp-delete-selected")
-                        .ghost()
-                        .small()
-                        .icon(IconName::Close)
-                        .label(if selected_entries.is_empty() {
-                            t!("delete_selected").to_string()
-                        } else {
-                            format!("{} ({})", t!("delete_selected"), selected_entries.len())
-                        })
-                        .disabled(selected_entries.is_empty())
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.show_delete_confirm_dialog(window, cx);
-                        })),
-                )
-                .child(
-                    Button::new("sftp-upload-file")
-                        .ghost()
-                        .small()
-                        .icon(IconName::Plus)
-                        .label(t!("upload_file").to_string())
-                        .on_click(
-                            cx.listener(|this, _, window, cx| this.upload_sftp_files(window, cx)),
-                        ),
-                )
-                .child(
-                    Button::new("sftp-upload-folder")
-                        .ghost()
-                        .small()
-                        .icon(IconName::Folder)
-                        .label(t!("upload_folder").to_string())
-                        .on_click(
-                            cx.listener(|this, _, window, cx| this.upload_sftp_folder(window, cx)),
-                        ),
-                )
-                .child(
-                    Button::new("sftp-download-selected")
-                        .ghost()
-                        .small()
-                        .icon(IconName::ArrowDown)
-                        .label(if selected_entries.is_empty() {
-                            t!("download").to_string()
-                        } else {
-                            t!("download_count", count = selected_entries.len()).to_string()
-                        })
-                        .disabled(selected_entries.is_empty())
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.download_selected_sftp_entries(window, cx);
-                        })),
-                )
-            });
-        let Some(sftp) = active_sftp else {
-            let mut outer = v_flex()
-                .gap_0()
-                .border_color(cx.theme().border)
-                .bg(cx.theme().background)
-                .flex_1()
-                .child(
-                    v_flex()
-                        .flex_1()
-                        .min_h(px(0.))
-                        .when(self.sftp_panel_minimized, |this| this.hidden())
-                        .child(header)
-                        .child(
-                            v_flex()
-                                .flex_1()
-                                .items_center()
-                                .justify_center()
-                                .p_3()
-                                .child(
-                                    div()
-                                        .text_size(rems(1.0))
-                                        .text_color(cx.theme().muted_foreground)
-                                        .child(t!("open_ssh_tab_sftp")),
-                                ),
-                        ),
-                );
-            outer = outer.child(
                 h_flex()
                     .flex_none()
-                    .h(px(24.))
-                    .px_3()
+                    .h(px(36.))
                     .items_center()
-                    .border_t_1()
+                    .gap_1()
+                    .px_2()
+                    .border_b_1()
                     .border_color(cx.theme().border)
-                    .bg(cx.theme().tab_bar)
+                    .children(categories.iter().enumerate().map(|(index, category)| {
+                        Button::new(("quick-command-category", index))
+                            .ghost()
+                            .small()
+                            .selected(self.quick_command_category == index)
+                            .icon(IconName::Folder)
+                            .label(category.name.clone())
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.quick_command_category = index;
+                                this.selected_quick_command = None;
+                                cx.notify();
+                            }))
+                    }))
                     .child(div().flex_1())
                     .child(
-                        Button::new("open-transfers")
+                        Button::new("quick-command-manage")
                             .ghost()
                             .small()
-                            .when(has_transfers, |this| {
-                                let mut content = h_flex().items_center().gap_2();
-                                if let Some((ref label, ref pct_display, pct)) = dl_summary {
-                                    content = content.child(
-                                        h_flex()
-                                            .items_center()
-                                            .gap_1()
-                                            .child(
-                                                Icon::new(IconName::ArrowDown)
-                                                    .with_size(Size::Small)
-                                                    .text_color(cx.theme().primary),
-                                            )
-                                            .child(
-                                                div()
-                                                    .text_size(rems(0.833))
-                                                    .text_color(cx.theme().primary)
-                                                    .italic()
-                                                    .child(label.clone()),
-                                            )
-                                            .child(
-                                                Progress::new("sftp-status-dl")
-                                                    .with_size(px(4.))
-                                                    .value(pct)
-                                                    .color(cx.theme().primary)
-                                                    .w(px(50.0)),
-                                            )
-                                            .child(
-                                                div()
-                                                    .text_size(rems(0.833))
-                                                    .text_color(cx.theme().primary)
-                                                    .italic()
-                                                    .child(pct_display.clone()),
-                                            ),
-                                    );
-                                }
-                                if let Some((ref label, ref pct_display, pct)) = ul_summary {
-                                    if dl_summary.is_some() {
-                                        content = content.child(div().w(px(6.)));
-                                    }
-                                    content = content.child(
-                                        h_flex()
-                                            .items_center()
-                                            .gap_1()
-                                            .child(
-                                                Icon::new(IconName::ArrowUp)
-                                                    .with_size(Size::Small)
-                                                    .text_color(cx.theme().primary),
-                                            )
-                                            .child(
-                                                div()
-                                                    .text_size(rems(0.833))
-                                                    .text_color(cx.theme().primary)
-                                                    .italic()
-                                                    .child(label.clone()),
-                                            )
-                                            .child(
-                                                Progress::new("sftp-status-ul")
-                                                    .with_size(px(4.))
-                                                    .value(pct)
-                                                    .color(cx.theme().primary)
-                                                    .w(px(50.0)),
-                                            )
-                                            .child(
-                                                div()
-                                                    .text_size(rems(0.833))
-                                                    .text_color(cx.theme().primary)
-                                                    .italic()
-                                                    .child(pct_display.clone()),
-                                            ),
-                                    );
-                                }
-                                this.child(content)
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.show_transfers_dialog(window, cx);
-                                    }))
-                            })
-                            .when(!has_transfers, |this| {
-                                this.icon(IconName::ArrowDown)
-                                    .label(t!("transfers").to_string())
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.show_transfers_dialog(window, cx);
-                                    }))
-                            }),
-                    )
-                    .child(
-                        Button::new("sftp-minimize-toggle")
-                            .ghost()
-                            .small()
-                            .icon(if self.sftp_panel_minimized {
-                                IconName::ChevronUp
-                            } else {
-                                IconName::ChevronDown
-                            })
-                            .label(if self.sftp_panel_minimized {
-                                t!("panel_expand").to_string()
-                            } else {
-                                t!("panel_minimize").to_string()
-                            })
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.toggle_sftp_minimized(window, cx);
+                            .icon(IconName::Settings)
+                            .label(t!("quick_command_manage").to_string())
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.home_page_open = true;
+                                this.home_page = HomePage::Commands;
+                                cx.notify();
                             })),
                     ),
-            );
-            return outer.into_any_element();
-        };
-
-        let selected_path = sftp.selected_path.clone();
-        let entries = sftp
-            .entries
-            .clone()
-            .into_iter()
-            .filter(|entry| self.show_hidden_files || !entry.name.starts_with('.'))
-            .collect::<Vec<_>>();
-        let selected_entries = sftp.selected_entries.clone();
-        let all_selected = !entries.is_empty()
-            && entries
-                .iter()
-                .all(|e| selected_entries.contains(&e.full_path));
-        let parent_path = Self::sftp_parent_path(&sftp.current_path);
-        let view = cx.entity();
-        let icon_col_width = px(14.);
-        let size_col_width = px(96.);
-        let modified_col_width = px(152.);
-
-        let mut outer = v_flex()
-            .gap_0()
-            .border_color(cx.theme().border)
-            .bg(cx.theme().background)
-            .flex_1()
-            .on_drop(
-                cx.listener(|this, paths: &gpui::ExternalPaths, _window, cx| {
-                    let paths_to_upload: Vec<String> = paths
-                        .0
-                        .iter()
-                        .map(|p| p.to_string_lossy().to_string())
-                        .collect();
-                    this.upload_sftp_files_batch(paths_to_upload, cx);
-                }),
-            );
-
-        outer = outer.child(
-            v_flex()
-                .flex_1()
-                .min_h(px(0.))
-                .when(self.sftp_panel_minimized, |this| this.hidden())
-                .child(header)
-                .child(
-                    h_flex()
-                        .h(px(36.))
-                        .items_center()
-                        .gap_2()
-                        .px_3()
-                        .border_b_1()
-                        .border_color(cx.theme().border)
-                        .bg(cx.theme().muted)
-                        .child(
-                            Button::new("sftp-up")
-                                .ghost()
-                                .small()
-                                .icon(IconName::ChevronUp)
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.navigate_sftp(parent_path.clone(), cx);
-                                })),
-                        )
-                        .child(Input::new(&self.sftp_path_input).flex_1().tab_index(0))
-                        .child(div().flex_none()),
-                )
-                .child(
-                    h_flex()
-                        .flex_1()
-                        .min_h(px(0.))
-                        .child(self.render_sftp_directory_tree(sftp, cx))
-                        .child(
-                            v_flex()
-                                .flex_1()
-                                .h_full()
-                                .min_w(px(0.))
-                                .min_h(px(0.))
-                                .child(
-                                    h_flex()
-                                        .h(px(26.))
-                        .px_3()
-                        .items_center()
-                        .gap_2()
-                        .border_b_1()
-                        .border_color(cx.theme().border)
-                        .bg(cx.theme().muted.opacity(0.8))
-                        .child(
-                            h_flex()
-                                .w(px(24.))
-                                .flex_none()
-                                .items_center()
-                                .justify_center()
-                                .child(
-                                    Checkbox::new("sftp-select-all")
-                                        .checked(all_selected)
-                                        .on_click(cx.listener(move |this, checked, _, cx| {
-                                            this.toggle_all_sftp_entries(*checked, cx);
-                                        })),
-                                ),
-                        )
-                        .child(
-                            h_flex()
-                                .flex_1()
-                                .min_w(px(0.))
-                                .items_center()
-                                .gap_2()
-                                .child(div().w(icon_col_width).flex_none())
-                                .child(
-                                    div()
-                                        .flex_1()
-                                        .text_size(rems(0.917))
-                                        .text_color(cx.theme().muted_foreground)
-                                        .child(t!("name")),
-                                ),
-                        )
-                        .child(
-                            div()
-                                .w(size_col_width)
-                                .flex_none()
-                                .text_size(rems(0.917))
-                                .text_color(cx.theme().muted_foreground)
-                                .child(t!("size")),
-                        )
-                        .child(
-                            div()
-                                .w(modified_col_width)
-                                .flex_none()
-                                .text_size(rems(0.917))
-                                .text_color(cx.theme().muted_foreground)
-                                .child(t!("modified")),
-                        ),
-                )
-                .child(
-                    div()
-                        .flex_1()
-                        .relative()
-                        .min_h(px(0.))
-                        .child({
-                            let entries = entries.clone();
-                            let selected_entries = selected_entries.clone();
-                            let selected_path = selected_path.clone();
-                            let view = view.clone();
-                            let theme = cx.theme().clone();
-                            uniform_list(
-                                "sftp-entries-list",
-                                entries.len(),
-                                move |range, window, _cx| {
-                                    range
-                                        .into_iter()
-                                        .filter_map(|ix| {
-                                            let entry = entries.get(ix)?;
-                                            let entry = entry.clone();
-                                            let is_checked =
-                                                selected_entries.contains(&entry.full_path);
-                                            let is_selected = selected_path.as_deref()
-                                                == Some(entry.full_path.as_str());
-                                            let name_color = if entry.is_dir {
-                                                theme.primary
-                                            } else {
-                                                theme.foreground
-                                            };
-                                            let bg = if is_selected {
-                                                theme.secondary
-                                            } else if ix % 2 == 0 {
-                                                theme.background
-                                            } else {
-                                                theme.muted.opacity(0.5)
-                                            };
-                                            Some(
-                                            h_flex()
-                                                .w_full()
-                                                .h(px(28.))
-                                                .items_center()
-                                                .px_3()
-                                                .gap_2()
-                                                .bg(bg)
-                                                .hover(|style| style.bg(theme.muted.opacity(0.8)))
-                                                .border_b_1()
-                                                .border_color(theme.border.opacity(0.35))
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_h(px(0.))
+                    .overflow_hidden()
+                    .child(
+                        h_resizable("sftp-quick-command-detail-split")
+                            .child(
+                                resizable_panel()
+                                    .size_range(px(240.)..Pixels::MAX)
+                                    .child(
+                                div()
+                                    .size_full()
+                                    .min_w(px(0.))
+                                    .min_h(px(0.))
+                                    .overflow_y_scrollbar()
+                                    .p_3()
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .flex_wrap()
+                                            .items_start()
+                                            .gap_2()
+                                            .children(selected_commands.into_iter().enumerate().map(
+                                        |(index, command)| {
+                                            let category_id = selected_category_id
+                                                .clone()
+                                                .unwrap_or_default();
+                                            let command_id = command.id.clone();
+                                            let edit_category_id = category_id.clone();
+                                            let edit_command_id = command.id.clone();
+                                            let selected = self.selected_quick_command.as_ref()
+                                                == Some(&(category_id.clone(), command.id.clone()));
+                                            div()
+                                                .id(("quick-command", index))
+                                                .flex_none()
+                                                .cursor_pointer()
+                                                .rounded_md()
+                                                .border_1()
+                                                .border_color(if selected {
+                                                    cx.theme().primary
+                                                } else {
+                                                    cx.theme().border
+                                                })
+                                                .bg(if selected {
+                                                    cx.theme().tab_active
+                                                } else {
+                                                    cx.theme().background
+                                                })
+                                                .hover(|this| this.bg(cx.theme().secondary))
                                                 .on_mouse_down(
                                                     MouseButton::Left,
-                                                    window.listener_for(&view, {
-                                                        let entry = entry.clone();
-                                                        move |this, event: &MouseDownEvent, _, cx| {
-                                                            this.dismiss_sftp_context_menu(cx);
-                                                            this.select_sftp_entry(
-                                                                entry.clone(),
+                                                    cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                                                        if event.click_count >= 2 {
+                                                            this.execute_quick_command(
+                                                                category_id.clone(),
+                                                                command_id.clone(),
+                                                                false,
+                                                                window,
                                                                 cx,
                                                             );
-                                                            if event.click_count >= 2 {
-                                                                if entry.is_dir {
-                                                                    this.navigate_sftp(
-                                                                        entry.full_path.clone(),
-                                                                        cx,
-                                                                    );
-                                                                } else if is_editable_text_file(
-                                                                    &entry.full_path,
-                                                                ) {
-                                                                    this.open_file_in_editor(
-                                                                        entry.full_path.clone(),
-                                                                        cx,
-                                                                    );
-                                                                }
-                                                            }
-                                                        }
-                                                    }),
-                                                )
-                                                .on_mouse_down(
-                                                    MouseButton::Right,
-                                                    window.listener_for(&view, {
-                                                        let entry = entry.clone();
-                                                        let remote_path = entry.full_path.clone();
-                                                        move |this, event: &MouseDownEvent, _, cx| {
-                                                            this.mark_sftp_entry_selected(
-                                                                &entry.full_path,
-                                                                cx,
-                                                            );
-                                                            this.open_sftp_context_menu(
-                                                                remote_path.clone(),
-                                                                entry.is_dir,
-                                                                event.position,
+                                                        } else {
+                                                            this.select_quick_command(
+                                                                category_id.clone(),
+                                                                command_id.clone(),
+                                                                window,
                                                                 cx,
                                                             );
                                                         }
                                                     }),
                                                 )
+                                                .context_menu({
+                                                    let view = cx.entity();
+                                                    move |menu, window, _| {
+                                                        menu.item(
+                                                            PopupMenuItem::new(t!("edit").to_string())
+                                                                .on_click(window.listener_for(&view, {
+                                                                    let category_id = edit_category_id.clone();
+                                                                    let command_id = edit_command_id.clone();
+                                                                    let dialog_view = view.clone();
+                                                                    move |_this, _, window, cx| {
+                                                                        cx.stop_propagation();
+                                                                        let category_id = category_id.clone();
+                                                                        let command_id = command_id.clone();
+                                                                        let dialog_view = dialog_view.clone();
+                                                                        window.defer(cx, move |window, cx| {
+                                                                            dialog_view.update(cx, |this, cx| {
+                                                                                this.show_quick_command_dialog(
+                                                                                    category_id,
+                                                                                    Some(command_id),
+                                                                                    window,
+                                                                                    cx,
+                                                                                );
+                                                                            });
+                                                                        });
+                                                                    }
+                                                                })),
+                                                        )
+                                                    }
+                                                })
                                                 .child(
                                                     h_flex()
-                                                        .w(px(24.))
-                                                        .flex_none()
-                                                        .items_center()
-                                                        .justify_center()
-                                                        .on_mouse_down(
-                                                            MouseButton::Left,
-                                                            |_, _, cx| cx.stop_propagation(),
-                                                        )
-                                                        .on_mouse_down(
-                                                            MouseButton::Right,
-                                                            |_, _, cx| cx.stop_propagation(),
-                                                        )
-                                                        .child(
-                                                            Checkbox::new(ElementId::Name(
-                                                                format!(
-                                                                    "check-{}",
-                                                                    entry.full_path
-                                                                )
-                                                                .into(),
-                                                            ))
-                                                            .checked(is_checked)
-                                                            .on_click(window.listener_for(&view, {
-                                                                let path = entry.full_path.clone();
-                                                                move |this, checked, _, cx| {
-                                                                    this.toggle_sftp_entry(
-                                                                        path.clone(),
-                                                                        *checked,
-                                                                        cx,
-                                                                    );
-                                                                }
-                                                            })),
-                                                        ),
-                                                )
-                                                .child(
-                                                    h_flex()
-                                                        .flex_1()
-                                                        .min_w(px(0.))
                                                         .items_center()
                                                         .gap_2()
+                                                        .px_3()
+                                                        .py_2()
                                                         .child(
-                                                            div()
-                                                                .w(icon_col_width)
-                                                                .flex_none()
-                                                                .text_size(rems(1.0))
-                                                                .text_color(name_color)
-                                                                .child(if entry.is_dir {
-                                                                    "📁"
-                                                                } else {
-                                                                    "📄"
-                                                                }),
+                                                            Icon::new(IconName::SquareTerminal)
+                                                                .with_size(Size::Small),
                                                         )
-                                                        .child(
-                                                            div()
-                                                                .flex_1()
-                                                                .min_w(px(0.))
-                                                                .overflow_hidden()
-                                                                .text_size(rems(1.0))
-                                                                .text_color(name_color)
-                                                                .child(entry.name),
-                                                        ),
+                                                        .child(command.name),
                                                 )
-                                                .child(
-                                                    div()
-                                                        .w(size_col_width)
-                                                        .flex_none()
-                                                        .text_size(rems(0.917))
-                                                        .text_color(theme.muted_foreground)
-                                                        .child(if entry.is_dir {
-                                                            "-".to_string()
-                                                        } else {
-                                                            format_bytes(entry.size)
-                                                        }),
+                                        },
+                                            ))
+                                            .when(!has_categories, |this| {
+                                                this.child(
+                                                    v_flex()
+                                                        .w_full()
+                                                        .items_center()
+                                                        .justify_center()
+                                                        .gap_2()
+                                                        .py_5()
+                                                        .text_color(cx.theme().muted_foreground)
+                                                        .child(t!("command_manager_empty_title")),
                                                 )
-                                                .child(
-                                                    div()
-                                                        .w(modified_col_width)
-                                                        .flex_none()
-                                                        .text_size(rems(0.917))
-                                                        .text_color(theme.muted_foreground)
-                                                        .child(format_mtime(entry.modified)),
-                                                )
-                                                .child(div().w(px(12.)).flex_none())
-                                                .into_any_element(),
-                                        )
-                                        })
-                                        .collect::<Vec<_>>()
-                                },
+                                            }),
+                                    ),
+                                    ),
                             )
-                            .size_full()
-                            .track_scroll(&self.remote_files_scroll_handle)
-                        })
-                        .child(
-                            div()
-                                .absolute()
-                                .top_0()
-                                .right_0()
-                                .bottom_0()
-                                .w(px(16.))
-                                .child(
-                                    Scrollbar::vertical(&self.remote_files_scroll_handle)
-                                        .scrollbar_show(ScrollbarShow::Always),
-                                ),
-                        ),
-                                ),
-                        ),
+                            .child(
+                                resizable_panel()
+                                    .size(px(420.))
+                                    .size_range(px(280.)..px(720.))
+                                    .flex_none()
+                                    .visible(quick_command_detail_visible)
+                                    .child(self.render_quick_command_detail(false, true, cx)),
+                            ),
+                    ),
+            )
+            .into_any_element()
+    }
+
+    fn sftp_transfer_summary(
+        &self,
+        kind: crate::terminal::TransferType,
+    ) -> Option<(String, String, f32)> {
+        let active = self
+            .transfers
+            .iter()
+            .filter(|transfer| {
+                matches!(
+                    transfer.state,
+                    crate::terminal::TransferState::Running
+                        | crate::terminal::TransferState::Paused
+                ) && transfer.info.kind == kind
+            })
+            .collect::<Vec<_>>();
+        if active.is_empty() {
+            return None;
+        }
+
+        if active.len() == 1 {
+            let transfer = active[0];
+            let percent = transfer.total.and_then(|total| {
+                if total > 0 {
+                    Some((transfer.transferred as f64 / total as f64 * 100.0) as f32)
+                } else {
+                    None
+                }
+            });
+            return Some(match percent {
+                Some(percent) => (
+                    transfer.info.name.clone(),
+                    format!("{percent:.0}%"),
+                    percent,
                 ),
-        );
-        outer = outer.child(
-            h_flex()
-                .flex_none()
-                .h(px(24.))
-                .px_3()
-                .items_center()
-                .border_t_1()
-                .border_color(cx.theme().border)
-                .bg(cx.theme().tab_bar)
-                .child(div().flex_1())
-                .child(
+                None => (transfer.info.name.clone(), "-".to_string(), 0.0),
+            });
+        }
+
+        let total_transferred = active
+            .iter()
+            .map(|transfer| transfer.transferred)
+            .sum::<u64>();
+        let total_size = active
+            .iter()
+            .filter_map(|transfer| transfer.total)
+            .sum::<u64>();
+        let label = match kind {
+            crate::terminal::TransferType::Download => {
+                t!("files_downloading", count = active.len()).to_string()
+            }
+            crate::terminal::TransferType::Upload => {
+                t!("files_uploading", count = active.len()).to_string()
+            }
+        };
+        if total_size == 0 {
+            return Some((label, "-".to_string(), 0.0));
+        }
+
+        let percent = (total_transferred as f64 / total_size as f64 * 100.0) as f32;
+        Some((label, format!("{percent:.0}%"), percent))
+    }
+
+    fn render_sftp_footer(&self, cx: &mut Context<Self>) -> AnyElement {
+        let visibility = self.config.sftp_footer_visibility();
+        let latency = self.active_sftp().and_then(|sftp| sftp.latency_ms);
+        let dl_summary = self.sftp_transfer_summary(crate::terminal::TransferType::Download);
+        let ul_summary = self.sftp_transfer_summary(crate::terminal::TransferType::Upload);
+        let has_transfers = dl_summary.is_some() || ul_summary.is_some();
+        let view = cx.entity();
+        h_flex()
+            .w_full()
+            .flex_none()
+            .h(px(24.))
+            .px_3()
+            .items_center()
+            .border_t_1()
+            .border_color(cx.theme().border)
+            .bg(cx.theme().tab_bar)
+            .occlude()
+            .child(div().flex_1())
+            .when(visibility.latency, |this| {
+                this.child(
+                    h_flex()
+                        .items_center()
+                        .gap_1()
+                        .mr_2()
+                        .text_size(rems(0.833))
+                        .text_color(cx.theme().muted_foreground)
+                        .child(Icon::new(IconName::Network).with_size(Size::Small))
+                        .child(t!(
+                            "sftp_latency_value",
+                            latency = latency
+                                .map(|latency| latency.to_string())
+                                .unwrap_or_else(|| "--".to_string())
+                        )),
+                )
+            })
+            .when(visibility.transfers, |this| {
+                this.child(
                     Button::new("open-transfers")
                         .ghost()
                         .small()
@@ -2886,26 +3434,648 @@ impl TinyShell {
                             this.show_transfers_dialog(window, cx);
                         })),
                 )
+            })
+            .when(
+                visibility.panel_toggle || self.sftp_panel_minimized,
+                |this| {
+                    this.child(
+                        Button::new("sftp-minimize-toggle")
+                            .ghost()
+                            .small()
+                            .icon(if self.sftp_panel_minimized {
+                                IconName::ChevronUp
+                            } else {
+                                IconName::ChevronDown
+                            })
+                            .label(if self.sftp_panel_minimized {
+                                t!("panel_expand").to_string()
+                            } else {
+                                t!("panel_minimize").to_string()
+                            })
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.toggle_sftp_minimized(window, cx);
+                            })),
+                    )
+                },
+            )
+            .context_menu({
+                let view = view.clone();
+                move |menu, window, cx| {
+                    Self::build_sftp_footer_visibility_menu(menu, view.clone(), window, cx)
+                }
+            })
+            .into_any_element()
+    }
+
+    fn render_sftp_panel(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let active_sftp = self.active_sftp();
+        let toolbar_visibility = self.config.sftp_toolbar_visibility();
+        let view = cx.entity();
+
+        let header = h_flex()
+            .flex_none()
+            .h(px(34.))
+            .px_2()
+            .items_center()
+            .gap_2()
+            .border_b_1()
+            .border_color(cx.theme().border)
+            .bg(cx.theme().tab_bar)
+            .child(
+                Button::new("sftp-view-files")
+                    .ghost()
+                    .small()
+                    .selected(self.sftp_panel_view == SftpPanelView::Files)
+                    .icon(IconName::FolderOpen)
+                    .label(t!("remote_files").to_string())
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.set_sftp_panel_view(SftpPanelView::Files, cx);
+                    })),
+            )
+            .child(
+                Button::new("sftp-view-commands")
+                    .ghost()
+                    .small()
+                    .selected(self.sftp_panel_view == SftpPanelView::Commands)
+                    .icon(IconName::SquareTerminal)
+                    .label(t!("quick_commands").to_string())
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.set_sftp_panel_view(SftpPanelView::Commands, cx);
+                    })),
+            )
+            .child(div().flex_1())
+            .when_some(
+                (self.sftp_panel_view == SftpPanelView::Files)
+                    .then_some(active_sftp)
+                    .flatten(),
+                |this, sftp| {
+                    let selected_entries = sftp.selected_entries.clone();
+                    this.when(toolbar_visibility.sync_cwd, |this| {
+                        this.child(
+                            Checkbox::new("sftp-sync-cwd")
+                                .small()
+                                .label(t!("sync_cwd").to_string())
+                                .checked(sftp.follow_terminal_cwd)
+                                .tab_stop(false)
+                                .on_click(cx.listener(|this, checked, window, cx| {
+                                    if this
+                                        .active_sftp()
+                                        .is_some_and(|sftp| sftp.follow_terminal_cwd == *checked)
+                                    {
+                                        return;
+                                    }
+                                    this.toggle_follow_terminal_cwd(window, cx);
+                                })),
+                        )
+                    })
+                    .when(toolbar_visibility.hidden_files, |this| {
+                        this.child(
+                            Checkbox::new("sftp-show-hidden")
+                                .small()
+                                .label(t!("hidden").to_string())
+                                .checked(self.show_hidden_files)
+                                .tab_stop(false)
+                                .on_click(cx.listener(|this, checked, _, cx| {
+                                    if this.show_hidden_files == *checked {
+                                        return;
+                                    }
+                                    this.show_hidden_files = *checked;
+                                    this.config.set_show_hidden_files(*checked);
+                                    this.mark_config_preferences_dirty();
+                                    cx.notify();
+                                })),
+                        )
+                    })
+                    .when(toolbar_visibility.refresh, |this| {
+                        this.child(
+                            Button::new("sftp-refresh")
+                                .ghost()
+                                .small()
+                                .icon(IconName::ArrowRight)
+                                .label(t!("refresh").to_string())
+                                .on_click(cx.listener(|this, _, _, cx| this.refresh_sftp(cx))),
+                        )
+                    })
+                    .when(toolbar_visibility.new_folder, |this| {
+                        this.child(
+                            Button::new("sftp-new-folder")
+                                .ghost()
+                                .small()
+                                .icon(IconName::Folder)
+                                .label(t!("new_folder").to_string())
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.sftp_creating_folder = true;
+                                    this.sftp_new_folder_input.update(cx, |input, cx| {
+                                        input.set_value("", window, cx);
+                                    });
+                                    crate::app::input_focus::defer_focus_input_at_end(
+                                        this.sftp_new_folder_input.clone(),
+                                        window,
+                                        cx,
+                                    );
+                                    cx.notify();
+                                })),
+                        )
+                    })
+                    .when(toolbar_visibility.delete, |this| {
+                        this.child(
+                            Button::new("sftp-delete-selected")
+                                .ghost()
+                                .small()
+                                .icon(IconName::Close)
+                                .label(if selected_entries.is_empty() {
+                                    t!("delete_selected").to_string()
+                                } else {
+                                    format!(
+                                        "{} ({})",
+                                        t!("delete_selected"),
+                                        selected_entries.len()
+                                    )
+                                })
+                                .disabled(selected_entries.is_empty())
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.show_delete_confirm_dialog(window, cx);
+                                })),
+                        )
+                    })
+                    .when(toolbar_visibility.upload_file, |this| {
+                        this.child(
+                            Button::new("sftp-upload-file")
+                                .ghost()
+                                .small()
+                                .icon(IconName::Plus)
+                                .label(t!("upload_file").to_string())
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.upload_sftp_files(window, cx)
+                                })),
+                        )
+                    })
+                    .when(toolbar_visibility.upload_folder, |this| {
+                        this.child(
+                            Button::new("sftp-upload-folder")
+                                .ghost()
+                                .small()
+                                .icon(IconName::Folder)
+                                .label(t!("upload_folder").to_string())
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.upload_sftp_folder(window, cx)
+                                })),
+                        )
+                    })
+                    .when(toolbar_visibility.download, |this| {
+                        this.child(
+                            Button::new("sftp-download-selected")
+                                .ghost()
+                                .small()
+                                .icon(IconName::ArrowDown)
+                                .label(if selected_entries.is_empty() {
+                                    t!("download").to_string()
+                                } else {
+                                    t!("download_count", count = selected_entries.len()).to_string()
+                                })
+                                .disabled(selected_entries.is_empty())
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.download_selected_sftp_entries(window, cx);
+                                })),
+                        )
+                    })
+                },
+            )
+            .context_menu({
+                let view = view.clone();
+                move |menu, window, cx| {
+                    Self::build_sftp_toolbar_visibility_menu(menu, view.clone(), window, cx)
+                }
+            });
+
+        let Some(sftp) = active_sftp else {
+            let outer = v_flex()
+                .gap_0()
+                .border_color(cx.theme().border)
+                .bg(cx.theme().background)
+                .flex_1()
+                .min_h(px(0.))
+                .relative()
+                .overflow_hidden()
                 .child(
-                    Button::new("sftp-minimize-toggle")
-                        .ghost()
-                        .small()
-                        .icon(if self.sftp_panel_minimized {
-                            IconName::ChevronUp
-                        } else {
-                            IconName::ChevronDown
-                        })
-                        .label(if self.sftp_panel_minimized {
-                            t!("panel_expand").to_string()
-                        } else {
-                            t!("panel_minimize").to_string()
-                        })
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.toggle_sftp_minimized(window, cx);
-                        })),
+                    v_flex()
+                        .flex_1()
+                        .min_h(px(0.))
+                        .when(self.sftp_panel_minimized, |this| this.hidden())
+                        .child(header)
+                        .child(
+                            v_flex()
+                                .flex_1()
+                                .items_center()
+                                .justify_center()
+                                .p_3()
+                                .child(
+                                    div()
+                                        .text_size(rems(1.0))
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child(t!("open_ssh_tab_sftp")),
+                                ),
+                        ),
+                );
+            return outer.into_any_element();
+        };
+
+        if self.sftp_panel_view == SftpPanelView::Commands {
+            return v_flex()
+                .gap_0()
+                .border_color(cx.theme().border)
+                .bg(cx.theme().background)
+                .flex_1()
+                .min_h(px(0.))
+                .relative()
+                .overflow_hidden()
+                .child(
+                    v_flex()
+                        .flex_1()
+                        .min_h(px(0.))
+                        .when(self.sftp_panel_minimized, |this| this.hidden())
+                        .child(header)
+                        .child(self.render_quick_commands(window, cx)),
+                )
+                .into_any_element();
+        }
+
+        let selected_path = sftp.selected_path.clone();
+        let entries = sftp
+            .entries
+            .clone()
+            .into_iter()
+            .filter(|entry| self.show_hidden_files || !entry.name.starts_with('.'))
+            .collect::<Vec<_>>();
+        let selected_entries = sftp.selected_entries.clone();
+        let all_selected = !entries.is_empty()
+            && entries
+                .iter()
+                .all(|e| selected_entries.contains(&e.full_path));
+        let parent_path = Self::sftp_parent_path(&sftp.current_path);
+        let view = cx.entity();
+        let icon_col_width = px(14.);
+        let size_col_width = px(96.);
+        let modified_col_width = px(152.);
+
+        let mut outer = v_flex()
+            .gap_0()
+            .border_color(cx.theme().border)
+            .bg(cx.theme().background)
+            .flex_1()
+            .min_h(px(0.))
+            .relative()
+            .overflow_hidden()
+            .on_drop(
+                cx.listener(|this, paths: &gpui::ExternalPaths, _window, cx| {
+                    let paths_to_upload: Vec<String> = paths
+                        .0
+                        .iter()
+                        .map(|p| p.to_string_lossy().to_string())
+                        .collect();
+                    this.upload_sftp_files_batch(paths_to_upload, cx);
+                }),
+            );
+
+        outer = outer.child(
+            v_flex()
+                .flex_1()
+                .min_h(px(0.))
+                .when(self.sftp_panel_minimized, |this| this.hidden())
+                .child(header)
+                .child(
+                    h_flex()
+                        .h(px(36.))
+                        .items_center()
+                        .gap_2()
+                        .px_3()
+                        .border_b_1()
+                        .border_color(cx.theme().border)
+                        .bg(cx.theme().muted)
+                        .child(
+                            Button::new("sftp-up")
+                                .ghost()
+                                .small()
+                                .icon(IconName::ChevronUp)
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.navigate_sftp(parent_path.clone(), cx);
+                                })),
+                        )
+                        .child(Input::new(&self.sftp_path_input).flex_1().tab_index(0))
+                        .child(div().flex_none()),
+                )
+                .child(
+                    h_flex()
+                        .flex_1()
+                        .min_h(px(0.))
+                        .child(self.render_sftp_directory_tree(sftp, cx))
+                        .child(
+                            v_flex()
+                                .flex_1()
+                                .h_full()
+                                .min_w(px(0.))
+                                .min_h(px(0.))
+                                .child(
+                                    h_flex()
+                                        .h(px(26.))
+                                        .px_3()
+                                        .items_center()
+                                        .gap_2()
+                                        .border_b_1()
+                                        .border_color(cx.theme().border)
+                                        .bg(cx.theme().muted.opacity(0.8))
+                                        .child(
+                                            h_flex()
+                                                .w(px(24.))
+                                                .flex_none()
+                                                .items_center()
+                                                .justify_center()
+                                                .child(
+                                                    Checkbox::new("sftp-select-all")
+                                                        .checked(all_selected)
+                                                        .on_click(cx.listener(
+                                                            move |this, checked, _, cx| {
+                                                                this.toggle_all_sftp_entries(
+                                                                    *checked, cx,
+                                                                );
+                                                            },
+                                                        )),
+                                                ),
+                                        )
+                                        .child(
+                                            h_flex()
+                                                .flex_1()
+                                                .min_w(px(0.))
+                                                .items_center()
+                                                .gap_2()
+                                                .child(div().w(icon_col_width).flex_none())
+                                                .child(
+                                                    div()
+                                                        .flex_1()
+                                                        .text_size(rems(0.917))
+                                                        .text_color(cx.theme().muted_foreground)
+                                                        .child(t!("name")),
+                                                ),
+                                        )
+                                        .child(
+                                            div()
+                                                .w(size_col_width)
+                                                .flex_none()
+                                                .text_size(rems(0.917))
+                                                .text_color(cx.theme().muted_foreground)
+                                                .child(t!("size")),
+                                        )
+                                        .child(
+                                            div()
+                                                .w(modified_col_width)
+                                                .flex_none()
+                                                .text_size(rems(0.917))
+                                                .text_color(cx.theme().muted_foreground)
+                                                .child(t!("modified")),
+                                        ),
+                                )
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .relative()
+                                        .min_h(px(0.))
+                                        .on_mouse_down(
+                                            MouseButton::Right,
+                                            cx.listener(|this, event: &MouseDownEvent, _, cx| {
+                                                let target_was_set_by_row =
+                                                    this.sftp_context_menu.as_ref().is_some_and(
+                                                        |menu| menu.position == event.position,
+                                                    );
+                                                if !target_was_set_by_row {
+                                                    this.open_sftp_context_menu(
+                                                        None,
+                                                        false,
+                                                        None,
+                                                        event.position,
+                                                        cx,
+                                                    );
+                                                }
+                                            }),
+                                        )
+                                        .child({
+                                            let entries = entries.clone();
+                                            let selected_entries = selected_entries.clone();
+                                            let selected_path = selected_path.clone();
+                                            let view = view.clone();
+                                            let theme = cx.theme().clone();
+                                            uniform_list(
+                                                "sftp-entries-list",
+                                                entries.len(),
+                                                move |range, window, _cx| {
+                                                    range
+                                                        .into_iter()
+                                                        .filter_map(|ix| {
+                                                            let entry = entries.get(ix)?;
+                                                            let entry = entry.clone();
+                                                            let is_checked = selected_entries
+                                                                .contains(&entry.full_path);
+                                                            let is_selected = selected_path
+                                                                .as_deref()
+                                                                == Some(entry.full_path.as_str());
+                                                            let name_color = if entry.is_dir {
+                                                                theme.primary
+                                                            } else {
+                                                                theme.foreground
+                                                            };
+                                                            let bg = if is_selected {
+                                                                theme.secondary
+                                                            } else if ix % 2 == 0 {
+                                                                theme.background
+                                                            } else {
+                                                                theme.muted.opacity(0.5)
+                                                            };
+                                                            Some(
+                                            h_flex()
+                                                .w_full()
+                                                .h(px(28.))
+                                                .items_center()
+                                                .px_3()
+                                                .gap_2()
+                                                .bg(bg)
+                                                .hover(|style| style.bg(theme.muted.opacity(0.8)))
+                                                .border_b_1()
+                                                .border_color(theme.border.opacity(0.35))
+                                                .on_mouse_down(
+                                                    MouseButton::Left,
+                                                    window.listener_for(&view, {
+                                                        let entry = entry.clone();
+                                                        move |this, event: &MouseDownEvent, _, cx| {
+                                                            this.dismiss_sftp_context_menu(cx);
+                                                            this.select_sftp_entry(
+                                                                entry.clone(),
+                                                                cx,
+                                                            );
+                                                            if event.click_count >= 2 {
+                                                                if entry.is_dir {
+                                                                    this.navigate_sftp(
+                                                                        entry.full_path.clone(),
+                                                                        cx,
+                                                                    );
+                                                                } else if is_editable_text_file(
+                                                                    &entry.full_path,
+                                                                ) {
+                                                                    this.open_file_in_editor(
+                                                                        entry.full_path.clone(),
+                                                                        cx,
+                                                                    );
+                                                                } else if let Some(handle) =
+                                                                    this.active_sftp_handle()
+                                                                {
+                                                                    handle.edit_file(
+                                                                        entry.full_path.clone(),
+                                                                    );
+                                                                }
+                                                            }
+                                                        }
+                                                    }),
+                                                )
+                                                .on_mouse_down(
+                                                    MouseButton::Right,
+                                                    window.listener_for(&view, {
+                                                        let entry = entry.clone();
+                                                        let remote_path = entry.full_path.clone();
+                                                        move |this, event: &MouseDownEvent, _, cx| {
+                                                            this.mark_sftp_entry_selected(
+                                                                &entry.full_path,
+                                                                cx,
+                                                            );
+                                                            this.open_sftp_context_menu(
+                                                                Some(remote_path.clone()),
+                                                                entry.is_dir,
+                                                                Some(entry.permissions),
+                                                                event.position,
+                                                                cx,
+                                                            );
+                                                        }
+                                                    }),
+                                                )
+                                                .child(
+                                                    h_flex()
+                                                        .w(px(24.))
+                                                        .flex_none()
+                                                        .items_center()
+                                                        .justify_center()
+                                                        .on_mouse_down(
+                                                            MouseButton::Left,
+                                                            |_, _, cx| cx.stop_propagation(),
+                                                        )
+                                                        .child(
+                                                            Checkbox::new(ElementId::Name(
+                                                                format!(
+                                                                    "check-{}",
+                                                                    entry.full_path
+                                                                )
+                                                                .into(),
+                                                            ))
+                                                            .checked(is_checked)
+                                                            .on_click(window.listener_for(&view, {
+                                                                let path = entry.full_path.clone();
+                                                                move |this, checked, _, cx| {
+                                                                    this.toggle_sftp_entry(
+                                                                        path.clone(),
+                                                                        *checked,
+                                                                        cx,
+                                                                    );
+                                                                }
+                                                            })),
+                                                        ),
+                                                )
+                                                .child(
+                                                    h_flex()
+                                                        .flex_1()
+                                                        .min_w(px(0.))
+                                                        .items_center()
+                                                        .gap_2()
+                                                        .child(
+                                                            div()
+                                                                .w(icon_col_width)
+                                                                .flex_none()
+                                                                .text_size(rems(1.0))
+                                                                .text_color(name_color)
+                                                                .child(if entry.is_dir {
+                                                                    "📁"
+                                                                } else {
+                                                                    "📄"
+                                                                }),
+                                                        )
+                                                        .child(
+                                                            div()
+                                                                .flex_1()
+                                                                .min_w(px(0.))
+                                                                .overflow_hidden()
+                                                                .text_size(rems(1.0))
+                                                                .text_color(name_color)
+                                                                .child(entry.name),
+                                                        ),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .w(size_col_width)
+                                                        .flex_none()
+                                                        .text_size(rems(0.917))
+                                                        .text_color(theme.muted_foreground)
+                                                        .child(if entry.is_dir {
+                                                            "-".to_string()
+                                                        } else {
+                                                            format_bytes(entry.size)
+                                                        }),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .w(modified_col_width)
+                                                        .flex_none()
+                                                        .text_size(rems(0.917))
+                                                        .text_color(theme.muted_foreground)
+                                                        .child(format_mtime(entry.modified)),
+                                                )
+                                                .child(div().w(px(12.)).flex_none())
+                                                .into_any_element(),
+                                        )
+                                                        })
+                                                        .collect::<Vec<_>>()
+                                                },
+                                            )
+                                            .size_full()
+                                            .track_scroll(&self.remote_files_scroll_handle)
+                                        })
+                                        .child(
+                                            div()
+                                                .absolute()
+                                                .top_0()
+                                                .right_0()
+                                                .bottom_0()
+                                                .w(px(16.))
+                                                .child(
+                                                    Scrollbar::vertical(
+                                                        &self.remote_files_scroll_handle,
+                                                    )
+                                                    .scrollbar_show(ScrollbarShow::Always),
+                                                ),
+                                        )
+                                        .context_menu({
+                                            let view = view.clone();
+                                            move |menu, window, cx| {
+                                                Self::build_sftp_context_menu(
+                                                    menu,
+                                                    view.clone(),
+                                                    window,
+                                                    cx,
+                                                )
+                                            }
+                                        }),
+                                ),
+                        ),
                 ),
         );
-
         outer.into_any_element()
     }
 
@@ -3371,7 +4541,7 @@ impl TinyShell {
                 .id(id)
                 .relative()
                 .w_full()
-                .h(px(5.))
+                .h(px(4.))
                 .overflow_hidden()
                 .rounded(px(999.))
                 .bg(metric_track_color)
@@ -3481,36 +4651,41 @@ impl TinyShell {
         let no_processes = displayed_processes.is_empty();
 
         v_flex()
-            .gap_3()
+            .gap(px(6.))
             .w_full()
+            .h_full()
+            .min_h(px(0.))
+            .overflow_hidden()
             .p_1()
             .child(
                 v_flex()
+                    .flex_none()
                     .rounded_lg()
                     .border_1()
                     .border_color(cx.theme().border)
                     .overflow_hidden()
                     .child(
                         h_flex()
-                            .h(px(32.))
+                            .h(px(28.))
                             .items_center()
-                            .px_3()
+                            .px_2()
                             .bg(cx.theme().muted)
                             .font_weight(FontWeight::SEMIBOLD)
-                            .text_size(rems(0.82))
+                            .text_size(rems(0.78))
                             .child(t!("resources")),
                     )
                     .child(
                         v_flex()
-                            .p_3()
-                            .gap_3()
+                            .px_2()
+                            .py_2()
+                            .gap_2()
                             .child(
                                 v_flex()
                                     .gap_1()
                                     .child(
                                         h_flex()
                                             .justify_between()
-                                            .text_size(rems(0.8))
+                                            .text_size(rems(0.75))
                                             .child(
                                                 div()
                                                     .font_weight(FontWeight::MEDIUM)
@@ -3540,7 +4715,7 @@ impl TinyShell {
                                     .child(
                                         h_flex()
                                             .justify_between()
-                                            .text_size(rems(0.8))
+                                            .text_size(rems(0.75))
                                             .child(
                                                 div()
                                                     .font_weight(FontWeight::MEDIUM)
@@ -3567,7 +4742,7 @@ impl TinyShell {
                                     .child(
                                         h_flex()
                                             .justify_between()
-                                            .text_size(rems(0.8))
+                                            .text_size(rems(0.75))
                                             .child(
                                                 div()
                                                     .font_weight(FontWeight::MEDIUM)
@@ -3592,13 +4767,14 @@ impl TinyShell {
             )
             .child(
                 v_flex()
+                    .flex_none()
                     .rounded_lg()
                     .border_1()
                     .border_color(cx.theme().border)
                     .overflow_hidden()
                     .child(
                         h_flex()
-                            .h(px(30.))
+                            .h(px(26.))
                             .items_center()
                             .p(px(2.))
                             .gap_1()
@@ -3624,7 +4800,7 @@ impl TinyShell {
                                         muted_fg
                                     })
                                     .text_center()
-                                    .text_size(rems(0.76))
+                                    .text_size(rems(0.7))
                                     .font_weight(if process_view == ProcessView::Memory {
                                         FontWeight::SEMIBOLD
                                     } else {
@@ -3657,7 +4833,7 @@ impl TinyShell {
                                         muted_fg
                                     })
                                     .text_center()
-                                    .text_size(rems(0.76))
+                                    .text_size(rems(0.7))
                                     .font_weight(if process_view == ProcessView::Cpu {
                                         FontWeight::SEMIBOLD
                                     } else {
@@ -3690,7 +4866,7 @@ impl TinyShell {
                                         muted_fg
                                     })
                                     .text_center()
-                                    .text_size(rems(0.76))
+                                    .text_size(rems(0.7))
                                     .font_weight(if process_view == ProcessView::Activity {
                                         FontWeight::SEMIBOLD
                                     } else {
@@ -3706,7 +4882,7 @@ impl TinyShell {
                     .children(displayed_processes.into_iter().enumerate().map(
                         |(index, process)| {
                             h_flex()
-                                .h(px(29.))
+                                .h(px(23.))
                                 .items_center()
                                 .when(index % 2 == 1, |this| {
                                     this.bg(cx.theme().muted.opacity(0.22))
@@ -3716,7 +4892,7 @@ impl TinyShell {
                                         .flex_1()
                                         .min_w(px(0.))
                                         .text_center()
-                                        .text_size(rems(0.73))
+                                        .text_size(rems(0.69))
                                         .child(format_bytes(process.memory_bytes)),
                                 )
                                 .child(
@@ -3724,7 +4900,7 @@ impl TinyShell {
                                         .flex_1()
                                         .min_w(px(0.))
                                         .text_center()
-                                        .text_size(rems(0.73))
+                                        .text_size(rems(0.69))
                                         .child(format!("{:.1}%", process.cpu_percent)),
                                 )
                                 .child(
@@ -3736,7 +4912,7 @@ impl TinyShell {
                                         .whitespace_nowrap()
                                         .text_ellipsis()
                                         .text_center()
-                                        .text_size(rems(0.73))
+                                        .text_size(rems(0.69))
                                         .child(process.command),
                                 )
                         },
@@ -3744,7 +4920,7 @@ impl TinyShell {
                     .when(no_processes, |this| {
                         this.child(
                             div()
-                                .h(px(30.))
+                                .h(px(26.))
                                 .flex()
                                 .items_center()
                                 .justify_center()
@@ -3756,6 +4932,7 @@ impl TinyShell {
             )
             .child(
                 v_flex()
+                    .flex_none()
                     .rounded_lg()
                     .border_1()
                     .border_color(cx.theme().border)
@@ -3859,19 +5036,19 @@ impl TinyShell {
                     )
                     .child(
                         div()
-                            .h(px(88.))
-                            .p_2()
-                            .mx_3()
+                            .h(px(68.))
+                            .p_1()
+                            .mx_2()
                             .mb_3()
                             .rounded_md()
                             .bg(cx.theme().muted.opacity(0.18))
                             .child(
                                 h_flex()
                                     .size_full()
-                                    .gap_2()
+                                    .gap_1()
                                     .child(
                                         v_flex()
-                                            .w(px(34.))
+                                            .w(px(28.))
                                             .h_full()
                                             .flex_none()
                                             .py_1()
@@ -3897,10 +5074,7 @@ impl TinyShell {
                                                     .child(network_axis_labels[2].clone()),
                                             )
                                             .child(
-                                                div()
-                                                    .w_full()
-                                                    .text_right()
-                                                    .child("0K"),
+                                                div().w_full().text_right().child("0K"),
                                             ),
                                     )
                                     .child(canvas(
@@ -3912,8 +5086,8 @@ impl TinyShell {
                                             return None;
                                         }
                                         let max_value = network_chart_max.max(1.0);
-                                        let plot_left = bounds.origin.x + px(4.);
-                                        let plot_right = bounds.origin.x + bounds.size.width - px(4.);
+                                        let plot_left = bounds.origin.x + px(1.);
+                                        let plot_right = bounds.origin.x + bounds.size.width - px(2.);
                                         let plot_top = bounds.origin.y + px(5.);
                                         let baseline = bounds.origin.y + bounds.size.height - px(5.);
                                         let plot_width = plot_right - plot_left;
@@ -4015,142 +5189,122 @@ impl TinyShell {
             )
             .child(
                 v_flex()
+                    .flex_1()
+                    .min_h(px(62.))
                     .rounded_lg()
                     .border_1()
                     .border_color(cx.theme().border)
                     .overflow_hidden()
                     .child(
                         h_flex()
-                            .h(px(36.))
-                            .px_3()
+                            .h(px(30.))
+                            .flex_none()
+                            .px_2()
                             .justify_between()
                             .items_center()
                             .bg(cx.theme().muted)
                             .child(
                                 div()
-                                    .text_size(rems(0.82))
+                                    .text_size(rems(0.76))
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .child(t!("disk").to_string()),
                             )
                             .child(
                                 div()
-                                    .text_size(rems(0.68))
+                                    .text_size(rems(0.64))
                                     .text_color(muted_fg)
-                                    .child(format!(
-                                        "{} {}",
-                                        self.system.filesystems.len(),
-                                        t!("mounts")
-                                    )),
+                                    .child(t!("available_size")),
                             ),
                     )
                     .child(
-                        v_flex()
+                        div()
+                            .relative()
                             .w_full()
+                            .flex_1()
+                            .min_h(px(0.))
+                            .overflow_hidden()
                             .child(
-                                h_flex()
-                                    .h(px(32.))
-                                    .flex_none()
-                                    .items_center()
-                                    .px_3()
-                                    .border_t_1()
-                                    .border_b_1()
-                                    .border_color(cx.theme().border.opacity(0.7))
-                                    .text_size(rems(0.72))
-                                    .text_color(muted_fg)
-                                    .child(div().flex_1().min_w(px(0.)).child(t!("disk_path")))
-                                    .child(
-                                        div()
-                                            .flex_1()
-                                            .min_w(px(0.))
-                                            .text_right()
-                                            .child(t!("available_size")),
-                                    ),
+                                v_flex()
+                                    .id("sidebar-disk-scroll")
+                                    .track_scroll(&self.disk_scroll_handle)
+                                    .overflow_y_scroll()
+                                    .h_full()
+                                    .min_h(px(0.))
+                                    .children(self.system.filesystems.iter().enumerate().map(
+                                        |(index, disk)| {
+                                            let mount = disk.mount.clone();
+                                            let capacity = format!(
+                                                "{} / {}",
+                                                format_bytes(disk.available_bytes),
+                                                format_bytes(disk.total_bytes)
+                                            );
+                                            h_flex()
+                                                .h(px(28.))
+                                                .flex_none()
+                                                .items_center()
+                                                .px_2()
+                                                    .border_b_1()
+                                                    .border_color(cx.theme().border.opacity(0.35))
+                                                    .when(index % 2 == 1, |this| {
+                                                        this.bg(cx.theme().muted.opacity(0.22))
+                                                    })
+                                                    .child(
+                                                        div()
+                                                            .id(("sidebar-disk-mount", index))
+                                                            .flex_1()
+                                                            .min_w(px(0.))
+                                                            .overflow_hidden()
+                                                        .whitespace_nowrap()
+                                                        .text_ellipsis()
+                                                        .text_size(rems(0.68))
+                                                            .font_weight(FontWeight::MEDIUM)
+                                                            .tooltip({
+                                                                let mount = mount.clone();
+                                                                move |window, cx| {
+                                                                    gpui_component::tooltip::Tooltip::new(
+                                                                        mount.clone(),
+                                                                    )
+                                                                    .build(window, cx)
+                                                                }
+                                                            })
+                                                            .child(mount),
+                                                    )
+                                                    .child(
+                                                        div()
+                                                            .id(("sidebar-disk-capacity", index))
+                                                        .flex_1()
+                                                        .min_w(px(0.))
+                                                        .text_right()
+                                                        .pr_1()
+                                                            .overflow_hidden()
+                                                            .whitespace_nowrap()
+                                                            .text_ellipsis()
+                                                        .text_size(rems(0.66))
+                                                            .text_color(muted_fg)
+                                                            .tooltip({
+                                                                let capacity = capacity.clone();
+                                                                move |window, cx| {
+                                                                    gpui_component::tooltip::Tooltip::new(
+                                                                        capacity.clone(),
+                                                                    )
+                                                                    .build(window, cx)
+                                                                }
+                                                            })
+                                                            .child(capacity),
+                                                    )
+                                        },
+                                    )),
                             )
                             .child(
                                 div()
-                                    .relative()
-                                    .w_full()
+                                    .absolute()
+                                    .top_0()
+                                    .right_0()
+                                    .bottom_0()
+                                    .w(px(8.))
                                     .child(
-                                        v_flex()
-                                            .id("sidebar-disk-scroll")
-                                            .track_scroll(&self.disk_scroll_handle)
-                                            .overflow_y_scroll()
-                                            .max_h(px(228.))
-                                            .children(self.system.filesystems.iter().enumerate().map(
-                                                |(index, disk)| {
-                                                    let mount = disk.mount.clone();
-                                                    let capacity = format!(
-                                                        "{} / {}",
-                                                        format_bytes(disk.available_bytes),
-                                                        format_bytes(disk.total_bytes)
-                                                    );
-                                                    h_flex()
-                                                        .h(px(36.))
-                                                        .items_center()
-                                                        .px_3()
-                                                        .border_b_1()
-                                                        .border_color(cx.theme().border.opacity(0.35))
-                                                        .when(index % 2 == 1, |this| {
-                                                            this.bg(cx.theme().muted.opacity(0.22))
-                                                        })
-                                                        .child(
-                                                            div()
-                                                                .id(("sidebar-disk-mount", index))
-                                                                .flex_1()
-                                                                .min_w(px(0.))
-                                                                .overflow_hidden()
-                                                                .whitespace_nowrap()
-                                                                .text_ellipsis()
-                                                                .text_size(rems(0.73))
-                                                                .font_weight(FontWeight::MEDIUM)
-                                                                .tooltip({
-                                                                    let mount = mount.clone();
-                                                                    move |window, cx| {
-                                                                        gpui_component::tooltip::Tooltip::new(
-                                                                            mount.clone(),
-                                                                        )
-                                                                        .build(window, cx)
-                                                                    }
-                                                                })
-                                                                .child(mount),
-                                                        )
-                                                        .child(
-                                                            div()
-                                                                .id(("sidebar-disk-capacity", index))
-                                                                .flex_1()
-                                                                .min_w(px(0.))
-                                                                .text_right()
-                                                                .pr_2()
-                                                                .overflow_hidden()
-                                                                .whitespace_nowrap()
-                                                                .text_ellipsis()
-                                                                .text_size(rems(0.7))
-                                                                .text_color(muted_fg)
-                                                                .tooltip({
-                                                                    let capacity = capacity.clone();
-                                                                    move |window, cx| {
-                                                                        gpui_component::tooltip::Tooltip::new(
-                                                                            capacity.clone(),
-                                                                        )
-                                                                        .build(window, cx)
-                                                                    }
-                                                                })
-                                                                .child(capacity),
-                                                        )
-                                                },
-                                            )),
-                                    )
-                                    .child(
-                                        div()
-                                            .absolute()
-                                            .top_0()
-                                            .right_0()
-                                            .bottom_0()
-                                            .w(px(8.))
-                                            .child(
-                                                Scrollbar::vertical(&self.disk_scroll_handle)
-                                                    .scrollbar_show(ScrollbarShow::Scrolling),
-                                            ),
+                                        Scrollbar::vertical(&self.disk_scroll_handle)
+                                            .scrollbar_show(ScrollbarShow::Scrolling),
                                     ),
                             ),
                     ),
@@ -4190,16 +5344,29 @@ impl TinyShell {
             .first()
             .map(|entry| entry.address.clone())
             .unwrap_or_else(|| "-".to_string());
+        let load_values = self
+            .system
+            .load_average
+            .split(|character: char| character == ',' || character.is_whitespace())
+            .filter(|value| !value.is_empty())
+            .take(3)
+            .map(ToOwned::to_owned)
+            .collect::<Vec<_>>();
+        let load_value = |index: usize| {
+            load_values
+                .get(index)
+                .cloned()
+                .unwrap_or_else(|| "--".to_string())
+        };
+        let load_one = load_value(0);
+        let load_five = load_value(1);
+        let load_fifteen = load_value(2);
 
-        v_flex()
+        let content = v_flex()
             .gap_2()
-            .w_full()
-            .h_full()
-            .min_w(px(0.))
+            .flex_1()
+            .min_h(px(0.))
             .p_2()
-            .border_r_1()
-            .border_color(cx.theme().sidebar_border)
-            .bg(cx.theme().sidebar)
             .overflow_hidden()
             .child(
                 h_flex()
@@ -4224,7 +5391,7 @@ impl TinyShell {
                                         div()
                                             .font_weight(FontWeight::BOLD)
                                             .text_size(rems(1.25))
-                                            .child("tiny-shell"),
+                                            .child(t!("app_name")),
                                     )
                                     .child(
                                         div()
@@ -4248,9 +5415,7 @@ impl TinyShell {
                                                         .right(px(-2.))
                                                         .size(px(6.))
                                                         .rounded_full()
-                                                        .border_1()
-                                                        .border_color(cx.theme().sidebar)
-                                                        .bg(hsla(0., 0.82, 0.57, 1.0)),
+                                                        .bg(cx.theme().danger),
                                                 )
                                             }),
                                     ),
@@ -4288,21 +5453,14 @@ impl TinyShell {
                                     .text_size(rems(0.8))
                                     .child(t!("server_ip")),
                             )
-                            .child(
-                                h_flex()
+                            .child({
+                                let trigger_ip = primary_ip.clone();
+                                let trigger = h_flex()
                                     .id("sidebar-ip-list")
                                     .flex_1()
                                     .min_w(px(0.))
                                     .items_center()
                                     .gap_1()
-                                    .relative()
-                                    .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
-                                        if *hovered {
-                                            this.show_ip_popover(cx);
-                                        } else {
-                                            this.schedule_ip_popover_hide(cx);
-                                        }
-                                    }))
                                     .child(
                                         div()
                                             .id("sidebar-primary-ip")
@@ -4313,174 +5471,161 @@ impl TinyShell {
                                             .text_ellipsis()
                                             .cursor_pointer()
                                             .text_size(rems(0.8))
-                                            .on_click({
-                                                let ip = primary_ip.clone();
-                                                cx.listener(move |_this, _, _, cx| {
-                                                    cx.write_to_clipboard(
-                                                        gpui::ClipboardItem::new_string(ip.clone()),
-                                                    );
-                                                })
+                                            .on_click(move |_, _, cx| {
+                                                cx.write_to_clipboard(
+                                                    gpui::ClipboardItem::new_string(
+                                                        trigger_ip.clone(),
+                                                    ),
+                                                );
                                             })
                                             .child(primary_ip),
-                                    )
-                                    .when(
-                                        self.ip_popover_visible && ip_address_entries.len() > 1,
-                                        |this| {
-                                            this.child(
-                                                deferred(
+                                    );
+
+                                if ip_address_entries.len() > 1 {
+                                    let popover_entries = ip_address_entries.clone();
+                                    HoverCard::new("sidebar-ip-hover-card")
+                                        .anchor(Anchor::TopRight)
+                                        .open_delay(Duration::ZERO)
+                                        .close_delay(Duration::from_millis(350))
+                                        .trigger(trigger)
+                                        .content(move |_, _, cx| {
+                                            v_flex()
+                                                .w(px(300.))
+                                                .gap_1()
+                                                .child(
+                                                    h_flex()
+                                                        .px_1()
+                                                        .pb_1()
+                                                        .items_center()
+                                                        .justify_between()
+                                                        .child(
+                                                            div()
+                                                                .text_size(rems(0.72))
+                                                                .font_weight(FontWeight::SEMIBOLD)
+                                                                .child(t!("ip_address")),
+                                                        )
+                                                        .child(
+                                                            div()
+                                                                .text_size(rems(0.62))
+                                                                .text_color(
+                                                                    cx.theme().muted_foreground,
+                                                                )
+                                                                .child(t!("click_to_copy")),
+                                                        ),
+                                                )
+                                                .child(
                                                     v_flex()
-                                                    .id("sidebar-ip-popover")
-                                                    .absolute()
-                                                    .top(px(22.))
-                                                    .left(px(-56.))
-                                                    .right_0()
-                                                    .p_2()
-                                                    .gap_1()
-                                                    .rounded_lg()
-                                                    .border_1()
-                                                    .border_color(cx.theme().border)
-                                                    .bg(cx.theme().background)
-                                                    .shadow_lg()
-                                                    .occlude()
-                                                    .on_hover(cx.listener(
-                                                        |this, hovered: &bool, _, cx| {
-                                                            if *hovered {
-                                                                this.show_ip_popover(cx);
-                                                            } else {
-                                                                this.schedule_ip_popover_hide(cx);
-                                                            }
-                                                        },
-                                                    ))
-                                                    .child(
-                                                        h_flex()
-                                                            .px_1()
-                                                            .pb_1()
-                                                            .items_center()
-                                                            .justify_between()
-                                                            .child(
-                                                                div()
-                                                                    .text_size(rems(0.72))
-                                                                    .font_weight(
-                                                                        FontWeight::SEMIBOLD,
-                                                                    )
-                                                                    .child(t!("ip_address")),
-                                                            )
-                                                            .child(
-                                                                div()
-                                                                    .text_size(rems(0.62))
-                                                                    .text_color(
-                                                                        cx.theme()
-                                                                            .muted_foreground,
-                                                                    )
-                                                                    .child(t!("click_to_copy")),
-                                                            ),
-                                                    )
-                                                    .child(
-                                                        v_flex()
-                                                            .rounded_md()
-                                                            .border_1()
-                                                            .border_color(cx.theme().border)
-                                                            .overflow_hidden()
-                                                            .child(
-                                                                h_flex()
-                                                                    .h(px(26.))
-                                                                    .px_2()
-                                                                    .items_center()
-                                                                    .bg(cx.theme().muted)
-                                                                    .text_size(rems(0.64))
-                                                                    .text_color(
-                                                                        cx.theme()
-                                                                            .muted_foreground,
-                                                                    )
-                                                                    .child(
-                                                                        div()
-                                                                            .w(px(68.))
-                                                                            .flex_none()
-                                                                            .child(t!(
-                                                                                "network_interface"
-                                                                            )),
-                                                                    )
-                                                                    .child(
-                                                                        div()
-                                                                            .flex_1()
-                                                                            .child(t!("ip_address")),
-                                                                    ),
-                                                            )
-                                                            .children(
-                                                                ip_address_entries
-                                                                    .clone()
-                                                                    .into_iter()
-                                                                    .enumerate()
-                                                                    .map(|(index, entry)| {
-                                                                        let copied_ip =
-                                                                            entry.address.clone();
-                                                                        let tooltip = format!(
-                                                                            "{}\n{}",
-                                                                            entry.interface,
-                                                                            entry.address
-                                                                        );
-                                                                        h_flex()
-                                                                            .id((
-                                                                                "sidebar-copy-ip",
-                                                                                index,
-                                                                            ))
-                                                                            .h(px(30.))
-                                                                            .px_2()
-                                                                            .items_center()
-                                                                            .cursor_pointer()
-                                                                            .text_size(rems(0.68))
-                                                                            .border_t_1()
-                                                                            .border_color(
-                                                                                cx.theme()
-                                                                                    .border
-                                                                                    .opacity(0.5),
+                                                        .rounded_md()
+                                                        .border_1()
+                                                        .border_color(cx.theme().border)
+                                                        .overflow_hidden()
+                                                        .child(
+                                                            h_flex()
+                                                                .h(px(26.))
+                                                                .px_2()
+                                                                .items_center()
+                                                                .bg(cx.theme().muted)
+                                                                .text_size(rems(0.64))
+                                                                .text_color(
+                                                                    cx.theme().muted_foreground,
+                                                                )
+                                                                .child(
+                                                                    div()
+                                                                        .w(px(68.))
+                                                                        .flex_none()
+                                                                        .child(t!(
+                                                                            "network_interface"
+                                                                        )),
+                                                                )
+                                                                .child(
+                                                                    div()
+                                                                        .flex_1()
+                                                                        .child(t!("ip_address")),
+                                                                ),
+                                                        )
+                                                        .children(
+                                                            popover_entries
+                                                                .clone()
+                                                                .into_iter()
+                                                                .enumerate()
+                                                                .map(|(index, entry)| {
+                                                                    let copied_ip =
+                                                                        entry.address.clone();
+                                                                    let tooltip = format!(
+                                                                        "{}\n{}",
+                                                                        entry.interface,
+                                                                        entry.address
+                                                                    );
+                                                                    h_flex()
+                                                                        .id((
+                                                                            "sidebar-copy-ip",
+                                                                            index,
+                                                                        ))
+                                                                        .h(px(30.))
+                                                                        .px_2()
+                                                                        .items_center()
+                                                                        .cursor_pointer()
+                                                                        .text_size(rems(0.68))
+                                                                        .border_t_1()
+                                                                        .border_color(
+                                                                            cx.theme()
+                                                                                .border
+                                                                                .opacity(0.5),
+                                                                        )
+                                                                        .hover(|this| {
+                                                                            this.bg(
+                                                                                cx.theme().muted,
                                                                             )
-                                                                            .hover(|this| {
-                                                                                this.bg(cx.theme().muted)
-                                                                            })
-                                                                            .tooltip(move |window, cx| {
+                                                                        })
+                                                                        .tooltip(
+                                                                            move |window, cx| {
                                                                                 gpui_component::tooltip::Tooltip::new(
                                                                                     tooltip.clone(),
                                                                                 )
                                                                                 .build(window, cx)
-                                                                            })
-                                                                            .on_click(cx.listener(
-                                                                                move |_this, _, _, cx| {
-                                                                                    cx.write_to_clipboard(
-                                                                                        gpui::ClipboardItem::new_string(
-                                                                                            copied_ip.clone(),
-                                                                                        ),
-                                                                                    );
-                                                                                },
-                                                                            ))
-                                                                            .child(
-                                                                                div()
-                                                                                    .w(px(68.))
-                                                                                    .flex_none()
-                                                                                    .min_w(px(0.))
-                                                                                    .overflow_hidden()
-                                                                                    .whitespace_nowrap()
-                                                                                    .text_ellipsis()
-                                                                                    .child(entry.interface),
-                                                                            )
-                                                                            .child(
-                                                                                div()
-                                                                                    .flex_1()
-                                                                                    .min_w(px(0.))
-                                                                                    .overflow_hidden()
-                                                                                    .whitespace_nowrap()
-                                                                                    .text_ellipsis()
-                                                                                    .child(entry.address),
-                                                                            )
-                                                                    }),
-                                                            ),
-                                                    ),
+                                                                            },
+                                                                        )
+                                                                        .on_click(
+                                                                            move |_, _, cx| {
+                                                                                cx.write_to_clipboard(
+                                                                                    gpui::ClipboardItem::new_string(
+                                                                                        copied_ip.clone(),
+                                                                                    ),
+                                                                                );
+                                                                            },
+                                                                        )
+                                                                        .child(
+                                                                            div()
+                                                                                .w(px(68.))
+                                                                                .flex_none()
+                                                                                .min_w(px(0.))
+                                                                                .overflow_hidden()
+                                                                                .whitespace_nowrap()
+                                                                                .text_ellipsis()
+                                                                                .child(
+                                                                                    entry.interface,
+                                                                                ),
+                                                                        )
+                                                                        .child(
+                                                                            div()
+                                                                                .flex_1()
+                                                                                .min_w(px(0.))
+                                                                                .overflow_hidden()
+                                                                                .whitespace_nowrap()
+                                                                                .text_ellipsis()
+                                                                                .child(
+                                                                                    entry.address,
+                                                                                ),
+                                                                        )
+                                                                }),
+                                                        ),
                                                 )
-                                                .priority(10),
-                                            )
-                                        },
-                                    ),
-                            ),
+                                        })
+                                        .into_any_element()
+                                } else {
+                                    trigger.into_any_element()
+                                }
+                            }),
                     )
                     .child(
                         h_flex()
@@ -4561,10 +5706,69 @@ impl TinyShell {
                         div()
                             .flex_1()
                             .min_h(px(0.))
-                            .overflow_y_scrollbar()
+                            .overflow_hidden()
                             .child(self.render_sidebar_monitoring_panel(cx)),
                     )
                 },
+            );
+
+        v_flex()
+            .w_full()
+            .h_full()
+            .min_w(px(0.))
+            .border_r_1()
+            .border_color(cx.theme().sidebar_border)
+            .bg(cx.theme().sidebar)
+            .overflow_hidden()
+            .child(content)
+            .child(
+                h_flex()
+                    .w_full()
+                    .h(px(24.))
+                    .flex_none()
+                    .items_center()
+                    .gap_1()
+                    .px_3()
+                    .border_t_1()
+                    .border_color(cx.theme().border)
+                    .bg(cx.theme().tab_bar)
+                    .text_size(rems(0.68))
+                    .text_color(cx.theme().muted_foreground)
+                    .child(
+                        Icon::new(IconName::Cpu)
+                            .with_size(Size::Small)
+                            .text_color(cx.theme().primary),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_ellipsis()
+                            .child(t!("sidebar_system_load")),
+                    )
+                    .child(
+                        h_flex()
+                            .items_center()
+                            .gap_1()
+                            .child(div().size(px(6.)).rounded_full().bg(gpui::rgb(0x36B37E)))
+                            .child(load_one),
+                    )
+                    .child(
+                        h_flex()
+                            .items_center()
+                            .gap_1()
+                            .child(div().size(px(6.)).rounded_full().bg(gpui::rgb(0x7C8494)))
+                            .child(load_five),
+                    )
+                    .child(
+                        h_flex()
+                            .items_center()
+                            .gap_1()
+                            .child(div().size(px(6.)).rounded_full().bg(gpui::rgb(0x8B5CF6)))
+                            .child(load_fifteen),
+                    ),
             )
     }
 
@@ -5169,7 +6373,19 @@ impl TinyShell {
                                                         .rounded_full()
                                                         .bg(dot_color),
                                                 )
-                                                .child(div().min_w(px(0.)).child(label)),
+                                                .child(div().min_w(px(0.)).child(label))
+                                                .context_menu({
+                                                    let view = view.clone();
+                                                    move |menu, window, cx| {
+                                                        Self::build_tab_context_menu(
+                                                            menu,
+                                                            view.clone(),
+                                                            context_gid.clone(),
+                                                            window,
+                                                            cx,
+                                                        )
+                                                    }
+                                                }),
                                         )
                                         .on_click(cx.listener(move |this, _, window, cx| {
                                             this.activate_group(gid.clone(), window, cx)
@@ -5196,18 +6412,6 @@ impl TinyShell {
                                                         }
                                                     },
                                                 )),
-                                        )
-                                        .on_mouse_down(
-                                            MouseButton::Right,
-                                            cx.listener(move |this, event: &MouseDownEvent, _, cx| {
-                                                this.tab_context_menu = Some(
-                                                    TabContextMenuState {
-                                                        group_id: context_gid.clone(),
-                                                        position: event.position,
-                                                    },
-                                                );
-                                                cx.notify();
-                                            }),
                                         )
                                 },
                             )
@@ -5345,6 +6549,8 @@ impl TinyShell {
         let has_active = self.active_tab.is_some();
         let pane_tree = self.pane_root.clone();
         let view = cx.entity();
+        let bounds_view = view.clone();
+        let menu_view = view.clone();
 
         v_flex()
             .size_full()
@@ -5360,7 +6566,7 @@ impl TinyShell {
                     .rounded_lg()
                     .bg(cx.theme().background)
                     .on_prepaint(move |bounds, _window, cx| {
-                        view.update(cx, |this, cx| {
+                        bounds_view.update(cx, |this, cx| {
                             if this.terminal_panel_bounds != Some(bounds) {
                                 this.terminal_panel_bounds = Some(bounds);
                                 cx.notify();
@@ -5371,10 +6577,6 @@ impl TinyShell {
                     .track_focus(&self.focus_handle)
                     .key_context(TERMINAL_KEY_CONTEXT)
                     .on_mouse_down(MouseButton::Left, cx.listener(Self::focus_terminal))
-                    .on_mouse_down(
-                        MouseButton::Right,
-                        cx.listener(Self::on_terminal_right_click),
-                    )
                     .on_mouse_move(cx.listener(Self::on_terminal_mouse_move))
                     .on_mouse_up(MouseButton::Left, cx.listener(Self::on_terminal_mouse_up))
                     .on_key_down(cx.listener(Self::on_terminal_key_down))
@@ -5385,6 +6587,9 @@ impl TinyShell {
                         Self::render_pane_tree(self, &pane_tree, &[], cx).into_any_element()
                     } else {
                         self.render_home_page(cx).into_any_element()
+                    })
+                    .context_menu(move |menu, window, cx| {
+                        Self::build_terminal_context_menu(menu, menu_view.clone(), window, cx)
                     }),
             )
             // Keep terminal input in the terminal itself, while making the
@@ -5690,91 +6895,6 @@ impl TinyShell {
                     );
                 }
 
-                // A failed SSH attempt belongs to this terminal pane, not to
-                // the entire application window. Keeping the recovery card
-                // here leaves other tabs, the sidebar, and SFTP usable.
-                if let Some(progress) = this
-                    .connection_progress
-                    .clone()
-                    .filter(|progress| progress.tab_id == *tab_id && progress.failed)
-                {
-                    el = div().size_full().relative().child(el).child(
-                        div()
-                            .absolute()
-                            .top_0()
-                            .left_0()
-                            .right_0()
-                            .bottom_0()
-                            .bg(gpui::Hsla {
-                                h: 0.0,
-                                s: 0.0,
-                                l: 0.0,
-                                a: 0.28,
-                            })
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .p_4()
-                            .child(
-                                v_flex()
-                                    .w(px(420.))
-                                    .max_w_full()
-                                    .gap_3()
-                                    .p_4()
-                                    .rounded_lg()
-                                    .border_1()
-                                    .border_color(cx.theme().border)
-                                    .bg(cx.theme().popover)
-                                    .shadow_lg()
-                                    .child(
-                                        h_flex()
-                                            .items_center()
-                                            .gap_2()
-                                            .child(
-                                                Icon::new(IconName::Close)
-                                                    .with_size(Size::Small)
-                                                    .text_color(cx.theme().danger),
-                                            )
-                                            .child(
-                                                div()
-                                                    .font_weight(FontWeight::SEMIBOLD)
-                                                    .child(progress.title.clone()),
-                                            ),
-                                    )
-                                    .child(div().max_h(px(180.)).overflow_y_scrollbar().children(
-                                        progress.lines.iter().cloned().map(|line| {
-                                            div()
-                                                .text_size(rems(0.875))
-                                                .text_color(cx.theme().danger)
-                                                .child(line)
-                                        }),
-                                    ))
-                                    .child(
-                                        h_flex()
-                                            .justify_end()
-                                            .gap_2()
-                                            .child(
-                                                Button::new(format!("pane-connect-retry-{tab_id}"))
-                                                    .primary()
-                                                    .label(t!("retry").to_string())
-                                                    .on_click(cx.listener(|this, _, _, cx| {
-                                                        this.retry_connection_progress(cx);
-                                                    })),
-                                            )
-                                            .child(
-                                                Button::new(format!(
-                                                    "pane-connect-cancel-{tab_id}"
-                                                ))
-                                                .secondary()
-                                                .label(t!("cancel").to_string())
-                                                .on_click(cx.listener(|this, _, _, cx| {
-                                                    this.cancel_connection_progress(cx);
-                                                })),
-                                            ),
-                                    ),
-                            ),
-                    );
-                }
                 let indicator_color = this
                     .tabs
                     .iter()
@@ -5946,6 +7066,545 @@ impl TinyShell {
                 .into_any_element(),
         }
     }
+
+    fn build_sftp_tree_context_menu(
+        menu: PopupMenu,
+        view: gpui::Entity<TinyShell>,
+        remote_path: String,
+        permissions: Option<u32>,
+        window: &mut Window,
+        _cx: &mut Context<PopupMenu>,
+    ) -> PopupMenu {
+        let can_mutate_target = remote_path != "/";
+
+        menu.item(
+            PopupMenuItem::new(t!("refresh").to_string()).on_click(window.listener_for(&view, {
+                let remote_path = remote_path.clone();
+                move |this, _, _, cx| {
+                    if let Some(handle) = this.active_sftp_handle() {
+                        handle.list_directory_tree(remote_path.clone());
+                    }
+                    if this
+                        .active_sftp()
+                        .is_some_and(|sftp| sftp.current_path == remote_path)
+                    {
+                        this.refresh_sftp(cx);
+                    } else {
+                        cx.notify();
+                    }
+                }
+            })),
+        )
+        .separator()
+        .item(
+            PopupMenuItem::new(t!("sftp_new_folder").to_string()).on_click(window.listener_for(
+                &view,
+                {
+                    let remote_path = remote_path.clone();
+                    move |this, _, window, cx| {
+                        this.navigate_sftp(remote_path.clone(), cx);
+                        this.show_sftp_create_dialog(true, window, cx);
+                    }
+                },
+            )),
+        )
+        .item(
+            PopupMenuItem::new(t!("sftp_rename").to_string())
+                .disabled(!can_mutate_target)
+                .on_click(window.listener_for(&view, {
+                    let remote_path = remote_path.clone();
+                    move |this, _, window, cx| {
+                        this.show_sftp_rename_dialog(remote_path.clone(), window, cx);
+                    }
+                })),
+        )
+        .item(
+            PopupMenuItem::new(t!("delete").to_string())
+                .disabled(!can_mutate_target)
+                .on_click(window.listener_for(&view, {
+                    let remote_path = remote_path.clone();
+                    move |this, _, window, cx| {
+                        this.show_sftp_delete_paths_confirm_dialog(
+                            vec![remote_path.clone()],
+                            false,
+                            window,
+                            cx,
+                        );
+                    }
+                })),
+        )
+        .item(
+            PopupMenuItem::new(t!("sftp_quick_delete").to_string())
+                .disabled(!can_mutate_target)
+                .on_click(window.listener_for(&view, {
+                    let remote_path = remote_path.clone();
+                    move |this, _, window, cx| {
+                        this.show_sftp_delete_paths_confirm_dialog(
+                            vec![remote_path.clone()],
+                            true,
+                            window,
+                            cx,
+                        );
+                    }
+                })),
+        )
+        .separator()
+        .item(
+            PopupMenuItem::new(t!("sftp_copy_path").to_string()).on_click(window.listener_for(
+                &view,
+                {
+                    let remote_path = remote_path.clone();
+                    move |_, _, _, cx| {
+                        cx.write_to_clipboard(gpui::ClipboardItem::new_string(remote_path.clone()));
+                    }
+                },
+            )),
+        )
+        .separator()
+        .item(
+            PopupMenuItem::new(t!("download").to_string()).on_click(window.listener_for(&view, {
+                let remote_path = remote_path.clone();
+                move |this, _, window, cx| {
+                    this.download_sftp_entry(remote_path.clone(), window, cx);
+                }
+            })),
+        )
+        .item(
+            PopupMenuItem::new(t!("upload").to_string()).on_click(window.listener_for(&view, {
+                let remote_path = remote_path.clone();
+                move |this, _, window, cx| {
+                    this.upload_sftp_files_to(remote_path.clone(), window, cx);
+                }
+            })),
+        )
+        .separator()
+        .item(
+            PopupMenuItem::new(t!("sftp_file_permissions").to_string()).on_click(
+                window.listener_for(&view, move |this, _, window, cx| {
+                    this.show_sftp_permissions_dialog(
+                        remote_path.clone(),
+                        true,
+                        permissions,
+                        window,
+                        cx,
+                    );
+                }),
+            ),
+        )
+    }
+
+    fn build_sftp_tree_empty_context_menu(
+        menu: PopupMenu,
+        view: gpui::Entity<TinyShell>,
+        remote_path: String,
+        window: &mut Window,
+        _cx: &mut Context<PopupMenu>,
+    ) -> PopupMenu {
+        menu.item(
+            PopupMenuItem::new(t!("sftp_new_folder").to_string()).on_click(window.listener_for(
+                &view,
+                move |this, _, window, cx| {
+                    this.navigate_sftp(remote_path.clone(), cx);
+                    this.show_sftp_create_dialog(true, window, cx);
+                },
+            )),
+        )
+    }
+
+    fn build_sftp_context_menu(
+        mut menu: PopupMenu,
+        view: gpui::Entity<TinyShell>,
+        window: &mut Window,
+        cx: &mut Context<PopupMenu>,
+    ) -> PopupMenu {
+        let target = view.read(cx).sftp_context_menu.clone();
+        let has_target = target
+            .as_ref()
+            .is_some_and(|target| target.remote_path.is_some());
+        let is_file = target
+            .as_ref()
+            .is_some_and(|target| target.remote_path.is_some() && !target.is_dir);
+        let editable = target
+            .as_ref()
+            .and_then(|target| target.remote_path.as_deref())
+            .is_some_and(is_editable_text_file);
+        let external_editor_set = !view.read(cx).config.sftp_external_editor().is_empty();
+
+        menu = menu
+            .item(
+                PopupMenuItem::new(t!("refresh").to_string()).on_click(window.listener_for(
+                    &view,
+                    |this, _, _, cx| {
+                        this.sftp_context_menu = None;
+                        this.refresh_sftp(cx);
+                    },
+                )),
+            )
+            .separator()
+            .item(
+                PopupMenuItem::new(t!("sftp_open").to_string())
+                    .disabled(!has_target)
+                    .on_click(window.listener_for(&view, |this, _, _, cx| {
+                        this.trigger_sftp_context_open(cx);
+                    })),
+            );
+
+        menu = if is_file {
+            menu.submenu(t!("sftp_open_with").to_string(), window, cx, {
+                let view = view.clone();
+                move |submenu, window, _| {
+                    submenu
+                        .item(
+                            PopupMenuItem::new(t!("sftp_text_editor").to_string())
+                                .disabled(!editable)
+                                .on_click(window.listener_for(&view, |this, _, _, cx| {
+                                    this.trigger_sftp_context_internal_editor(cx);
+                                })),
+                        )
+                        .item(
+                            PopupMenuItem::new(t!("sftp_system_association").to_string()).on_click(
+                                window.listener_for(&view, |this, _, _, cx| {
+                                    this.trigger_sftp_context_system_open(cx);
+                                }),
+                            ),
+                        )
+                }
+            })
+        } else {
+            menu.item(PopupMenuItem::new(t!("sftp_open_with").to_string()).disabled(true))
+        };
+
+        menu = if is_file {
+            menu.submenu(t!("sftp_select_text_editor").to_string(), window, cx, {
+                let view = view.clone();
+                move |submenu, window, _| {
+                    submenu
+                        .item(
+                            PopupMenuItem::new(t!("sftp_internal_editor").to_string())
+                                .disabled(!editable)
+                                .on_click(window.listener_for(&view, |this, _, _, cx| {
+                                    this.trigger_sftp_context_internal_editor(cx);
+                                })),
+                        )
+                        .item(
+                            PopupMenuItem::new(t!("sftp_external_editor").to_string())
+                                .disabled(!external_editor_set)
+                                .on_click(window.listener_for(&view, |this, _, _, cx| {
+                                    this.trigger_sftp_context_external_editor(cx);
+                                })),
+                        )
+                        .separator()
+                        .item(
+                            PopupMenuItem::new(t!("sftp_set_external_editor").to_string())
+                                .on_click(window.listener_for(&view, |this, _, window, cx| {
+                                    this.choose_sftp_external_editor(window, cx);
+                                })),
+                        )
+                }
+            })
+        } else {
+            menu.item(PopupMenuItem::new(t!("sftp_select_text_editor").to_string()).disabled(true))
+        };
+
+        menu.separator()
+            .item(
+                PopupMenuItem::new(t!("sftp_copy_path").to_string())
+                    .disabled(!has_target)
+                    .on_click(window.listener_for(&view, |this, _, _, cx| {
+                        this.trigger_sftp_context_copy_path(cx);
+                    })),
+            )
+            .separator()
+            .item(
+                PopupMenuItem::new(t!("download").to_string())
+                    .disabled(!has_target)
+                    .on_click(window.listener_for(&view, |this, _, window, cx| {
+                        this.trigger_sftp_context_download(window, cx);
+                    })),
+            )
+            .item(
+                PopupMenuItem::new(t!("upload").to_string()).on_click(window.listener_for(
+                    &view,
+                    |this, _, window, cx| {
+                        this.trigger_sftp_context_upload(window, cx);
+                    },
+                )),
+            )
+            .separator()
+            .item(
+                PopupMenuItem::new(t!("sftp_pack_transfer").to_string())
+                    .disabled(!has_target)
+                    .on_click(window.listener_for(&view, |this, _, window, cx| {
+                        this.trigger_sftp_context_pack_download(window, cx);
+                    })),
+            )
+            .separator()
+            .submenu(t!("sftp_new").to_string(), window, cx, {
+                let view = view.clone();
+                move |submenu, window, _| {
+                    submenu
+                        .item(
+                            PopupMenuItem::new(t!("sftp_new_file").to_string()).on_click(
+                                window.listener_for(&view, |this, _, window, cx| {
+                                    this.trigger_sftp_context_new_file(window, cx);
+                                }),
+                            ),
+                        )
+                        .item(
+                            PopupMenuItem::new(t!("sftp_new_folder").to_string()).on_click(
+                                window.listener_for(&view, |this, _, window, cx| {
+                                    this.trigger_sftp_context_new_folder(window, cx);
+                                }),
+                            ),
+                        )
+                }
+            })
+            .separator()
+            .item(
+                PopupMenuItem::new(t!("sftp_rename").to_string())
+                    .disabled(!has_target)
+                    .on_click(window.listener_for(&view, |this, _, window, cx| {
+                        this.trigger_sftp_context_rename(window, cx);
+                    })),
+            )
+            .item(
+                PopupMenuItem::new(t!("delete").to_string())
+                    .disabled(!has_target)
+                    .on_click(window.listener_for(&view, |this, _, window, cx| {
+                        this.trigger_sftp_context_delete(false, window, cx);
+                    })),
+            )
+            .item(
+                PopupMenuItem::new(t!("sftp_quick_delete").to_string())
+                    .disabled(!has_target)
+                    .on_click(window.listener_for(&view, |this, _, window, cx| {
+                        this.trigger_sftp_context_delete(true, window, cx);
+                    })),
+            )
+            .item(
+                PopupMenuItem::new(t!("sftp_file_permissions").to_string())
+                    .disabled(!has_target)
+                    .on_click(window.listener_for(&view, |this, _, window, cx| {
+                        this.trigger_sftp_context_permissions(window, cx);
+                    })),
+            )
+    }
+
+    fn build_terminal_context_menu(
+        menu: PopupMenu,
+        view: gpui::Entity<TinyShell>,
+        window: &mut Window,
+        cx: &mut Context<PopupMenu>,
+    ) -> PopupMenu {
+        let selection = view.read(cx).active_terminal_selection_text();
+        let has_selection = selection.is_some();
+        let has_clipboard_text = cx
+            .read_from_clipboard()
+            .and_then(|item| item.text())
+            .is_some_and(|text| !text.is_empty());
+
+        menu.action_context(view.read(cx).focus_handle.clone())
+            .item(
+                PopupMenuItem::new(t!("terminal_copy").to_string())
+                    .disabled(!has_selection)
+                    .action(Box::new(crate::Copy)),
+            )
+            .item(
+                PopupMenuItem::new(t!("terminal_paste").to_string())
+                    .disabled(!has_clipboard_text)
+                    .action(Box::new(crate::Paste)),
+            )
+            .item(
+                PopupMenuItem::new(t!("terminal_paste_selection").to_string())
+                    .disabled(!has_selection)
+                    .on_click(window.listener_for(&view, move |this, _, window, cx| {
+                        if let Some(text) = selection.as_deref() {
+                            this.paste_into_terminal(text, window, cx);
+                        }
+                    })),
+            )
+            .separator()
+            .item(
+                PopupMenuItem::new(t!("terminal_find").to_string())
+                    .action(Box::new(crate::OpenSearch)),
+            )
+            .separator()
+            .item(
+                PopupMenuItem::new(t!("terminal_clear").to_string()).on_click(window.listener_for(
+                    &view,
+                    |this, _, _, cx| {
+                        this.clear_active_terminal(cx);
+                    },
+                )),
+            )
+    }
+
+    fn build_tab_context_menu(
+        menu: PopupMenu,
+        view: gpui::Entity<TinyShell>,
+        group_id: String,
+        window: &mut Window,
+        cx: &mut Context<PopupMenu>,
+    ) -> PopupMenu {
+        let (
+            duplicate_session,
+            reconnect_tab_ids,
+            reconnect_all_tab_ids,
+            is_connected_ssh,
+            close_tab_id,
+            close_other_tab_ids,
+            close_all_tab_ids,
+        ) = {
+            let this = view.read(cx);
+            let group_tab_ids: Vec<String> = this
+                .tab_groups
+                .iter()
+                .find(|group| group.id == group_id)
+                .map(|group| {
+                    group
+                        .pane_root
+                        .tab_ids()
+                        .iter()
+                        .map(|tab_id| (*tab_id).to_string())
+                        .collect()
+                })
+                .unwrap_or_default();
+            let close_tab_id = group_tab_ids.first().cloned();
+            let close_other_tab_ids: Vec<String> = this
+                .tab_groups
+                .iter()
+                .filter(|group| group.id != group_id)
+                .filter_map(|group| group.pane_root.tab_ids().first().copied())
+                .map(String::from)
+                .collect();
+            let close_all_tab_ids: Vec<String> = this
+                .tab_groups
+                .iter()
+                .filter_map(|group| group.pane_root.tab_ids().first().copied())
+                .map(String::from)
+                .collect();
+            let duplicate_session = group_tab_ids.iter().find_map(|tab_id| {
+                this.tabs
+                    .iter()
+                    .find(|tab| tab.id == *tab_id && tab.kind == TabKind::Ssh)
+                    .and_then(|tab| tab.session.clone())
+            });
+            let reconnect_tab_ids: Vec<String> = group_tab_ids
+                .iter()
+                .filter(|tab_id| {
+                    this.tabs.iter().any(|tab| {
+                        tab.id == **tab_id
+                            && tab.kind == TabKind::Ssh
+                            && !tab.connected
+                            && tab.disconnected_reason.is_some()
+                    })
+                })
+                .cloned()
+                .collect();
+            let reconnect_all_tab_ids: Vec<String> = this
+                .tabs
+                .iter()
+                .filter(|tab| {
+                    tab.kind == TabKind::Ssh && !tab.connected && tab.disconnected_reason.is_some()
+                })
+                .map(|tab| tab.id.clone())
+                .collect();
+            let is_connected_ssh = group_tab_ids.iter().any(|tab_id| {
+                this.tabs
+                    .iter()
+                    .any(|tab| tab.id == *tab_id && tab.kind == TabKind::Ssh && tab.connected)
+            });
+            (
+                duplicate_session,
+                reconnect_tab_ids,
+                reconnect_all_tab_ids,
+                is_connected_ssh,
+                close_tab_id,
+                close_other_tab_ids,
+                close_all_tab_ids,
+            )
+        };
+
+        menu.item(
+            PopupMenuItem::new(t!("tab_copy_label").to_string())
+                .disabled(duplicate_session.is_none())
+                .on_click(window.listener_for(&view, move |this, _, _, cx| {
+                    if let Some(session) = duplicate_session.clone() {
+                        this.open_ssh_session(session, cx);
+                    }
+                })),
+        )
+        .item(
+            PopupMenuItem::new(t!("tab_connect").to_string())
+                .disabled(reconnect_tab_ids.is_empty())
+                .on_click(window.listener_for(&view, move |this, _, _, cx| {
+                    for tab_id in &reconnect_tab_ids {
+                        this.retry_disconnected_tab(tab_id, cx);
+                    }
+                    cx.notify();
+                })),
+        )
+        .item(
+            PopupMenuItem::new(t!("tab_connect_all").to_string())
+                .disabled(reconnect_all_tab_ids.is_empty())
+                .on_click(window.listener_for(&view, move |this, _, _, cx| {
+                    for tab_id in &reconnect_all_tab_ids {
+                        this.retry_disconnected_tab(tab_id, cx);
+                    }
+                    cx.notify();
+                })),
+        )
+        .separator()
+        .item(
+            PopupMenuItem::new(t!("tab_disconnect").to_string())
+                .disabled(!is_connected_ssh)
+                .on_click(window.listener_for(&view, {
+                    let group_id = group_id.clone();
+                    move |this, _, _, cx| {
+                        this.disconnect_tab_group(&group_id, cx);
+                    }
+                })),
+        )
+        .separator()
+        .item(
+            PopupMenuItem::new(t!("tab_close").to_string())
+                .disabled(close_tab_id.is_none())
+                .on_click(window.listener_for(&view, move |this, _, _, cx| {
+                    if let Some(tab_id) = close_tab_id.clone() {
+                        this.close_tab(tab_id, cx);
+                    }
+                })),
+        )
+        .item(
+            PopupMenuItem::new(t!("tab_close_others").to_string())
+                .disabled(close_other_tab_ids.is_empty())
+                .on_click(window.listener_for(&view, move |this, _, _, cx| {
+                    for tab_id in &close_other_tab_ids {
+                        this.close_tab(tab_id.clone(), cx);
+                    }
+                    cx.notify();
+                })),
+        )
+        .item(
+            PopupMenuItem::new(t!("tab_close_all").to_string())
+                .disabled(close_all_tab_ids.is_empty())
+                .on_click(window.listener_for(&view, move |this, _, _, cx| {
+                    for tab_id in &close_all_tab_ids {
+                        this.close_tab(tab_id.clone(), cx);
+                    }
+                    cx.notify();
+                })),
+        )
+        .separator()
+        .item(
+            PopupMenuItem::new(t!("settings_detach_tab").to_string()).on_click(
+                window.listener_for(&view, move |this, _, window, cx| {
+                    this.activate_group(group_id.clone(), window, cx);
+                    this.detach_tab_to_new_window(cx);
+                }),
+            ),
+        )
+    }
 }
 
 impl Render for TinyShell {
@@ -6012,13 +7671,21 @@ impl Render for TinyShell {
         } else if self.active_tab.is_some() && !self.home_page_open {
             let monitoring_contents = v_flex()
                 .size_full()
+                .min_h(px(0.))
+                .overflow_hidden()
                 .when(self.config.monitoring_position() == "Bottom", |this| {
                     this.child(self.render_monitoring_panel(window.viewport_size().width, cx))
                 })
-                .child(self.render_sftp_panel(window, cx));
+                .child(
+                    v_flex()
+                        .flex_1()
+                        .min_h(px(0.))
+                        .overflow_hidden()
+                        .child(self.render_sftp_panel(window, cx)),
+                );
 
             let is_monitor_bottom = self.config.monitoring_position() == "Bottom";
-            let minimized_height = if is_monitor_bottom { 104. } else { 24. };
+            let minimized_height = if is_monitor_bottom { 81. } else { 1. };
             let min_panel_height = if is_monitor_bottom { 260. } else { 180. };
             let default_panel_height = if is_monitor_bottom { 328. } else { 248. };
 
@@ -6032,7 +7699,7 @@ impl Render for TinyShell {
                     .unwrap_or(default_panel_height))
             };
 
-            v_resizable("tiny-shell-body")
+            let body = v_resizable("tiny-shell-body")
                 .lock(self.config.lock_layout())
                 .with_state(&self.body_panels)
                 .child(resizable_panel().child(self.render_terminal_panel(window, cx)))
@@ -6045,7 +7712,14 @@ impl Render for TinyShell {
                             px(min_panel_height)..px(1200.)
                         })
                         .child(monitoring_contents),
-                )
+                );
+
+            v_flex()
+                .size_full()
+                .min_h(px(0.))
+                .overflow_hidden()
+                .child(div().flex_1().min_h(px(0.)).overflow_hidden().child(body))
+                .child(self.render_sftp_footer(cx))
                 .into_any_element()
         } else {
             match self.home_page {
@@ -6152,17 +7826,28 @@ impl Render for TinyShell {
             // Keep tab-drag tracking on the root element. Registering a window
             // listener from Render is invalid during GPUI's layout phase.
             .on_mouse_move(cx.listener(Self::on_tab_drag_mouse_move))
-            .on_mouse_up(
-                MouseButton::Left,
-                cx.listener(Self::on_tab_drag_mouse_up),
+            .on_mouse_up(MouseButton::Left, cx.listener(Self::on_tab_drag_mouse_up))
+            .on_action(cx.listener(|this, _: &crate::OpenSettings, window, cx| {
+                this.show_settings_dialog(window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &crate::OpenSession, window, cx| {
+                this.show_selector_dialog(window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &crate::OpenTransfers, window, cx| {
+                this.show_transfers_dialog(window, cx)
+            }))
+            .on_action(
+                cx.listener(|this, _: &crate::NewSsh, window, cx| this.show_ssh_dialog(window, cx)),
             )
-            .on_action(cx.listener(|this, _: &crate::OpenSettings, window, cx| this.show_settings_dialog(window, cx)))
-            .on_action(cx.listener(|this, _: &crate::OpenSession, window, cx| this.show_selector_dialog(window, cx)))
-            .on_action(cx.listener(|this, _: &crate::OpenTransfers, window, cx| this.show_transfers_dialog(window, cx)))
-            .on_action(cx.listener(|this, _: &crate::NewSsh, window, cx| this.show_ssh_dialog(window, cx)))
             .on_action(cx.listener(|this, _: &crate::NewWindow, _, cx| this.open_new_window(cx)))
-            .on_action(cx.listener(|this, _: &crate::DetachTabToWindow, _, cx| this.detach_tab_to_new_window(cx)))
-            .on_action(cx.listener(|this, _: &crate::OpenSearch, window, cx| this.toggle_search(window, cx)))
+            .on_action(cx.listener(|this, _: &crate::DetachTabToWindow, _, cx| {
+                this.detach_tab_to_new_window(cx)
+            }))
+            .on_action(
+                cx.listener(|this, _: &crate::OpenSearch, window, cx| {
+                    this.toggle_search(window, cx)
+                }),
+            )
             .on_action(cx.listener(|this, _: &crate::ToggleSidebar, _, cx| {
                 this.sidebar_collapsed = !this.sidebar_collapsed;
                 this.config.set_sidebar_collapsed(this.sidebar_collapsed);
@@ -6172,14 +7857,36 @@ impl Render for TinyShell {
             .on_action(cx.listener(|this, _: &crate::ToggleSftpZoom, window, cx| {
                 this.toggle_sftp_minimized(window, cx);
             }))
-            .on_action(cx.listener(|this, _: &crate::FocusPaneLeft, _, _| this.focus_adjacent_pane("left")))
-            .on_action(cx.listener(|this, _: &crate::FocusPaneRight, _, _| this.focus_adjacent_pane("right")))
-            .on_action(cx.listener(|this, _: &crate::FocusPaneUp, _, _| this.focus_adjacent_pane("up")))
-            .on_action(cx.listener(|this, _: &crate::FocusPaneDown, _, _| this.focus_adjacent_pane("down")))
-            .on_action(cx.listener(|this, _: &crate::SplitPaneLeft, _, cx| this.split_current_pane("left", cx)))
-            .on_action(cx.listener(|this, _: &crate::SplitPaneRight, _, cx| this.split_current_pane("right", cx)))
-            .on_action(cx.listener(|this, _: &crate::SplitPaneUp, _, cx| this.split_current_pane("up", cx)))
-            .on_action(cx.listener(|this, _: &crate::SplitPaneDown, _, cx| this.split_current_pane("down", cx)))
+            .on_action(
+                cx.listener(|this, _: &crate::FocusPaneLeft, _, _| {
+                    this.focus_adjacent_pane("left")
+                }),
+            )
+            .on_action(cx.listener(|this, _: &crate::FocusPaneRight, _, _| {
+                this.focus_adjacent_pane("right")
+            }))
+            .on_action(
+                cx.listener(|this, _: &crate::FocusPaneUp, _, _| this.focus_adjacent_pane("up")),
+            )
+            .on_action(
+                cx.listener(|this, _: &crate::FocusPaneDown, _, _| {
+                    this.focus_adjacent_pane("down")
+                }),
+            )
+            .on_action(cx.listener(|this, _: &crate::SplitPaneLeft, _, cx| {
+                this.split_current_pane("left", cx)
+            }))
+            .on_action(cx.listener(|this, _: &crate::SplitPaneRight, _, cx| {
+                this.split_current_pane("right", cx)
+            }))
+            .on_action(
+                cx.listener(|this, _: &crate::SplitPaneUp, _, cx| {
+                    this.split_current_pane("up", cx)
+                }),
+            )
+            .on_action(cx.listener(|this, _: &crate::SplitPaneDown, _, cx| {
+                this.split_current_pane("down", cx)
+            }))
             .on_action(cx.listener(|this, _: &crate::ClosePane, _, cx| {
                 if let Some(active_id) = this.active_tab.clone() {
                     this.close_tab(active_id, cx);
@@ -6190,7 +7897,8 @@ impl Render for TinyShell {
                     if let Some(text) = this.active_terminal_selection_text() {
                         cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
                         if let Some(active_id) = &this.active_tab {
-                            if let Some(tab) = this.tabs.iter_mut().find(|tab| &tab.id == active_id) {
+                            if let Some(tab) = this.tabs.iter_mut().find(|tab| &tab.id == active_id)
+                            {
                                 tab.clear_selection();
                             }
                         }
@@ -6212,495 +7920,69 @@ impl Render for TinyShell {
                     cx.propagate();
                 }
             }))
-            .when(self.active_title_bar_style == crate::session::config::TitleBarStyle::Integrated, |this| {
-                this.child(
-                    div()
-                        .id("title-bar")
-                        .flex()
-                        .items_center()
-                        .h(px(34.))
-                        .w_full()
-                        .bg(cx.theme().tab_bar)
-                        .child(self.render_window_controls(window, cx))
-                        .child(
-                            div()
-                                .id("tab-bar-drag")
-                                .flex_1()
-                                .min_w(px(0.))
-                                .h_full()
-                                .on_double_click(|_, window, _| {
-                                    #[cfg(target_os = "macos")]
-                                    window.titlebar_double_click();
-                                    #[cfg(not(target_os = "macos"))]
-                                    window.zoom_window();
-                                })
-                                .when(cfg!(target_os = "linux"), |this| {
-                                    this.on_mouse_down(
-                                        MouseButton::Left,
-                                        cx.listener(|this, _, _, _| {
-                                            // Don't start window move if the user
-                                            // might be initiating a tab drag
-                                            if !this.tab_drag.is_pending()
-                                                && !this.tab_drag.is_dragging()
-                                            {
-                                                this.should_move_window = true;
-                                            }
-                                        }),
-                                    )
-                                    .on_mouse_up(
-                                        MouseButton::Left,
-                                        cx.listener(|this, _, _, _| {
+            .when(
+                self.active_title_bar_style == crate::session::config::TitleBarStyle::Integrated,
+                |this| {
+                    this.child(
+                        div()
+                            .id("title-bar")
+                            .flex()
+                            .items_center()
+                            .h(px(34.))
+                            .w_full()
+                            .bg(cx.theme().tab_bar)
+                            .child(self.render_window_controls(window, cx))
+                            .child(
+                                div()
+                                    .id("tab-bar-drag")
+                                    .flex_1()
+                                    .min_w(px(0.))
+                                    .h_full()
+                                    .on_double_click(|_, window, _| {
+                                        #[cfg(target_os = "macos")]
+                                        window.titlebar_double_click();
+                                        #[cfg(not(target_os = "macos"))]
+                                        window.zoom_window();
+                                    })
+                                    .when(cfg!(target_os = "linux"), |this| {
+                                        this.on_mouse_down(
+                                            MouseButton::Left,
+                                            cx.listener(|this, _, _, _| {
+                                                // Don't start window move if the user
+                                                // might be initiating a tab drag
+                                                if !this.tab_drag.is_pending()
+                                                    && !this.tab_drag.is_dragging()
+                                                {
+                                                    this.should_move_window = true;
+                                                }
+                                            }),
+                                        )
+                                        .on_mouse_up(
+                                            MouseButton::Left,
+                                            cx.listener(|this, _, _, _| {
+                                                this.should_move_window = false;
+                                            }),
+                                        )
+                                        .on_mouse_down_out(cx.listener(|this, _, _, _| {
                                             this.should_move_window = false;
-                                        }),
-                                    )
-                                    .on_mouse_down_out(cx.listener(|this, _, _, _| {
-                                        this.should_move_window = false;
-                                    }))
-                                    .on_mouse_move(cx.listener(|this, _, window, _| {
-                                        if this.should_move_window {
-                                            this.should_move_window = false;
-                                            window.start_window_move();
-                                        }
-                                    }))
-                                })
-                                .child(self.render_tab_bar(cx)),
-                        ),
-                )
-            })
-            .child(
-                div().flex_1().min_h_0().child(workspace),
+                                        }))
+                                        .on_mouse_move(
+                                            cx.listener(|this, _, window, _| {
+                                                if this.should_move_window {
+                                                    this.should_move_window = false;
+                                                    window.start_window_move();
+                                                }
+                                            }),
+                                        )
+                                    })
+                                    .child(self.render_tab_bar(cx)),
+                            ),
+                    )
+                },
             )
+            .child(div().flex_1().min_h_0().child(workspace))
             .children(Root::render_dialog_layer(window, cx))
             .children(Root::render_sheet_layer(window, cx))
-            .when_some(self.sftp_context_menu.clone(), |this, menu| {
-                let label = if menu.is_dir {
-                    t!("download_folder").to_string()
-                } else {
-                    t!("download").to_string()
-                };
-                this.child(
-                    div()
-                        .absolute()
-                        .top_0()
-                        .left_0()
-                        .right_0()
-                        .bottom_0()
-                        .on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(|this, _, _, cx| {
-                                this.dismiss_sftp_context_menu(cx);
-                            }),
-                        )
-                        .on_mouse_down(
-                            MouseButton::Right,
-                            cx.listener(|this, _, _, cx| {
-                                this.dismiss_sftp_context_menu(cx);
-                            }),
-                        )
-                        .child(
-                            div()
-                                .absolute()
-                                .left(menu.position.x)
-                                .top(menu.position.y)
-                                .w(px(172.))
-                                .p_1()
-                                .rounded_md()
-                                .border_1()
-                                .border_color(cx.theme().border)
-                                .bg(cx.theme().popover)
-                                .shadow_lg()
-                                .on_mouse_down(MouseButton::Left, |_, window, cx| {
-                                    window.prevent_default();
-                                    cx.stop_propagation();
-                                })
-                                .on_mouse_down(MouseButton::Right, |_, window, cx| {
-                                    window.prevent_default();
-                                    cx.stop_propagation();
-                                })
-                                .child(
-                                    v_flex()
-                                        .w_full()
-                                        .child(
-                                            Button::new("sftp-context-download")
-                                                .ghost()
-                                                .w_full()
-                                                .justify_start()
-                                                .label(label)
-                                                .on_click(cx.listener(|this, _, window, cx| {
-                                                    this.trigger_sftp_context_download(window, cx);
-                                                })),
-                                        )
-                                        .when(
-                                            !menu.is_dir
-                                                && is_editable_text_file(&menu.remote_path),
-                                            |this| {
-                                                this.child(
-                                                    Button::new("sftp-context-edit")
-                                                        .ghost()
-                                                        .w_full()
-                                                        .justify_start()
-                                                        .label(t!("edit_file"))
-                                                        .tooltip(
-                                                            t!("edit_file_tooltip").to_string(),
-                                                        )
-                                                        .on_click(cx.listener(|this, _, _, cx| {
-                                                            this.trigger_sftp_context_edit(cx);
-                                                        })),
-                                                )
-                                            },
-                                        ),
-                                ),
-                        ),
-                )
-            })
-            .when_some(self.tab_context_menu.clone(), |this, menu| {
-                let group_id = menu.group_id.clone();
-                let group_tab_ids: Vec<String> = self
-                    .tab_groups
-                    .iter()
-                    .find(|group| group.id == group_id)
-                    .map(|group| {
-                        group
-                            .pane_root
-                            .tab_ids()
-                            .iter()
-                            .map(|tab_id| (*tab_id).to_string())
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                let close_tab_id = group_tab_ids.first().cloned();
-                let close_other_tab_ids: Vec<String> = self
-                    .tab_groups
-                    .iter()
-                    .filter(|group| group.id != group_id)
-                    .filter_map(|group| group.pane_root.tab_ids().first().copied())
-                    .map(String::from)
-                    .collect();
-                let close_all_tab_ids: Vec<String> = self
-                    .tab_groups
-                    .iter()
-                    .filter_map(|group| group.pane_root.tab_ids().first().copied())
-                    .map(String::from)
-                    .collect();
-                let duplicate_session = group_tab_ids.iter().find_map(|tab_id| {
-                    self.tabs
-                        .iter()
-                        .find(|tab| tab.id == *tab_id && tab.kind == TabKind::Ssh)
-                        .and_then(|tab| tab.session.clone())
-                });
-                let reconnect_tab_ids: Vec<String> = group_tab_ids
-                    .iter()
-                    .filter(|tab_id| {
-                        self.tabs.iter().any(|tab| {
-                            tab.id == **tab_id
-                                && tab.kind == TabKind::Ssh
-                                && !tab.connected
-                                && tab.disconnected_reason.is_some()
-                        })
-                    })
-                    .cloned()
-                    .collect();
-                let reconnect_all_tab_ids: Vec<String> = self
-                    .tabs
-                    .iter()
-                    .filter(|tab| {
-                        tab.kind == TabKind::Ssh
-                            && !tab.connected
-                            && tab.disconnected_reason.is_some()
-                    })
-                    .map(|tab| tab.id.clone())
-                    .collect();
-                let is_connected_ssh = group_tab_ids.iter().any(|tab_id| {
-                    self.tabs.iter().any(|tab| {
-                        tab.id == *tab_id && tab.kind == TabKind::Ssh && tab.connected
-                    })
-                });
-                let disconnect_gid = group_id.clone();
-                let detach_gid = group_id;
-                this.child(
-                    div()
-                        .absolute()
-                        .top_0()
-                        .left_0()
-                        .right_0()
-                        .bottom_0()
-                        .on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(|this, _, _, cx| {
-                                this.tab_context_menu = None;
-                                cx.notify();
-                            }),
-                        )
-                        .on_mouse_down(
-                            MouseButton::Right,
-                            cx.listener(|this, _, _, cx| {
-                                this.tab_context_menu = None;
-                                cx.notify();
-                            }),
-                        )
-                        .child(
-                            div()
-                                .absolute()
-                                .left(menu.position.x)
-                                .top(menu.position.y)
-                                .w(px(200.))
-                                .p_1()
-                                .rounded_md()
-                                .border_1()
-                                .border_color(cx.theme().border)
-                                .bg(cx.theme().popover)
-                                .shadow_lg()
-                                .on_mouse_down(MouseButton::Left, |_, window, cx| {
-                                    window.prevent_default();
-                                    cx.stop_propagation();
-                                })
-                                .on_mouse_down(MouseButton::Right, |_, window, cx| {
-                                    window.prevent_default();
-                                    cx.stop_propagation();
-                                })
-                                .child(
-                                    v_flex()
-                                        .w_full()
-                                        .child(
-                                            Button::new("tab-context-copy-label")
-                                                .ghost()
-                                                .w_full()
-                                                .justify_start()
-                                                .disabled(duplicate_session.is_none())
-                                                .label(t!("tab_copy_label").to_string())
-                                                .on_click(cx.listener(move |this, _, _, cx| {
-                                                    this.tab_context_menu = None;
-                                                    if let Some(session) = duplicate_session.clone() {
-                                                        this.open_ssh_session(session, cx);
-                                                    } else {
-                                                        cx.notify();
-                                                    }
-                                                })),
-                                        )
-                                        .child(
-                                            Button::new("tab-context-connect")
-                                                .ghost()
-                                                .w_full()
-                                                .justify_start()
-                                                .disabled(reconnect_tab_ids.is_empty())
-                                                .label(t!("tab_connect").to_string())
-                                                .on_click(cx.listener(move |this, _, _, cx| {
-                                                    this.tab_context_menu = None;
-                                                    for tab_id in &reconnect_tab_ids {
-                                                        this.retry_disconnected_tab(tab_id, cx);
-                                                    }
-                                                    cx.notify();
-                                                })),
-                                        )
-                                        .child(
-                                            Button::new("tab-context-connect-all")
-                                                .ghost()
-                                                .w_full()
-                                                .justify_start()
-                                                .disabled(reconnect_all_tab_ids.is_empty())
-                                                .label(t!("tab_connect_all").to_string())
-                                                .on_click(cx.listener(move |this, _, _, cx| {
-                                                    this.tab_context_menu = None;
-                                                    for tab_id in &reconnect_all_tab_ids {
-                                                        this.retry_disconnected_tab(tab_id, cx);
-                                                    }
-                                                    cx.notify();
-                                                })),
-                                        )
-                                        .child(div().my_1().h(px(1.)).bg(cx.theme().border))
-                                        .child(
-                                            Button::new("tab-context-disconnect")
-                                                .ghost()
-                                                .w_full()
-                                                .justify_start()
-                                                .disabled(!is_connected_ssh)
-                                                .label(t!("tab_disconnect").to_string())
-                                                .on_click(cx.listener(move |this, _, _, cx| {
-                                                    this.tab_context_menu = None;
-                                                    this.disconnect_tab_group(&disconnect_gid, cx);
-                                                })),
-                                        )
-                                        .child(div().my_1().h(px(1.)).bg(cx.theme().border))
-                                        .child(
-                                            Button::new("tab-context-close")
-                                                .ghost()
-                                                .w_full()
-                                                .justify_start()
-                                                .disabled(close_tab_id.is_none())
-                                                .label(t!("tab_close").to_string())
-                                                .on_click(cx.listener(move |this, _, _, cx| {
-                                                    this.tab_context_menu = None;
-                                                    if let Some(tab_id) = close_tab_id.clone() {
-                                                        this.close_tab(tab_id, cx);
-                                                    } else {
-                                                        cx.notify();
-                                                    }
-                                                })),
-                                        )
-                                        .child(
-                                            Button::new("tab-context-close-others")
-                                                .ghost()
-                                                .w_full()
-                                                .justify_start()
-                                                .disabled(close_other_tab_ids.is_empty())
-                                                .label(t!("tab_close_others").to_string())
-                                                .on_click(cx.listener(move |this, _, _, cx| {
-                                                    this.tab_context_menu = None;
-                                                    for tab_id in &close_other_tab_ids {
-                                                        this.close_tab(tab_id.clone(), cx);
-                                                    }
-                                                    cx.notify();
-                                                })),
-                                        )
-                                        .child(
-                                            Button::new("tab-context-close-all")
-                                                .ghost()
-                                                .w_full()
-                                                .justify_start()
-                                                .disabled(close_all_tab_ids.is_empty())
-                                                .label(t!("tab_close_all").to_string())
-                                                .on_click(cx.listener(move |this, _, _, cx| {
-                                                    this.tab_context_menu = None;
-                                                    for tab_id in &close_all_tab_ids {
-                                                        this.close_tab(tab_id.clone(), cx);
-                                                    }
-                                                    cx.notify();
-                                                })),
-                                        )
-                                        .child(div().my_1().h(px(1.)).bg(cx.theme().border))
-                                        .child(
-                                            Button::new("tab-context-detach")
-                                                .ghost()
-                                                .w_full()
-                                                .justify_start()
-                                                .label(t!("settings_detach_tab").to_string())
-                                                .on_click(cx.listener(move |this, _, window, cx| {
-                                                    this.tab_context_menu = None;
-                                                    this.activate_group(
-                                                        detach_gid.clone(),
-                                                        window,
-                                                        cx,
-                                                    );
-                                                    this.detach_tab_to_new_window(cx);
-                                                })),
-                                        ),
-                                ),
-                        ),
-                )
-            })
-            .when_some(
-                self.connection_progress
-                    .clone()
-                    .filter(|progress| !progress.failed),
-                |this, progress| {
-                this.child(
-                    div()
-                        .absolute()
-                        .top_0()
-                        .left_0()
-                        .right_0()
-                        .bottom_0()
-                        .bg(gpui::Hsla {
-                            h: 0.0,
-                            s: 0.0,
-                            l: 0.0,
-                            a: 0.48,
-                        })
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .child(
-                            div()
-                                .w(px(420.))
-                                .p_5()
-                                .rounded_lg()
-                                .border_1()
-                                .border_color(cx.theme().border)
-                                .bg(cx.theme().popover)
-                                .shadow_lg()
-                                .child(
-                                    v_flex()
-                                        .gap_4()
-                                        .child(
-                                            Button::new("ssh-connect-progress")
-                                                .primary()
-                                                .loading(!progress.failed)
-                                                .label(progress.title.clone()),
-                                        )
-                                        .child(
-                                            div()
-                                                .relative()
-                                                .min_h(px(0.))
-                                                .max_h(px(220.))
-                                                .child(
-                                                    div()
-                                                        .id("connection-progress-scroll")
-                                                        .max_h(px(220.))
-                                                        .overflow_hidden()
-                                                        .overflow_y_scroll()
-                                                        .track_scroll(&self.connection_scroll_handle)
-                                                        .child(
-                                                            v_flex().gap_2().children(
-                                                                progress.lines.iter().cloned().map(|line| {
-                                                                    div()
-                                                                        .text_size(rems(1.0))
-                                                                        .text_color(if progress.failed {
-                                                                            cx.theme().danger
-                                                                        } else {
-                                                                            cx.theme().muted_foreground
-                                                                        })
-                                                                        .child(line)
-                                                                }),
-                                                            ),
-                                                        )
-                                                )
-                                                .child(
-                                                    div()
-                                                        .absolute()
-                                                        .top_0()
-                                                        .right_0()
-                                                        .bottom_0()
-                                                        .w(px(16.))
-                                                        .child(
-                                                            Scrollbar::vertical(&self.connection_scroll_handle)
-                                                                .scrollbar_show(ScrollbarShow::Scrolling)
-                                                        )
-                                                )
-                                        )
-                                        .when(progress.failed, |this| {
-                                            this.child(
-                                                h_flex()
-                                                    .justify_end()
-                                                    .gap_2()
-                                                    .child(
-                                                        Button::new("ssh-connect-progress-retry")
-                                                            .primary()
-                                                            .label(t!("retry").to_string())
-                                                            .on_click(cx.listener(
-                                                                |this, _, _, cx| {
-                                                                    this.retry_connection_progress(
-                                                                        cx,
-                                                                    )
-                                                                },
-                                                            )),
-                                                    )
-                                                    .child(
-                                                        Button::new("ssh-connect-progress-close")
-                                                            .label(t!("cancel").to_string())
-                                                            .on_click(cx.listener(
-                                                                |this, _, _, cx| {
-                                                                    this.cancel_connection_progress(
-                                                                        cx,
-                                                                    )
-                                                                },
-                                                            )),
-                                                    ),
-                                            )
-                                        }),
-                                ),
-                        ),
-                )
-            })
             .on_prepaint({
                 let view = cx.entity().clone();
                 move |_, window, cx| {

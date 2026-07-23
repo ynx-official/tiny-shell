@@ -1,6 +1,6 @@
 [package]
 name = "tiny-shell"
-version = "1.0.5"
+version = "1.0.61"
 edition = "2024"
 authors = ["tiny-shell contributors"]
 description = "A modern, fast, GPUI Component-based desktop terminal client"
@@ -52,7 +52,7 @@ hmac = "0.12"
 hex = "0.4"
 serialport = "4"
 rand = "0.8"
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
 semver = "1"
 sha2 = "0.10"
 

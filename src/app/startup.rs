@@ -6,6 +6,7 @@ use std::{
 
 use gpui::{App, AppContext as _, Bounds, Entity, WindowOptions, point, px, size};
 use gpui_component::Root;
+use rust_i18n::t;
 
 use crate::TinyShell;
 use crate::session::{
@@ -97,7 +98,12 @@ pub(crate) fn init_logging() {
     use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
     let log_dir = directories::BaseDirs::new()
-        .map(|dirs| dirs.home_dir().join(".config").join("tiny-shell").join("log"))
+        .map(|dirs| {
+            dirs.home_dir()
+                .join(".config")
+                .join("tiny-shell")
+                .join("log")
+        })
         .unwrap_or_else(|| std::path::PathBuf::from("."));
 
     std::fs::create_dir_all(&log_dir).ok();
@@ -419,7 +425,7 @@ fn open_window_with_initializer(
     cx: &mut App,
 ) -> Result<(), String> {
     cx.open_window(window_options, |window, cx| {
-        window.set_window_title("tiny-shell");
+        window.set_window_title(&t!("app_name"));
         let view = cx.new(|cx| TinyShell::new(window, session_store.clone(), cx));
 
         crate::app::register_window(window.window_handle(), view.clone());

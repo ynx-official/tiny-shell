@@ -16,7 +16,7 @@ use uuid::Uuid;
 use self::config::{AuthMethod, ManagedKey, Session};
 
 use crate::{
-    TinyShell, PaneLayout, SelectorEntry, TabGroup,
+    PaneLayout, SelectorEntry, TabGroup, TinyShell,
     app::{
         IncomingTabDrag, SystemInfoTab,
         constants::{DEFAULT_COLS, DEFAULT_ROWS},
@@ -458,6 +458,11 @@ Self::set_input_value(&self.key_import_remark_input, "", window, cx);
         };
         self.editing_managed_key_id = Some(key_id);
         Self::set_input_value(&self.key_import_remark_input, key.name.clone(), window, cx);
+        crate::app::input_focus::defer_focus_input_at_end(
+            self.key_import_remark_input.clone(),
+            window,
+            cx,
+        );
         cx.notify();
     }
 
@@ -793,11 +798,15 @@ Self::set_input_value(&self.key_import_remark_input, "", window, cx);
         cx.notify();
     }
 
-    pub(crate) fn delete_selected_managed_key(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn delete_selected_managed_key(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(key_id) = self.managed_key_dialog_selection.clone() else {
             return;
         };
-        self.delete_managed_key(key_id, cx);
+        self.request_managed_key_deletion(key_id, window, cx);
     }
 
     /// Switch the connection form back to managed-key mode.
@@ -1151,13 +1160,10 @@ Self::set_input_value(&self.key_import_remark_input, "", window, cx);
             backend,
             events.clone(),
         ));
+        if let Some(tab) = self.tabs.last_mut() {
+            tab.feed_status_line(&rust_i18n::t!("starting_connection"));
+        }
         self.active_tab = Some(id.clone());
-        self.connection_progress = Some(crate::app::ConnectionProgress {
-            tab_id: id.clone(),
-            title: rust_i18n::t!("connecting").into(),
-            lines: vec![rust_i18n::t!("starting_connection").into()],
-            failed: false,
-        });
         self.pane_root = PaneLayout::Single(id.clone());
         self.focused_pane_path = vec![];
         let group_id = Uuid::new_v4().to_string();
@@ -1178,6 +1184,7 @@ Self::set_input_value(&self.key_import_remark_input, "", window, cx);
                 home_dir: String::new(),
                 follow_terminal_cwd: false,
                 initial_terminal_cwd_synced: false,
+                latency_ms: None,
             }),
         });
         self.active_group = Some(group_id.clone());
@@ -1322,6 +1329,7 @@ let tab_kind = self.tabs[ix].kind;
             self.tabs[ix].disconnected_reason = None;
             self.tabs[ix].backend_generation = new_generation;
             self.tabs[ix].backend_initialized = false;
+            self.tabs[ix].feed_status_line(&rust_i18n::t!("starting_connection"));
 
             // Restart SFTP for the group containing this tab
             if let Some(group) = self
@@ -1480,9 +1488,8 @@ if session.protocol != "serial" {
                 if tab.connected {
                     tab.connected = false;
                     tab.status = rust_i18n::t!("tab_manually_disconnected").into();
-                    tab.disconnected_reason = Some(
-                        rust_i18n::t!("tab_manually_disconnected").to_string(),
-                    );
+                    tab.disconnected_reason =
+                        Some(rust_i18n::t!("tab_manually_disconnected").to_string());
                     tab.send_backend(BackendCommand::Close);
                 }
             }
@@ -1500,13 +1507,6 @@ if session.protocol != "serial" {
         self.system_info_tabs.retain(|tab| tab.source_tab_id != id);
         if removed_active_info {
             self.active_system_info_tab = None;
-        }
-        if self
-            .connection_progress
-            .as_ref()
-            .is_some_and(|p| p.tab_id == id)
-        {
-            self.connection_progress = None;
         }
         let group_ix = self
             .tab_groups
@@ -1726,19 +1726,6 @@ if session.protocol != "serial" {
                         ) {
                             let _ = open::that(&url);
                             return;
-                        }
-                    }
-                }
-            }
-            if self.config.right_click_copy_paste() {
-                if let Some(text) = self.active_terminal_selection_text() {
-                    if !text.is_empty() {
-                        cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
-                        if let Some(active_id) = &self.active_tab {
-                            if let Some(tab) = self.tabs.iter_mut().find(|tab| &tab.id == active_id)
-                            {
-                                tab.clear_selection();
-                            }
                         }
                     }
                 }

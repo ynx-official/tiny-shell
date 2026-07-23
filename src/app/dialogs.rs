@@ -1,24 +1,304 @@
 use gpui::{
-    Anchor, Context, Focusable as _, FontWeight, InteractiveElement as _, IntoElement, MouseButton,
-    ParentElement as _, SharedString, StatefulInteractiveElement as _, Styled as _, Window, div,
-    prelude::FluentBuilder as _, px, rems,
+    Anchor, AppContext as _, Context, Entity, FontWeight, InteractiveElement as _, IntoElement,
+    MouseButton, ParentElement as _, Render, SharedString, StatefulInteractiveElement as _,
+    Styled as _, Window, div, prelude::FluentBuilder as _, px, rems,
 };
 use gpui_component::{
     ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, Size, WindowExt as _,
     button::{Button, ButtonVariants as _},
+    checkbox::Checkbox,
     dialog::Dialog,
     h_flex,
-    input::Input,
+    input::{Input, InputEvent, InputState},
     menu::{DropdownMenu as _, PopupMenuItem},
     progress::Progress,
+    radio::{Radio, RadioGroup},
     scroll::{Scrollbar, ScrollbarShow},
     switch::Switch,
     v_flex,
 };
+
+#[derive(Clone)]
+struct QuickCommandDialogInputs {
+    name: Entity<InputState>,
+    remark: Entity<InputState>,
+    command: Entity<InputState>,
+}
+
+struct SftpPermissionsForm {
+    remote_path: String,
+    is_dir: bool,
+    mode: u32,
+    recursive: bool,
+    apply_to: crate::sftp::PermissionApplyTarget,
+    input: Entity<InputState>,
+    _subscriptions: Vec<gpui::Subscription>,
+}
+
+impl SftpPermissionsForm {
+    fn new(
+        remote_path: String,
+        is_dir: bool,
+        mode: u32,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .default_value(format!("{:03o}", mode & 0o7777))
+                .placeholder("755")
+        });
+        let subscriptions = vec![cx.subscribe_in(&input, window, Self::on_input_event)];
+        Self {
+            remote_path,
+            is_dir,
+            mode: mode & 0o7777,
+            recursive: false,
+            apply_to: crate::sftp::PermissionApplyTarget::FilesAndDirectories,
+            input,
+            _subscriptions: subscriptions,
+        }
+    }
+
+    fn on_input_event(
+        &mut self,
+        input: &Entity<InputState>,
+        _: &InputEvent,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let value = input.read(cx).value().trim().to_string();
+        if (3..=4).contains(&value.len())
+            && let Ok(mode) = u32::from_str_radix(&value, 8)
+            && mode <= 0o7777
+        {
+            self.mode = mode;
+            cx.notify();
+        }
+    }
+
+    fn permission_checkbox(&self, id: &'static str, bit: u32, cx: &mut Context<Self>) -> Checkbox {
+        Checkbox::new(id)
+            .checked(self.mode & bit != 0)
+            .on_click(cx.listener(move |this, checked, window, cx| {
+                if *checked {
+                    this.mode |= bit;
+                } else {
+                    this.mode &= !bit;
+                }
+                let value = format!("{:03o}", this.mode & 0o7777);
+                this.input.update(cx, |input, cx| {
+                    input.set_value(value, window, cx);
+                });
+                cx.notify();
+            }))
+    }
+}
+
+impl Render for SftpPermissionsForm {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let name = self
+            .remote_path
+            .trim_end_matches('/')
+            .rsplit('/')
+            .next()
+            .filter(|name| !name.is_empty())
+            .unwrap_or("/")
+            .to_string();
+        let parent = TinyShell::sftp_parent_path(&self.remote_path);
+        let current_mode = format!("{:03o}", self.mode & 0o7777);
+        let recursive = self.recursive;
+        let selected_target = match self.apply_to {
+            crate::sftp::PermissionApplyTarget::FilesAndDirectories => 0,
+            crate::sftp::PermissionApplyTarget::FilesOnly => 1,
+            crate::sftp::PermissionApplyTarget::DirectoriesOnly => 2,
+        };
+
+        v_flex()
+            .gap_4()
+            .child(
+                h_flex()
+                    .gap_3()
+                    .p_3()
+                    .rounded_lg()
+                    .border_1()
+                    .border_color(cx.theme().border)
+                    .child(
+                        div()
+                            .size(px(42.))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded_md()
+                            .bg(cx.theme().muted)
+                            .child(
+                                Icon::new(if self.is_dir {
+                                    IconName::Folder
+                                } else {
+                                    IconName::File
+                                })
+                                .with_size(Size::Medium),
+                            ),
+                    )
+                    .child(
+                        v_flex()
+                            .min_w(px(0.))
+                            .gap_1()
+                            .child(div().font_weight(FontWeight::BOLD).child(name))
+                            .child(
+                                div()
+                                    .text_size(rems(0.833))
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(parent),
+                            ),
+                    ),
+            )
+            .child(
+                v_flex()
+                    .gap_2()
+                    .child(
+                        div()
+                            .text_size(rems(0.833))
+                            .text_color(cx.theme().muted_foreground)
+                            .child(t!("sftp_permission_matrix")),
+                    )
+                    .child(
+                        v_flex()
+                            .gap_1()
+                            .p_3()
+                            .rounded_lg()
+                            .border_1()
+                            .border_color(cx.theme().border)
+                            .child(
+                                h_flex()
+                                    .pb_1()
+                                    .child(div().flex_1())
+                                    .child(div().w(px(56.)).child(t!("sftp_permission_read")))
+                                    .child(div().w(px(56.)).child(t!("sftp_permission_write")))
+                                    .child(div().w(px(56.)).child(t!("sftp_permission_execute"))),
+                            )
+                            .child(
+                                h_flex()
+                                    .h(px(36.))
+                                    .px_2()
+                                    .rounded_md()
+                                    .bg(cx.theme().muted.opacity(0.7))
+                                    .child(div().flex_1().font_weight(FontWeight::MEDIUM).child(t!("sftp_permission_owner")))
+                                    .child(div().w(px(56.)).child(self.permission_checkbox("permission-owner-read", 0o400, cx)))
+                                    .child(div().w(px(56.)).child(self.permission_checkbox("permission-owner-write", 0o200, cx)))
+                                    .child(div().w(px(56.)).child(self.permission_checkbox("permission-owner-execute", 0o100, cx))),
+                            )
+                            .child(
+                                h_flex()
+                                    .h(px(36.))
+                                    .px_2()
+                                    .rounded_md()
+                                    .child(div().flex_1().font_weight(FontWeight::MEDIUM).child(t!("sftp_permission_group")))
+                                    .child(div().w(px(56.)).child(self.permission_checkbox("permission-group-read", 0o040, cx)))
+                                    .child(div().w(px(56.)).child(self.permission_checkbox("permission-group-write", 0o020, cx)))
+                                    .child(div().w(px(56.)).child(self.permission_checkbox("permission-group-execute", 0o010, cx))),
+                            )
+                            .child(
+                                h_flex()
+                                    .h(px(36.))
+                                    .px_2()
+                                    .rounded_md()
+                                    .bg(cx.theme().muted.opacity(0.7))
+                                    .child(div().flex_1().font_weight(FontWeight::MEDIUM).child(t!("sftp_permission_other")))
+                                    .child(div().w(px(56.)).child(self.permission_checkbox("permission-other-read", 0o004, cx)))
+                                    .child(div().w(px(56.)).child(self.permission_checkbox("permission-other-write", 0o002, cx)))
+                                    .child(div().w(px(56.)).child(self.permission_checkbox("permission-other-execute", 0o001, cx))),
+                            ),
+                    ),
+            )
+            .child(
+                v_flex()
+                    .gap_2()
+                    .child(
+                        div()
+                            .text_size(rems(0.833))
+                            .text_color(cx.theme().muted_foreground)
+                            .child(t!("sftp_permission_advanced")),
+                    )
+                    .child(
+                        h_flex()
+                            .items_center()
+                            .gap_3()
+                            .p_3()
+                            .rounded_lg()
+                            .border_1()
+                            .border_color(cx.theme().border)
+                            .child(
+                                v_flex()
+                                    .flex_1()
+                                    .gap_1()
+                                    .child(div().font_weight(FontWeight::MEDIUM).child(t!("sftp_permission_octal")))
+                                    .child(div().text_size(rems(0.8)).text_color(cx.theme().muted_foreground).child(t!("sftp_permissions_hint"))),
+                            )
+                            .child(Input::new(&self.input).w(px(100.)))
+                            .child(
+                                div()
+                                    .min_w(px(52.))
+                                    .text_center()
+                                    .font_weight(FontWeight::BOLD)
+                                    .child(current_mode),
+                            ),
+                    ),
+            )
+            .when(self.is_dir, |this| {
+                this.child(
+                    v_flex()
+                        .gap_2()
+                        .p_3()
+                        .rounded_lg()
+                        .border_1()
+                        .border_color(cx.theme().border)
+                        .child(
+                            h_flex()
+                                .items_center()
+                                .child(
+                                    v_flex()
+                                        .flex_1()
+                                        .gap_1()
+                                        .child(div().font_weight(FontWeight::MEDIUM).child(t!("sftp_permission_recursive")))
+                                        .child(div().text_size(rems(0.8)).text_color(cx.theme().muted_foreground).child(t!("sftp_permission_recursive_hint"))),
+                                )
+                                .child(
+                                    Switch::new("permission-recursive")
+                                        .checked(recursive)
+                                        .on_click(cx.listener(|this, checked, _, cx| {
+                                            this.recursive = *checked;
+                                            cx.notify();
+                                        })),
+                                ),
+                        )
+                        .when(recursive, |this| {
+                            this.child(
+                                RadioGroup::vertical("permission-recursive-target")
+                                    .selected_index(Some(selected_target))
+                                    .on_click(cx.listener(|this, index, _, cx| {
+                                        this.apply_to = match *index {
+                                            1 => crate::sftp::PermissionApplyTarget::FilesOnly,
+                                            2 => crate::sftp::PermissionApplyTarget::DirectoriesOnly,
+                                            _ => crate::sftp::PermissionApplyTarget::FilesAndDirectories,
+                                        };
+                                        cx.notify();
+                                    }))
+                                    .child(Radio::new("permission-all").label(t!("sftp_permission_apply_all").to_string()))
+                                    .child(Radio::new("permission-files").label(t!("sftp_permission_apply_files").to_string()))
+                                    .child(Radio::new("permission-directories").label(t!("sftp_permission_apply_directories").to_string())),
+                            )
+                        }),
+                )
+            })
+    }
+}
 use rust_i18n::t;
 
 use crate::{
-    TinyShell, app::ssh_key_import::KeyImportValidation, session::config::AuthMethod,
+    TinyShell,
+    app::ssh_key_import::KeyImportValidation,
+    session::config::{AuthMethod, QuickCommand, QuickCommandCategory},
     system::format_bytes,
 };
 
@@ -244,6 +524,7 @@ impl TinyShell {
 
         let view = cx.entity();
         let group_input = self.connection_group_input.clone();
+        let focus_group_input = group_input.clone();
         window.open_dialog(cx, move |dialog: Dialog, _window, _| {
             dialog
                 .title(t!("connection_group_dialog_title").to_string())
@@ -321,6 +602,458 @@ impl TinyShell {
                     }
                 })
         });
+        crate::app::input_focus::defer_focus_input_at_end(focus_group_input, window, cx);
+    }
+
+    pub(crate) fn show_quick_command_category_dialog(
+        &mut self,
+        category_id: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.active_dialog.is_some() {
+            return;
+        }
+        let existing = category_id.as_deref().and_then(|category_id| {
+            self.config
+                .quick_command_categories()
+                .and_then(|categories| categories.iter().find(|item| item.id == category_id))
+                .cloned()
+        });
+        let input = cx.new(|cx| {
+            gpui_component::input::InputState::new(window, cx).default_value(
+                existing
+                    .as_ref()
+                    .map(|item| item.name.as_str())
+                    .unwrap_or_default(),
+            )
+        });
+        self.active_dialog = Some(crate::app::DialogKind::QuickCommandCategory);
+        let view = cx.entity();
+        let submit_input = input.clone();
+        let focus_input = input.clone();
+        window.open_dialog(cx, move |dialog: Dialog, _window, _| {
+            let submit_input = submit_input.clone();
+            let content_input = input.clone();
+            let existing = existing.clone();
+            dialog
+                .title(t!("quick_command_category_dialog_title").to_string())
+                .w(px(420.))
+                .on_close({
+                    let view = view.clone();
+                    move |_, _, cx| {
+                        view.update(cx, |this, cx| {
+                            this.active_dialog = None;
+                            cx.notify();
+                        });
+                    }
+                })
+                .on_ok({
+                    let view = view.clone();
+                    move |_, window, cx| {
+                        let name = submit_input.read(cx).value().trim().to_string();
+                        if name.is_empty() {
+                            view.update(cx, |this, cx| {
+                                this.status = t!("quick_command_category_name_required").into();
+                                cx.notify();
+                            });
+                            return false;
+                        }
+                        view.update(cx, |this, cx| {
+                            let category =
+                                existing.clone().unwrap_or_else(|| QuickCommandCategory {
+                                    id: uuid::Uuid::new_v4().to_string(),
+                                    name: String::new(),
+                                    commands: Vec::new(),
+                                });
+                            let category = QuickCommandCategory { name, ..category };
+                            this.command_category_filter = Some(category.id.clone());
+                            this.config.upsert_quick_command_category(category);
+                            this.mark_config_preferences_dirty();
+                            this.active_dialog = None;
+                            cx.notify();
+                        });
+                        window.close_dialog(cx);
+                        true
+                    }
+                })
+                .content(move |content, _, cx| {
+                    content.child(
+                        v_flex()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(t!("quick_command_category_name")),
+                            )
+                            .child(Input::new(&content_input).w_full()),
+                    )
+                })
+        });
+        crate::app::input_focus::defer_focus_input_at_end(focus_input, window, cx);
+    }
+
+    fn confirm_quick_command_dialog(
+        &mut self,
+        source_category_id: String,
+        existing: Option<QuickCommand>,
+        inputs: &QuickCommandDialogInputs,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let name = inputs.name.read(cx).value().trim().to_string();
+        let remark = inputs.remark.read(cx).value().trim().to_string();
+        let command_text = inputs.command.read(cx).value().trim().to_string();
+        if name.is_empty() || command_text.is_empty() {
+            self.status = t!("quick_command_fields_required").into();
+            cx.notify();
+            return false;
+        }
+        let Some(category_id) = self.editing_quick_command_category.clone() else {
+            self.status = t!("quick_command_category_name_required").into();
+            cx.notify();
+            return false;
+        };
+        let is_new_command = existing.is_none();
+        let command = existing.unwrap_or_else(|| QuickCommand {
+            id: uuid::Uuid::new_v4().to_string(),
+            name: String::new(),
+            remark: String::new(),
+            command: String::new(),
+        });
+        let command_id = command.id.clone();
+        let edited_command_was_selected = self
+            .selected_quick_command
+            .as_ref()
+            .is_some_and(|(_, selected_command_id)| selected_command_id == &command_id);
+        if source_category_id != category_id {
+            self.config
+                .remove_quick_command(&source_category_id, &command_id);
+        }
+        self.config.upsert_quick_command(
+            &category_id,
+            QuickCommand {
+                name,
+                remark,
+                command: command_text,
+                ..command
+            },
+        );
+        self.command_category_filter = Some(category_id.clone());
+        if is_new_command || edited_command_was_selected {
+            self.selected_quick_command = Some((category_id, command_id));
+        }
+        self.mark_config_preferences_dirty();
+        cx.notify();
+        true
+    }
+
+    pub(crate) fn show_quick_command_dialog(
+        &mut self,
+        category_id: String,
+        command_id: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.active_dialog.is_some() {
+            return;
+        }
+        let categories = self
+            .config
+            .quick_command_categories()
+            .unwrap_or_default()
+            .to_vec();
+        let existing = self
+            .config
+            .quick_command_categories()
+            .and_then(|categories| categories.iter().find(|item| item.id == category_id))
+            .and_then(|category| {
+                command_id.as_deref().and_then(|command_id| {
+                    category.commands.iter().find(|item| item.id == command_id)
+                })
+            })
+            .cloned();
+        let name_input = cx.new(|cx| {
+            gpui_component::input::InputState::new(window, cx).default_value(
+                existing
+                    .as_ref()
+                    .map(|item| item.name.as_str())
+                    .unwrap_or_default(),
+            )
+        });
+        let remark_input = cx.new(|cx| {
+            gpui_component::input::InputState::new(window, cx).default_value(
+                existing
+                    .as_ref()
+                    .map(|item| item.remark.as_str())
+                    .unwrap_or_default(),
+            )
+        });
+        let command_input = cx.new(|cx| {
+            gpui_component::input::InputState::new(window, cx)
+                .multi_line(true)
+                .rows(12)
+                .default_value(
+                    existing
+                        .as_ref()
+                        .map(|item| item.command.as_str())
+                        .unwrap_or_default(),
+                )
+        });
+        let dialog_inputs = QuickCommandDialogInputs {
+            name: name_input.clone(),
+            remark: remark_input.clone(),
+            command: command_input.clone(),
+        };
+        self.editing_quick_command_category = Some(category_id.clone());
+        self.active_dialog = Some(crate::app::DialogKind::QuickCommand);
+        let view = cx.entity();
+        let source_category_id = category_id.clone();
+        let submit_inputs = dialog_inputs.clone();
+        let focus_name_input = name_input.clone();
+        window.open_dialog(cx, move |dialog: Dialog, _window, _| {
+            let submit_inputs = submit_inputs.clone();
+            let content_name = name_input.clone();
+            let content_remark = remark_input.clone();
+            let content_command = command_input.clone();
+            let existing = existing.clone();
+            let categories = categories.clone();
+            let source_category_id = source_category_id.clone();
+            dialog
+                .title(t!("quick_command_dialog_title").to_string())
+                .w(px(760.))
+                .h(px(620.))
+                .on_close({
+                    let view = view.clone();
+                    move |_, _, cx| {
+                        view.update(cx, |this, cx| {
+                            this.active_dialog = None;
+                            this.editing_quick_command_category = None;
+                            cx.notify();
+                        });
+                    }
+                })
+                .on_ok({
+                    let view = view.clone();
+                    let submit_inputs = submit_inputs.clone();
+                    let existing = existing.clone();
+                    let source_category_id = source_category_id.clone();
+                    move |_, _window, cx| {
+                        view.update(cx, |this, cx| {
+                            this.confirm_quick_command_dialog(
+                                source_category_id.clone(),
+                                existing.clone(),
+                                &submit_inputs,
+                                cx,
+                            )
+                        })
+                    }
+                })
+                .content({
+                    let view = view.clone();
+                    move |content, window, cx| {
+                        let selected_category = view
+                            .read(cx)
+                            .editing_quick_command_category
+                            .clone();
+                        let category_label = categories
+                            .iter()
+                            .find(|category| {
+                                Some(category.id.as_str()) == selected_category.as_deref()
+                            })
+                            .map(|category| category.name.clone())
+                            .unwrap_or_else(|| t!("quick_command_category_name").to_string());
+                        content.child(
+                        v_flex()
+                            .size_full()
+                            .gap_4()
+                            .child(
+                                h_flex()
+                                    .gap_3()
+                                    .child(
+                                        v_flex()
+                                            .flex_1()
+                                            .gap_1()
+                                            .child(
+                                                div()
+                                                    .text_color(cx.theme().muted_foreground)
+                                                    .child(t!("quick_command_name")),
+                                            )
+                                            .child(Input::new(&content_name).w_full()),
+                                    )
+                                    .child(
+                                        v_flex()
+                                            .flex_1()
+                                            .gap_1()
+                                            .child(
+                                                div()
+                                                    .text_color(cx.theme().muted_foreground)
+                                                    .child(t!("quick_command_category_name")),
+                                            )
+                                            .child(
+                                                Button::new("quick-command-category-picker")
+                                                    .secondary()
+                                                    .w_full()
+                                                    .label(category_label)
+                                                    .dropdown_menu_with_anchor(
+                                                        Anchor::BottomLeft,
+                                                        {
+                                                            let view = view.clone();
+                                                            let categories = categories.clone();
+                                                            move |mut menu, window, cx| {
+                                                                let selected = view
+                                                                    .read(cx)
+                                                                    .editing_quick_command_category
+                                                                    .clone();
+                                                                for category in &categories {
+                                                                    let category_id =
+                                                                        category.id.clone();
+                                                                    menu = menu.item(
+                                                                        PopupMenuItem::new(
+                                                                            category.name.clone(),
+                                                                        )
+                                                                        .checked(
+                                                                            selected.as_deref()
+                                                                                == Some(
+                                                                                    category.id
+                                                                                        .as_str(),
+                                                                                ),
+                                                                        )
+                                                                        .on_click(
+                                                                            window.listener_for(
+                                                                                &view,
+                                                                                move |this,
+                                                                                      _,
+                                                                                      _,
+                                                                                      cx| {
+                                                                                    this.editing_quick_command_category = Some(category_id.clone());
+                                                                                    cx.notify();
+                                                                                },
+                                                                            ),
+                                                                        ),
+                                                                    );
+                                                                }
+                                                                menu
+                                                            }
+                                                        },
+                                                    ),
+                                            ),
+                                    )
+                            )
+                            .child(
+                                v_flex()
+                                    .gap_1()
+                                    .child(
+                                        div()
+                                            .text_color(cx.theme().muted_foreground)
+                                            .child(t!("quick_command_remark")),
+                                    )
+                                    .child(Input::new(&content_remark).w_full()),
+                            )
+                            .child(
+                                v_flex()
+                                    .flex_1()
+                                    .min_h(px(0.))
+                                    .gap_1()
+                                    .child(
+                                        div()
+                                            .text_color(cx.theme().muted_foreground)
+                                            .child(t!("quick_command_content")),
+                                    )
+                                    .child(Input::new(&content_command).size_full()),
+                            )
+                            .child(
+                                v_flex()
+                                    .gap_2()
+                                    .child(
+                                        div()
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .child(t!("quick_command_insert_parameter")),
+                                    )
+                                    .child(
+                                        h_flex()
+                                            .gap_2()
+                                            .children((1usize..=5).map(|index| {
+                                                let command_input = content_command.clone();
+                                                Button::new(("insert-command-parameter", index))
+                                                    .small()
+                                                    .secondary()
+                                                    .label(format!("[p{index}]"))
+                                                    .on_click(move |_, window, cx| {
+                                                        let current = command_input
+                                                            .read(cx)
+                                                            .value()
+                                                            .to_string();
+                                                        command_input.update(cx, |input, cx| {
+                                                            input.set_value(
+                                                                format!("{current}[p{index}]"),
+                                                                window,
+                                                                cx,
+                                                            );
+                                                        });
+                                                    })
+                                            }))
+                                            .child(
+                                                div()
+                                                    .text_size(rems(0.75))
+                                                    .text_color(cx.theme().muted_foreground)
+                                                    .child(t!("quick_command_parameter_hint")),
+                                            ),
+                                    ),
+                            )
+                            .child(
+                                h_flex()
+                                    .flex_none()
+                                    .justify_end()
+                                    .gap_2()
+                                    .pt_2()
+                                    .child(
+                                        Button::new("quick-command-dialog-cancel")
+                                            .secondary()
+                                            .label(t!("cancel").to_string())
+                                            .on_click(window.listener_for(
+                                                &view,
+                                                |_this, _, window, cx| {
+                                                    cx.stop_propagation();
+                                                    window.defer(cx, |window, cx| {
+                                                        window.close_dialog(cx);
+                                                    });
+                                                },
+                                            )),
+                                    )
+                                    .child(
+                                        Button::new("quick-command-dialog-save")
+                                            .primary()
+                                            .label(t!("save").to_string())
+                                            .on_click(window.listener_for(&view, {
+                                                let source_category_id =
+                                                    source_category_id.clone();
+                                                let existing = existing.clone();
+                                                let inputs = QuickCommandDialogInputs {
+                                                    name: content_name.clone(),
+                                                    remark: content_remark.clone(),
+                                                    command: content_command.clone(),
+                                                };
+                                                move |this, _, window, cx| {
+                                                    cx.stop_propagation();
+                                                    if this.confirm_quick_command_dialog(
+                                                        source_category_id.clone(),
+                                                        existing.clone(),
+                                                        &inputs,
+                                                        cx,
+                                                    ) {
+                                                        window.defer(cx, |window, cx| {
+                                                            window.close_dialog(cx);
+                                                        });
+                                                    }
+                                                }
+                                            })),
+                                    ),
+                            ),
+                        )
+                    }
+                })
+        });
+        crate::app::input_focus::defer_focus_input_at_end(focus_name_input, window, cx);
     }
 
     pub(crate) fn show_ssh_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -913,9 +1646,7 @@ impl TinyShell {
                     }
                 })
         });
-        window.defer(cx, move |window, cx| {
-            window.focus(&focus_host_input.read(cx).focus_handle(cx), cx);
-        });
+        crate::app::input_focus::defer_focus_input_at_end(focus_host_input, window, cx);
     }
     pub(crate) fn show_managed_key_selector_dialog(
         &mut self,
@@ -1098,8 +1829,10 @@ impl TinyShell {
                                                     .label(t!("delete").to_string())
                                                     .on_click(window.listener_for(
                                                         &view,
-                                                        |this, _, _, cx| {
-                                                            this.delete_selected_managed_key(cx);
+                                                        |this, _, window, cx| {
+                                                            this.delete_selected_managed_key(
+                                                                window, cx,
+                                                            );
                                                         },
                                                     )),
                                             ),
@@ -1181,6 +1914,7 @@ impl TinyShell {
         let view = cx.entity();
         let remark_input = self.key_import_remark_input.clone();
         let passphrase_input = self.key_import_passphrase_input.clone();
+        let focus_remark_input = remark_input.clone();
         window.open_dialog(cx, move |dialog: Dialog, _window, _cx| {
             dialog
                 .title(t!("key_import_dialog_title").to_string())
@@ -1345,6 +2079,7 @@ impl TinyShell {
                     }
                 })
         });
+        crate::app::input_focus::defer_focus_input_at_end(focus_remark_input, window, cx);
     }
 
     pub(crate) fn show_selector_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1946,9 +2681,7 @@ impl TinyShell {
                 })
         });
 
-        window.defer(cx, move |window, cx| {
-            window.focus(&deferred_search_input.read(cx).focus_handle(cx), cx);
-        });
+        crate::app::input_focus::defer_focus_input_at_end(deferred_search_input, window, cx);
     }
 
     pub(crate) fn show_transfers_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -2377,6 +3110,60 @@ impl TinyShell {
                 })
         });
     }
+    pub(crate) fn request_managed_key_deletion(
+        &mut self,
+        key_id: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self
+            .config
+            .sessions()
+            .iter()
+            .any(|session| session.managed_key_id.as_deref() == Some(key_id.as_str()))
+        {
+            self.delete_managed_key(key_id, cx);
+            return;
+        }
+
+        let view = cx.entity();
+        window.open_dialog(cx, move |dialog: Dialog, _window, _| {
+            dialog
+                .title(t!("confirm_delete").to_string())
+                .w(px(420.))
+                .content(move |content, _window, _cx| {
+                    content.child(div().text_sm().child(t!("key_delete_confirm").to_string()))
+                })
+                .footer(
+                    h_flex()
+                        .w_full()
+                        .justify_end()
+                        .gap_2()
+                        .child(
+                            Button::new("cancel-delete-managed-key")
+                                .ghost()
+                                .label(t!("cancel").to_string())
+                                .on_click(|_, window, cx| window.close_dialog(cx)),
+                        )
+                        .child(
+                            Button::new(format!("confirm-delete-managed-key-{key_id}"))
+                                .danger()
+                                .label(t!("delete").to_string())
+                                .on_click({
+                                    let view = view.clone();
+                                    let key_id = key_id.clone();
+                                    move |_, window, cx| {
+                                        view.update(cx, |this, cx| {
+                                            this.delete_managed_key(key_id.clone(), cx);
+                                        });
+                                        window.close_dialog(cx);
+                                    }
+                                }),
+                        ),
+                )
+        });
+    }
+
     pub(crate) fn show_delete_confirm_dialog(
         &mut self,
         window: &mut Window,
@@ -2570,11 +3357,434 @@ impl TinyShell {
                 })
         });
     }
+
+    fn apply_sftp_create_input(
+        &mut self,
+        input: &Entity<InputState>,
+        base_path: &str,
+        is_dir: bool,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let name = input.read(cx).value().trim().to_string();
+        if name.is_empty() || name.contains('/') || name.contains('\\') {
+            self.status = t!("sftp_invalid_name").into();
+            cx.notify();
+            return false;
+        }
+        if let Some(handle) = self.active_sftp_handle() {
+            let path = crate::sftp::join_remote(base_path, &name);
+            let command = if is_dir {
+                crate::sftp::SftpCommand::CreateDir(path)
+            } else {
+                crate::sftp::SftpCommand::CreateFile(path)
+            };
+            let _ = handle.commands.send(command);
+        }
+        cx.notify();
+        true
+    }
+
+    pub(crate) fn show_sftp_create_dialog(
+        &mut self,
+        is_dir: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let view = cx.entity();
+        let base_path = self
+            .active_sftp()
+            .map(|sftp| sftp.current_path.clone())
+            .unwrap_or_else(|| "/".to_string());
+        let input = cx.new(|cx| {
+            gpui_component::input::InputState::new(window, cx).placeholder(if is_dir {
+                t!("sftp_new_folder_name").to_string()
+            } else {
+                t!("sftp_new_file_name").to_string()
+            })
+        });
+        let submit_input = input.clone();
+        let focus_input = input.clone();
+        window.open_dialog(cx, move |dialog: Dialog, window, _| {
+            let submit_input = submit_input.clone();
+            let content_input = input.clone();
+            let confirm_input = input.clone();
+            let confirm_base_path = base_path.clone();
+            dialog
+                .title(if is_dir {
+                    t!("sftp_new_folder").to_string()
+                } else {
+                    t!("sftp_new_file").to_string()
+                })
+                .w(px(420.))
+                .on_ok({
+                    let view = view.clone();
+                    let base_path = base_path.clone();
+                    move |_, _, cx| {
+                        view.update(cx, |this, cx| {
+                            this.apply_sftp_create_input(&submit_input, &base_path, is_dir, cx)
+                        })
+                    }
+                })
+                .footer(
+                    h_flex()
+                        .w_full()
+                        .justify_end()
+                        .gap_2()
+                        .child(
+                            Button::new("cancel-sftp-create")
+                                .label(t!("cancel").to_string())
+                                .on_click(|_, window, cx| window.close_dialog(cx)),
+                        )
+                        .child(
+                            Button::new("confirm-sftp-create")
+                                .primary()
+                                .label(t!("confirm").to_string())
+                                .on_click(window.listener_for(
+                                    &view,
+                                    move |this, _, window, cx| {
+                                        if this.apply_sftp_create_input(
+                                            &confirm_input,
+                                            &confirm_base_path,
+                                            is_dir,
+                                            cx,
+                                        ) {
+                                            window.close_dialog(cx);
+                                        }
+                                    },
+                                )),
+                        ),
+                )
+                .content(move |content, _, _| content.child(Input::new(&content_input).w_full()))
+        });
+        crate::app::input_focus::defer_focus_input_at_end(focus_input, window, cx);
+    }
+
+    fn apply_sftp_rename_input(
+        &mut self,
+        input: &Entity<InputState>,
+        remote_path: &str,
+        parent: &str,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let name = input.read(cx).value().trim().to_string();
+        if name.is_empty() || name.contains('/') || name.contains('\\') {
+            self.status = t!("sftp_invalid_name").into();
+            cx.notify();
+            return false;
+        }
+        if let Some(handle) = self.active_sftp_handle() {
+            let _ = handle.commands.send(crate::sftp::SftpCommand::RenamePath {
+                old_path: remote_path.to_string(),
+                new_path: crate::sftp::join_remote(parent, &name),
+            });
+        }
+        cx.notify();
+        true
+    }
+
+    pub(crate) fn show_sftp_rename_dialog(
+        &mut self,
+        remote_path: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let view = cx.entity();
+        let old_name = remote_path
+            .trim_end_matches('/')
+            .rsplit('/')
+            .next()
+            .unwrap_or_default()
+            .to_string();
+        let parent = crate::sftp::parent_dir(&remote_path).unwrap_or_else(|| "/".to_string());
+        let input =
+            cx.new(|cx| gpui_component::input::InputState::new(window, cx).default_value(old_name));
+        let submit_input = input.clone();
+        let focus_input = input.clone();
+        window.open_dialog(cx, move |dialog: Dialog, window, _| {
+            let submit_input = submit_input.clone();
+            let content_input = input.clone();
+            let confirm_input = input.clone();
+            let confirm_remote_path = remote_path.clone();
+            let confirm_parent = parent.clone();
+            dialog
+                .title(t!("sftp_rename").to_string())
+                .w(px(420.))
+                .on_ok({
+                    let view = view.clone();
+                    let remote_path = remote_path.clone();
+                    let parent = parent.clone();
+                    move |_, _, cx| {
+                        view.update(cx, |this, cx| {
+                            this.apply_sftp_rename_input(&submit_input, &remote_path, &parent, cx)
+                        })
+                    }
+                })
+                .footer(
+                    h_flex()
+                        .w_full()
+                        .justify_end()
+                        .gap_2()
+                        .child(
+                            Button::new("cancel-sftp-rename")
+                                .label(t!("cancel").to_string())
+                                .on_click(|_, window, cx| window.close_dialog(cx)),
+                        )
+                        .child(
+                            Button::new("confirm-sftp-rename")
+                                .primary()
+                                .label(t!("confirm").to_string())
+                                .on_click(window.listener_for(
+                                    &view,
+                                    move |this, _, window, cx| {
+                                        if this.apply_sftp_rename_input(
+                                            &confirm_input,
+                                            &confirm_remote_path,
+                                            &confirm_parent,
+                                            cx,
+                                        ) {
+                                            window.close_dialog(cx);
+                                        }
+                                    },
+                                )),
+                        ),
+                )
+                .content(move |content, _, _| content.child(Input::new(&content_input).w_full()))
+        });
+        crate::app::input_focus::defer_focus_input_at_end(focus_input, window, cx);
+    }
+
+    fn apply_sftp_permissions_form(
+        &mut self,
+        form: &Entity<SftpPermissionsForm>,
+        remote_path: &str,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let (value, recursive, apply_to) = {
+            let form = form.read(cx);
+            (
+                form.input.read(cx).value().trim().to_string(),
+                form.recursive,
+                form.apply_to,
+            )
+        };
+        let Ok(mode) = u32::from_str_radix(&value, 8) else {
+            self.status = t!("sftp_invalid_permissions").into();
+            cx.notify();
+            return false;
+        };
+        if value.len() < 3 || value.len() > 4 || mode > 0o7777 {
+            self.status = t!("sftp_invalid_permissions").into();
+            cx.notify();
+            return false;
+        }
+        if let Some(handle) = self.active_sftp_handle() {
+            let _ = handle
+                .commands
+                .send(crate::sftp::SftpCommand::SetPermissions {
+                    remote_path: remote_path.to_string(),
+                    mode,
+                    recursive,
+                    apply_to,
+                });
+        }
+        cx.notify();
+        true
+    }
+
+    pub(crate) fn show_sftp_permissions_dialog(
+        &mut self,
+        remote_path: String,
+        is_dir: bool,
+        permissions: Option<u32>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let view = cx.entity();
+        let initial_mode = permissions.unwrap_or(if is_dir { 0o755 } else { 0o644 });
+        let form = cx.new(|cx| {
+            SftpPermissionsForm::new(remote_path.clone(), is_dir, initial_mode, window, cx)
+        });
+        let focus_input = form.read(cx).input.clone();
+        let submit_form = form.clone();
+        window.open_dialog(cx, move |dialog: Dialog, window, _| {
+            let submit_form = submit_form.clone();
+            let content_form = form.clone();
+            let confirm_form = form.clone();
+            let confirm_path = remote_path.clone();
+            let content_max_height = (window.viewport_size().height - px(220.))
+                .max(px(180.))
+                .min(px(520.));
+            dialog
+                .title(t!("sftp_file_permissions").to_string())
+                .w(px(560.))
+                .on_ok({
+                    let view = view.clone();
+                    let remote_path = remote_path.clone();
+                    move |_, _, cx| {
+                        view.update(cx, |this, cx| {
+                            this.apply_sftp_permissions_form(&submit_form, &remote_path, cx)
+                        })
+                    }
+                })
+                .footer(
+                    h_flex()
+                        .w_full()
+                        .justify_end()
+                        .gap_2()
+                        .child(
+                            Button::new("cancel-sftp-permissions")
+                                .label(t!("cancel").to_string())
+                                .on_click(|_, window, cx| window.close_dialog(cx)),
+                        )
+                        .child(
+                            Button::new("confirm-sftp-permissions")
+                                .primary()
+                                .label(t!("confirm").to_string())
+                                .on_click(window.listener_for(
+                                    &view,
+                                    move |this, _, window, cx| {
+                                        if this.apply_sftp_permissions_form(
+                                            &confirm_form,
+                                            &confirm_path,
+                                            cx,
+                                        ) {
+                                            window.close_dialog(cx);
+                                        }
+                                    },
+                                )),
+                        ),
+                )
+                .content(move |content, _, _| {
+                    content.child(
+                        div()
+                            .id("sftp-permissions-scroll")
+                            .max_h(content_max_height)
+                            .overflow_y_scroll()
+                            .child(content_form.clone()),
+                    )
+                })
+        });
+        crate::app::input_focus::defer_focus_input_at_end(focus_input, window, cx);
+    }
+
+    fn apply_sftp_delete_paths(&mut self, paths: &[String], quick: bool, cx: &mut Context<Self>) {
+        if let Some(handle) = self.active_sftp_handle() {
+            let command = if quick {
+                crate::sftp::SftpCommand::QuickDeletePaths(paths.to_vec())
+            } else {
+                crate::sftp::SftpCommand::DeletePaths(paths.to_vec())
+            };
+            let _ = handle.commands.send(command);
+        }
+        if let Some(sftp) = self.active_sftp_mut() {
+            sftp.selected_entries.clear();
+        }
+        cx.notify();
+    }
+
+    pub(crate) fn show_sftp_delete_paths_confirm_dialog(
+        &mut self,
+        paths: Vec<String>,
+        quick: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let view = cx.entity();
+        let submit_paths = paths.clone();
+        window.open_dialog(cx, move |dialog: Dialog, window, _| {
+            let confirm_paths = paths.clone();
+            let content_max_height = (window.viewport_size().height - px(220.))
+                .max(px(160.))
+                .min(px(420.));
+            dialog
+                .title(if quick {
+                    t!("sftp_quick_delete_title").to_string()
+                } else {
+                    t!("confirm_delete").to_string()
+                })
+                .w(px(520.))
+                .on_ok({
+                    let view = view.clone();
+                    let submit_paths = submit_paths.clone();
+                    move |_, _, cx| {
+                        view.update(cx, |this, cx| {
+                            this.apply_sftp_delete_paths(&submit_paths, quick, cx);
+                        });
+                        true
+                    }
+                })
+                .footer(
+                    h_flex()
+                        .w_full()
+                        .justify_end()
+                        .gap_2()
+                        .child(
+                            Button::new(if quick {
+                                "cancel-sftp-quick-delete"
+                            } else {
+                                "cancel-sftp-delete"
+                            })
+                            .label(t!("cancel").to_string())
+                            .on_click(|_, window, cx| window.close_dialog(cx)),
+                        )
+                        .child(
+                            Button::new(if quick {
+                                "confirm-sftp-quick-delete"
+                            } else {
+                                "confirm-sftp-delete"
+                            })
+                            .danger()
+                            .label(t!("confirm").to_string())
+                            .on_click(window.listener_for(
+                                &view,
+                                move |this, _, window, cx| {
+                                    this.apply_sftp_delete_paths(&confirm_paths, quick, cx);
+                                    window.close_dialog(cx);
+                                },
+                            )),
+                        ),
+                )
+                .content({
+                    let paths = paths.clone();
+                    move |content, _, cx| {
+                        let mut body = v_flex().gap_3().child(
+                            div().child(t!("confirm_delete_desc", count = paths.len()).to_string()),
+                        );
+                        if quick {
+                            body = body.child(
+                                div()
+                                    .w_full()
+                                    .p_3()
+                                    .rounded_md()
+                                    .border_1()
+                                    .border_color(cx.theme().danger)
+                                    .bg(cx.theme().danger.opacity(0.12))
+                                    .text_color(cx.theme().danger)
+                                    .child(t!("sftp_quick_delete_warning").to_string()),
+                            );
+                        }
+                        body = body.child(v_flex().gap_1().children(paths.iter().map(|path| {
+                            div()
+                                .text_size(rems(0.833))
+                                .text_color(cx.theme().muted_foreground)
+                                .child(path.clone())
+                        })));
+                        content.child(
+                            div()
+                                .id("sftp-delete-confirm-scroll")
+                                .max_h(content_max_height)
+                                .overflow_y_scroll()
+                                .child(body),
+                        )
+                    }
+                })
+        });
+    }
     pub(crate) fn check_for_updates(&mut self, cx: &mut Context<Self>) {
         if matches!(
             self.updater_status,
             Some(crate::app::updater::UpdateStatus::Checking)
-                | Some(crate::app::updater::UpdateStatus::Downloading)
+                | Some(crate::app::updater::UpdateStatus::Downloading(_, _, _))
         ) {
             return;
         }
@@ -2630,7 +3840,11 @@ impl TinyShell {
             Some(crate::app::updater::UpdateStatus::UpdateAvailable(info)) => info,
             _ => return,
         };
-        self.updater_status = Some(crate::app::updater::UpdateStatus::Downloading);
+        self.updater_status = Some(crate::app::updater::UpdateStatus::Downloading(
+            info.clone(),
+            0,
+            info.size,
+        ));
         cx.notify();
 
         let view = cx.entity();
@@ -2639,19 +3853,42 @@ impl TinyShell {
             |_, cx: &mut gpui::AsyncApp| {
                 let cx = cx.clone();
                 async move {
-                    let (tx, rx) = futures::channel::oneshot::channel();
+                    let (result_tx, result_rx) = futures::channel::oneshot::channel();
+                    let (progress_tx, mut progress_rx) = futures::channel::mpsc::unbounded();
+                    let update_info = info.clone();
                     crate::app::shared_runtime().spawn(async move {
-                        let result = crate::app::updater::perform_update(&info).await;
-                        let _ = tx.send(result);
+                        let result =
+                            crate::app::updater::download_update(&update_info, |done, total| {
+                                let _ = progress_tx.unbounded_send((done, total));
+                            })
+                            .await;
+                        let _ = result_tx.send(result);
                     });
-                    let result = rx
+                    use futures::StreamExt as _;
+                    while let Some((done, total)) = progress_rx.next().await {
+                        cx.update(|cx| {
+                            view.update(cx, |this, cx| {
+                                this.updater_status =
+                                    Some(crate::app::updater::UpdateStatus::Downloading(
+                                        info.clone(),
+                                        done,
+                                        total,
+                                    ));
+                                cx.notify();
+                            });
+                        });
+                    }
+                    let result = result_rx
                         .await
                         .unwrap_or_else(|_| Err(anyhow::anyhow!("update download cancelled")));
                     cx.update(|cx| match result {
-                        Ok(()) => {
+                        Ok(path) => {
                             view.update(cx, |this, cx| {
                                 this.updater_status =
-                                    Some(crate::app::updater::UpdateStatus::InstallComplete);
+                                    Some(crate::app::updater::UpdateStatus::ReadyToRestart(
+                                        info.clone(),
+                                        path,
+                                    ));
                                 cx.notify();
                             });
                         }
@@ -2668,6 +3905,64 @@ impl TinyShell {
             }
         })
         .detach();
+    }
+
+    pub(crate) fn confirm_update_restart(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(crate::app::updater::UpdateStatus::ReadyToRestart(info, path)) =
+            self.updater_status.clone()
+        else {
+            return;
+        };
+
+        let view = cx.entity();
+        window.open_dialog(cx, move |dialog: Dialog, _window, _| {
+            let version = info.version.clone();
+            let path = path.clone();
+            let view = view.clone();
+            dialog
+                .title(t!("update_restart_confirm_title").to_string())
+                .w(px(440.))
+                .content(move |content, _window, _cx| {
+                    content.child(div().text_sm().child(
+                        t!("update_restart_confirm_desc", version = version.clone()).to_string(),
+                    ))
+                })
+                .footer(
+                    h_flex()
+                        .w_full()
+                        .justify_end()
+                        .gap_2()
+                        .child(
+                            Button::new("cancel-update-restart")
+                                .ghost()
+                                .label(t!("cancel").to_string())
+                                .on_click(|_, window, cx| window.close_dialog(cx)),
+                        )
+                        .child(
+                            Button::new("confirm-update-restart")
+                                .primary()
+                                .label(t!("update_restart_now").to_string())
+                                .on_click({
+                                    let path = path.clone();
+                                    let view = view.clone();
+                                    move |_, _window, _cx| {
+                                        if let Err(error) =
+                                            crate::app::updater::install_and_restart(&path)
+                                        {
+                                            tracing::error!("failed to install update: {error:#}");
+                                            view.update(_cx, |this, cx| {
+                                                this.updater_status =
+                                                    Some(crate::app::updater::UpdateStatus::Error(
+                                                        format!("{error:#}"),
+                                                    ));
+                                                cx.notify();
+                                            });
+                                        }
+                                    }
+                                }),
+                        ),
+                )
+        });
     }
 
     pub(crate) fn show_update_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -2702,7 +3997,11 @@ impl TinyShell {
                     move |content, window, cx| {
                         let current_version = env!("CARGO_PKG_VERSION");
                         let status = view.read(cx).updater_status.clone();
-                        let (title, detail, notes, has_update, is_busy, is_error) = match status {
+                        let can_restart = matches!(
+                            &status,
+                            Some(crate::app::updater::UpdateStatus::ReadyToRestart(_, _))
+                        );
+                        let (title, detail, notes, has_update, is_busy, is_error) = match status.clone() {
                             Some(crate::app::updater::UpdateStatus::Checking) => (
                                 t!("checking_update").to_string(),
                                 format!("{} v{current_version}", t!("update_current_version")),
@@ -2737,26 +4036,22 @@ impl TinyShell {
                                 false,
                                 false,
                             ),
-                            Some(crate::app::updater::UpdateStatus::Downloading) => (
+                            Some(crate::app::updater::UpdateStatus::Downloading(info, done, total)) => (
                                 t!("update_downloading").to_string(),
-                                t!("update_please_wait").to_string(),
-                                String::new(),
+                                if total > 0 {
+                                    format!("{} / {}", format_bytes(done), format_bytes(total))
+                                } else {
+                                    format_bytes(done)
+                                },
+                                info.notes,
                                 false,
                                 true,
                                 false,
                             ),
-                            Some(crate::app::updater::UpdateStatus::Installing) => (
-                                t!("update_installing").to_string(),
-                                t!("update_please_wait").to_string(),
-                                String::new(),
-                                false,
-                                true,
-                                false,
-                            ),
-                            Some(crate::app::updater::UpdateStatus::InstallComplete) => (
+                            Some(crate::app::updater::UpdateStatus::ReadyToRestart(info, _)) => (
                                 t!("update_install_complete").to_string(),
                                 t!("update_restart_hint").to_string(),
-                                String::new(),
+                                info.notes,
                                 false,
                                 false,
                                 false,
@@ -2895,6 +4190,25 @@ impl TinyShell {
                                                 ),
                                         ),
                                 )
+                                .when(
+                                    matches!(
+                                        status,
+                                        Some(crate::app::updater::UpdateStatus::Downloading(_, _, _))
+                                    ),
+                                    |this| {
+                                        let (done, total) = match status.as_ref() {
+                                            Some(crate::app::updater::UpdateStatus::Downloading(_, done, total)) => (*done, *total),
+                                            _ => unreachable!(),
+                                        };
+                                        this.child(
+                                            Progress::new("update-download-progress")
+                                                .with_size(px(5.))
+                                                .value(if total > 0 { done as f32 / total as f32 } else { 0.0 })
+                                                .color(cx.theme().primary)
+                                                .w_full(),
+                                        )
+                                    },
+                                )
                                 .child(
                                     h_flex()
                                         .flex_none()
@@ -2929,6 +4243,19 @@ impl TinyShell {
                                                         &view,
                                                         |this, _, _, cx| {
                                                             this.download_available_update(cx)
+                                                        },
+                                                    )),
+                                            )
+                                        })
+                                        .when(can_restart, |this| {
+                                            this.child(
+                                                Button::new("update-restart")
+                                                    .primary()
+                                                    .label(t!("update_restart_now").to_string())
+                                                    .on_click(window.listener_for(
+                                                        &view,
+                                                        |this, _, window, cx| {
+                                                            this.confirm_update_restart(window, cx)
                                                         },
                                                     )),
                                             )
@@ -3429,25 +4756,6 @@ impl TinyShell {
                                                 .title(t!("settings_group_other").to_string())
                                                 .item(
                                                     SettingItem::new(
-                                                        t!("right_click_copy_paste").to_string(),
-                                                        SettingField::render({
-                                                            let view = view_clone_for_general.clone();
-                                                            move |_, window, cx| {
-                                                                Switch::new("right-click-copy-paste")
-                                                                    .small()
-                                                                    .checked(view.read(cx).config.right_click_copy_paste())
-                                                                    .on_click(window.listener_for(&view, |this, checked, _, cx| {
-                                                                        this.config.set_right_click_copy_paste(*checked);
-                                                                        this.mark_config_preferences_dirty();
-                                                                        cx.notify();
-                                                                    }))
-                                                                    .into_any_element()
-                                                            }
-                                                        })
-                                                    ).description(t!("copy_paste_hint").to_string())
-                                                )
-                                                .item(
-                                                    SettingItem::new(
                                                         t!("keyword_highlight").to_string(),
                                                         SettingField::render({
                                                             let view = view_clone_for_general.clone();
@@ -3613,153 +4921,6 @@ impl TinyShell {
                                                             }
                                                         })
                                                     ).description(t!("reset_layout_hint").to_string())
-                                                )
-                                        )
-                                        // ── SSH Keys management group ──
-                                        .group(
-                                            SettingGroup::new()
-                                                .title(t!("settings_group_keys").to_string())
-                                                .item(
-                                                    SettingItem::new(
-                                                        t!("key_management").to_string(),
-                                                        SettingField::render({
-                                                            let view = view_clone_for_general.clone();
-                                                            move |_, window, _cx| {
-                                                                Button::new("import-key")
-                                                                    .small()
-                                                                    .primary()
-                                                                    .label(t!("import_key").to_string())
-                                                                    .on_click(window.listener_for(&view, |this, _, window, cx| {
-                                                                        this.import_managed_key(window, cx);
-                                                                    }))
-                                                                    .into_any_element()
-                                                            }
-                                                        })
-                                                    ).description(t!("key_management_desc").to_string())
-                                                )
-                                                .item(
-                                                    SettingItem::render({
-                                                        let view = view_clone_for_general.clone();
-                                                        move |_, _window, cx| {
-                                                            let keys = view.read(cx).managed_keys.clone();
-                                                            if keys.is_empty() {
-                                                                return div()
-                                                                    .py(px(12.))
-                                                                    .text_color(cx.theme().muted_foreground)
-                                                                    .child(t!("no_managed_keys").to_string())
-                                                                    .into_any_element();
-                                                            }
-                                                            let mut list = v_flex().gap_2();
-                                                            for key in keys {
-                                                                let view = view.clone();
-                                                                let key_id = key.id.clone();
-                                                                let key_name = key.name.clone();
-                                                                let key_type = key.key_type.clone();
-                                                                let fingerprint = {
-                                                                    let fp = key.fingerprint.clone();
-                                                                    if fp.len() > 30 {
-                                                                        format!("{}…", &fp[..30])
-                                                                    } else {
-                                                                        fp
-                                                                    }
-                                                                };
-                                                                let is_editing = view.read(cx).editing_managed_key_id.as_deref() == Some(&key.id);
-                                                                let rename_input = view.read(cx).key_inline_input.clone();
-                                                                list = list.child(
-                                                                    h_flex()
-                                                                        .items_center()
-                                                                        .gap_2()
-                                                                        .px(px(8.))
-                                                                        .py(px(6.))
-                                                                        .rounded_md()
-                                                                        .border_1()
-                                                                        .border_color(cx.theme().border)
-                                                                        .child(
-                                                                            div()
-                                                                                .px(px(6.))
-                                                                                .py(px(2.))
-                                                                                .rounded(px(4.))
-                                                                                .text_xs()
-                                                                                .text_color(cx.theme().primary)
-                                                                                .bg(cx.theme().accent.opacity(0.15))
-                                                                                .child(key_type)
-                                                                        )
-                                                                        .child(
-                                                                            if is_editing {
-                                                                                div().flex_1().child(
-                                                                                    Input::new(&rename_input)
-                                                                                        .small()
-                                                                                )
-                                                                            } else {
-                                                                                div().flex_1().child(key_name.clone())
-                                                                            }
-                                                                        )
-                                                                        .child(
-                                                                            div()
-                                                                                .text_xs()
-                                                                                .text_color(cx.theme().muted_foreground)
-                                                                                .child(fingerprint)
-                                                                        )
-                                                                        .child(
-                                                                            if is_editing {
-                                                                                Button::new(SharedString::from(format!("key-save-{}", key_id)))
-                                                                                    .ghost()
-                                                                                    .xsmall()
-                                                                                    .icon(IconName::Check)
-                                                                                    .on_click({
-                                                                                        let view = view.clone();
-                                                                                        let key_id = key_id.clone();
-                                                                                        move |_, _window, cx| {
-                                                                                            let new_name = view.read(cx).key_inline_input.read(cx).value().trim().to_string();
-                                                                                            if !new_name.is_empty() {
-                                                                                                let key_id = key_id.clone();
-                                                                                                view.update(cx, |this, cx| {
-                                                                                                    this.rename_managed_key(key_id, new_name, cx);
-                                                                                                });
-                                                                                            }
-                                                                                        }
-                                                                                    })
-                                                                            } else {
-                                                                                Button::new(SharedString::from(format!("key-rename-{}", key_id)))
-                                                                                    .ghost()
-                                                                                    .xsmall()
-                                                                                    .label(t!("key_rename").to_string())
-                                                                                    .on_click({
-                                                                                        let view = view.clone();
-                                                                                        let key_id = key_id.clone();
-                                                                                        let key_name = key_name.clone();
-                                                                                        move |_, window, cx| {
-                                                                                            let key_name = key_name.clone();
-                                                                                            view.update(cx, |this, cx| {
-                                                                                                this.editing_managed_key_id = Some(key_id.clone());
-                                                                                                Self::set_input_value(&this.key_inline_input, key_name, window, cx);
-                                                                                                cx.notify();
-                                                                                            });
-                                                                                        }
-                                                                                    })
-                                                                            }
-                                                                        )
-                                                                        .child(
-                                                                            Button::new(SharedString::from(format!("key-delete-{}", key_id)))
-                                                                                .ghost()
-                                                                                .xsmall()
-                                                                                .icon(IconName::Delete)
-                                                                                .on_click({
-                                                                                    let view = view.clone();
-                                                                                    let key_id = key_id.clone();
-                                                                                    move |_, _window, cx| {
-                                                                                        let key_id = key_id.clone();
-                                                                                        view.update(cx, |this, cx| {
-                                                                                            this.delete_managed_key(key_id, cx);
-                                                                                        });
-                                                                                    }
-                                                                                })
-                                                                        )
-                                                                );
-                                                            }
-                                                            list.into_any_element()
-                                                        }
-                                                    })
                                                 )
                                         )
                                 )
@@ -3979,13 +5140,10 @@ impl TinyShell {
                                                                 Some(crate::app::updater::UpdateStatus::UpdateAvailable(info)) => {
                                                                     Some(t!("update_available", version = info.version.clone()).to_string())
                                                                 }
-                                                                Some(crate::app::updater::UpdateStatus::Downloading) => {
+                                                                Some(crate::app::updater::UpdateStatus::Downloading(_, _, _)) => {
                                                                     Some(t!("update_downloading").to_string())
                                                                 }
-                                                                Some(crate::app::updater::UpdateStatus::Installing) => {
-                                                                    Some(t!("update_installing").to_string())
-                                                                }
-                                                                Some(crate::app::updater::UpdateStatus::InstallComplete) => {
+                                                                Some(crate::app::updater::UpdateStatus::ReadyToRestart(_, _)) => {
                                                                     Some(t!("update_install_complete").to_string())
                                                                 }
                                                                 Some(crate::app::updater::UpdateStatus::Error(msg)) => {
@@ -4002,7 +5160,7 @@ impl TinyShell {
                                                         v_flex()
                                                             .gap_2()
                                                             .items_center()
-                                                            .child(div().text_size(rems(1.5)).font_weight(FontWeight::BOLD).child("tiny-shell"))
+                                                            .child(div().text_size(rems(1.5)).font_weight(FontWeight::BOLD).child(t!("app_name")))
                                                             .child(div().text_size(rems(0.9)).child(format!("Version {}", version)))
                                                             .child(
                                                                 div()
@@ -4034,48 +5192,7 @@ impl TinyShell {
                                             .on_click({
                                                 let view = view.clone();
                                                 move |_, _window, cx| {
-                                                    view.update(cx, |this, cx| {
-                                                        this.updater_status = Some(crate::app::updater::UpdateStatus::Checking);
-                                                        cx.notify();
-                                                    });
-                                                    cx.spawn({
-                                                        let view = view.clone();
-                                                        |cx: &mut gpui::AsyncApp| {
-                                                            let cx = cx.clone();
-                                                            async move {
-                                                                let (tx, rx) = futures::channel::oneshot::channel();
-                                                                crate::app::shared_runtime().spawn(async move {
-                                                                    let result = crate::app::updater::check_for_update().await;
-                                                                    let _ = tx.send(result);
-                                                                });
-                                                                let result = rx.await.unwrap_or_else(|_| {
-                                                                    Err(anyhow::anyhow!("update check cancelled"))
-                                                                });
-                                                                cx.update(|cx| {
-                                                                    match result {
-                                                                        Ok(crate::app::updater::UpdateCheckResult::UpdateAvailable(info)) => {
-                                                                            view.update(cx, |this, cx| {
-                                                                                this.updater_status = Some(crate::app::updater::UpdateStatus::UpdateAvailable(info));
-                                                                                cx.notify();
-                                                                            });
-                                                                        }
-                                                                        Ok(crate::app::updater::UpdateCheckResult::UpToDate(info)) => {
-                                                                            view.update(cx, |this, cx| {
-                                                                                this.updater_status = Some(crate::app::updater::UpdateStatus::UpToDate(info));
-                                                                                cx.notify();
-                                                                            });
-                                                                        }
-                                                                        Err(err) => {
-                                                                            view.update(cx, |this, cx| {
-                                                                                this.updater_status = Some(crate::app::updater::UpdateStatus::Error(format!("{err:#}")));
-                                                                                cx.notify();
-                                                                            });
-                                                                        }
-                                                                    }
-                                                                });
-                                                            }
-                                                        }
-                                                    }).detach();
+                                                    view.update(cx, |this, cx| this.check_for_updates(cx));
                                                 }
                                             }),
                                     )
@@ -4087,47 +5204,7 @@ impl TinyShell {
                                                                                 .on_click({
                                                                                     let view = view.clone();
                                                                                     move |_, _window, cx| {
-                                                                                        let info = match view.read(cx).updater_status.clone() {
-                                                                                            Some(crate::app::updater::UpdateStatus::UpdateAvailable(info)) => info,
-                                                                                            _ => return,
-                                                                                        };
-                                                                                        view.update(cx, |this, cx| {
-                                                                                            this.updater_status = Some(crate::app::updater::UpdateStatus::Downloading);
-                                                                                            cx.notify();
-                                                                                        });
-                                                                                        cx.spawn({
-                                                                                            let view = view.clone();
-                                                                                            |cx: &mut gpui::AsyncApp| {
-                                                                                                let cx = cx.clone();
-                                                                                                async move {
-                                                                                                    let (tx, rx) = futures::channel::oneshot::channel();
-                                                                                                    let info = info.clone();
-                                                                                                    crate::app::shared_runtime().spawn(async move {
-                                                                                                        let result = crate::app::updater::perform_update(&info).await;
-                                                                                                        let _ = tx.send(result);
-                                                                                                    });
-                                                                                                    let result = rx.await.unwrap_or_else(|_| {
-                                                                                                        Err(anyhow::anyhow!("update download cancelled"))
-                                                                                                    });
-                                                                                                    cx.update(|cx| {
-                                                                                                        match result {
-                                                                                                            Ok(()) => {
-                                                                                                                view.update(cx, |this, cx| {
-                                                                                                                    this.updater_status = Some(crate::app::updater::UpdateStatus::InstallComplete);
-                                                                                                                    cx.notify();
-                                                                                                                });
-                                                                                                            }
-                                                                                                            Err(err) => {
-                                                                                                                view.update(cx, |this, cx| {
-                                                                                                                    this.updater_status = Some(crate::app::updater::UpdateStatus::Error(format!("{err:#}")));
-                                                                                                                    cx.notify();
-                                                                                                                });
-                                                                                                            }
-                                                                                                        }
-                                                                                                    });
-                                                                                                }
-                                                                                            }
-                                                                                        }).detach();
+                                                                                        view.update(cx, |this, cx| this.download_available_update(cx));
                                                                                     }
                                                                                 }),
                                                                         )

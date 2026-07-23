@@ -84,7 +84,8 @@ fn window_options(cx: &App, position_hint: Option<Point<Pixels>>) -> WindowOptio
     }
 
     #[cfg(not(target_os = "macos"))]
-    if let Ok(image) = image::load_from_memory(include_bytes!("../../assets/icons/tiny-shell.png")) {
+    if let Ok(image) = image::load_from_memory(include_bytes!("../../assets/icons/tiny-shell.png"))
+    {
         options.icon = Some(std::sync::Arc::new(image.into_rgba8()));
     }
 

@@ -1,6 +1,7 @@
 pub mod config_sync;
 pub mod constants;
 pub mod dialogs;
+pub mod input_focus;
 pub mod keybinding_recorder;
 pub mod resizable;
 pub mod search;
@@ -40,7 +41,7 @@ use rust_i18n::t;
 use tokio::runtime::Runtime;
 
 use crate::{
-    session::config::{AuthMethod, ConfigStore, ManagedKey},
+    session::config::{AuthMethod, ConfigStore, ManagedKey, QuickCommandCategory},
     session::ssh_config::SshConfigEntry,
     system::{SharedSystemSampler, SystemSampler, SystemSnapshot},
     terminal::{self, BackendCommand, BackendEvent, TabKind, TerminalTab},
@@ -411,6 +412,8 @@ pub(crate) enum DialogKind {
     ManagedKeyImport,
     ConnectionGroup,
     ConnectionGroupMove,
+    QuickCommandCategory,
+    QuickCommand,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -424,11 +427,59 @@ pub(crate) enum HomePage {
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum SftpPanelView {
+    #[default]
+    Files,
+    Commands,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) enum ProcessView {
     #[default]
     Memory,
     Cpu,
     Activity,
+}
+
+fn is_legacy_seeded_quick_commands(categories: &[QuickCommandCategory]) -> bool {
+    const COMMANDS: [&[&str]; 4] = [
+        &["pwd", "ls -lah", "df -h", "uptime"],
+        &[
+            "free -h",
+            "ps aux --sort=-%cpu | head -n 20",
+            "ss -lntup",
+            "journalctl -n 100 --no-pager",
+        ],
+        &[
+            "docker ps -a",
+            "docker images",
+            "docker stats --no-stream",
+            "docker system df",
+        ],
+        &[
+            "ip address",
+            "ip route",
+            "cat /etc/resolv.conf",
+            "curl -fsSL https://api.ipify.org && echo",
+        ],
+    ];
+    let names_match = categories
+        .iter()
+        .map(|category| category.name.as_str())
+        .eq(["常用", "系统", "Docker", "网络"])
+        || categories
+            .iter()
+            .map(|category| category.name.as_str())
+            .eq(["Common", "System", "Docker", "Network"]);
+    names_match
+        && categories.len() == COMMANDS.len()
+        && categories.iter().zip(COMMANDS).all(|(category, expected)| {
+            category
+                .commands
+                .iter()
+                .map(|command| command.command.as_str())
+                .eq(expected.iter().copied())
+        })
 }
 
 #[derive(Default)]
@@ -484,6 +535,7 @@ pub(crate) key_import_remark_input: Entity<InputState>,
     pub(crate) ssh_config_selected: Option<usize>,
     pub(crate) editing_session_id: Option<String>,
     pub(crate) editing_connection_group: Option<String>,
+    pub(crate) editing_quick_command_category: Option<String>,
     pub(crate) connection_group_parent: Option<String>,
     pub(crate) moving_connection_group: Option<String>,
     pub(crate) session_group_selection: Option<String>,
@@ -518,13 +570,14 @@ pub(crate) key_import_remark_input: Entity<InputState>,
     pub(crate) home_page_open: bool,
     pub(crate) home_page: HomePage,
     pub(crate) connection_group_filter: Option<String>,
+    pub(crate) command_category_filter: Option<String>,
+    pub(crate) selected_quick_command: Option<(String, String)>,
+    pub(crate) quick_command_parameter_inputs: Vec<Entity<InputState>>,
     /// Bounds of the visible group rows, used to calculate a drop position.
     pub(crate) connection_group_bounds: HashMap<String, Bounds<Pixels>>,
     pub(crate) pending_connection_group_drag: Option<(String, Point<Pixels>)>,
     pub(crate) dragging_connection_group: Option<String>,
     pub(crate) connection_group_drop_before: Option<String>,
-    pub(crate) ip_popover_visible: bool,
-    pub(crate) ip_popover_hide_generation: u64,
     pub(crate) selector_selection: usize,
     pub(crate) workspace_panels: Entity<ResizableState>,
     pub(crate) body_panels: Entity<ResizableState>,
@@ -539,11 +592,15 @@ pub(crate) key_import_remark_input: Entity<InputState>,
     pub(crate) saved_scroll_handle: gpui::ScrollHandle,
     pub(crate) connection_scroll_handle: gpui::ScrollHandle,
     pub(crate) group_picker_scroll_handle: gpui::ScrollHandle,
-    pub(crate) connection_progress: Option<ConnectionProgress>,
     pub(crate) pending_sftp_path_sync: Option<String>,
     pub(crate) pending_sftp_tree_scroll_path: Option<String>,
     pub(crate) sftp_context_menu: Option<SftpContextMenuState>,
-    pub(crate) tab_context_menu: Option<TabContextMenuState>,
+    /// Increments each time a context menu is opened, used as an animation
+    /// epoch so the menu fade-in restarts on every open.
+    pub(crate) context_menu_epoch: u64,
+    /// Increments each time a tab becomes disconnected, used as an animation
+    /// epoch so the reconnect bar fade-in restarts on every disconnect.
+    pub(crate) disconnect_epoch: u64,
     pub(crate) sftp_creating_folder: bool,
     pub(crate) sftp_new_folder_input: Entity<InputState>,
     pub(crate) sftp_delete_scroll_handle: gpui::ScrollHandle,
@@ -561,10 +618,13 @@ pub(crate) key_import_remark_input: Entity<InputState>,
     pub(crate) dragging_splitter: Option<(Vec<usize>, usize)>, // (parent_path, child_index)
     pub(crate) drag_split_origin: Option<gpui::Point<Pixels>>,
     // Tab drag state
-    pub(crate) tab_drag: tab_drag::TabDragState<AnyWindowHandle, (AnyWindowHandle, Entity<TinyShell>)>,
+    pub(crate) tab_drag:
+        tab_drag::TabDragState<AnyWindowHandle, (AnyWindowHandle, Entity<TinyShell>)>,
     /// Source drag currently hovering over this window.
     pub(crate) incoming_tab_drag: Option<IncomingTabDrag>,
     pub(crate) terminal_marked_text: Option<String>,
+    pub(crate) sftp_panel_view: SftpPanelView,
+    pub(crate) quick_command_category: usize,
     pub(crate) sftp_panel_minimized: bool,
     pub(crate) sidebar_collapsed: bool,
     pub(crate) collapsed_saved_scroll_handle: gpui::ScrollHandle,
@@ -597,10 +657,14 @@ pub(crate) key_import_remark_input: Entity<InputState>,
     pub(crate) selected_network_interface: Option<String>,
     pub(crate) network_interface_histories: HashMap<String, NetworkHistory>,
     pub(crate) last_system_sample: Instant,
+    pub(crate) last_sftp_latency_sample: Instant,
 
     pub(crate) search_input: Entity<InputState>,
     pub(crate) quick_connection_search_input: Entity<InputState>,
     pub(crate) search_active: bool,
+    /// Increments each time the search bar is opened, used as an animation
+    /// epoch so the search bar fade-in restarts on every open.
+    pub(crate) search_epoch: u64,
     pub(crate) search_query: String,
     pub(crate) search_matches: Vec<(i32, i32)>,
     pub(crate) search_current: usize,
@@ -637,23 +701,10 @@ pub(crate) enum SelectorEntry {
 }
 
 #[derive(Clone)]
-pub(crate) struct ConnectionProgress {
-    pub(crate) tab_id: String,
-    pub(crate) title: SharedString,
-    pub(crate) lines: Vec<SharedString>,
-    pub(crate) failed: bool,
-}
-
-#[derive(Clone)]
 pub(crate) struct SftpContextMenuState {
-    pub(crate) remote_path: String,
+    pub(crate) remote_path: Option<String>,
     pub(crate) is_dir: bool,
-    pub(crate) position: Point<Pixels>,
-}
-
-#[derive(Clone)]
-pub(crate) struct TabContextMenuState {
-    pub(crate) group_id: String,
+    pub(crate) permissions: Option<u32>,
     pub(crate) position: Point<Pixels>,
 }
 
@@ -749,7 +800,15 @@ let key_import_remark_input = cx.new(|cx| {
             cx.new(|cx| InputState::new(window, cx).placeholder(t!("search").to_string()));
         let quick_connection_search_input =
             cx.new(|cx| InputState::new(window, cx).placeholder(t!("search").to_string()));
-        let config = ConfigStore::load().unwrap_or_else(|err| {
+        let quick_command_parameter_inputs = (1..=5)
+            .map(|index| {
+                cx.new(|cx| {
+                    InputState::new(window, cx)
+                        .placeholder(t!("quick_command_parameter", index = index).to_string())
+                })
+            })
+            .collect::<Vec<_>>();
+        let mut config = ConfigStore::load().unwrap_or_else(|err| {
             tracing::warn!("failed to load config: {err:#}");
             ConfigStore::in_memory()
         });
@@ -853,11 +912,7 @@ cx.subscribe_in(&key_import_remark_input, window, Self::on_input_event),
             cx.subscribe_in(&sftp_path_input, window, Self::on_input_event),
             cx.subscribe_in(&sftp_new_folder_input, window, Self::on_input_event),
             cx.subscribe_in(&search_input, window, Self::on_input_event),
-            cx.subscribe_in(
-                &quick_connection_search_input,
-                window,
-                Self::on_input_event,
-            ),
+            cx.subscribe_in(&quick_connection_search_input, window, Self::on_input_event),
             cx.subscribe_in(&sync_endpoint_input, window, Self::on_input_event),
             cx.subscribe_in(&sync_username_input, window, Self::on_input_event),
             cx.subscribe_in(&sync_webdav_password_input, window, Self::on_input_event),
@@ -913,8 +968,22 @@ cx.subscribe_in(&key_import_remark_input, window, Self::on_input_event),
         }
         rust_i18n::set_locale(&active_locale);
         gpui_component::set_locale(&active_locale);
+        let reset_legacy_seed = config
+            .quick_command_categories()
+            .is_some_and(is_legacy_seeded_quick_commands);
+        if config.quick_command_categories().is_none() || reset_legacy_seed {
+            config.set_quick_command_categories(Vec::new());
+            if let Err(err) = config.save() {
+                tracing::warn!("failed to initialize quick commands: {err:#}");
+            }
+        }
         let ui_font_family: SharedString = config.ui_font_family().into();
         let terminal_font_family: SharedString = config.terminal_font_family().into();
+        let sftp_panel_view = if config.sftp_panel_view() == "commands" {
+            SftpPanelView::Commands
+        } else {
+            SftpPanelView::Files
+        };
         let last_sidebar_width = Some(px(config
             .workspace_panels()
             .and_then(|s| s.first().copied())
@@ -966,6 +1035,7 @@ key_import_remark_input,
             ssh_config_selected: None,
             editing_session_id: None,
             editing_connection_group: None,
+            editing_quick_command_category: None,
             connection_group_parent: None,
             moving_connection_group: None,
             session_group_selection: None,
@@ -995,12 +1065,13 @@ key_import_remark_input,
             home_page_open: true,
             home_page: HomePage::default(),
             connection_group_filter: None,
+            command_category_filter: None,
+            selected_quick_command: None,
+            quick_command_parameter_inputs,
             connection_group_bounds: HashMap::new(),
             pending_connection_group_drag: None,
             dragging_connection_group: None,
             connection_group_drop_before: None,
-            ip_popover_visible: false,
-            ip_popover_hide_generation: 0,
             pane_root: PaneLayout::Single(String::new()),
             focused_pane_path: Vec::new(),
             terminal_panel_bounds: None,
@@ -1018,11 +1089,11 @@ key_import_remark_input,
             saved_scroll_handle: gpui::ScrollHandle::new(),
             connection_scroll_handle: gpui::ScrollHandle::new(),
             group_picker_scroll_handle: gpui::ScrollHandle::new(),
-            connection_progress: None,
             pending_sftp_path_sync: Some("/".into()),
             pending_sftp_tree_scroll_path: None,
             sftp_context_menu: None,
-            tab_context_menu: None,
+            context_menu_epoch: 0,
+            disconnect_epoch: 0,
             sftp_creating_folder: false,
             sftp_new_folder_input,
             sftp_delete_scroll_handle: gpui::ScrollHandle::new(),
@@ -1052,6 +1123,8 @@ key_import_remark_input,
             drag_split_origin: None,
             tab_drag: tab_drag::TabDragState::default(),
             incoming_tab_drag: None,
+            sftp_panel_view,
+            quick_command_category: 0,
             sftp_panel_minimized: config.sftp_panel_minimized(),
             sidebar_collapsed: config.sidebar_collapsed(),
             collapsed_saved_scroll_handle: gpui::ScrollHandle::new(),
@@ -1078,10 +1151,12 @@ key_import_remark_input,
             selected_network_interface: None,
             network_interface_histories: HashMap::new(),
             last_system_sample: Instant::now(),
+            last_sftp_latency_sample: Instant::now(),
 
             search_input,
             quick_connection_search_input,
             search_active: false,
+            search_epoch: 0,
             search_query: String::new(),
             search_matches: Vec::new(),
             search_current: 0,
@@ -1225,6 +1300,7 @@ key_import_remark_input,
                     .update(cx, |this, cx| {
                         let changed = this.drain_backend_events(cx);
                         let system_sampled = this.sample_system_if_due();
+                        this.sample_sftp_latency_if_due();
                         let metrics_animated = this.animate_resource_metrics();
                         this.sync_theme_if_due(cx);
                         let is_blinking = matches!(
@@ -1272,31 +1348,6 @@ key_import_remark_input,
         changed
     }
 
-    pub(crate) fn show_ip_popover(&mut self, cx: &mut Context<Self>) {
-        self.ip_popover_hide_generation = self.ip_popover_hide_generation.wrapping_add(1);
-        if !self.ip_popover_visible {
-            self.ip_popover_visible = true;
-            cx.notify();
-        }
-    }
-
-    pub(crate) fn schedule_ip_popover_hide(&mut self, cx: &mut Context<Self>) {
-        self.ip_popover_hide_generation = self.ip_popover_hide_generation.wrapping_add(1);
-        let generation = self.ip_popover_hide_generation;
-        cx.spawn(async move |this, cx| {
-            cx.background_executor()
-                .timer(Duration::from_millis(350))
-                .await;
-            let _ = this.update(cx, |this, cx| {
-                if this.ip_popover_hide_generation == generation && this.ip_popover_visible {
-                    this.ip_popover_visible = false;
-                    cx.notify();
-                }
-            });
-        })
-        .detach();
-    }
-
     pub(crate) fn drain_backend_events(&mut self, cx: &mut Context<Self>) -> bool {
         let mut changed = false;
         let mut transfers_changed = false;
@@ -1323,31 +1374,17 @@ key_import_remark_input,
                         tab.backend_initialized = true;
                         tab.status = text.clone();
                     }
-                    if let Some(progress) = self.connection_progress.as_mut() {
-                        if progress.tab_id == tab_id {
-                            progress.lines.push(text.clone().into());
-                            let _idx = progress.lines.len().saturating_sub(1);
-                            self.connection_scroll_handle
-                                .set_offset(gpui::point(px(0.), px(-99999.0)));
-                        }
-                    }
                     self.status = text.into();
                 }
                 BackendEvent::Connected { tab_id } => {
                     if let Some(tab) = self.tabs.iter_mut().find(|t| t.id == tab_id) {
                         tab.backend_initialized = true;
+                        tab.feed_status_line(&t!("connection_succeeded"));
                         tab.connected = true;
                         tab.disconnected_reason = None;
                     }
                     self.sync_system_tab_to_active_group();
                     self.request_active_system_snapshot();
-                    if self
-                        .connection_progress
-                        .as_ref()
-                        .is_some_and(|progress| progress.tab_id == tab_id && !progress.failed)
-                    {
-                        self.connection_progress = None;
-                    }
                 }
                 BackendEvent::SftpEntries {
                     tab_id,
@@ -1393,6 +1430,13 @@ key_import_remark_input,
                     }
                     if self.active_group.as_ref() == Some(&tab_id) {
                         self.status = text.into();
+                    }
+                }
+                BackendEvent::SftpLatency { tab_id, latency_ms } => {
+                    if let Some(group) = self.tab_groups.iter_mut().find(|group| group.id == tab_id)
+                        && let Some(sftp) = group.sftp.as_mut()
+                    {
+                        sftp.latency_ms = latency_ms;
                     }
                 }
                 BackendEvent::SftpFileContent {
@@ -1496,22 +1540,19 @@ key_import_remark_input,
                     if !was_manually_disconnected
                         && let Some(tab) = self.tabs.iter_mut().find(|t| t.id == tab_id)
                     {
+                        let terminal_message = if tab.connected {
+                            t!("session_disconnected", "reason" = reason.clone()).to_string()
+                        } else {
+                            format!("{}: {reason}", t!("connection_failed"))
+                        };
+                        tab.feed_status_line(&terminal_message);
                         tab.connected = false;
                         tab.status = reason.clone();
                         tab.disconnected_reason = Some(reason.clone());
+                        self.disconnect_epoch = self.disconnect_epoch.wrapping_add(1);
                     }
                     if self.system_tab_id.as_deref() == Some(tab_id.as_str()) {
                         self.system_status = Some(reason.clone().into());
-                    }
-                    if let Some(progress) = self.connection_progress.as_mut() {
-                        if progress.tab_id == tab_id {
-                            progress.lines.push(reason.clone().into());
-                            let _idx = progress.lines.len().saturating_sub(1);
-                            self.connection_scroll_handle
-                                .set_offset(gpui::point(px(0.), px(-99999.0)));
-                            progress.title = t!("connection_failed").into();
-                            progress.failed = true;
-                        }
                     }
                     self.status = reason.into();
                 }
@@ -1562,10 +1603,8 @@ key_import_remark_input,
                             }
                         }
                     }
-                    if let Some(terminal_tab_id) = self
-                        .active_tab
-                        .clone()
-                        .filter(|terminal_tab_id| {
+                    if let Some(terminal_tab_id) =
+                        self.active_tab.clone().filter(|terminal_tab_id| {
                             self.tab_groups.iter().any(|group| {
                                 group.id == tab_id && group.pane_root.contains(terminal_tab_id)
                             })
@@ -1656,6 +1695,19 @@ key_import_remark_input,
         false
     }
 
+    fn sample_sftp_latency_if_due(&mut self) {
+        if self.last_sftp_latency_sample.elapsed() < Duration::from_secs(5) {
+            return;
+        }
+        self.last_sftp_latency_sample = Instant::now();
+        if !self.config.sftp_footer_visibility().latency {
+            return;
+        }
+        if let Some(handle) = self.active_sftp_handle() {
+            handle.measure_latency();
+        }
+    }
+
     fn record_network_interface_histories(&mut self, snapshot: &SystemSnapshot) {
         if self
             .selected_network_interface
@@ -1736,117 +1788,6 @@ key_import_remark_input,
     pub(crate) fn remove_transfer(&mut self, transfer_id: &str, cx: &mut Context<Self>) {
         self.transfers.retain(|t| t.info.id != transfer_id);
         self.config.set_transfers(self.transfers.clone());
-        cx.notify();
-    }
-
-    pub(crate) fn retry_connection_progress(&mut self, cx: &mut Context<Self>) {
-        let Some(progress) = self.connection_progress.clone() else {
-            return;
-        };
-        self.connection_progress = None;
-        let mut retry_tabs = Vec::new();
-        for (ix, tab) in self.tabs.iter().enumerate() {
-            if !tab.connected && tab.session.is_some() && tab.id == progress.tab_id {
-                retry_tabs.push((ix, tab.id.clone(), tab.session.clone().unwrap(), tab.kind));
-            }
-        }
-
-        if retry_tabs.is_empty() {
-            cx.notify();
-            return;
-        }
-
-let events = self.backend_events_sender(cx);
-        for (ix, tab_id, session, tab_kind) in retry_tabs {
-            self.register_backend_route(tab_id.clone(), cx);
-            // Close old backend
-            self.tabs[ix].send_backend(crate::terminal::BackendCommand::Close);
-
-            // Spawn new backend
-            let backend = match tab_kind {
-                crate::terminal::TabKind::Serial => {
-                    let b = crate::backend::serial::spawn_serial_client(
-                        self.runtime.handle(),
-                        tab_id.clone(),
-                        session.clone(),
-                        events.clone(),
-                    );
-                    crate::terminal::BackendTx::Serial(b)
-                }
-                crate::terminal::TabKind::Ssh => {
-                    let b = crate::backend::ssh::spawn_ssh_terminal(
-                        self.runtime.handle(),
-                        tab_id.clone(),
-                        session.clone(),
-                        self.tabs[ix].cols,
-                        self.tabs[ix].rows,
-                        events.clone(),
-                    );
-                    b
-                }
-                _ => continue,
-            };
-
-            // Replace tab state
-            self.tabs[ix].set_backend(backend);
-            self.tabs[ix].connected = false;
-            self.tabs[ix].status = "connecting".into();
-            self.tabs[ix].disconnected_reason = None;
-            self.tabs[ix].backend_initialized = false;
-
-            // Restart SFTP for the group containing this tab
-            if let Some(group) = self
-                .tab_groups
-                .iter()
-                .find(|g| g.pane_root.contains(&tab_id))
-            {
-                let group_id = group.id.clone();
-                let group_session = self
-                    .tabs
-                    .iter()
-                    .find(|t| group.pane_root.contains(&t.id) && t.session.is_some())
-                    .and_then(|t| t.session.clone());
-
-                if let Some(session) = group_session {
-if session.protocol != "serial" {
-                        if let Some(old_handle) = self.sftp_handles.remove(&group_id) {
-                            old_handle.close();
-                        }
-                        self.register_backend_route(group_id.clone(), cx);
-                        let sftp_handle = crate::sftp::spawn_sftp(
-                            self.runtime.handle(),
-                            group_id.clone(),
-                            session,
-                            events.clone(),
-                        );
-                        self.sftp_handles.insert(group_id.clone(), sftp_handle);
-
-                        if let Some(group) = self.tab_groups.iter_mut().find(|g| g.id == group_id) {
-                            if let Some(sftp) = group.sftp.as_mut() {
-                                sftp.status = rust_i18n::t!("sftp_connecting").to_string();
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        self.connection_progress = Some(ConnectionProgress {
-            tab_id: progress.tab_id.clone(),
-            title: t!("connecting").into(),
-            lines: vec![t!("starting_connection").into()],
-            failed: false,
-        });
-        self.status = "ssh tabs retrying".into();
-        cx.notify();
-    }
-
-    pub(crate) fn cancel_connection_progress(&mut self, cx: &mut Context<Self>) {
-        if let Some(progress) = &self.connection_progress {
-            let tab_id = progress.tab_id.clone();
-            self.connection_progress = None;
-            self.handle_tab_close(tab_id);
-        }
         cx.notify();
     }
 

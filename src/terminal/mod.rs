@@ -73,6 +73,10 @@ pub enum BackendEvent {
         tab_id: String,
         text: String,
     },
+    SftpLatency {
+        tab_id: String,
+        latency_ms: Option<u64>,
+    },
     /// 文件内容与远程版本信息已下载，供内置编辑器使用。
     SftpFileContent {
         tab_id: String,
@@ -228,6 +232,7 @@ pub struct SftpUiState {
     pub home_dir: String,
     pub follow_terminal_cwd: bool,
     pub initial_terminal_cwd_synced: bool,
+    pub latency_ms: Option<u64>,
 }
 
 impl TerminalTab {
@@ -320,6 +325,19 @@ impl TerminalTab {
 
     pub fn feed(&mut self, bytes: &[u8]) {
         self.processor.advance(&mut self.term, bytes);
+    }
+
+    pub fn feed_status_line(&mut self, text: &str) {
+        let mut line = String::with_capacity(text.len() + 2);
+        for character in text.chars() {
+            if character == '\t' || !character.is_control() {
+                line.push(character);
+            } else if matches!(character, '\r' | '\n') && !line.ends_with(' ') {
+                line.push(' ');
+            }
+        }
+        line.push_str("\r\n");
+        self.feed(line.as_bytes());
     }
 
     /// Send a command to the backend. Thread-safe via the shared Arc<Mutex>.
@@ -513,6 +531,15 @@ impl TerminalTab {
         self.term.selection = None;
     }
 
+    pub fn clear_contents(&mut self) {
+        self.processor
+            .advance(&mut self.term, b"\x1b[2J\x1b[3J\x1b[H");
+        self.scroll_pixel_y = 0.0;
+        self.clear_selection();
+        *self.highlight_cache.borrow_mut() = None;
+        self.send_backend(BackendCommand::Input(vec![b'\x0c']));
+    }
+
     pub fn selection_text(&self) -> Option<String> {
         self.term
             .selection_to_string()
@@ -560,6 +587,50 @@ impl TerminalTab {
         }
 
         self.send_backend(BackendCommand::Input(bytes));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clear_contents_removes_viewport_and_scrollback() {
+        let (backend_tx, backend_rx) = std::sync::mpsc::channel();
+        let (event_tx, _event_rx) = std::sync::mpsc::channel();
+        let mut tab = TerminalTab::new_local(
+            "test".to_string(),
+            "Test".to_string(),
+            BackendTx::Local(backend_tx),
+            event_tx,
+        );
+
+        for line in 0..40 {
+            tab.feed(format!("line {line}\r\n").as_bytes());
+        }
+        tab.scroll_pixel_y = 7.0;
+        assert!(tab.render_snapshot(false).history_size > 0);
+
+        tab.clear_contents();
+
+        let snapshot = tab.render_snapshot(false);
+        assert_eq!(snapshot.history_size, 0);
+        assert_eq!(snapshot.display_offset, 0);
+        assert_eq!(
+            snapshot.cursor.map(|cursor| (cursor.row, cursor.col)),
+            Some((0, 0))
+        );
+        assert!(
+            snapshot
+                .cells
+                .iter()
+                .all(|cell| matches!(cell.cell.c, ' ' | '\0'))
+        );
+        assert_eq!(tab.scroll_pixel_y, 0.0);
+        assert!(matches!(
+            backend_rx.try_recv(),
+            Ok(BackendCommand::Input(bytes)) if bytes == vec![b'\x0c']
+        ));
     }
 }
 

@@ -194,6 +194,7 @@ fn event_route_id(event: &BackendEvent) -> Option<&str> {
         | BackendEvent::SftpDirectoryEntries { tab_id, .. }
         | BackendEvent::SftpPreview { tab_id, .. }
         | BackendEvent::SftpStatus { tab_id, .. }
+        | BackendEvent::SftpLatency { tab_id, .. }
         | BackendEvent::SftpFileContent { tab_id, .. }
         | BackendEvent::SftpContentUploaded { tab_id, .. }
         | BackendEvent::SftpContentConflict { tab_id, .. }

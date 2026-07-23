@@ -16,6 +16,69 @@ use rand::{RngCore, rngs::OsRng};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SftpToolbarVisibility {
+    pub sync_cwd: bool,
+    pub hidden_files: bool,
+    pub refresh: bool,
+    pub new_folder: bool,
+    pub delete: bool,
+    pub upload_file: bool,
+    pub upload_folder: bool,
+    pub download: bool,
+}
+
+impl Default for SftpToolbarVisibility {
+    fn default() -> Self {
+        Self {
+            sync_cwd: true,
+            hidden_files: true,
+            refresh: true,
+            new_folder: false,
+            delete: false,
+            upload_file: false,
+            upload_folder: false,
+            download: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SftpFooterVisibility {
+    pub latency: bool,
+    pub transfers: bool,
+    pub panel_toggle: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QuickCommand {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub remark: String,
+    pub command: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QuickCommandCategory {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub commands: Vec<QuickCommand>,
+}
+
+impl Default for SftpFooterVisibility {
+    fn default() -> Self {
+        Self {
+            latency: true,
+            transfers: true,
+            panel_toggle: true,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum AuthMethod {
@@ -243,8 +306,6 @@ pub struct ConfigFile {
     #[serde(default = "default_ui_font_size")]
     pub ui_font_size: f32,
     #[serde(default)]
-    pub right_click_copy_paste: bool,
-    #[serde(default)]
     pub keyword_highlight: bool,
     #[serde(default = "default_ui_font_family")]
     pub ui_font_family: String,
@@ -278,6 +339,16 @@ pub struct ConfigFile {
     pub sidebar_collapsed: bool,
     #[serde(default)]
     pub sftp_panel_minimized: bool,
+    #[serde(default = "default_sftp_panel_view")]
+    pub sftp_panel_view: String,
+    #[serde(default)]
+    pub sftp_toolbar_visibility: SftpToolbarVisibility,
+    #[serde(default)]
+    pub sftp_footer_visibility: SftpFooterVisibility,
+    #[serde(default)]
+    pub quick_command_categories: Option<Vec<QuickCommandCategory>>,
+    #[serde(default)]
+    pub sftp_external_editor: String,
     #[serde(default)]
     pub key_bindings: std::collections::HashMap<String, String>,
     #[serde(default)]
@@ -328,6 +399,10 @@ fn default_monitoring_position() -> String {
     "Sidebar".to_string()
 }
 
+fn default_sftp_panel_view() -> String {
+    "files".to_string()
+}
+
 fn default_s3_region() -> String {
     "us-east-1".to_string()
 }
@@ -372,7 +447,6 @@ impl Default for ConfigFile {
             locale: default_locale(),
             terminal_font_size: default_terminal_font_size(),
             ui_font_size: default_ui_font_size(),
-            right_click_copy_paste: false,
             keyword_highlight: false,
             ui_font_family: default_ui_font_family(),
             terminal_font_family: default_terminal_font_family(),
@@ -390,6 +464,11 @@ impl Default for ConfigFile {
             monitoring_position: default_monitoring_position(),
             sidebar_collapsed: false,
             sftp_panel_minimized: false,
+            sftp_panel_view: default_sftp_panel_view(),
+            sftp_toolbar_visibility: SftpToolbarVisibility::default(),
+            sftp_footer_visibility: SftpFooterVisibility::default(),
+            quick_command_categories: None,
+            sftp_external_editor: String::new(),
             key_bindings: std::collections::HashMap::new(),
             sync_endpoint: String::new(),
             sync_username: String::new(),
@@ -855,14 +934,6 @@ impl ConfigStore {
         self.cache.ui_font_family = family.to_string();
     }
 
-    pub fn right_click_copy_paste(&self) -> bool {
-        self.cache.right_click_copy_paste
-    }
-
-    pub fn set_right_click_copy_paste(&mut self, val: bool) {
-        self.cache.right_click_copy_paste = val;
-    }
-
     pub fn keyword_highlight(&self) -> bool {
         self.cache.keyword_highlight
     }
@@ -966,6 +1037,131 @@ impl ConfigStore {
         self.cache.sftp_panel_minimized = val;
     }
 
+    pub fn sftp_panel_view(&self) -> &str {
+        &self.cache.sftp_panel_view
+    }
+
+    pub fn set_sftp_panel_view(&mut self, view: &str) {
+        self.cache.sftp_panel_view = view.to_string();
+    }
+
+    pub fn sftp_toolbar_visibility(&self) -> SftpToolbarVisibility {
+        self.cache.sftp_toolbar_visibility
+    }
+
+    pub fn set_sftp_toolbar_visibility(&mut self, visibility: SftpToolbarVisibility) {
+        self.cache.sftp_toolbar_visibility = visibility;
+    }
+
+    pub fn sftp_footer_visibility(&self) -> SftpFooterVisibility {
+        self.cache.sftp_footer_visibility
+    }
+
+    pub fn set_sftp_footer_visibility(&mut self, visibility: SftpFooterVisibility) {
+        self.cache.sftp_footer_visibility = visibility;
+    }
+
+    pub fn quick_command_categories(&self) -> Option<&[QuickCommandCategory]> {
+        self.cache.quick_command_categories.as_deref()
+    }
+
+    pub fn set_quick_command_categories(&mut self, categories: Vec<QuickCommandCategory>) {
+        self.cache.quick_command_categories = Some(categories);
+    }
+
+    pub fn upsert_quick_command_category(&mut self, category: QuickCommandCategory) {
+        let categories = self
+            .cache
+            .quick_command_categories
+            .get_or_insert_with(Vec::new);
+        if let Some(existing) = categories.iter_mut().find(|item| item.id == category.id) {
+            *existing = category;
+        } else {
+            categories.push(category);
+        }
+    }
+
+    pub fn remove_quick_command_category(&mut self, category_id: &str) {
+        self.cache
+            .quick_command_categories
+            .get_or_insert_with(Vec::new)
+            .retain(|category| category.id != category_id);
+    }
+
+    pub fn upsert_quick_command(&mut self, category_id: &str, command: QuickCommand) {
+        let Some(category) = self
+            .cache
+            .quick_command_categories
+            .get_or_insert_with(Vec::new)
+            .iter_mut()
+            .find(|category| category.id == category_id)
+        else {
+            return;
+        };
+        if let Some(existing) = category
+            .commands
+            .iter_mut()
+            .find(|item| item.id == command.id)
+        {
+            *existing = command;
+        } else {
+            category.commands.push(command);
+        }
+    }
+
+    pub fn remove_quick_command(&mut self, category_id: &str, command_id: &str) {
+        if let Some(category) = self
+            .cache
+            .quick_command_categories
+            .get_or_insert_with(Vec::new)
+            .iter_mut()
+            .find(|category| category.id == category_id)
+        {
+            category.commands.retain(|command| command.id != command_id);
+        }
+    }
+
+    pub fn move_quick_command(
+        &mut self,
+        source_category_id: &str,
+        target_category_id: &str,
+        command_id: &str,
+    ) {
+        if source_category_id == target_category_id {
+            return;
+        }
+        let Some(categories) = self.cache.quick_command_categories.as_mut() else {
+            return;
+        };
+        let Some(command) = categories
+            .iter_mut()
+            .find(|category| category.id == source_category_id)
+            .and_then(|category| {
+                category
+                    .commands
+                    .iter()
+                    .position(|command| command.id == command_id)
+                    .map(|index| category.commands.remove(index))
+            })
+        else {
+            return;
+        };
+        if let Some(category) = categories
+            .iter_mut()
+            .find(|category| category.id == target_category_id)
+        {
+            category.commands.push(command);
+        }
+    }
+
+    pub fn sftp_external_editor(&self) -> &str {
+        &self.cache.sftp_external_editor
+    }
+
+    pub fn set_sftp_external_editor(&mut self, value: String) {
+        self.cache.sftp_external_editor = value;
+    }
+
     pub fn show_hidden_files(&self) -> bool {
         self.cache.show_hidden_files
     }
@@ -982,7 +1178,6 @@ impl ConfigStore {
         self.cache.locale = source.cache.locale.clone();
         self.cache.terminal_font_size = source.cache.terminal_font_size;
         self.cache.ui_font_size = source.cache.ui_font_size;
-        self.cache.right_click_copy_paste = source.cache.right_click_copy_paste;
         self.cache.keyword_highlight = source.cache.keyword_highlight;
         self.cache.ui_font_family = source.cache.ui_font_family.clone();
         self.cache.terminal_font_family = source.cache.terminal_font_family.clone();
@@ -993,6 +1188,11 @@ impl ConfigStore {
         self.cache.monitoring_position = source.cache.monitoring_position.clone();
         self.cache.sidebar_collapsed = source.cache.sidebar_collapsed;
         self.cache.sftp_panel_minimized = source.cache.sftp_panel_minimized;
+        self.cache.sftp_panel_view = source.cache.sftp_panel_view.clone();
+        self.cache.sftp_toolbar_visibility = source.cache.sftp_toolbar_visibility;
+        self.cache.sftp_footer_visibility = source.cache.sftp_footer_visibility;
+        self.cache.quick_command_categories = source.cache.quick_command_categories.clone();
+        self.cache.sftp_external_editor = source.cache.sftp_external_editor.clone();
         self.cache.key_bindings = source.cache.key_bindings.clone();
         self.cache.use_proxy = source.cache.use_proxy;
         self.cache.read_env_proxy = source.cache.read_env_proxy;
@@ -1368,8 +1568,8 @@ fn query_hardware_uuid() -> String {
     {
         use winreg::{RegKey, enums::HKEY_LOCAL_MACHINE};
 
-        if let Ok(key) = RegKey::predef(HKEY_LOCAL_MACHINE)
-            .open_subkey("SOFTWARE\\Microsoft\\Cryptography")
+        if let Ok(key) =
+            RegKey::predef(HKEY_LOCAL_MACHINE).open_subkey("SOFTWARE\\Microsoft\\Cryptography")
             && let Ok(guid) = key.get_value::<String, _>("MachineGuid")
         {
             let guid = guid.trim().to_string();
@@ -1463,13 +1663,43 @@ mod tests {
         let mut source = ConfigStore::in_memory();
         source.cache.connection_groups = vec!["stale".to_string()];
         source.set_ui_font_size(18.0);
-        source.set_right_click_copy_paste(true);
-
         latest.merge_interactive_preferences_from(&source);
 
         assert_eq!(latest.cache.connection_groups, ["production"]);
         assert_eq!(latest.ui_font_size(), 18.0);
-        assert!(latest.right_click_copy_paste());
+    }
+
+    #[test]
+    fn quick_command_categories_and_commands_support_crud() {
+        let mut store = ConfigStore::in_memory();
+        let category = QuickCommandCategory {
+            id: "category-1".to_string(),
+            name: "System".to_string(),
+            commands: Vec::new(),
+        };
+        store.set_quick_command_categories(vec![category]);
+        store.upsert_quick_command(
+            "category-1",
+            QuickCommand {
+                id: "command-1".to_string(),
+                name: "Uptime".to_string(),
+                remark: String::new(),
+                command: "uptime".to_string(),
+            },
+        );
+
+        let categories = store.quick_command_categories().unwrap();
+        assert_eq!(categories.len(), 1);
+        assert_eq!(categories[0].commands[0].command, "uptime");
+
+        store.remove_quick_command("category-1", "command-1");
+        assert!(
+            store.quick_command_categories().unwrap()[0]
+                .commands
+                .is_empty()
+        );
+        store.remove_quick_command_category("category-1");
+        assert!(store.quick_command_categories().unwrap().is_empty());
     }
 
     #[test]

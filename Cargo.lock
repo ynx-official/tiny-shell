@@ -6021,6 +6021,7 @@ dependencies = [
  "base64",
  "bytes",
  "futures-core",
+ "futures-util",
  "http",
  "http-body",
  "http-body-util",
@@ -6040,12 +6041,14 @@ dependencies = [
  "sync_wrapper",
  "tokio",
  "tokio-rustls",
+ "tokio-util",
  "tower",
  "tower-http",
  "tower-service",
  "url",
  "wasm-bindgen",
  "wasm-bindgen-futures",
+ "wasm-streams",
  "web-sys",
  "webpki-roots",
 ]
@@ -7783,7 +7786,7 @@ dependencies = [
 
 [[package]]
 name = "tiny-shell"
-version = "1.0.5"
+version = "1.0.61"
 dependencies = [
  "alacritty_terminal",
  "anyhow",

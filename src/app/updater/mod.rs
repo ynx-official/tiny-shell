@@ -1,6 +1,8 @@
 use std::path::PathBuf;
 
 use anyhow::Context;
+use futures::StreamExt;
+use semver::Version;
 use serde::Deserialize;
 
 #[cfg(windows)]
@@ -9,6 +11,37 @@ use std::os::windows::process::CommandExt;
 const REPO_OWNER: &str = "ynx-official";
 const REPO_NAME: &str = "tiny-shell";
 const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+fn parse_version(version: &str) -> anyhow::Result<Version> {
+    let normalized = version
+        .trim()
+        .strip_prefix(['v', 'V'])
+        .unwrap_or(version.trim());
+
+    Version::parse(normalized).with_context(|| format!("failed to parse version '{version}'"))
+}
+
+fn is_newer_version(current: &str, latest: &str) -> anyhow::Result<bool> {
+    let current_version = parse_version(current)?;
+    let latest_version = parse_version(latest)?;
+    let current_segments = [
+        current_version.major.to_string(),
+        current_version.minor.to_string(),
+        current_version.patch.to_string(),
+    ];
+    let latest_segments = [
+        latest_version.major.to_string(),
+        latest_version.minor.to_string(),
+        latest_version.patch.to_string(),
+    ];
+
+    // Release numbers follow the project's textual segment ordering instead
+    // of SemVer's numeric ordering: "2" > "11" and "21" > "2".
+    Ok(match latest_segments.cmp(&current_segments) {
+        std::cmp::Ordering::Equal => latest_version > current_version,
+        ordering => ordering.is_gt(),
+    })
+}
 
 /// Maps the cargo target triple to the release asset naming convention used in
 /// release.yml.
@@ -71,13 +104,11 @@ fn select_release_asset<'a>(
     // The updater follows the release naming contract exactly and only accepts
     // the explicitly identified portable archive.
     if platform.starts_with("windows-") {
-        assets
-            .iter()
-            .find(|asset| {
-                asset.name.contains(platform)
-                    && asset.name.contains("-portable.")
-                    && asset.name.ends_with(archive_extension)
-            })
+        assets.iter().find(|asset| {
+            asset.name.contains(platform)
+                && asset.name.contains("-portable.")
+                && asset.name.ends_with(archive_extension)
+        })
     } else {
         assets.iter().find(is_archive)
     }
@@ -110,10 +141,8 @@ pub enum UpdateStatus {
     Checking,
     UpToDate(ReleaseInfo),
     UpdateAvailable(UpdateInfo),
-    Downloading,
-    #[allow(dead_code)]
-    Installing,
-    InstallComplete,
+    Downloading(UpdateInfo, u64, u64),
+    ReadyToRestart(UpdateInfo, PathBuf),
     Error(String),
 }
 
@@ -139,19 +168,11 @@ pub async fn check_for_update() -> anyhow::Result<UpdateCheckResult> {
         .await
         .context("failed to parse release JSON")?;
 
-    let latest_version = release
-        .tag_name
-        .strip_prefix('v')
-        .unwrap_or(&release.tag_name);
+    let latest_version = release.tag_name.trim();
 
-    let current = semver::Version::parse(CURRENT_VERSION)
-        .context("failed to parse current version")?;
-    let latest = semver::Version::parse(latest_version)
-        .context("failed to parse latest version")?;
-
-    if latest <= current {
+    if !is_newer_version(CURRENT_VERSION, latest_version)? {
         return Ok(UpdateCheckResult::UpToDate(ReleaseInfo {
-            version: latest_version.to_string(),
+            version: parse_version(latest_version)?.to_string(),
             notes: release.body,
         }));
     }
@@ -170,7 +191,7 @@ pub async fn check_for_update() -> anyhow::Result<UpdateCheckResult> {
     };
 
     Ok(UpdateCheckResult::UpdateAvailable(UpdateInfo {
-        version: latest_version.to_string(),
+        version: parse_version(latest_version)?.to_string(),
         notes: release.body,
         download_url: asset.browser_download_url.clone(),
         size: asset.size,
@@ -179,7 +200,14 @@ pub async fn check_for_update() -> anyhow::Result<UpdateCheckResult> {
 
 /// Download the update archive and extract the binary to a temp directory.
 /// Returns the path to the extracted binary.
-async fn download_and_extract(url: &str) -> anyhow::Result<PathBuf> {
+async fn download_and_extract<F>(
+    url: &str,
+    expected_size: u64,
+    mut on_progress: F,
+) -> anyhow::Result<PathBuf>
+where
+    F: FnMut(u64, u64),
+{
     let client = reqwest::Client::builder()
         .user_agent(format!("{}/{}", REPO_NAME, CURRENT_VERSION))
         .build()
@@ -189,12 +217,20 @@ async fn download_and_extract(url: &str) -> anyhow::Result<PathBuf> {
         .get(url)
         .send()
         .await
-        .context("failed to download update")?;
+        .context("failed to download update")?
+        .error_for_status()
+        .context("update download returned an error status")?;
 
-    let bytes = response
-        .bytes()
-        .await
-        .context("failed to read update bytes")?;
+    let total = response.content_length().unwrap_or(expected_size);
+    let mut downloaded = 0_u64;
+    let mut bytes = Vec::with_capacity(total.min(usize::MAX as u64) as usize);
+    let mut stream = response.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.context("failed to read update bytes")?;
+        downloaded += chunk.len() as u64;
+        bytes.extend_from_slice(&chunk);
+        on_progress(downloaded, total);
+    }
 
     let temp_dir = std::env::temp_dir().join(format!("{}-update", REPO_NAME));
     std::fs::create_dir_all(&temp_dir).context("failed to create temp directory")?;
@@ -208,8 +244,7 @@ async fn download_and_extract(url: &str) -> anyhow::Result<PathBuf> {
             .unpack(&temp_dir)
             .context("failed to extract tar.gz archive")?;
     } else {
-        let mut archive = zip::ZipArchive::new(cursor)
-            .context("failed to open zip archive")?;
+        let mut archive = zip::ZipArchive::new(cursor).context("failed to open zip archive")?;
         archive
             .extract(&temp_dir)
             .context("failed to extract zip archive")?;
@@ -232,11 +267,7 @@ async fn download_and_extract(url: &str) -> anyhow::Result<PathBuf> {
                 let app = walkdir::WalkDir::new(&temp_dir)
                     .into_iter()
                     .filter_map(|e| e.ok())
-                    .find(|e| {
-                        e.path()
-                            .extension()
-                            .map_or(false, |ext| ext == "app")
-                    });
+                    .find(|e| e.path().extension().map_or(false, |ext| ext == "app"));
                 if let Some(app_entry) = app {
                     return Ok(app_entry.path().to_path_buf());
                 }
@@ -246,30 +277,35 @@ async fn download_and_extract(url: &str) -> anyhow::Result<PathBuf> {
     }
 }
 
-/// Perform the update: download, extract, and replace the current binary.
-pub async fn perform_update(info: &UpdateInfo) -> anyhow::Result<()> {
+/// Download and extract an update without touching the running application.
+pub async fn download_update<F>(info: &UpdateInfo, on_progress: F) -> anyhow::Result<PathBuf>
+where
+    F: FnMut(u64, u64),
+{
     tracing::info!("downloading update from {}", info.download_url);
-    let new_path = download_and_extract(&info.download_url).await?;
+    download_and_extract(&info.download_url, info.size, on_progress).await
+}
 
-    let current_exe =
-        std::env::current_exe().context("failed to get current executable path")?;
+/// Install a prepared update, then close this process while the new version starts.
+pub fn install_and_restart(new_path: &std::path::Path) -> anyhow::Result<()> {
+    let current_exe = std::env::current_exe().context("failed to get current executable path")?;
 
     #[cfg(target_os = "linux")]
     {
-        install_linux(&new_path, &current_exe)?;
+        install_linux(new_path, &current_exe)?;
     }
 
     #[cfg(target_os = "macos")]
     {
-        install_macos(&new_path, &current_exe)?;
+        install_macos(new_path, &current_exe)?;
     }
 
     #[cfg(target_os = "windows")]
     {
-        install_windows(&new_path, &current_exe)?;
+        install_windows(new_path, &current_exe)?;
     }
 
-    Ok(())
+    restart()
 }
 
 /// Restart the application by launching the new binary and exiting.
@@ -287,9 +323,8 @@ pub fn restart() -> ! {
 
     #[cfg(target_os = "linux")]
     {
-        let error = std::os::unix::process::CommandExt::exec(
-            &mut std::process::Command::new(&current_exe),
-        );
+        let error =
+            std::os::unix::process::CommandExt::exec(&mut std::process::Command::new(&current_exe));
         tracing::error!("exec failed: {error}");
         std::process::exit(1);
     }
@@ -306,9 +341,9 @@ pub fn restart() -> ! {
                 .arg(app_path)
                 .spawn();
         } else {
-            let error = std::os::unix::process::CommandExt::exec(
-                &mut std::process::Command::new(&current_exe),
-            );
+            let error = std::os::unix::process::CommandExt::exec(&mut std::process::Command::new(
+                &current_exe,
+            ));
             tracing::error!("exec failed: {error}");
         }
         std::process::exit(0);
@@ -316,7 +351,8 @@ pub fn restart() -> ! {
 
     #[cfg(target_os = "windows")]
     {
-        let _ = std::process::Command::new(&current_exe).spawn();
+        // The updater script replaces this locked executable after this
+        // process exits, then launches the replacement.
         std::process::exit(0);
     }
 }
@@ -324,7 +360,10 @@ pub fn restart() -> ! {
 // ── Platform-specific installation ──────────────────────────────────────────
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-fn install_linux(new_binary: &std::path::Path, current_exe: &std::path::Path) -> anyhow::Result<()> {
+fn install_linux(
+    new_binary: &std::path::Path,
+    current_exe: &std::path::Path,
+) -> anyhow::Result<()> {
     // Write the new binary next to the old one with a .new suffix, then rename.
     // On Linux, rename() over an in-use file is safe — the old inode stays alive
     // until the last file descriptor is closed, so the running process is fine.
@@ -338,22 +377,17 @@ fn install_linux(new_binary: &std::path::Path, current_exe: &std::path::Path) ->
         .context("failed to get metadata of new binary")?
         .permissions();
     perms.set_mode(0o755);
-    std::fs::set_permissions(&new_temp, perms)
-        .context("failed to set executable permissions")?;
+    std::fs::set_permissions(&new_temp, perms).context("failed to set executable permissions")?;
 
     // Atomic rename.
-    std::fs::rename(&new_temp, current_exe)
-        .context("failed to rename new binary into place")?;
+    std::fs::rename(&new_temp, current_exe).context("failed to rename new binary into place")?;
 
     tracing::info!("update installed to {}", current_exe.display());
     Ok(())
 }
 
 #[cfg(target_os = "macos")]
-fn install_macos(
-    new_path: &std::path::Path,
-    current_exe: &std::path::Path,
-) -> anyhow::Result<()> {
+fn install_macos(new_path: &std::path::Path, current_exe: &std::path::Path) -> anyhow::Result<()> {
     // Determine whether we are running from an .app bundle.
     let app_bundle = current_exe
         .ancestors()
@@ -378,16 +412,12 @@ fn install_macos(
         // Move the old bundle aside, then move the new one in.
         let backup = parent.join(format!(
             "{}.old",
-            app_bundle
-                .file_name()
-                .unwrap_or_default()
-                .to_string_lossy()
+            app_bundle.file_name().unwrap_or_default().to_string_lossy()
         ));
         if backup.exists() {
             std::fs::remove_dir_all(&backup).ok();
         }
-        std::fs::rename(app_bundle, &backup)
-            .context("failed to backup old app bundle")?;
+        std::fs::rename(app_bundle, &backup).context("failed to backup old app bundle")?;
 
         if let Err(e) = std::fs::rename(&new_app, app_bundle) {
             // Rollback: restore the backup.
@@ -436,8 +466,7 @@ fn install_windows(
         new = new_binary.display(),
     );
 
-    std::fs::write(&script_path, script)
-        .context("failed to write update batch script")?;
+    std::fs::write(&script_path, script).context("failed to write update batch script")?;
 
     // Launch the script detached.
     std::process::Command::new("cmd.exe")
@@ -455,7 +484,7 @@ fn install_windows(
 
 #[cfg(test)]
 mod tests {
-    use super::{GitHubAsset, select_release_asset};
+    use super::{GitHubAsset, is_newer_version, select_release_asset};
 
     fn asset(name: &str) -> GitHubAsset {
         GitHubAsset {
@@ -484,5 +513,19 @@ mod tests {
         let assets = vec![asset("tiny-shell-v1.1.0-windows-x86_64-setup.exe")];
 
         assert!(select_release_asset(&assets, "windows-x86_64", "zip").is_none());
+    }
+
+    #[test]
+    fn compares_version_segments_using_release_order() {
+        assert!(is_newer_version("v1.0.1", "v1.0.2").unwrap());
+        assert!(is_newer_version("v1.0.11", "v1.0.2").unwrap());
+        assert!(is_newer_version("v1.0.2", "v1.0.21").unwrap());
+        assert!(!is_newer_version("v1.0.21", "v1.0.2").unwrap());
+        assert!(!is_newer_version("v1.0.11", "v1.0.11").unwrap());
+    }
+
+    #[test]
+    fn accepts_common_release_tag_formatting() {
+        assert!(is_newer_version(" 1.0.1 ", " V1.0.2 ").unwrap());
     }
 }
