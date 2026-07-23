@@ -297,12 +297,12 @@ impl TinyShell {
         cx.notify();
     }
 
-    pub(crate) fn clear_active_terminal_scrollback(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn clear_active_terminal(&mut self, cx: &mut Context<Self>) {
         let Some(active_id) = self.active_tab.as_ref() else {
             return;
         };
         if let Some(tab) = self.tabs.iter_mut().find(|tab| &tab.id == active_id) {
-            tab.clear_scrollback();
+            tab.clear_contents();
             cx.notify();
         }
     }

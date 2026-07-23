@@ -507,9 +507,13 @@ impl TerminalTab {
         self.term.selection = None;
     }
 
-    pub fn clear_scrollback(&mut self) {
-        self.processor.advance(&mut self.term, b"\x1b[3J");
+    pub fn clear_contents(&mut self) {
+        self.processor
+            .advance(&mut self.term, b"\x1b[2J\x1b[3J\x1b[H");
+        self.scroll_pixel_y = 0.0;
         self.clear_selection();
+        *self.highlight_cache.borrow_mut() = None;
+        self.send_backend(BackendCommand::Input(vec![b'\x0c']));
     }
 
     pub fn selection_text(&self) -> Option<String> {
@@ -559,6 +563,50 @@ impl TerminalTab {
         }
 
         self.send_backend(BackendCommand::Input(bytes));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clear_contents_removes_viewport_and_scrollback() {
+        let (backend_tx, backend_rx) = std::sync::mpsc::channel();
+        let (event_tx, _event_rx) = std::sync::mpsc::channel();
+        let mut tab = TerminalTab::new_local(
+            "test".to_string(),
+            "Test".to_string(),
+            BackendTx::Local(backend_tx),
+            event_tx,
+        );
+
+        for line in 0..40 {
+            tab.feed(format!("line {line}\r\n").as_bytes());
+        }
+        tab.scroll_pixel_y = 7.0;
+        assert!(tab.render_snapshot(false).history_size > 0);
+
+        tab.clear_contents();
+
+        let snapshot = tab.render_snapshot(false);
+        assert_eq!(snapshot.history_size, 0);
+        assert_eq!(snapshot.display_offset, 0);
+        assert_eq!(
+            snapshot.cursor.map(|cursor| (cursor.row, cursor.col)),
+            Some((0, 0))
+        );
+        assert!(
+            snapshot
+                .cells
+                .iter()
+                .all(|cell| matches!(cell.cell.c, ' ' | '\0'))
+        );
+        assert_eq!(tab.scroll_pixel_y, 0.0);
+        assert!(matches!(
+            backend_rx.try_recv(),
+            Ok(BackendCommand::Input(bytes)) if bytes == vec![b'\x0c']
+        ));
     }
 }
 

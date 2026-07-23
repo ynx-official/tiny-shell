@@ -5037,18 +5037,18 @@ impl TinyShell {
                     .child(
                         div()
                             .h(px(68.))
-                            .p_2()
-                            .mx_3()
+                            .p_1()
+                            .mx_2()
                             .mb_3()
                             .rounded_md()
                             .bg(cx.theme().muted.opacity(0.18))
                             .child(
                                 h_flex()
                                     .size_full()
-                                    .gap_2()
+                                    .gap_1()
                                     .child(
                                         v_flex()
-                                            .w(px(34.))
+                                            .w(px(28.))
                                             .h_full()
                                             .flex_none()
                                             .py_1()
@@ -5074,10 +5074,7 @@ impl TinyShell {
                                                     .child(network_axis_labels[2].clone()),
                                             )
                                             .child(
-                                                div()
-                                                    .w_full()
-                                                    .text_right()
-                                                    .child("0K"),
+                                                div().w_full().text_right().child("0K"),
                                             ),
                                     )
                                     .child(canvas(
@@ -5089,8 +5086,8 @@ impl TinyShell {
                                             return None;
                                         }
                                         let max_value = network_chart_max.max(1.0);
-                                        let plot_left = bounds.origin.x + px(4.);
-                                        let plot_right = bounds.origin.x + bounds.size.width - px(4.);
+                                        let plot_left = bounds.origin.x + px(1.);
+                                        let plot_right = bounds.origin.x + bounds.size.width - px(2.);
                                         let plot_top = bounds.origin.y + px(5.);
                                         let baseline = bounds.origin.y + bounds.size.height - px(5.);
                                         let plot_width = plot_right - plot_left;
@@ -7427,11 +7424,12 @@ impl TinyShell {
             )
             .separator()
             .item(
-                PopupMenuItem::new(t!("terminal_clear_scrollback").to_string()).on_click(
-                    window.listener_for(&view, |this, _, _, cx| {
-                        this.clear_active_terminal_scrollback(cx);
-                    }),
-                ),
+                PopupMenuItem::new(t!("terminal_clear").to_string()).on_click(window.listener_for(
+                    &view,
+                    |this, _, _, cx| {
+                        this.clear_active_terminal(cx);
+                    },
+                )),
             )
     }
 
