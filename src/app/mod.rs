@@ -500,12 +500,10 @@ pub(crate) struct TinyShell {
     pub(crate) key_path_input: Entity<InputState>,
     pub(crate) key_inline_input: Entity<InputState>,
     pub(crate) passphrase_input: Entity<InputState>,
-pub(crate) key_import_remark_input: Entity<InputState>,
+    pub(crate) key_import_remark_input: Entity<InputState>,
     pub(crate) key_import_passphrase_input: Entity<InputState>,
     pub(crate) key_import: KeyImportState,
     pub(crate) managed_key_dialog_selection: Option<String>,
-    pub(crate) baud_rate_input: Entity<InputState>,
-    pub(crate) session_protocol: String,
     pub(crate) ssh_proxy_type: String,
     pub(crate) proxy_host_input: Entity<InputState>,
     pub(crate) proxy_port_input: Entity<InputState>,
@@ -773,7 +771,7 @@ impl TinyShell {
                 .placeholder("SSH private key passphrase (optional)")
                 .masked(true)
         });
-let key_import_remark_input = cx.new(|cx| {
+        let key_import_remark_input = cx.new(|cx| {
             InputState::new(window, cx).placeholder(t!("key_import_remark_placeholder").to_string())
         });
         let key_import_passphrase_input = cx.new(|cx| {
@@ -781,7 +779,6 @@ let key_import_remark_input = cx.new(|cx| {
                 .placeholder(t!("key_passphrase").to_string())
                 .masked(true)
         });
-        let baud_rate_input = cx.new(|cx| InputState::new(window, cx).default_value("115200"));
         let proxy_host_input =
             cx.new(|cx| InputState::new(window, cx).placeholder(t!("proxy_host").to_string()));
         let proxy_port_input =
@@ -902,9 +899,8 @@ let key_import_remark_input = cx.new(|cx| {
             cx.subscribe_in(&key_path_input, window, Self::on_input_event),
             cx.subscribe_in(&key_inline_input, window, Self::on_input_event),
             cx.subscribe_in(&passphrase_input, window, Self::on_input_event),
-cx.subscribe_in(&key_import_remark_input, window, Self::on_input_event),
+            cx.subscribe_in(&key_import_remark_input, window, Self::on_input_event),
             cx.subscribe_in(&key_import_passphrase_input, window, Self::on_input_event),
-            cx.subscribe_in(&baud_rate_input, window, Self::on_input_event),
             cx.subscribe_in(&proxy_host_input, window, Self::on_input_event),
             cx.subscribe_in(&proxy_port_input, window, Self::on_input_event),
             cx.subscribe_in(&proxy_user_input, window, Self::on_input_event),
@@ -1000,12 +996,10 @@ cx.subscribe_in(&key_import_remark_input, window, Self::on_input_event),
             key_path_input,
             key_inline_input,
             passphrase_input,
-key_import_remark_input,
+            key_import_remark_input,
             key_import_passphrase_input,
             key_import: KeyImportState::default(),
             managed_key_dialog_selection: None,
-            baud_rate_input,
-            session_protocol: "ssh".to_string(),
             ssh_proxy_type: "none".to_string(),
             proxy_host_input,
             proxy_port_input,

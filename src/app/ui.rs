@@ -5325,13 +5325,7 @@ impl TinyShell {
             .map(|session| session.host.clone())
             .unwrap_or_else(|| t!("local_host").to_string());
         let connection_text = active_session
-            .map(|session| {
-                if session.protocol == "serial" {
-                    format!("Serial: {}@{}", session.host, session.baud_rate)
-                } else {
-                    format!("{}@{}:{}", session.user, session.host, session.port)
-                }
-            })
+            .map(|session| format!("{}@{}:{}", session.user, session.host, session.port))
             .unwrap_or_else(|| t!("local_terminal").to_string());
         let mut ip_address_entries = self.system.ip_address_entries.clone();
         if ip_address_entries.is_empty() && !host_text.is_empty() {

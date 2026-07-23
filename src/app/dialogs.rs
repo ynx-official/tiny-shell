@@ -1062,15 +1062,6 @@ impl TinyShell {
         }
         self.active_dialog = Some(crate::app::DialogKind::NewSsh);
 
-        if let Some(id) = &self.editing_session_id {
-            if let Some(session) = self.config.get(id) {
-                self.session_protocol = session.protocol.clone();
-            }
-        } else {
-            self.session_protocol = "ssh".to_string();
-        }
-
-        let initial_is_serial = self.session_protocol == "serial";
         let view = cx.entity();
         let session_name_input = self.session_name_input.clone();
         let host_input = self.host_input.clone();
@@ -1085,11 +1076,10 @@ impl TinyShell {
         let proxy_port_input = self.proxy_port_input.clone();
         let proxy_user_input = self.proxy_user_input.clone();
         let proxy_password_input = self.proxy_password_input.clone();
-        let baud_rate_input = self.baud_rate_input.clone();
 
         window.open_dialog(cx, move |dialog: Dialog, _window, _cx| {
             dialog
-                .title(if initial_is_serial { t!("new_serial_connection") } else { t!("new_ssh_connection") })
+                .title(t!("new_ssh_connection"))
                 .w(px(520.))
                 .overlay_closable(true)
                 .on_ok({
@@ -1125,7 +1115,6 @@ impl TinyShell {
                     let proxy_port_input = proxy_port_input.clone();
                     let proxy_user_input = proxy_user_input.clone();
                     let proxy_password_input = proxy_password_input.clone();
-                    let baud_rate_input = baud_rate_input.clone();
                     move |content, window, cx| {
                         let auth_method = view.read(cx).ssh_auth_method;
                         let is_password = auth_method == AuthMethod::Password;
@@ -1134,9 +1123,6 @@ impl TinyShell {
                         let is_editing = view.read(cx).editing_session_id.is_some();
                         let proxy_type = view.read(cx).ssh_proxy_type.clone();
                         let show_proxy_fields = proxy_type != "none";
-                        let protocol = view.read(cx).session_protocol.clone();
-                        let is_ssh = protocol == "ssh";
-                        let is_serial = protocol == "serial";
                         let key_auth_incomplete = is_key
                             && !view.read(cx).using_custom_key_path
                             && view.read(cx).managed_key_selected.is_none();
@@ -1152,57 +1138,9 @@ impl TinyShell {
                                     h_flex()
                                         .gap_2()
                                         .child(
-                                            Button::new("proto-ssh")
-                                                .label("SSH")
-                                                .when(is_ssh, |button| button.primary())
-                                                .on_click(window.listener_for(
-                                                    &view,
-                                                    |this, _, window, cx| {
-                                                        this.set_session_protocol("ssh".to_string(), cx);
-                                                        Self::set_input_value(&this.port_input, "22", window, cx);
-                                                    },
-                                                )),
-                                        )
-                                        .child(
-                                            Button::new("proto-serial")
-                                                .label("Serial")
-                                                .when(is_serial, |button| button.primary())
-                                                .on_click(window.listener_for(
-                                                    &view,
-                                                    |this, _, _window, cx| {
-                                                        this.set_session_protocol("serial".to_string(), cx);
-                                                    },
-                                                )),
-                                        ),
-                                )
-                                .when(is_serial, |this| {
-                                    this.child(
-                                        v_flex()
-                                            .gap_1()
-                                            .child(div().text_sm().text_color(cx.theme().muted_foreground).child(t!("session_name").to_string()))
-                                            .child(Input::new(&session_name_input).tab_index(0))
-                                    )
-                                    .child(
-                                        v_flex()
-                                            .gap_1()
-                                            .child(div().text_sm().text_color(cx.theme().muted_foreground).child(t!("serial_port").to_string()))
-                                            .child(Input::new(&host_input).tab_index(1))
-                                    )
-                                    .child(
-                                        v_flex()
-                                            .gap_1()
-                                            .child(div().text_sm().text_color(cx.theme().muted_foreground).child(t!("baud_rate").to_string()))
-                                            .child(Input::new(&baud_rate_input).tab_index(2))
-                                    )
-                                })
-                                .when(is_ssh, |this| {
-                                    this.child(
-                                        h_flex()
-                                            .gap_2()
-                                            .child(
-                                                Button::new("ssh-auth-password")
-                                                    .label(t!("password").to_string())
-                                                    .when(is_password, |button| button.primary())
+                                            Button::new("ssh-auth-password")
+                                                .label(t!("password").to_string())
+                                                .when(is_password, |button| button.primary())
                                                 .on_click(window.listener_for(
                                                     &view,
                                                     |this, _, _, cx| {
@@ -1605,7 +1543,6 @@ impl TinyShell {
                                             )
                                         },
                                     )
-                                })
                                 })
                                 .child(
                                     h_flex()

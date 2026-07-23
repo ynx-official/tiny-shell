@@ -31,7 +31,6 @@ type HighlightCache = Option<(
 pub enum TabKind {
     Local,
     Ssh,
-    Serial,
 }
 
 #[derive(Debug)]
@@ -140,7 +139,6 @@ pub enum BackendEvent {
 pub enum BackendTx {
     Local(Sender<BackendCommand>),
     Ssh(tokio::sync::mpsc::UnboundedSender<BackendCommand>),
-    Serial(tokio::sync::mpsc::UnboundedSender<BackendCommand>),
 }
 
 impl BackendTx {
@@ -150,9 +148,6 @@ impl BackendTx {
                 let _ = tx.send(command);
             }
             Self::Ssh(tx) => {
-                let _ = tx.send(command);
-            }
-            Self::Serial(tx) => {
                 let _ = tx.send(command);
             }
         }
@@ -266,25 +261,6 @@ impl TerminalTab {
                 "connecting {}@{}:{}",
                 session.user, session.host, session.port
             ),
-            backend,
-            events,
-        );
-        tab.session = Some(session.clone());
-        tab.connected = false;
-        tab
-    }
-
-    pub fn new_serial(
-        id: String,
-        session: &Session,
-        backend: BackendTx,
-        events: std::sync::mpsc::Sender<BackendEvent>,
-    ) -> Self {
-        let mut tab = Self::new(
-            id,
-            session.name.clone(),
-            TabKind::Serial,
-            format!("connecting serial://{}@{}", session.host, session.baud_rate),
             backend,
             events,
         );
