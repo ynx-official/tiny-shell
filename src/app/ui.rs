@@ -1,9 +1,10 @@
 use crate::app::resizable::{h_resizable, resizable_panel, v_resizable};
 use gpui::{
-    Anchor, AnyElement, Context, ElementId, Focusable as _, FontWeight, Hsla,
-    InteractiveElement as _, IntoElement, MouseButton, MouseDownEvent, ParentElement as _,
-    PathBuilder, Pixels, Render, StatefulInteractiveElement as _, Styled as _, Window, canvas, div,
-    hsla, point, prelude::FluentBuilder as _, px, relative, rems, uniform_list,
+    Anchor, Animation, AnimationExt as _, AnyElement, Context, ElementId, Focusable as _,
+    FontWeight, Hsla, InteractiveElement as _, IntoElement, MouseButton, MouseDownEvent,
+    ParentElement as _, PathBuilder, Pixels, Render, StatefulInteractiveElement as _, Styled as _,
+    Window, canvas, div, ease_out_quint, hsla, point, prelude::FluentBuilder as _, px, relative,
+    rems, uniform_list,
 };
 use gpui_component::{
     ActiveTheme, Disableable as _, ElementExt, Icon, IconName, InteractiveElementExt as _, Root,
@@ -67,6 +68,29 @@ fn format_uptime(seconds: u64) -> String {
         format!("{}{} {}{}", hours, t!("hours"), minutes, t!("minutes"))
     } else {
         format!("{}{}", minutes, t!("minutes"))
+    }
+}
+
+fn lerp_hsla(from: Hsla, to: Hsla, delta: f32) -> Hsla {
+    let delta = delta.clamp(0.0, 1.0);
+    let mut hue_delta = to.h - from.h;
+    if hue_delta > 0.5 {
+        hue_delta -= 1.0;
+    } else if hue_delta < -0.5 {
+        hue_delta += 1.0;
+    }
+    let hue = from.h + hue_delta * delta;
+    Hsla {
+        h: if hue < 0.0 {
+            hue + 1.0
+        } else if hue > 1.0 {
+            hue - 1.0
+        } else {
+            hue
+        },
+        s: from.s + (to.s - from.s) * delta,
+        l: from.l + (to.l - from.l) * delta,
+        a: from.a + (to.a - from.a) * delta,
     }
 }
 
@@ -652,8 +676,7 @@ impl TinyShell {
                                     .icon(IconName::Network)
                                     .label(t!("overview_connections").to_string())
                                     .on_click(cx.listener(|this, _, _, cx| {
-                                        this.home_page = HomePage::Connections;
-                                        cx.notify();
+                                        this.set_home_page(HomePage::Connections, cx);
                                     })),
                             ),
                     ),
@@ -849,8 +872,7 @@ impl TinyShell {
                                     .icon(IconName::SquareTerminal)
                                     .label(t!("command_manager").to_string())
                                     .on_click(cx.listener(|this, _, _, cx| {
-                                        this.home_page = HomePage::Commands;
-                                        cx.notify();
+                                        this.set_home_page(HomePage::Commands, cx);
                                     })),
                             )
                             .child(
@@ -859,8 +881,7 @@ impl TinyShell {
                                     .icon(IconName::Folder)
                                     .label(t!("overview_key_manager").to_string())
                                     .on_click(cx.listener(|this, _, _, cx| {
-                                        this.home_page = HomePage::KeyManager;
-                                        cx.notify();
+                                        this.set_home_page(HomePage::KeyManager, cx);
                                     })),
                             )
                             .child(
@@ -2534,6 +2555,28 @@ impl TinyShell {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let active = self.home_page == page;
+        let was_active = self.prev_home_page == page && !active;
+        let epoch = self.home_page_epoch;
+        let target_background = if active {
+            cx.theme().tab_active
+        } else {
+            cx.theme().sidebar
+        };
+        let target_text = if active {
+            cx.theme().primary
+        } else {
+            cx.theme().foreground
+        };
+        let start_background = if was_active {
+            cx.theme().tab_active
+        } else {
+            target_background
+        };
+        let start_text = if was_active {
+            cx.theme().primary
+        } else {
+            target_text
+        };
         let hover_background = if active {
             cx.theme().tab_active
         } else {
@@ -2547,20 +2590,11 @@ impl TinyShell {
             .flex_none()
             .cursor_pointer()
             .rounded_md()
-            .bg(if active {
-                cx.theme().tab_active
-            } else {
-                cx.theme().sidebar
-            })
-            .text_color(if active {
-                cx.theme().primary
-            } else {
-                cx.theme().foreground
-            })
+            .bg(target_background)
+            .text_color(target_text)
             .hover(move |this| this.bg(hover_background))
             .on_click(cx.listener(move |this, _, _, cx| {
-                this.home_page = page;
-                cx.notify();
+                this.set_home_page(page, cx);
             }))
             .child(
                 h_flex()
@@ -2576,6 +2610,14 @@ impl TinyShell {
                             .child(Icon::new(icon).with_size(Size::Small)),
                     )
                     .child(div().flex_1().font_weight(FontWeight::MEDIUM).child(label)),
+            )
+            .with_animation(
+                ElementId::NamedInteger(format!("{id}-nav-transition").into(), epoch),
+                Animation::new(Duration::from_millis(220)).with_easing(ease_out_quint()),
+                move |this, delta| {
+                    this.bg(lerp_hsla(start_background, target_background, delta))
+                        .text_color(lerp_hsla(start_text, target_text, delta))
+                },
             )
     }
 
@@ -2680,6 +2722,7 @@ impl TinyShell {
     pub(crate) fn toggle_sftp_minimized(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let state = self.body_panels.clone();
         let minimized = self.sftp_panel_minimized;
+        self.sftp_minimize_epoch = self.sftp_minimize_epoch.wrapping_add(1);
 
         if !minimized {
             let sizes = state.read(cx).sizes();
@@ -3104,8 +3147,7 @@ impl TinyShell {
                             .label(t!("quick_command_manage").to_string())
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.home_page_open = true;
-                                this.home_page = HomePage::Commands;
-                                cx.notify();
+                                this.set_home_page(HomePage::Commands, cx);
                             })),
                     ),
             )
@@ -3681,7 +3723,13 @@ impl TinyShell {
                                 ),
                         ),
                 );
-            return outer.into_any_element();
+            return outer
+                .with_animation(
+                    ElementId::NamedInteger("sftp-content-fade".into(), self.sftp_minimize_epoch),
+                    Animation::new(Duration::from_millis(220)).with_easing(ease_out_quint()),
+                    |this, delta| this.opacity(delta * delta),
+                )
+                .into_any_element();
         };
 
         if self.sftp_panel_view == SftpPanelView::Commands {
@@ -3700,6 +3748,11 @@ impl TinyShell {
                         .when(self.sftp_panel_minimized, |this| this.hidden())
                         .child(header)
                         .child(self.render_quick_commands(window, cx)),
+                )
+                .with_animation(
+                    ElementId::NamedInteger("sftp-content-fade".into(), self.sftp_minimize_epoch),
+                    Animation::new(Duration::from_millis(220)).with_easing(ease_out_quint()),
+                    |this, delta| this.opacity(delta * delta),
                 )
                 .into_any_element();
         }
@@ -4076,7 +4129,13 @@ impl TinyShell {
                         ),
                 ),
         );
-        outer.into_any_element()
+        outer
+            .with_animation(
+                ElementId::NamedInteger("sftp-content-fade".into(), self.sftp_minimize_epoch),
+                Animation::new(Duration::from_millis(220)).with_easing(ease_out_quint()),
+                |this, delta| this.opacity(delta * delta),
+            )
+            .into_any_element()
     }
 
     fn render_monitoring_panel(
@@ -6230,8 +6289,7 @@ impl TinyShell {
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.active_system_info_tab = None;
                                 this.home_page_open = true;
-                                this.home_page = HomePage::Overview;
-                                cx.notify();
+                                this.set_home_page(HomePage::Overview, cx);
                             }));
                         let plus_tab = Tab::new()
                             .min_w(px(40.))
@@ -6254,8 +6312,7 @@ impl TinyShell {
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.active_system_info_tab = None;
                                 this.home_page_open = true;
-                                this.home_page = HomePage::Overview;
-                                cx.notify();
+                                this.set_home_page(HomePage::Overview, cx);
                             }));
                         TabBar::new("tiny-shell-tab-bar")
                             .track_scroll(&self.tabs_scroll_handle)
@@ -7660,7 +7717,8 @@ impl Render for TinyShell {
         // The file-transfer panel belongs to an active terminal session. Keeping it
         // out of the home workspace avoids showing an empty "remote files" area on
         // Overview and Key Manager pages.
-        let main_content = if self.active_system_info_tab.is_some() {
+        let main_view_key = self.main_view_key();
+        let main_content_raw = if self.active_system_info_tab.is_some() {
             self.render_system_info_page(cx).into_any_element()
         } else if self.active_tab.is_some() && !self.home_page_open {
             let monitoring_contents = v_flex()
@@ -7724,6 +7782,16 @@ impl Render for TinyShell {
                 HomePage::Settings => self.render_settings_page(cx).into_any_element(),
             }
         };
+
+        let main_content = div()
+            .size_full()
+            .overflow_hidden()
+            .child(main_content_raw)
+            .with_animation(
+                ElementId::NamedInteger("main-content-fade".into(), main_view_key),
+                Animation::new(Duration::from_millis(240)).with_easing(ease_out_quint()),
+                |this, delta| this.opacity(delta * delta),
+            );
 
         let workspace = if self.sidebar_collapsed {
             h_flex()

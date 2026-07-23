@@ -567,6 +567,8 @@ pub(crate) struct TinyShell {
     /// The Home workspace is a first-class tab alongside terminal groups.
     pub(crate) home_page_open: bool,
     pub(crate) home_page: HomePage,
+    pub(crate) prev_home_page: HomePage,
+    pub(crate) home_page_epoch: u64,
     pub(crate) connection_group_filter: Option<String>,
     pub(crate) command_category_filter: Option<String>,
     pub(crate) selected_quick_command: Option<(String, String)>,
@@ -624,6 +626,7 @@ pub(crate) struct TinyShell {
     pub(crate) sftp_panel_view: SftpPanelView,
     pub(crate) quick_command_category: usize,
     pub(crate) sftp_panel_minimized: bool,
+    pub(crate) sftp_minimize_epoch: u64,
     pub(crate) sidebar_collapsed: bool,
     pub(crate) collapsed_saved_scroll_handle: gpui::ScrollHandle,
     pub(crate) prev_monitoring_size: Option<Pixels>,
@@ -1058,6 +1061,8 @@ impl TinyShell {
             active_system_info_tab: None,
             home_page_open: true,
             home_page: HomePage::default(),
+            prev_home_page: HomePage::default(),
+            home_page_epoch: 0,
             connection_group_filter: None,
             command_category_filter: None,
             selected_quick_command: None,
@@ -1120,6 +1125,7 @@ impl TinyShell {
             sftp_panel_view,
             quick_command_category: 0,
             sftp_panel_minimized: config.sftp_panel_minimized(),
+            sftp_minimize_epoch: 0,
             sidebar_collapsed: config.sidebar_collapsed(),
             collapsed_saved_scroll_handle: gpui::ScrollHandle::new(),
             prev_monitoring_size: None,
@@ -1340,6 +1346,34 @@ impl TinyShell {
         changed |= advance(&mut self.animated_mem_percent, self.system.mem_percent);
         changed |= advance(&mut self.animated_swap_percent, self.system.swap_percent);
         changed
+    }
+
+    pub(crate) fn set_home_page(&mut self, page: HomePage, cx: &mut Context<Self>) {
+        if self.home_page == page {
+            return;
+        }
+        self.prev_home_page = self.home_page;
+        self.home_page = page;
+        self.home_page_epoch = self.home_page_epoch.wrapping_add(1);
+        cx.notify();
+    }
+
+    pub(crate) fn main_view_key(&self) -> u64 {
+        let mut hash = self.home_page as u64;
+        hash = hash
+            .wrapping_mul(31)
+            .wrapping_add(self.home_page_open as u64);
+        if let Some(id) = &self.active_system_info_tab {
+            for byte in id.bytes() {
+                hash = hash.wrapping_mul(31).wrapping_add(byte as u64);
+            }
+        }
+        if let Some(id) = &self.active_tab {
+            for byte in id.bytes() {
+                hash = hash.wrapping_mul(31).wrapping_add(byte as u64);
+            }
+        }
+        hash
     }
 
     pub(crate) fn drain_backend_events(&mut self, cx: &mut Context<Self>) -> bool {
