@@ -975,6 +975,7 @@ impl TinyShell {
     fn render_quick_command_detail(
         &self,
         return_to_terminal: bool,
+        resizable_width: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let categories = self.config.quick_command_categories().unwrap_or_default();
@@ -997,8 +998,8 @@ impl TinyShell {
             return v_flex()
                 .self_stretch()
                 .min_h(px(0.))
-                .w(px(360.))
-                .flex_none()
+                .when(resizable_width, |this| this.w_full())
+                .when(!resizable_width, |this| this.w(px(360.)).flex_none())
                 .overflow_hidden()
                 .items_center()
                 .justify_center()
@@ -1020,8 +1021,8 @@ impl TinyShell {
         v_flex()
             .self_stretch()
             .min_h(px(0.))
-            .w(px(360.))
-            .flex_none()
+            .when(resizable_width, |this| this.w_full())
+            .when(!resizable_width, |this| this.w(px(360.)).flex_none())
             .overflow_hidden()
             .border_l_1()
             .border_color(cx.theme().border)
@@ -1036,7 +1037,18 @@ impl TinyShell {
                     .border_color(cx.theme().border)
                     .bg(cx.theme().muted)
                     .font_weight(FontWeight::SEMIBOLD)
-                    .child(t!("quick_command_details")),
+                    .child(t!("quick_command_details"))
+                    .child(div().flex_1())
+                    .child(
+                        Button::new("quick-command-detail-close")
+                            .ghost()
+                            .small()
+                            .icon(IconName::Close)
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.selected_quick_command = None;
+                                cx.notify();
+                            })),
+                    ),
             )
             .child(
                 div()
@@ -1049,18 +1061,34 @@ impl TinyShell {
                             .p_4()
                             .gap_4()
                             .child(
-                                v_flex()
-                                    .gap_1()
+                                h_flex()
+                                    .items_center()
+                                    .gap_3()
                                     .child(
                                         div()
+                                            .flex_1()
+                                            .min_w(px(0.))
+                                            .overflow_hidden()
+                                            .whitespace_nowrap()
+                                            .text_ellipsis()
                                             .text_size(rems(1.1))
                                             .font_weight(FontWeight::SEMIBOLD)
                                             .child(command.name.clone()),
                                     )
                                     .child(
-                                        div()
+                                        h_flex()
+                                            .flex_none()
+                                            .items_center()
+                                            .gap_1()
+                                            .px_2()
+                                            .py_1()
+                                            .rounded_md()
+                                            .bg(cx.theme().muted)
                                             .text_size(rems(0.78))
                                             .text_color(cx.theme().muted_foreground)
+                                            .child(
+                                                Icon::new(IconName::Folder).with_size(Size::XSmall),
+                                            )
                                             .child(category.name.clone()),
                                     ),
                             )
@@ -1648,7 +1676,7 @@ impl TinyShell {
                                     }),
                             ),
                     )
-                    .child(self.render_quick_command_detail(true, cx)),
+                    .child(self.render_quick_command_detail(true, false, cx)),
             )
     }
 
@@ -2878,6 +2906,7 @@ impl TinyShell {
             return;
         }
         self.sftp_panel_view = view;
+        self.selected_quick_command = None;
         self.config.set_sftp_panel_view(match view {
             SftpPanelView::Files => "files",
             SftpPanelView::Commands => "commands",
@@ -3030,6 +3059,15 @@ impl TinyShell {
         let selected_category_id = categories
             .get(self.quick_command_category)
             .map(|category| category.id.clone());
+        let quick_command_detail_visible =
+            self.selected_quick_command
+                .as_ref()
+                .is_some_and(|(category_id, command_id)| {
+                    selected_category_id.as_deref() == Some(category_id.as_str())
+                        && selected_commands
+                            .iter()
+                            .any(|command| command.id == *command_id)
+                });
         let has_categories = !categories.is_empty();
 
         v_flex()
@@ -3072,25 +3110,29 @@ impl TinyShell {
                     ),
             )
             .child(
-                h_flex()
+                div()
                     .flex_1()
                     .min_h(px(0.))
-                    .items_stretch()
                     .overflow_hidden()
                     .child(
-                        div()
-                            .flex_1()
-                            .min_w(px(0.))
-                            .min_h(px(0.))
-                            .overflow_y_scrollbar()
-                            .p_3()
+                        h_resizable("sftp-quick-command-detail-split")
                             .child(
+                                resizable_panel()
+                                    .size_range(px(240.)..Pixels::MAX)
+                                    .child(
                                 div()
-                                    .flex()
-                                    .flex_wrap()
-                                    .items_start()
-                                    .gap_2()
-                                    .children(selected_commands.into_iter().enumerate().map(
+                                    .size_full()
+                                    .min_w(px(0.))
+                                    .min_h(px(0.))
+                                    .overflow_y_scrollbar()
+                                    .p_3()
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .flex_wrap()
+                                            .items_start()
+                                            .gap_2()
+                                            .children(selected_commands.into_iter().enumerate().map(
                                         |(index, command)| {
                                             let category_id = selected_category_id
                                                 .clone()
@@ -3180,22 +3222,31 @@ impl TinyShell {
                                                         .child(command.name),
                                                 )
                                         },
-                                    ))
-                                    .when(!has_categories, |this| {
-                                        this.child(
-                                            v_flex()
-                                                .w_full()
-                                                .items_center()
-                                                .justify_center()
-                                                .gap_2()
-                                                .py_5()
-                                                .text_color(cx.theme().muted_foreground)
-                                                .child(t!("command_manager_empty_title")),
-                                        )
-                                    }),
+                                            ))
+                                            .when(!has_categories, |this| {
+                                                this.child(
+                                                    v_flex()
+                                                        .w_full()
+                                                        .items_center()
+                                                        .justify_center()
+                                                        .gap_2()
+                                                        .py_5()
+                                                        .text_color(cx.theme().muted_foreground)
+                                                        .child(t!("command_manager_empty_title")),
+                                                )
+                                            }),
+                                    ),
+                                    ),
+                            )
+                            .child(
+                                resizable_panel()
+                                    .size(px(420.))
+                                    .size_range(px(280.)..px(720.))
+                                    .flex_none()
+                                    .visible(quick_command_detail_visible)
+                                    .child(self.render_quick_command_detail(false, true, cx)),
                             ),
-                    )
-                    .child(self.render_quick_command_detail(false, cx)),
+                    ),
             )
             .into_any_element()
     }
