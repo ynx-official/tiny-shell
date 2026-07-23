@@ -4548,7 +4548,7 @@ impl TinyShell {
                 .id(id)
                 .relative()
                 .w_full()
-                .h(px(5.))
+                .h(px(4.))
                 .overflow_hidden()
                 .rounded(px(999.))
                 .bg(metric_track_color)
@@ -4658,36 +4658,41 @@ impl TinyShell {
         let no_processes = displayed_processes.is_empty();
 
         v_flex()
-            .gap_3()
+            .gap_2()
             .w_full()
+            .h_full()
+            .min_h(px(0.))
+            .overflow_hidden()
             .p_1()
             .child(
                 v_flex()
+                    .flex_none()
                     .rounded_lg()
                     .border_1()
                     .border_color(cx.theme().border)
                     .overflow_hidden()
                     .child(
                         h_flex()
-                            .h(px(32.))
+                            .h(px(28.))
                             .items_center()
-                            .px_3()
+                            .px_2()
                             .bg(cx.theme().muted)
                             .font_weight(FontWeight::SEMIBOLD)
-                            .text_size(rems(0.82))
+                            .text_size(rems(0.78))
                             .child(t!("resources")),
                     )
                     .child(
                         v_flex()
-                            .p_3()
-                            .gap_3()
+                            .px_2()
+                            .py_2()
+                            .gap_2()
                             .child(
                                 v_flex()
                                     .gap_1()
                                     .child(
                                         h_flex()
                                             .justify_between()
-                                            .text_size(rems(0.8))
+                                            .text_size(rems(0.75))
                                             .child(
                                                 div()
                                                     .font_weight(FontWeight::MEDIUM)
@@ -4717,7 +4722,7 @@ impl TinyShell {
                                     .child(
                                         h_flex()
                                             .justify_between()
-                                            .text_size(rems(0.8))
+                                            .text_size(rems(0.75))
                                             .child(
                                                 div()
                                                     .font_weight(FontWeight::MEDIUM)
@@ -4744,7 +4749,7 @@ impl TinyShell {
                                     .child(
                                         h_flex()
                                             .justify_between()
-                                            .text_size(rems(0.8))
+                                            .text_size(rems(0.75))
                                             .child(
                                                 div()
                                                     .font_weight(FontWeight::MEDIUM)
@@ -4769,13 +4774,14 @@ impl TinyShell {
             )
             .child(
                 v_flex()
+                    .flex_none()
                     .rounded_lg()
                     .border_1()
                     .border_color(cx.theme().border)
                     .overflow_hidden()
                     .child(
                         h_flex()
-                            .h(px(30.))
+                            .h(px(26.))
                             .items_center()
                             .p(px(2.))
                             .gap_1()
@@ -4801,7 +4807,7 @@ impl TinyShell {
                                         muted_fg
                                     })
                                     .text_center()
-                                    .text_size(rems(0.76))
+                                    .text_size(rems(0.7))
                                     .font_weight(if process_view == ProcessView::Memory {
                                         FontWeight::SEMIBOLD
                                     } else {
@@ -4834,7 +4840,7 @@ impl TinyShell {
                                         muted_fg
                                     })
                                     .text_center()
-                                    .text_size(rems(0.76))
+                                    .text_size(rems(0.7))
                                     .font_weight(if process_view == ProcessView::Cpu {
                                         FontWeight::SEMIBOLD
                                     } else {
@@ -4867,7 +4873,7 @@ impl TinyShell {
                                         muted_fg
                                     })
                                     .text_center()
-                                    .text_size(rems(0.76))
+                                    .text_size(rems(0.7))
                                     .font_weight(if process_view == ProcessView::Activity {
                                         FontWeight::SEMIBOLD
                                     } else {
@@ -4883,7 +4889,7 @@ impl TinyShell {
                     .children(displayed_processes.into_iter().enumerate().map(
                         |(index, process)| {
                             h_flex()
-                                .h(px(29.))
+                                .h(px(25.))
                                 .items_center()
                                 .when(index % 2 == 1, |this| {
                                     this.bg(cx.theme().muted.opacity(0.22))
@@ -4893,7 +4899,7 @@ impl TinyShell {
                                         .flex_1()
                                         .min_w(px(0.))
                                         .text_center()
-                                        .text_size(rems(0.73))
+                                        .text_size(rems(0.69))
                                         .child(format_bytes(process.memory_bytes)),
                                 )
                                 .child(
@@ -4901,7 +4907,7 @@ impl TinyShell {
                                         .flex_1()
                                         .min_w(px(0.))
                                         .text_center()
-                                        .text_size(rems(0.73))
+                                        .text_size(rems(0.69))
                                         .child(format!("{:.1}%", process.cpu_percent)),
                                 )
                                 .child(
@@ -4913,7 +4919,7 @@ impl TinyShell {
                                         .whitespace_nowrap()
                                         .text_ellipsis()
                                         .text_center()
-                                        .text_size(rems(0.73))
+                                        .text_size(rems(0.69))
                                         .child(process.command),
                                 )
                         },
@@ -4921,7 +4927,7 @@ impl TinyShell {
                     .when(no_processes, |this| {
                         this.child(
                             div()
-                                .h(px(30.))
+                                .h(px(26.))
                                 .flex()
                                 .items_center()
                                 .justify_center()
@@ -4933,6 +4939,7 @@ impl TinyShell {
             )
             .child(
                 v_flex()
+                    .flex_none()
                     .rounded_lg()
                     .border_1()
                     .border_color(cx.theme().border)
@@ -5192,142 +5199,122 @@ impl TinyShell {
             )
             .child(
                 v_flex()
+                    .flex_1()
+                    .min_h(px(62.))
                     .rounded_lg()
                     .border_1()
                     .border_color(cx.theme().border)
                     .overflow_hidden()
                     .child(
                         h_flex()
-                            .h(px(36.))
-                            .px_3()
+                            .h(px(30.))
+                            .flex_none()
+                            .px_2()
                             .justify_between()
                             .items_center()
                             .bg(cx.theme().muted)
                             .child(
                                 div()
-                                    .text_size(rems(0.82))
+                                    .text_size(rems(0.76))
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .child(t!("disk").to_string()),
                             )
                             .child(
                                 div()
-                                    .text_size(rems(0.68))
+                                    .text_size(rems(0.64))
                                     .text_color(muted_fg)
-                                    .child(format!(
-                                        "{} {}",
-                                        self.system.filesystems.len(),
-                                        t!("mounts")
-                                    )),
+                                    .child(t!("available_size")),
                             ),
                     )
                     .child(
-                        v_flex()
+                        div()
+                            .relative()
                             .w_full()
+                            .flex_1()
+                            .min_h(px(0.))
+                            .overflow_hidden()
                             .child(
-                                h_flex()
-                                    .h(px(32.))
-                                    .flex_none()
-                                    .items_center()
-                                    .px_3()
-                                    .border_t_1()
-                                    .border_b_1()
-                                    .border_color(cx.theme().border.opacity(0.7))
-                                    .text_size(rems(0.72))
-                                    .text_color(muted_fg)
-                                    .child(div().flex_1().min_w(px(0.)).child(t!("disk_path")))
-                                    .child(
-                                        div()
-                                            .flex_1()
-                                            .min_w(px(0.))
-                                            .text_right()
-                                            .child(t!("available_size")),
-                                    ),
+                                v_flex()
+                                    .id("sidebar-disk-scroll")
+                                    .track_scroll(&self.disk_scroll_handle)
+                                    .overflow_y_scroll()
+                                    .h_full()
+                                    .min_h(px(0.))
+                                    .children(self.system.filesystems.iter().enumerate().map(
+                                        |(index, disk)| {
+                                            let mount = disk.mount.clone();
+                                            let capacity = format!(
+                                                "{} / {}",
+                                                format_bytes(disk.available_bytes),
+                                                format_bytes(disk.total_bytes)
+                                            );
+                                            h_flex()
+                                                .h(px(28.))
+                                                .flex_none()
+                                                .items_center()
+                                                .px_2()
+                                                    .border_b_1()
+                                                    .border_color(cx.theme().border.opacity(0.35))
+                                                    .when(index % 2 == 1, |this| {
+                                                        this.bg(cx.theme().muted.opacity(0.22))
+                                                    })
+                                                    .child(
+                                                        div()
+                                                            .id(("sidebar-disk-mount", index))
+                                                            .flex_1()
+                                                            .min_w(px(0.))
+                                                            .overflow_hidden()
+                                                        .whitespace_nowrap()
+                                                        .text_ellipsis()
+                                                        .text_size(rems(0.68))
+                                                            .font_weight(FontWeight::MEDIUM)
+                                                            .tooltip({
+                                                                let mount = mount.clone();
+                                                                move |window, cx| {
+                                                                    gpui_component::tooltip::Tooltip::new(
+                                                                        mount.clone(),
+                                                                    )
+                                                                    .build(window, cx)
+                                                                }
+                                                            })
+                                                            .child(mount),
+                                                    )
+                                                    .child(
+                                                        div()
+                                                            .id(("sidebar-disk-capacity", index))
+                                                        .flex_1()
+                                                        .min_w(px(0.))
+                                                        .text_right()
+                                                        .pr_1()
+                                                            .overflow_hidden()
+                                                            .whitespace_nowrap()
+                                                            .text_ellipsis()
+                                                        .text_size(rems(0.66))
+                                                            .text_color(muted_fg)
+                                                            .tooltip({
+                                                                let capacity = capacity.clone();
+                                                                move |window, cx| {
+                                                                    gpui_component::tooltip::Tooltip::new(
+                                                                        capacity.clone(),
+                                                                    )
+                                                                    .build(window, cx)
+                                                                }
+                                                            })
+                                                            .child(capacity),
+                                                    )
+                                        },
+                                    )),
                             )
                             .child(
                                 div()
-                                    .relative()
-                                    .w_full()
+                                    .absolute()
+                                    .top_0()
+                                    .right_0()
+                                    .bottom_0()
+                                    .w(px(8.))
                                     .child(
-                                        v_flex()
-                                            .id("sidebar-disk-scroll")
-                                            .track_scroll(&self.disk_scroll_handle)
-                                            .overflow_y_scroll()
-                                            .max_h(px(228.))
-                                            .children(self.system.filesystems.iter().enumerate().map(
-                                                |(index, disk)| {
-                                                    let mount = disk.mount.clone();
-                                                    let capacity = format!(
-                                                        "{} / {}",
-                                                        format_bytes(disk.available_bytes),
-                                                        format_bytes(disk.total_bytes)
-                                                    );
-                                                    h_flex()
-                                                        .h(px(36.))
-                                                        .items_center()
-                                                        .px_3()
-                                                        .border_b_1()
-                                                        .border_color(cx.theme().border.opacity(0.35))
-                                                        .when(index % 2 == 1, |this| {
-                                                            this.bg(cx.theme().muted.opacity(0.22))
-                                                        })
-                                                        .child(
-                                                            div()
-                                                                .id(("sidebar-disk-mount", index))
-                                                                .flex_1()
-                                                                .min_w(px(0.))
-                                                                .overflow_hidden()
-                                                                .whitespace_nowrap()
-                                                                .text_ellipsis()
-                                                                .text_size(rems(0.73))
-                                                                .font_weight(FontWeight::MEDIUM)
-                                                                .tooltip({
-                                                                    let mount = mount.clone();
-                                                                    move |window, cx| {
-                                                                        gpui_component::tooltip::Tooltip::new(
-                                                                            mount.clone(),
-                                                                        )
-                                                                        .build(window, cx)
-                                                                    }
-                                                                })
-                                                                .child(mount),
-                                                        )
-                                                        .child(
-                                                            div()
-                                                                .id(("sidebar-disk-capacity", index))
-                                                                .flex_1()
-                                                                .min_w(px(0.))
-                                                                .text_right()
-                                                                .pr_2()
-                                                                .overflow_hidden()
-                                                                .whitespace_nowrap()
-                                                                .text_ellipsis()
-                                                                .text_size(rems(0.7))
-                                                                .text_color(muted_fg)
-                                                                .tooltip({
-                                                                    let capacity = capacity.clone();
-                                                                    move |window, cx| {
-                                                                        gpui_component::tooltip::Tooltip::new(
-                                                                            capacity.clone(),
-                                                                        )
-                                                                        .build(window, cx)
-                                                                    }
-                                                                })
-                                                                .child(capacity),
-                                                        )
-                                                },
-                                            )),
-                                    )
-                                    .child(
-                                        div()
-                                            .absolute()
-                                            .top_0()
-                                            .right_0()
-                                            .bottom_0()
-                                            .w(px(8.))
-                                            .child(
-                                                Scrollbar::vertical(&self.disk_scroll_handle)
-                                                    .scrollbar_show(ScrollbarShow::Scrolling),
-                                            ),
+                                        Scrollbar::vertical(&self.disk_scroll_handle)
+                                            .scrollbar_show(ScrollbarShow::Scrolling),
                                     ),
                             ),
                     ),
@@ -5710,7 +5697,7 @@ impl TinyShell {
                         div()
                             .flex_1()
                             .min_h(px(0.))
-                            .overflow_y_scrollbar()
+                            .overflow_hidden()
                             .child(self.render_sidebar_monitoring_panel(cx)),
                     )
                 },
