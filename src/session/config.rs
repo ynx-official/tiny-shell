@@ -56,6 +56,8 @@ pub struct SftpFooterVisibility {
 pub struct QuickCommand {
     pub id: String,
     pub name: String,
+    #[serde(default)]
+    pub remark: String,
     pub command: String,
 }
 
@@ -1079,6 +1081,39 @@ impl ConfigStore {
         }
     }
 
+    pub fn move_quick_command(
+        &mut self,
+        source_category_id: &str,
+        target_category_id: &str,
+        command_id: &str,
+    ) {
+        if source_category_id == target_category_id {
+            return;
+        }
+        let Some(categories) = self.cache.quick_command_categories.as_mut() else {
+            return;
+        };
+        let Some(command) = categories
+            .iter_mut()
+            .find(|category| category.id == source_category_id)
+            .and_then(|category| {
+                category
+                    .commands
+                    .iter()
+                    .position(|command| command.id == command_id)
+                    .map(|index| category.commands.remove(index))
+            })
+        else {
+            return;
+        };
+        if let Some(category) = categories
+            .iter_mut()
+            .find(|category| category.id == target_category_id)
+        {
+            category.commands.push(command);
+        }
+    }
+
     pub fn sftp_external_editor(&self) -> &str {
         &self.cache.sftp_external_editor
     }
@@ -1608,6 +1643,7 @@ mod tests {
             QuickCommand {
                 id: "command-1".to_string(),
                 name: "Uptime".to_string(),
+                remark: String::new(),
                 command: "uptime".to_string(),
             },
         );

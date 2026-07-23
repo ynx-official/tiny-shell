@@ -533,6 +533,7 @@ pub(crate) struct TinyShell {
     pub(crate) ssh_config_selected: Option<usize>,
     pub(crate) editing_session_id: Option<String>,
     pub(crate) editing_connection_group: Option<String>,
+    pub(crate) editing_quick_command_category: Option<String>,
     pub(crate) connection_group_parent: Option<String>,
     pub(crate) moving_connection_group: Option<String>,
     pub(crate) session_group_selection: Option<String>,
@@ -568,6 +569,8 @@ pub(crate) struct TinyShell {
     pub(crate) home_page: HomePage,
     pub(crate) connection_group_filter: Option<String>,
     pub(crate) command_category_filter: Option<String>,
+    pub(crate) selected_quick_command: Option<(String, String)>,
+    pub(crate) quick_command_parameter_inputs: Vec<Entity<InputState>>,
     /// Bounds of the visible group rows, used to calculate a drop position.
     pub(crate) connection_group_bounds: HashMap<String, Bounds<Pixels>>,
     pub(crate) pending_connection_group_drag: Option<(String, Point<Pixels>)>,
@@ -794,6 +797,14 @@ impl TinyShell {
             cx.new(|cx| InputState::new(window, cx).placeholder(t!("search").to_string()));
         let quick_connection_search_input =
             cx.new(|cx| InputState::new(window, cx).placeholder(t!("search").to_string()));
+        let quick_command_parameter_inputs = (1..=5)
+            .map(|index| {
+                cx.new(|cx| {
+                    InputState::new(window, cx)
+                        .placeholder(t!("quick_command_parameter", index = index).to_string())
+                })
+            })
+            .collect::<Vec<_>>();
         let mut config = ConfigStore::load().unwrap_or_else(|err| {
             tracing::warn!("failed to load config: {err:#}");
             ConfigStore::in_memory()
@@ -1018,6 +1029,7 @@ impl TinyShell {
             ssh_config_selected: None,
             editing_session_id: None,
             editing_connection_group: None,
+            editing_quick_command_category: None,
             connection_group_parent: None,
             moving_connection_group: None,
             session_group_selection: None,
@@ -1048,6 +1060,8 @@ impl TinyShell {
             home_page: HomePage::default(),
             connection_group_filter: None,
             command_category_filter: None,
+            selected_quick_command: None,
+            quick_command_parameter_inputs,
             connection_group_bounds: HashMap::new(),
             pending_connection_group_drag: None,
             dragging_connection_group: None,
