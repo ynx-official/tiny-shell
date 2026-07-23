@@ -1093,14 +1093,10 @@ impl TinyShell {
             backend,
             events.clone(),
         ));
+        if let Some(tab) = self.tabs.last_mut() {
+            tab.feed_status_line(&rust_i18n::t!("starting_connection"));
+        }
         self.active_tab = Some(id.clone());
-        self.connection_progress_epoch = self.connection_progress_epoch.wrapping_add(1);
-        self.connection_progress = Some(crate::app::ConnectionProgress {
-            tab_id: id.clone(),
-            title: rust_i18n::t!("connecting").into(),
-            lines: vec![rust_i18n::t!("starting_connection").into()],
-            failed: false,
-        });
         self.pane_root = PaneLayout::Single(id.clone());
         self.focused_pane_path = vec![];
         let group_id = Uuid::new_v4().to_string();
@@ -1201,6 +1197,7 @@ impl TinyShell {
             self.tabs[ix].disconnected_reason = None;
             self.tabs[ix].backend_generation = new_generation;
             self.tabs[ix].backend_initialized = false;
+            self.tabs[ix].feed_status_line(&rust_i18n::t!("starting_connection"));
 
             // Restart SFTP for the group containing this tab
             if let Some(group) = self
@@ -1376,13 +1373,6 @@ impl TinyShell {
         self.system_info_tabs.retain(|tab| tab.source_tab_id != id);
         if removed_active_info {
             self.active_system_info_tab = None;
-        }
-        if self
-            .connection_progress
-            .as_ref()
-            .is_some_and(|p| p.tab_id == id)
-        {
-            self.connection_progress = None;
         }
         let group_ix = self
             .tab_groups

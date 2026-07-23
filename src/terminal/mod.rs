@@ -303,6 +303,19 @@ impl TerminalTab {
         self.processor.advance(&mut self.term, bytes);
     }
 
+    pub fn feed_status_line(&mut self, text: &str) {
+        let mut line = String::with_capacity(text.len() + 2);
+        for character in text.chars() {
+            if character == '\t' || !character.is_control() {
+                line.push(character);
+            } else if matches!(character, '\r' | '\n') && !line.ends_with(' ') {
+                line.push(' ');
+            }
+        }
+        line.push_str("\r\n");
+        self.feed(line.as_bytes());
+    }
+
     /// Send a command to the backend. Thread-safe via the shared Arc<Mutex>.
     pub fn send_backend(&self, command: BackendCommand) {
         if let Ok(backend) = self.backend.lock() {

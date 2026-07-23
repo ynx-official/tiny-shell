@@ -120,15 +120,6 @@ impl TinyShell {
             && !event.keystroke.modifiers.alt
             && !event.keystroke.modifiers.platform
         {
-            if let Some(progress) = &self.connection_progress {
-                if progress.failed {
-                    self.retry_connection_progress(cx);
-                    window.prevent_default();
-                    cx.stop_propagation();
-                    return;
-                }
-            }
-
             let active_id = self.active_tab.clone();
             if let Some(active_id) = active_id {
                 let is_disconnected = self
