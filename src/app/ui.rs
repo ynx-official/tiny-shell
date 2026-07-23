@@ -4658,7 +4658,7 @@ impl TinyShell {
         let no_processes = displayed_processes.is_empty();
 
         v_flex()
-            .gap_2()
+            .gap(px(6.))
             .w_full()
             .h_full()
             .min_h(px(0.))
@@ -4889,7 +4889,7 @@ impl TinyShell {
                     .children(displayed_processes.into_iter().enumerate().map(
                         |(index, process)| {
                             h_flex()
-                                .h(px(25.))
+                                .h(px(23.))
                                 .items_center()
                                 .when(index % 2 == 1, |this| {
                                     this.bg(cx.theme().muted.opacity(0.22))
@@ -5043,7 +5043,7 @@ impl TinyShell {
                     )
                     .child(
                         div()
-                            .h(px(88.))
+                            .h(px(68.))
                             .p_2()
                             .mx_3()
                             .mb_3()
