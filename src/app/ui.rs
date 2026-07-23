@@ -6207,6 +6207,7 @@ impl TinyShell {
         let is_integrated =
             self.active_title_bar_style == crate::session::config::TitleBarStyle::Integrated;
         let selected_tab_color = Hsla::from(gpui::rgb(0x1586F5));
+        let tab_selection_epoch = self.main_view_key();
 
         h_flex()
             .flex_1()
@@ -6271,7 +6272,16 @@ impl TinyShell {
                                                 .left_0()
                                                 .right_0()
                                                 .h(px(3.))
-                                                .bg(selected_tab_color),
+                                                .bg(selected_tab_color)
+                                                .with_animation(
+                                                    ElementId::NamedInteger(
+                                                        "tab-selection-indicator".into(),
+                                                        tab_selection_epoch,
+                                                    ),
+                                                    Animation::new(Duration::from_millis(180))
+                                                        .with_easing(ease_out_quint()),
+                                                    |this, delta| this.opacity(delta * delta),
+                                                ),
                                         ),
                                 )
                             })
@@ -6349,6 +6359,20 @@ impl TinyShell {
                                             }
                                         })
                                         .unwrap_or(cx.theme().muted_foreground);
+                                    let dot_epoch = pane_ids
+                                        .first()
+                                        .and_then(|id| self.tabs.iter().find(|tab| tab.id == *id))
+                                        .map(|tab| {
+                                            tab.backend_generation.wrapping_mul(3)
+                                                + if tab.disconnected_reason.is_some() {
+                                                    2
+                                                } else if tab.connected {
+                                                    1
+                                                } else {
+                                                    0
+                                                }
+                                        })
+                                        .unwrap_or(0);
                                     let drag_gid = gid.clone();
                                     let context_gid = gid.clone();
                                     let bounds_gid = gid.clone();
@@ -6379,7 +6403,16 @@ impl TinyShell {
                                                             .left_0()
                                                             .right_0()
                                                             .h(px(3.))
-                                                            .bg(selected_tab_color),
+                                                            .bg(selected_tab_color)
+                                                            .with_animation(
+                                                                ElementId::NamedInteger(
+                                                                    "tab-selection-indicator".into(),
+                                                                    tab_selection_epoch,
+                                                                ),
+                                                                Animation::new(Duration::from_millis(180))
+                                                                    .with_easing(ease_out_quint()),
+                                                                |this, delta| this.opacity(delta * delta),
+                                                            ),
                                                     ),
                                             )
                                         })
@@ -6422,7 +6455,16 @@ impl TinyShell {
                                                         .size(px(8.))
                                                         .flex_none()
                                                         .rounded_full()
-                                                        .bg(dot_color),
+                                                        .bg(dot_color)
+                                                        .with_animation(
+                                                                ElementId::NamedInteger(
+                                                                    format!("tab-status-dot-{gid}").into(),
+                                                                    u64::from(dot_epoch),
+                                                                ),
+                                                            Animation::new(Duration::from_millis(160))
+                                                                .with_easing(ease_out_quint()),
+                                                            |this, delta| this.opacity(delta * delta),
+                                                        ),
                                                 )
                                                 .child(div().min_w(px(0.)).child(label))
                                                 .context_menu({
@@ -6493,7 +6535,16 @@ impl TinyShell {
                                                             .left_0()
                                                             .right_0()
                                                             .h(px(3.))
-                                                            .bg(selected_tab_color),
+                                                            .bg(selected_tab_color)
+                                                            .with_animation(
+                                                                ElementId::NamedInteger(
+                                                                    "tab-selection-indicator".into(),
+                                                                    tab_selection_epoch,
+                                                                ),
+                                                                Animation::new(Duration::from_millis(180))
+                                                                    .with_easing(ease_out_quint()),
+                                                                |this, delta| this.opacity(delta * delta),
+                                                            ),
                                                     ),
                                             )
                                         })
