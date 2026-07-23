@@ -20,7 +20,7 @@ jobs:
     runs-on: windows-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -63,7 +63,7 @@ jobs:
             name: macos-x86_64
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # GPUI needs these system libs on Linux to compile.
       - name: Install Linux GUI dependencies
