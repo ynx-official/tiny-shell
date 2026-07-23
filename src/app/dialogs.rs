@@ -5097,7 +5097,7 @@ impl TinyShell {
                                                         v_flex()
                                                             .gap_2()
                                                             .items_center()
-                                                            .child(div().text_size(rems(1.5)).font_weight(FontWeight::BOLD).child("tiny-shell"))
+                                                            .child(div().text_size(rems(1.5)).font_weight(FontWeight::BOLD).child(t!("app_name")))
                                                             .child(div().text_size(rems(0.9)).child(format!("Version {}", version)))
                                                             .child(
                                                                 div()

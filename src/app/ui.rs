@@ -2609,7 +2609,7 @@ impl TinyShell {
                             .font_weight(FontWeight::BOLD)
                             .text_size(rems(1.5))
                             .text_color(cx.theme().primary)
-                            .child("tiny-shell"),
+                            .child(t!("app_name")),
                     )
                     .child(
                         div()
@@ -5388,7 +5388,7 @@ impl TinyShell {
                                         div()
                                             .font_weight(FontWeight::BOLD)
                                             .text_size(rems(1.25))
-                                            .child("tiny-shell"),
+                                            .child(t!("app_name")),
                                     )
                                     .child(
                                         div()

@@ -24,15 +24,15 @@
 
 [Setup]
 AppId={{8E091D1C-6D7C-4C29-9CA2-8B3D84A42CF8}
-AppName=tiny-shell
+AppName=TinyShell
 AppVersion={#MyAppVersion}
-AppVerName=tiny-shell {#MyAppVersion}
-AppPublisher=tiny-shell contributors
+AppVerName=TinyShell {#MyAppVersion}
+AppPublisher=TinyShell contributors
 AppPublisherURL=https://github.com/ynx-official/tiny-shell
 AppSupportURL=https://github.com/ynx-official/tiny-shell/issues
 AppUpdatesURL=https://github.com/ynx-official/tiny-shell/releases
-DefaultDirName={localappdata}\Programs\tiny-shell
-DefaultGroupName=tiny-shell
+DefaultDirName={localappdata}\Programs\TinyShell
+DefaultGroupName=TinyShell
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
 ArchitecturesAllowed=x64compatible
@@ -58,8 +58,8 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 Source: "{#SourceExe}"; DestDir: "{app}"; DestName: "tiny-shell.exe"; Flags: ignoreversion
 
 [Icons]
-Name: "{autoprograms}\tiny-shell"; Filename: "{app}\tiny-shell.exe"
-Name: "{autodesktop}\tiny-shell"; Filename: "{app}\tiny-shell.exe"; Tasks: desktopicon
+Name: "{autoprograms}\TinyShell"; Filename: "{app}\tiny-shell.exe"
+Name: "{autodesktop}\TinyShell"; Filename: "{app}\tiny-shell.exe"; Tasks: desktopicon
 
 [Run]
-Filename: "{app}\tiny-shell.exe"; Description: "{cm:LaunchProgram,tiny-shell}"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\tiny-shell.exe"; Description: "{cm:LaunchProgram,TinyShell}"; Flags: nowait postinstall skipifsilent

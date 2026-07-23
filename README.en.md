@@ -1,9 +1,9 @@
 [中文](README.md) | [English](README.en.md)
 
-# tiny-shell
+# TinyShell
 
 <p align="center">
-  <img src="assets/icons/tiny-shell.png" alt="tiny-shell" width="128" />
+  <img src="assets/icons/tiny-shell.png" alt="TinyShell" width="128" />
 </p>
 
 <p align="center">
@@ -18,7 +18,7 @@
 
 ---
 
-`tiny-shell` is a desktop terminal client built with the GPUI framework and GPUI Component library, written in Rust. It integrates local terminals, SSH remote connections, SFTP file management, and system monitoring into a single high-performance, visually polished workspace.
+TinyShell is a desktop terminal client built with the GPUI framework and GPUI Component library, written in Rust. It integrates local terminals, SSH remote connections, SFTP file management, and system monitoring into a single high-performance, visually polished workspace.
 
 ## Features
 
@@ -69,11 +69,11 @@ brew update && brew upgrade tiny-shell --cask
 ```
 
 #### Manual Install
-Download `tiny-shell-*-macos-*.zip` from the [Releases page](https://github.com/ynx-official/tiny-shell/releases/latest), unzip, and drag `tiny-shell.app` to your Applications folder.
+Download `tiny-shell-*-macos-*.zip` from the [Releases page](https://github.com/ynx-official/tiny-shell/releases/latest), unzip, and drag `TinyShell.app` to your Applications folder.
 
 > If macOS warns the app is "damaged" on first launch:
 > ```bash
-> sudo xattr -cr /Applications/tiny-shell.app
+> sudo xattr -cr /Applications/TinyShell.app
 > ```
 
 ### Windows
@@ -126,7 +126,7 @@ cargo deb
 ## Version History
 
 ### v1.0.1 (Current)
-- Rebranded from ashell to tiny-shell, repository moved to [ynx-official/tiny-shell](https://github.com/ynx-official/tiny-shell)
+- Rebranded from ashell to TinyShell, repository moved to [ynx-official/tiny-shell](https://github.com/ynx-official/tiny-shell)
 - Added cross-platform auto-update for Linux, macOS, and Windows
 - Added auto-update UI prompts in both English and Chinese
 - Updated all brand assets: icons, desktop entries, config directories, environment variables

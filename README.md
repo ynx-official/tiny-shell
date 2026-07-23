@@ -1,9 +1,9 @@
 [中文](README.md) | [English](README.en.md)
 
-# tiny-shell
+# TinyShell
 
 <p align="center">
-  <img src="assets/icons/tiny-shell.png" alt="tiny-shell" width="128" />
+  <img src="assets/icons/tiny-shell.png" alt="TinyShell" width="128" />
 </p>
 
 <p align="center">
@@ -18,7 +18,7 @@
 
 ---
 
-`tiny-shell` 是一款基于 GPUI 框架和 GPUI Component 组件库构建的桌面终端客户端，采用 Rust 编写。它将本地终端、SSH 远程连接、SFTP 文件管理、系统监控等能力整合在一个高性能、美观的统一工作区中。
+TinyShell 是一款基于 GPUI 框架和 GPUI Component 组件库构建的桌面终端客户端，采用 Rust 编写。它将本地终端、SSH 远程连接、SFTP 文件管理、系统监控等能力整合在一个高性能、美观的统一工作区中。
 
 ## 功能特性
 
@@ -69,11 +69,11 @@ brew update && brew upgrade tiny-shell --cask
 ```
 
 #### 手动安装
-从 [Releases 页面](https://github.com/ynx-official/tiny-shell/releases/latest) 下载 `tiny-shell-*-macos-*.zip`，解压后将 `tiny-shell.app` 拖入应用程序目录。
+从 [Releases 页面](https://github.com/ynx-official/tiny-shell/releases/latest) 下载 `tiny-shell-*-macos-*.zip`，解压后将 `TinyShell.app` 拖入应用程序目录。
 
 > 首次启动若提示"已损坏"，执行：
 > ```bash
-> sudo xattr -cr /Applications/tiny-shell.app
+> sudo xattr -cr /Applications/TinyShell.app
 > ```
 
 ### Windows
@@ -126,7 +126,7 @@ cargo deb
 ## 版本历史
 
 ### v1.0.1（当前）
-- 从 ashell 正式更名为 tiny-shell，仓库迁移至 [ynx-official/tiny-shell](https://github.com/ynx-official/tiny-shell)
+- 从 ashell 正式更名为 TinyShell，仓库迁移至 [ynx-official/tiny-shell](https://github.com/ynx-official/tiny-shell)
 - 新增跨平台自动更新功能，支持 Linux / macOS / Windows
 - 新增中英文自动更新相关 UI 提示
 - 更新所有品牌资源：图标、桌面入口、配置目录、环境变量

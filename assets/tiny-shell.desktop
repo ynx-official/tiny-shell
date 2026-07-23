@@ -1,5 +1,5 @@
 [Desktop Entry]
-Name=tiny-shell
+Name=TinyShell
 Comment=A modern, fast, GPUI Component-based desktop terminal client
 Exec=tiny-shell
 Icon=tiny-shell
