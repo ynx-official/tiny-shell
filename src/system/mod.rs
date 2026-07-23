@@ -193,7 +193,7 @@ impl SystemSampler {
                 command: process.name().to_string_lossy().into_owned(),
             })
             .collect::<Vec<_>>();
-        processes.sort_by(|left, right| right.memory_bytes.cmp(&left.memory_bytes));
+        processes.sort_by_key(|process| std::cmp::Reverse(process.memory_bytes));
         processes.truncate(64);
 
         SystemSnapshot {

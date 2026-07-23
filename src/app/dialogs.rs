@@ -5048,7 +5048,7 @@ impl TinyShell {
                                     let mut page = SettingPage::new(t!("settings_key_bindings").to_string())
                                         .icon(IconName::SquareTerminal)
                                         .default_open(true);
-                                    for group in crate::app::keybinding_recorder::KeybindingsPage::render_groups(self, &view) {
+                                    for group in crate::app::keybinding_recorder::KeybindingsPage::render_groups(self, view) {
                                         page = page.group(group);
                                     }
                                     page

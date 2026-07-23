@@ -4622,8 +4622,9 @@ impl TinyShell {
         let process_view = self.process_view;
         let mut displayed_processes = self.system.processes.clone();
         match process_view {
-            ProcessView::Memory => displayed_processes
-                .sort_by(|left, right| right.memory_bytes.cmp(&left.memory_bytes)),
+            ProcessView::Memory => {
+                displayed_processes.sort_by_key(|process| std::cmp::Reverse(process.memory_bytes))
+            }
             ProcessView::Cpu => displayed_processes.sort_by(|left, right| {
                 right
                     .cpu_percent

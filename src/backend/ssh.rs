@@ -150,7 +150,7 @@ async fn run_ssh(
                                 Ok(snapshot) => {
                                     let _ = events_clone.send(BackendEvent::RemoteSystem {
                                         tab_id: tab_id_clone,
-                                        snapshot,
+                                        snapshot: Box::new(snapshot),
                                     });
                                 }
                                 Err(err) => {

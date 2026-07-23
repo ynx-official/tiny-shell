@@ -1464,6 +1464,7 @@ impl TinyShell {
                     sftp_editor_window::mark_upload_failed(&tab_id, &remote_path, error, cx);
                 }
                 BackendEvent::RemoteSystem { tab_id, snapshot } => {
+                    let snapshot = *snapshot;
                     self.remote_sample_in_flight = false;
                     self.remote_system_snapshots
                         .insert(tab_id.clone(), snapshot.clone());

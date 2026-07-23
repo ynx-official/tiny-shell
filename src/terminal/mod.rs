@@ -102,7 +102,7 @@ pub enum BackendEvent {
     },
     RemoteSystem {
         tab_id: String,
-        snapshot: SystemSnapshot,
+        snapshot: Box<SystemSnapshot>,
     },
     RemoteSystemUnavailable {
         tab_id: String,
