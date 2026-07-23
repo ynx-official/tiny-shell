@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::Context;
 use futures::StreamExt;
@@ -73,6 +73,25 @@ fn bin_name() -> &'static str {
     } else {
         "tiny-shell"
     }
+}
+
+fn prepare_update_dir(temp_root: &Path, version: &str) -> anyhow::Result<PathBuf> {
+    let version = parse_version(version)?;
+    let update_dir = temp_root.join(format!("{REPO_NAME}-update-{version}"));
+
+    if update_dir.exists() {
+        std::fs::remove_dir_all(&update_dir).with_context(|| {
+            format!(
+                "failed to clear previous update directory {}",
+                update_dir.display()
+            )
+        })?;
+    }
+
+    std::fs::create_dir_all(&update_dir)
+        .with_context(|| format!("failed to create update directory {}", update_dir.display()))?;
+
+    Ok(update_dir)
 }
 
 #[derive(Debug, Deserialize)]
@@ -202,6 +221,7 @@ pub async fn check_for_update() -> anyhow::Result<UpdateCheckResult> {
 /// Returns the path to the extracted binary.
 async fn download_and_extract<F>(
     url: &str,
+    version: &str,
     expected_size: u64,
     mut on_progress: F,
 ) -> anyhow::Result<PathBuf>
@@ -232,8 +252,10 @@ where
         on_progress(downloaded, total);
     }
 
-    let temp_dir = std::env::temp_dir().join(format!("{}-update", REPO_NAME));
-    std::fs::create_dir_all(&temp_dir).context("failed to create temp directory")?;
+    // Release archives contain a versioned top-level directory. Reusing one
+    // extraction directory lets older binaries accumulate, and a recursive
+    // search can then select a stale executable instead of the downloaded one.
+    let temp_dir = prepare_update_dir(&std::env::temp_dir(), version)?;
 
     let cursor = std::io::Cursor::new(bytes);
 
@@ -283,7 +305,7 @@ where
     F: FnMut(u64, u64),
 {
     tracing::info!("downloading update from {}", info.download_url);
-    download_and_extract(&info.download_url, info.size, on_progress).await
+    download_and_extract(&info.download_url, &info.version, info.size, on_progress).await
 }
 
 /// Install a prepared update, then close this process while the new version starts.
@@ -484,7 +506,9 @@ fn install_windows(
 
 #[cfg(test)]
 mod tests {
-    use super::{GitHubAsset, is_newer_version, select_release_asset};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use super::{GitHubAsset, is_newer_version, prepare_update_dir, select_release_asset};
 
     fn asset(name: &str) -> GitHubAsset {
         GitHubAsset {
@@ -527,5 +551,27 @@ mod tests {
     #[test]
     fn accepts_common_release_tag_formatting() {
         assert!(is_newer_version(" 1.0.1 ", " V1.0.2 ").unwrap());
+    }
+
+    #[test]
+    fn update_directory_is_reset_for_each_download() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let temp_root = std::env::temp_dir().join(format!(
+            "tiny-shell-updater-test-{}-{unique}",
+            std::process::id()
+        ));
+        let update_dir = prepare_update_dir(&temp_root, "v1.0.61").unwrap();
+        let stale_binary = update_dir.join("old-release").join("tiny-shell.exe");
+        std::fs::create_dir_all(stale_binary.parent().unwrap()).unwrap();
+        std::fs::write(&stale_binary, b"old version").unwrap();
+
+        let prepared_again = prepare_update_dir(&temp_root, "v1.0.61").unwrap();
+
+        assert_eq!(prepared_again, update_dir);
+        assert!(!stale_binary.exists());
+        std::fs::remove_dir_all(temp_root).unwrap();
     }
 }
