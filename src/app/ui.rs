@@ -3251,21 +3251,77 @@ impl TinyShell {
             .into_any_element()
     }
 
-    fn render_sftp_footer(
+    fn sftp_transfer_summary(
         &self,
-        dl_summary: Option<(String, String, f32)>,
-        ul_summary: Option<(String, String, f32)>,
-        has_transfers: bool,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
+        kind: crate::terminal::TransferType,
+    ) -> Option<(String, String, f32)> {
+        let active = self
+            .transfers
+            .iter()
+            .filter(|transfer| {
+                matches!(
+                    transfer.state,
+                    crate::terminal::TransferState::Running
+                        | crate::terminal::TransferState::Paused
+                ) && transfer.info.kind == kind
+            })
+            .collect::<Vec<_>>();
+        if active.is_empty() {
+            return None;
+        }
+
+        if active.len() == 1 {
+            let transfer = active[0];
+            let percent = transfer.total.and_then(|total| {
+                if total > 0 {
+                    Some((transfer.transferred as f64 / total as f64 * 100.0) as f32)
+                } else {
+                    None
+                }
+            });
+            return Some(match percent {
+                Some(percent) => (
+                    transfer.info.name.clone(),
+                    format!("{percent:.0}%"),
+                    percent,
+                ),
+                None => (transfer.info.name.clone(), "-".to_string(), 0.0),
+            });
+        }
+
+        let total_transferred = active
+            .iter()
+            .map(|transfer| transfer.transferred)
+            .sum::<u64>();
+        let total_size = active
+            .iter()
+            .filter_map(|transfer| transfer.total)
+            .sum::<u64>();
+        let label = match kind {
+            crate::terminal::TransferType::Download => {
+                t!("files_downloading", count = active.len()).to_string()
+            }
+            crate::terminal::TransferType::Upload => {
+                t!("files_uploading", count = active.len()).to_string()
+            }
+        };
+        if total_size == 0 {
+            return Some((label, "-".to_string(), 0.0));
+        }
+
+        let percent = (total_transferred as f64 / total_size as f64 * 100.0) as f32;
+        Some((label, format!("{percent:.0}%"), percent))
+    }
+
+    fn render_sftp_footer(&self, cx: &mut Context<Self>) -> AnyElement {
         let visibility = self.config.sftp_footer_visibility();
         let latency = self.active_sftp().and_then(|sftp| sftp.latency_ms);
+        let dl_summary = self.sftp_transfer_summary(crate::terminal::TransferType::Download);
+        let ul_summary = self.sftp_transfer_summary(crate::terminal::TransferType::Upload);
+        let has_transfers = dl_summary.is_some() || ul_summary.is_some();
         let view = cx.entity();
         h_flex()
-            .absolute()
-            .left_0()
-            .right_0()
-            .bottom_0()
+            .w_full()
             .flex_none()
             .h(px(24.))
             .px_3()
@@ -3419,61 +3475,6 @@ impl TinyShell {
         let active_sftp = self.active_sftp();
         let toolbar_visibility = self.config.sftp_toolbar_visibility();
         let view = cx.entity();
-
-        // Compute active download progress for status bar and minimized header
-        let build_summary = |kind: crate::terminal::TransferType| -> Option<(String, String, f32)> {
-            let active: Vec<&crate::terminal::Transfer> = self
-                .transfers
-                .iter()
-                .filter(|t| {
-                    matches!(
-                        t.state,
-                        crate::terminal::TransferState::Running
-                            | crate::terminal::TransferState::Paused
-                    ) && t.info.kind == kind
-                })
-                .collect();
-            if active.is_empty() {
-                return None;
-            }
-            Some(if active.len() == 1 {
-                let t = &active[0];
-                let pct = t.total.and_then(|total| {
-                    if total > 0 {
-                        Some((t.transferred as f64 / total as f64 * 100.0) as f32)
-                    } else {
-                        None
-                    }
-                });
-                match pct {
-                    Some(pct) => (t.info.name.clone(), format!("{:.0}%", pct), pct),
-                    None => (t.info.name.clone(), "-".to_string(), 0.0),
-                }
-            } else {
-                let total_transferred: u64 = active.iter().map(|t| t.transferred).sum();
-                let total_total: u64 = active.iter().filter_map(|t| t.total).sum();
-                let pct = if total_total > 0 {
-                    Some((total_transferred as f64 / total_total as f64 * 100.0) as f32)
-                } else {
-                    None
-                };
-                let label = match kind {
-                    crate::terminal::TransferType::Download => {
-                        t!("files_downloading", count = active.len()).to_string()
-                    }
-                    crate::terminal::TransferType::Upload => {
-                        t!("files_uploading", count = active.len()).to_string()
-                    }
-                };
-                match pct {
-                    Some(pct) => (label, format!("{:.0}%", pct), pct),
-                    None => (label, "-".to_string(), 0.0),
-                }
-            })
-        };
-        let dl_summary = build_summary(crate::terminal::TransferType::Download);
-        let ul_summary = build_summary(crate::terminal::TransferType::Upload);
-        let has_transfers = dl_summary.is_some() || ul_summary.is_some();
 
         let header = h_flex()
             .flex_none()
@@ -3652,7 +3653,7 @@ impl TinyShell {
             });
 
         let Some(sftp) = active_sftp else {
-            let mut outer = v_flex()
+            let outer = v_flex()
                 .gap_0()
                 .border_color(cx.theme().border)
                 .bg(cx.theme().background)
@@ -3660,7 +3661,6 @@ impl TinyShell {
                 .min_h(px(0.))
                 .relative()
                 .overflow_hidden()
-                .pb(px(24.))
                 .child(
                     v_flex()
                         .flex_1()
@@ -3681,12 +3681,10 @@ impl TinyShell {
                                 ),
                         ),
                 );
-            outer = outer.child(self.render_sftp_footer(dl_summary, ul_summary, has_transfers, cx));
             return outer.into_any_element();
         };
 
         if self.sftp_panel_view == SftpPanelView::Commands {
-            let footer = self.render_sftp_footer(dl_summary, ul_summary, has_transfers, cx);
             return v_flex()
                 .gap_0()
                 .border_color(cx.theme().border)
@@ -3695,7 +3693,6 @@ impl TinyShell {
                 .min_h(px(0.))
                 .relative()
                 .overflow_hidden()
-                .pb(px(24.))
                 .child(
                     v_flex()
                         .flex_1()
@@ -3704,7 +3701,6 @@ impl TinyShell {
                         .child(header)
                         .child(self.render_quick_commands(window, cx)),
                 )
-                .child(footer)
                 .into_any_element();
         }
 
@@ -3734,7 +3730,6 @@ impl TinyShell {
             .min_h(px(0.))
             .relative()
             .overflow_hidden()
-            .pb(px(24.))
             .on_drop(
                 cx.listener(|this, paths: &gpui::ExternalPaths, _window, cx| {
                     let paths_to_upload: Vec<String> = paths
@@ -4081,8 +4076,6 @@ impl TinyShell {
                         ),
                 ),
         );
-        outer = outer.child(self.render_sftp_footer(dl_summary, ul_summary, has_transfers, cx));
-
         outer.into_any_element()
     }
 
@@ -5348,16 +5341,29 @@ impl TinyShell {
             .first()
             .map(|entry| entry.address.clone())
             .unwrap_or_else(|| "-".to_string());
+        let load_values = self
+            .system
+            .load_average
+            .split(|character: char| character == ',' || character.is_whitespace())
+            .filter(|value| !value.is_empty())
+            .take(3)
+            .map(ToOwned::to_owned)
+            .collect::<Vec<_>>();
+        let load_value = |index: usize| {
+            load_values
+                .get(index)
+                .cloned()
+                .unwrap_or_else(|| "--".to_string())
+        };
+        let load_one = load_value(0);
+        let load_five = load_value(1);
+        let load_fifteen = load_value(2);
 
-        v_flex()
+        let content = v_flex()
             .gap_2()
-            .w_full()
-            .h_full()
-            .min_w(px(0.))
+            .flex_1()
+            .min_h(px(0.))
             .p_2()
-            .border_r_1()
-            .border_color(cx.theme().sidebar_border)
-            .bg(cx.theme().sidebar)
             .overflow_hidden()
             .child(
                 h_flex()
@@ -5701,6 +5707,65 @@ impl TinyShell {
                             .child(self.render_sidebar_monitoring_panel(cx)),
                     )
                 },
+            );
+
+        v_flex()
+            .w_full()
+            .h_full()
+            .min_w(px(0.))
+            .border_r_1()
+            .border_color(cx.theme().sidebar_border)
+            .bg(cx.theme().sidebar)
+            .overflow_hidden()
+            .child(content)
+            .child(
+                h_flex()
+                    .w_full()
+                    .h(px(24.))
+                    .flex_none()
+                    .items_center()
+                    .gap_1()
+                    .px_3()
+                    .border_t_1()
+                    .border_color(cx.theme().border)
+                    .bg(cx.theme().tab_bar)
+                    .text_size(rems(0.68))
+                    .text_color(cx.theme().muted_foreground)
+                    .child(
+                        Icon::new(IconName::Cpu)
+                            .with_size(Size::Small)
+                            .text_color(cx.theme().primary),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_ellipsis()
+                            .child(t!("sidebar_system_load")),
+                    )
+                    .child(
+                        h_flex()
+                            .items_center()
+                            .gap_1()
+                            .child(div().size(px(6.)).rounded_full().bg(gpui::rgb(0x36B37E)))
+                            .child(load_one),
+                    )
+                    .child(
+                        h_flex()
+                            .items_center()
+                            .gap_1()
+                            .child(div().size(px(6.)).rounded_full().bg(gpui::rgb(0x7C8494)))
+                            .child(load_five),
+                    )
+                    .child(
+                        h_flex()
+                            .items_center()
+                            .gap_1()
+                            .child(div().size(px(6.)).rounded_full().bg(gpui::rgb(0x8B5CF6)))
+                            .child(load_fifteen),
+                    ),
             )
     }
 
@@ -7616,7 +7681,7 @@ impl Render for TinyShell {
                 );
 
             let is_monitor_bottom = self.config.monitoring_position() == "Bottom";
-            let minimized_height = if is_monitor_bottom { 104. } else { 24. };
+            let minimized_height = if is_monitor_bottom { 81. } else { 1. };
             let min_panel_height = if is_monitor_bottom { 260. } else { 180. };
             let default_panel_height = if is_monitor_bottom { 328. } else { 248. };
 
@@ -7630,7 +7695,7 @@ impl Render for TinyShell {
                     .unwrap_or(default_panel_height))
             };
 
-            v_resizable("tiny-shell-body")
+            let body = v_resizable("tiny-shell-body")
                 .lock(self.config.lock_layout())
                 .with_state(&self.body_panels)
                 .child(resizable_panel().child(self.render_terminal_panel(window, cx)))
@@ -7643,7 +7708,14 @@ impl Render for TinyShell {
                             px(min_panel_height)..px(1200.)
                         })
                         .child(monitoring_contents),
-                )
+                );
+
+            v_flex()
+                .size_full()
+                .min_h(px(0.))
+                .overflow_hidden()
+                .child(div().flex_1().min_h(px(0.)).overflow_hidden().child(body))
+                .child(self.render_sftp_footer(cx))
                 .into_any_element()
         } else {
             match self.home_page {
