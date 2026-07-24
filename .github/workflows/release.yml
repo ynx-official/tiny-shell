@@ -93,9 +93,10 @@ jobs:
 
           if [ "${{ runner.os }}" = "macOS" ]; then
             # ── Build a proper .app bundle ────────────────────────────────────
-            # Note: We build the bundle manually here rather than running
-            # scripts/package-macos-app.sh, because that script runs `cargo build`
-            # without respecting the `--target` flag from the matrix.
+            # Note: scripts/package-macos-app.sh now accepts --target and shares
+            # the Info.plist template, but we still inline the bundle assembly
+            # here so matrix builds keep a single shell step and full control
+            # over the staging directory used by ditto/pkgbuild below.
 
             APP="TinyShell.app"
             CONTENTS="$APP/Contents"
@@ -105,39 +106,11 @@ jobs:
             cp "assets/icons/tiny-shell.icns" "$CONTENTS/Resources/tiny-shell.icns"
 
             VERSION_NUM="${VERSION#v}"
-            cat > "$CONTENTS/Info.plist" <<EOF
-          <?xml version="1.0" encoding="UTF-8"?>
-          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
-            "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-          <plist version="1.0">
-          <dict>
-            <key>CFBundleDevelopmentRegion</key>
-            <string>en</string>
-            <key>CFBundleExecutable</key>
-            <string>tiny-shell</string>
-            <key>CFBundleIconFile</key>
-            <string>tiny-shell.icns</string>
-            <key>CFBundleIdentifier</key>
-            <string>dev.tiny-shell.app</string>
-            <key>CFBundleInfoDictionaryVersion</key>
-            <string>6.0</string>
-            <key>CFBundleName</key>
-            <string>TinyShell</string>
-            <key>CFBundleDisplayName</key>
-            <string>TinyShell</string>
-            <key>CFBundlePackageType</key>
-            <string>APPL</string>
-            <key>CFBundleShortVersionString</key>
-            <string>${VERSION_NUM}</string>
-            <key>CFBundleVersion</key>
-            <string>1</string>
-            <key>LSMinimumSystemVersion</key>
-            <string>12.0</string>
-            <key>NSHighResolutionCapable</key>
-            <true/>
-          </dict>
-          </plist>
-          EOF
+            # Info.plist lives as a template in the repo (assets/macos/Info.plist)
+            # with a {{VERSION}} placeholder; substituting here keeps the
+            # workflow and the local packaging script in sync from one source.
+            sed "s/{{VERSION}}/${VERSION_NUM}/g" \
+              "assets/macos/Info.plist" > "$CONTENTS/Info.plist"
 
             printf 'APPL????' > "$CONTENTS/PkgInfo"
 
@@ -198,7 +171,7 @@ jobs:
           "EOF" | Out-File -FilePath $env:GITHUB_ENV -Append
 
       - name: Upload workflow artifact
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.name }}
           path: ${{ env.ASSETS }}
@@ -210,7 +183,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Download all workflow artifacts
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v7
         with:
           path: dist
 

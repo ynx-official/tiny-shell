@@ -1,58 +1,87 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Build and package TinyShell.app locally.
+#
+# Usage:
+#   ./scripts/package-macos-app.sh                     # native target, version from Cargo.toml
+#   ./scripts/package-macos-app.sh --target aarch64-apple-darwin
+#   ./scripts/package-macos-app.sh --version 1.0.9 --target x86_64-apple-darwin
+#
+# The Info.plist is generated from the shared template at
+# assets/macos/Info.plist so this script and release.yml stay in sync.
+
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APP_NAME="tiny-shell"
 DISPLAY_NAME="TinyShell"
 BUNDLE_ID="dev.tiny-shell.app"
+TARGET=""
+VERSION=""
+
+usage() {
+  echo "Usage: $0 [--version <ver>] [--target <triple>]" >&2
+  exit 2
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --version)
+      VERSION="$2"
+      shift 2
+      ;;
+    --target)
+      TARGET="$2"
+      shift 2
+      ;;
+    -h|--help)
+      usage
+      ;;
+    *)
+      echo "unknown argument: $1" >&2
+      usage
+      ;;
+  esac
+done
+
+cd "$ROOT_DIR"
+
+if [[ -z "$VERSION" ]]; then
+  VERSION="$(grep -m1 '^version' Cargo.toml | sed -E 's/^version[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/')"
+  if [[ -z "$VERSION" ]]; then
+    echo "failed to read version from Cargo.toml" >&2
+    exit 1
+  fi
+fi
+# Strip a leading 'v' so CFBundleShortVersionString stays numeric.
+VERSION_NUM="${VERSION#v}"
+
+if [[ -n "$TARGET" ]]; then
+  cargo build --release --target "$TARGET"
+  BINARY="target/$TARGET/release/$APP_NAME"
+else
+  cargo build --release
+  BINARY="target/release/$APP_NAME"
+fi
+
+if [[ ! -f "$BINARY" ]]; then
+  echo "compiled binary not found at $BINARY" >&2
+  exit 1
+fi
+
 APP_DIR="$ROOT_DIR/target/release/${DISPLAY_NAME}.app"
 CONTENTS_DIR="$APP_DIR/Contents"
 MACOS_DIR="$CONTENTS_DIR/MacOS"
 RESOURCES_DIR="$CONTENTS_DIR/Resources"
 SIGN_IDENTITY="${SIGN_IDENTITY:--}"
 
-cd "$ROOT_DIR"
-cargo build --release
-
 rm -rf "$APP_DIR"
 mkdir -p "$MACOS_DIR" "$RESOURCES_DIR"
-cp "$ROOT_DIR/target/release/$APP_NAME" "$MACOS_DIR/$APP_NAME"
+cp "$BINARY" "$MACOS_DIR/$APP_NAME"
 
 cp "$ROOT_DIR/assets/icons/tiny-shell.icns" "$RESOURCES_DIR/tiny-shell.icns"
 
-cat > "$CONTENTS_DIR/Info.plist" <<EOF
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
-  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>CFBundleDevelopmentRegion</key>
-  <string>en</string>
-  <key>CFBundleExecutable</key>
-  <string>$APP_NAME</string>
-  <key>CFBundleIconFile</key>
-  <string>tiny-shell.icns</string>
-  <key>CFBundleIdentifier</key>
-  <string>$BUNDLE_ID</string>
-  <key>CFBundleInfoDictionaryVersion</key>
-  <string>6.0</string>
-  <key>CFBundleName</key>
-  <string>$DISPLAY_NAME</string>
-  <key>CFBundleDisplayName</key>
-  <string>$DISPLAY_NAME</string>
-  <key>CFBundlePackageType</key>
-  <string>APPL</string>
-  <key>CFBundleShortVersionString</key>
-  <string>1.0.1</string>
-  <key>CFBundleVersion</key>
-  <string>1</string>
-  <key>LSMinimumSystemVersion</key>
-  <string>12.0</string>
-  <key>NSHighResolutionCapable</key>
-  <true/>
-</dict>
-</plist>
-EOF
+sed "s/{{VERSION}}/${VERSION_NUM}/g" \
+  "$ROOT_DIR/assets/macos/Info.plist" > "$CONTENTS_DIR/Info.plist"
 
 printf 'APPL????' > "$CONTENTS_DIR/PkgInfo"
 

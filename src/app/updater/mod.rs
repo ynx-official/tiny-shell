@@ -469,43 +469,29 @@ where
     // search can then select a stale executable instead of the downloaded one.
     let temp_dir = prepare_update_dir(&std::env::temp_dir(), version)?;
 
-    if installation_kind == InstallationKind::WindowsInstaller {
-        let installer_path = temp_dir.join(format!("tiny-shell-v{version}-setup.exe"));
+    // Installer editions (Windows setup.exe, macOS .pkg) are not unpacked —
+    // they are handed to the platform installer verbatim. Persist the bytes to
+    // a stable path and fsync so a crash before launch does not leave a
+    // half-written installer on disk.
+    let installer_suffix = match installation_kind {
+        InstallationKind::WindowsInstaller => Some("exe"),
+        InstallationKind::MacInstaller => Some("pkg"),
+        _ => None,
+    };
+    if let Some(suffix) = installer_suffix {
+        let installer_path = temp_dir.join(format!("tiny-shell-v{version}-setup.{suffix}"));
         std::fs::write(&installer_path, &bytes).with_context(|| {
-            format!(
-                "failed to write downloaded installer {}",
-                installer_path.display()
-            )
+            format!("failed to write downloaded installer {}", installer_path.display())
         })?;
         std::fs::OpenOptions::new()
             .write(true)
             .open(&installer_path)
             .with_context(|| {
-                format!(
-                    "failed to open downloaded installer {}",
-                    installer_path.display()
-                )
+                format!("failed to open downloaded installer {}", installer_path.display())
             })?
             .sync_all()
             .context("failed to flush downloaded installer to disk")?;
         return Ok(installer_path);
-    }
-
-    if installation_kind == InstallationKind::MacInstaller {
-        // The .pkg is run through the system installer, not unpacked here.
-        let pkg_path = temp_dir.join(format!("tiny-shell-v{version}-setup.pkg"));
-        std::fs::write(&pkg_path, &bytes).with_context(|| {
-            format!("failed to write downloaded installer {}", pkg_path.display())
-        })?;
-        std::fs::OpenOptions::new()
-            .write(true)
-            .open(&pkg_path)
-            .with_context(|| {
-                format!("failed to open downloaded installer {}", pkg_path.display())
-            })?
-            .sync_all()
-            .context("failed to flush downloaded installer to disk")?;
-        return Ok(pkg_path);
     }
 
     let cursor = std::io::Cursor::new(bytes);
@@ -650,9 +636,10 @@ pub fn install_and_restart(
 
     #[cfg(target_os = "macos")]
     {
-        let _ = expected_version;
         match installation_kind {
-            InstallationKind::MacInstaller => install_macos_pkg(new_path, &current_exe)?,
+            InstallationKind::MacInstaller => {
+                install_macos_pkg(new_path, &current_exe, expected_version)?
+            }
             _ => install_macos(new_path, &current_exe)?,
         }
     }
@@ -804,7 +791,11 @@ fn install_macos(new_path: &std::path::Path, current_exe: &std::path::Path) -> a
 }
 
 #[cfg(target_os = "macos")]
-fn install_macos_pkg(pkg_path: &std::path::Path, _current_exe: &std::path::Path) -> anyhow::Result<()> {
+fn install_macos_pkg(
+    pkg_path: &std::path::Path,
+    _current_exe: &std::path::Path,
+    expected_version: &str,
+) -> anyhow::Result<()> {
     // The .pkg's install-location targets /Applications, so install into the
     // root domain and let the package lay the bundle down itself. installer
     // requires root; elevate via osascript, which shows the standard macOS
@@ -827,7 +818,42 @@ fn install_macos_pkg(pkg_path: &std::path::Path, _current_exe: &std::path::Path)
             String::from_utf8_lossy(&output.stderr).trim()
         );
     }
-    Ok(())
+
+    // Verify the installed bundle matches the expected version before
+    // restarting. A silent installer failure (e.g. the old bundle was in use
+    // and the new one could not replace it) would otherwise leave the app
+    // running the previous version with no error surfaced.
+    let installed_app = std::path::Path::new("/Applications/TinyShell.app");
+    let installed_version = std::process::Command::new("defaults")
+        .args([
+            "read",
+            &installed_app
+                .join("Contents/Info.plist")
+                .to_string_lossy(),
+            "CFBundleShortVersionString",
+        ])
+        .output()
+        .ok()
+        .and_then(|out| {
+            if out.status.success() {
+                Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
+            } else {
+                None
+            }
+        });
+    let expected = parse_version(expected_version)
+        .map(|v| v.to_string())
+        .unwrap_or_else(|_| expected_version.to_string());
+    match installed_version {
+        Some(v) if v == expected => Ok(()),
+        Some(v) => anyhow::bail!(
+            "installed pkg version mismatch: expected {expected}, got {v}"
+        ),
+        None => anyhow::bail!(
+            "failed to read installed version from {} after pkg install",
+            installed_app.display()
+        ),
+    }
 }
 
 #[cfg(target_os = "windows")]
