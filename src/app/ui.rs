@@ -7772,8 +7772,7 @@ impl TinyShell {
         .item(
             PopupMenuItem::new(t!("settings_detach_tab").to_string()).on_click(
                 window.listener_for(&view, move |this, _, window, cx| {
-                    this.activate_group(group_id.clone(), window, cx);
-                    this.detach_tab_to_new_window(cx);
+                    this.defer_group_detach(group_id.clone(), window, cx);
                 }),
             ),
         )
@@ -8024,9 +8023,11 @@ impl Render for TinyShell {
                 cx.listener(|this, _: &crate::NewSsh, window, cx| this.show_ssh_dialog(window, cx)),
             )
             .on_action(cx.listener(|this, _: &crate::NewWindow, _, cx| this.open_new_window(cx)))
-            .on_action(cx.listener(|this, _: &crate::DetachTabToWindow, _, cx| {
-                this.detach_tab_to_new_window(cx)
-            }))
+            .on_action(
+                cx.listener(|this, _: &crate::DetachTabToWindow, window, cx| {
+                    this.detach_tab_to_new_window(window, cx)
+                }),
+            )
             .on_action(
                 cx.listener(|this, _: &crate::OpenSearch, window, cx| {
                     this.toggle_search(window, cx)

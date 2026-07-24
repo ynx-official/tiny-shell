@@ -2077,40 +2077,39 @@ impl TinyShell {
         cx.notify();
     }
 
-    /// Detach the current active tab into a new window.
-    /// For SSH tabs: extracts the session, closes the tab here, opens a new
-    /// window that auto-connects to the same session.
-    /// For Local tabs: opens a new window with a local terminal.
-    pub(crate) fn detach_tab_to_new_window(&mut self, cx: &mut Context<Self>) {
-        let Some(active_id) = self.active_tab.clone() else {
-            return;
-        };
-        let Some(tab) = self.tabs.iter().find(|t| t.id == active_id) else {
-            return;
-        };
-
-        let session = tab.session.clone();
-        let is_local = tab.kind == TabKind::Local;
-
-        // Window creation is the prepare step. Only commit the source close
-        // after the target window has been constructed successfully.
-        if is_local {
-            crate::app::startup::open_new_window(None, Some(self.session_store.clone()), cx);
-        } else if let Some(session) = session {
-            crate::app::startup::open_new_window(
-                Some(session),
-                Some(self.session_store.clone()),
-                cx,
-            );
-        } else {
-            self.status = "cannot detach: SSH session information is missing".into();
+    /// Schedule the active tab group to move into a new native window after
+    /// the current input callback has released its window and entity borrows.
+    pub(crate) fn detach_tab_to_new_window(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let group_id = self
+            .active_group
+            .clone()
+            .filter(|group_id| self.tab_groups.iter().any(|group| group.id == *group_id))
+            .or_else(|| {
+                let active_tab = self.active_tab.as_deref()?;
+                self.tab_groups
+                    .iter()
+                    .find(|group| group.pane_root.tab_ids().contains(&active_tab))
+                    .map(|group| group.id.clone())
+            });
+        let Some(group_id) = group_id else {
+            self.status = "cannot detach: active tab group is missing".into();
             cx.notify();
             return;
-        }
-        self.close_tab(active_id, cx);
+        };
 
-        self.status = "tab detached to new window".into();
-        cx.notify();
+        self.defer_group_detach(group_id, window, cx);
+    }
+
+    pub(crate) fn defer_group_detach(
+        &mut self,
+        group_id: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let source = cx.entity();
+        window.defer(cx, move |_window, cx| {
+            Self::detach_group_to_new_window(source, group_id, cx);
+        });
     }
 
     /// Detach a complete tab group to a new window without recreating its
@@ -2525,10 +2524,7 @@ impl TinyShell {
                 }
             }
             DropIntent::Detach { group_id } => {
-                let source = cx.entity();
-                window.defer(cx, move |_window, cx| {
-                    Self::detach_group_to_new_window(source, group_id, cx);
-                });
+                self.defer_group_detach(group_id, window, cx);
             }
             DropIntent::None | DropIntent::Cancelled => cx.notify(),
         }
@@ -2862,6 +2858,8 @@ impl TinyShell {
         self.tabs.extend(tabs.into_iter().map(|(_, tab)| tab));
         self.sftp_handles.extend(sftp_handles);
         self.tab_groups.push(group);
+        self.home_page_open = false;
+        self.active_system_info_tab = None;
         self.active_group = Some(group_id);
         self.pane_root = group_layout;
         self.focused_pane_path.clear();
