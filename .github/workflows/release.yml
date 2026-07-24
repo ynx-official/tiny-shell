@@ -145,9 +145,31 @@ jobs:
             codesign --force --deep --sign - "$APP"
             codesign --verify --verbose "$APP"
 
-            # Package with ditto (Apple's tool) to preserve signature/metadata
-            ditto -c -k --keepParent "$APP" "${STAGE}.zip"
-            echo "ASSETS=${STAGE}.zip" >> "$GITHUB_ENV"
+            # ── Portable edition: zip of the signed .app bundle ──────
+            # ditto preserves code-signature and bundle metadata.
+            ditto -c -k --keepParent "$APP" "${STAGE}-portable.zip"
+
+            # ── Installer edition: .pkg that installs into /Applications
+            # pkgbuild wraps the .app in an Apple installer package.
+            # No Developer ID Installer cert is available in CI, so the
+            # .pkg is unsigned; Gatekeeper will prompt on first launch
+            # (same as the ad-hoc signed .app) — users allow it via
+            # System Settings > Privacy & Security.
+            PKG_STAGING="$(mktemp -d)"
+            cp -R "$APP" "$PKG_STAGING/"
+            pkgbuild \
+              --root "$PKG_STAGING" \
+              --identifier "dev.tiny-shell.app" \
+              --version "$VERSION_NUM" \
+              --install-location "/Applications" \
+              "${STAGE}-setup.pkg"
+            rm -rf "$PKG_STAGING"
+
+            # upload-artifact accepts multiple newline-separated paths.
+            echo "ASSETS<<EOF" >> "$GITHUB_ENV"
+            echo "${STAGE}-portable.zip" >> "$GITHUB_ENV"
+            echo "${STAGE}-setup.pkg" >> "$GITHUB_ENV"
+            echo "EOF" >> "$GITHUB_ENV"
 
           else
             # Linux
