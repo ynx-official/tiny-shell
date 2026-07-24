@@ -18,6 +18,32 @@ const REPO_NAME: &str = "tiny-shell";
 const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 const HTTP_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 const HTTP_READ_TIMEOUT: Duration = Duration::from_secs(60);
+/// Hard cap on how many bytes a single update download may buffer in memory
+/// before we reject it. The release artifacts (portable zips, .pkg, setup.exe)
+/// are all well under 200 MB today; 1 GB leaves ample headroom for future
+/// growth while preventing a malicious or buggy server from triggering OOM by
+/// streaming an unbounded body.
+const MAX_UPDATE_DOWNLOAD_BYTES: u64 = 1024 * 1024 * 1024;
+
+/// Monotonic counter combined with the process id and a high-resolution
+/// timestamp to derive an unguessable suffix for per-update temp files. The
+/// Windows update flow writes a PowerShell helper and a log under the system
+/// temp dir; naming them only by pid lets a local attacker pre-create a
+/// symlink or file at that predictable path to hijack the write. Mixing in a
+/// nanosecond timestamp and an in-process counter makes the path unguessable
+/// in practice without pulling in a new dependency.
+#[cfg(target_os = "windows")]
+fn unique_temp_suffix() -> String {
+    use std::sync::atomic::AtomicU64;
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let pid = std::process::id();
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0);
+    format!("{pid}-{nanos:016x}-{n:08x}")
+}
 #[cfg(target_os = "windows")]
 const INNO_UNINSTALL_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\{8E091D1C-6D7C-4C29-9CA2-8B3D84A42CF8}_is1";
 // Matches the --identifier passed to pkgbuild in release.yml. pkgutil records
@@ -367,12 +393,20 @@ pub async fn check_for_update() -> anyhow::Result<UpdateCheckResult> {
         REPO_OWNER, REPO_NAME
     );
 
-    let release: GitHubRelease = client
+    let response = client
         .get(&url)
         .header("Accept", "application/vnd.github.v3+json")
         .send()
         .await
-        .context("failed to fetch latest release")?
+        .context("failed to fetch latest release")?;
+    let status = response.status();
+    if status == reqwest::StatusCode::NOT_FOUND {
+        anyhow::bail!("no release has been published yet");
+    }
+    if !status.is_success() {
+        anyhow::bail!("github releases/latest returned {}", status);
+    }
+    let release: GitHubRelease = response
         .json()
         .await
         .context("failed to parse release JSON")?;
@@ -437,8 +471,11 @@ where
     .context("update download returned an error status")?;
 
     let total = response.content_length().unwrap_or(expected_size);
+    // Cap the initial allocation at the hard limit; a server claiming a huge
+    // content-length must not trick us into reserving gigabytes up front.
+    let reserve = total.min(MAX_UPDATE_DOWNLOAD_BYTES) as usize;
     let mut downloaded = 0_u64;
-    let mut bytes = Vec::with_capacity(total.min(usize::MAX as u64) as usize);
+    let mut bytes = Vec::with_capacity(reserve);
     let mut stream = response.bytes_stream();
     loop {
         let chunk = tokio::select! {
@@ -450,6 +487,11 @@ where
         };
         let chunk = chunk.context("failed to read update bytes")?;
         downloaded += chunk.len() as u64;
+        if downloaded > MAX_UPDATE_DOWNLOAD_BYTES {
+            anyhow::bail!(
+                "update download exceeded the {MAX_UPDATE_DOWNLOAD_BYTES} byte safety limit (got {downloaded} bytes); refusing to buffer further"
+            );
+        }
         bytes.extend_from_slice(&chunk);
         on_progress(downloaded, total);
     }
@@ -735,6 +777,30 @@ fn install_linux(
     Ok(())
 }
 
+/// Recursively copy a directory tree. Unlike `std::fs::rename`, this works
+/// across volumes and leaves the source intact, so a failure mid-copy does
+/// not corrupt the running app bundle. Used when staging a new .app before
+/// the atomic swap into place.
+#[cfg(target_os = "macos")]
+fn copy_dir_all(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let path = entry.path();
+        let ft = entry.file_type()?;
+        let target = dst.join(entry.file_name());
+        if ft.is_dir() {
+            copy_dir_all(&path, &target)?;
+        } else if ft.is_symlink() {
+            let link_target = std::fs::read_link(&path)?;
+            std::os::unix::fs::symlink(&link_target, &target)?;
+        } else {
+            std::fs::copy(&path, &target)?;
+        }
+    }
+    Ok(())
+}
+
 #[cfg(target_os = "macos")]
 fn install_macos(new_path: &std::path::Path, current_exe: &std::path::Path) -> anyhow::Result<()> {
     // Determine whether we are running from an .app bundle.
@@ -758,7 +824,26 @@ fn install_macos(new_path: &std::path::Path, current_exe: &std::path::Path) -> a
             .parent()
             .context("app bundle has no parent directory")?;
 
-        // Move the old bundle aside, then move the new one in.
+        // Stage the new bundle next to the live one as `<name>.new`. Copying
+        // (rather than renaming the live bundle aside first) keeps the running
+        // app's bundle intact while the new tree is written, so a copy failure
+        // leaves the user on the previous version instead of with no app at
+        // all. Only after a successful copy do we swap the bundles.
+        let staging = parent.join(format!(
+            "{}.new",
+            app_bundle.file_name().unwrap_or_default().to_string_lossy()
+        ));
+        if staging.exists() {
+            std::fs::remove_dir_all(&staging)
+                .with_context(|| format!("failed to clear stale staging dir {}", staging.display()))?;
+        }
+        copy_dir_all(&new_app, &staging).with_context(|| {
+            format!("failed to stage new app bundle at {}", staging.display())
+        })?;
+
+        // Swap: move the live bundle aside, move the staged one into place,
+        // then delete the old bundle. If the move-into-place fails we restore
+        // the live bundle from the sidecar.
         let backup = parent.join(format!(
             "{}.old",
             app_bundle.file_name().unwrap_or_default().to_string_lossy()
@@ -768,17 +853,31 @@ fn install_macos(new_path: &std::path::Path, current_exe: &std::path::Path) -> a
         }
         std::fs::rename(app_bundle, &backup).context("failed to backup old app bundle")?;
 
-        if let Err(e) = std::fs::rename(&new_app, app_bundle) {
-            // Rollback: restore the backup.
+        if let Err(e) = std::fs::rename(&staging, app_bundle) {
+            // Rollback: restore the live bundle from the sidecar.
             std::fs::rename(&backup, app_bundle).ok();
+            std::fs::remove_dir_all(&staging).ok();
             return Err(e).context("failed to install new app bundle");
         }
 
-        // Re-sign the new bundle (ad-hoc).
-        let _ = std::process::Command::new("codesign")
+        // Re-sign the new bundle (ad-hoc). Log on failure instead of staying
+        // silent: a failed re-sign leaves Gatekeeper blocking the app on next
+        // launch, which is worth surfacing in the log.
+        let codesign = std::process::Command::new("codesign")
             .args(["--force", "--deep", "--sign", "-"])
             .arg(app_bundle)
             .output();
+        if let Err(e) = &codesign {
+            tracing::warn!("ad-hoc re-sign of {} failed: {e}", app_bundle.display());
+        } else if let Ok(out) = &codesign {
+            if !out.status.success() {
+                tracing::warn!(
+                    "ad-hoc re-sign of {} failed: {}",
+                    app_bundle.display(),
+                    String::from_utf8_lossy(&out.stderr).trim()
+                );
+            }
+        }
 
         // Remove the old backup in the background.
         let _ = std::fs::remove_dir_all(backup);
@@ -822,7 +921,10 @@ fn install_macos_pkg(
     // Verify the installed bundle matches the expected version before
     // restarting. A silent installer failure (e.g. the old bundle was in use
     // and the new one could not replace it) would otherwise leave the app
-    // running the previous version with no error surfaced.
+    // running the previous version with no error surfaced. Compare as plain
+    // strings: CFBundleShortVersionString is written verbatim from the plist
+    // template, so it must equal the release version (with any leading 'v'
+    // stripped) character-for-character.
     let installed_app = std::path::Path::new("/Applications/TinyShell.app");
     let installed_version = std::process::Command::new("defaults")
         .args([
@@ -841,10 +943,8 @@ fn install_macos_pkg(
                 None
             }
         });
-    let expected = parse_version(expected_version)
-        .map(|v| v.to_string())
-        .unwrap_or_else(|_| expected_version.to_string());
-    match installed_version {
+    let expected = expected_version.trim_start_matches('v');
+    match installed_version.as_deref() {
         Some(v) if v == expected => Ok(()),
         Some(v) => anyhow::bail!(
             "installed pkg version mismatch: expected {expected}, got {v}"
@@ -871,9 +971,10 @@ fn install_windows_setup(
     }
 
     let process_id = std::process::id();
+    let suffix = unique_temp_suffix();
     let script_path =
-        std::env::temp_dir().join(format!("tiny-shell-setup-update-{process_id}.ps1"));
-    let log_path = std::env::temp_dir().join("tiny-shell-update.log");
+        std::env::temp_dir().join(format!("tiny-shell-setup-update-{suffix}.ps1"));
+    let log_path = std::env::temp_dir().join(format!("tiny-shell-update-{suffix}.log"));
     let plan = WindowsSetupUpdateScriptPlan {
         process_id,
         current_exe,
@@ -923,8 +1024,9 @@ fn install_windows_portable(
         );
     }
     let backup_binary = install_dir.join(format!(".tiny-shell-backup-{process_id}.exe"));
-    let script_path = std::env::temp_dir().join(format!("tiny-shell-update-{process_id}.ps1"));
-    let log_path = std::env::temp_dir().join("tiny-shell-update.log");
+    let suffix = unique_temp_suffix();
+    let script_path = std::env::temp_dir().join(format!("tiny-shell-update-{suffix}.ps1"));
+    let log_path = std::env::temp_dir().join(format!("tiny-shell-update-{suffix}.log"));
 
     let script_plan = WindowsUpdateScriptPlan {
         process_id,
