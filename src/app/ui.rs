@@ -1,10 +1,10 @@
 use crate::app::resizable::{h_resizable, resizable_panel, v_resizable};
 use gpui::{
-    Anchor, Animation, AnimationExt as _, AnyElement, Context, ElementId, Focusable as _,
-    FontWeight, Hsla, InteractiveElement as _, IntoElement, MouseButton, MouseDownEvent,
-    ParentElement as _, PathBuilder, Pixels, Render, StatefulInteractiveElement as _, Styled as _,
-    Window, canvas, div, ease_out_quint, hsla, point, prelude::FluentBuilder as _, px, relative,
-    rems, uniform_list,
+    Anchor, Animation, AnimationExt as _, AnyElement, AppContext as _, Context, ElementId,
+    Focusable as _, FontWeight, Hsla, InteractiveElement as _, IntoElement, MouseButton,
+    MouseDownEvent, ParentElement as _, PathBuilder, Pixels, Point, Render,
+    StatefulInteractiveElement as _, Styled as _, Window, canvas, div, ease_out_quint, hsla, point,
+    prelude::FluentBuilder as _, px, relative, rems, uniform_list,
 };
 use gpui_component::{
     ActiveTheme, Disableable as _, ElementExt, Icon, IconName, InteractiveElementExt as _, Root,
@@ -29,7 +29,7 @@ use std::{
 use crate::{
     PaneLayout, TinyShell,
     app::constants::{COLLAPSED_SIDEBAR_WIDTH, SIDEBAR_WIDTH, TERMINAL_KEY_CONTEXT},
-    app::{HomePage, ProcessView, SftpPanelView},
+    app::{HomePage, IncomingTabDrag, ProcessView, SftpPanelView},
     sftp::format_mtime,
     sftp::ops::is_editable_text_file,
     system::format_bytes,
@@ -53,6 +53,31 @@ enum SftpFooterItem {
     Latency,
     Transfers,
     PanelToggle,
+}
+
+struct TabDragPreview {
+    label: String,
+    offset: Point<Pixels>,
+}
+
+impl Render for TabDragPreview {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div().pl(self.offset.x).pt(self.offset.y).child(
+            h_flex()
+                .max_w(px(320.))
+                .gap_2()
+                .px_3()
+                .py_2()
+                .rounded(px(8.))
+                .border_1()
+                .border_color(hsla(199. / 360., 0.82, 0.68, 1.0))
+                .bg(hsla(217. / 360., 0.74, 0.30, 0.96))
+                .text_color(hsla(0., 0., 1., 1.))
+                .shadow_lg()
+                .child(Icon::new(IconName::SquareTerminal).with_size(Size::Small))
+                .child(div().min_w_0().truncate().child(self.label.clone())),
+        )
+    }
 }
 
 fn format_uptime(seconds: u64) -> String {
@@ -6225,7 +6250,11 @@ impl TinyShell {
             })
     }
 
-    fn render_tab_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_tab_bar(
+        &self,
+        source_window: gpui::AnyWindowHandle,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let view = cx.entity();
         let active_tab_index = self
             .active_tab
@@ -6445,6 +6474,13 @@ impl TinyShell {
                                         })
                                         .unwrap_or(0);
                                     let drag_gid = gid.clone();
+                                    let drag_payload = IncomingTabDrag {
+                                        drag_id: crate::app::next_tab_drag_id(),
+                                        source_window,
+                                        source: view.clone(),
+                                        group_id: gid.clone(),
+                                    };
+                                    let drag_preview_label = label.clone();
                                     let context_gid = gid.clone();
                                     let bounds_gid = gid.clone();
                                     let bounds_view = view.clone();
@@ -6500,6 +6536,7 @@ impl TinyShell {
                                         })
                                         .child(
                                             h_flex()
+                                                .id(("tab-native-drag", ix))
                                                 .relative()
                                                 .h_full()
                                                 .items_center()
@@ -6517,6 +6554,16 @@ impl TinyShell {
                                                     cx.listener(move |this, event: &MouseDownEvent, _, _| {
                                                         this.tab_drag.begin(drag_gid.clone(), event.position);
                                                     }),
+                                                )
+                                                .on_drag(
+                                                    drag_payload,
+                                                    move |_, offset, _, cx| {
+                                                        crate::app::clear_tab_drag_hover();
+                                                        cx.new(|_| TabDragPreview {
+                                                            label: drag_preview_label.clone(),
+                                                            offset,
+                                                        })
+                                                    },
                                                 )
                                                 .when(tab_selected, |this| {
                                                     this.font_weight(FontWeight::BOLD)
@@ -6811,11 +6858,8 @@ impl TinyShell {
             .when(self.search_active, |el| {
                 el.child(self.render_search_bar(window, cx))
             })
-            // Every non-reorder drag has visible feedback. A neutral destination
-            // explicitly states that releasing will cancel instead of moving data.
             .when(
-                (self.tab_drag.is_dragging() && self.tab_drag.reorder_index().is_none())
-                    || self.incoming_tab_drag.is_some(),
+                self.tab_drag.is_dragging() || self.incoming_tab_drag.is_some(),
                 |el| el.child(self.render_tab_drag_overlay(cx)),
             )
     }
@@ -6827,6 +6871,8 @@ impl TinyShell {
         let card_text = hsla(0., 0., 1.0, 1.0);
         let neutral_bg = hsla(32. / 360., 0.82, 0.34, 0.98);
         let neutral_border = hsla(42. / 360., 0.95, 0.68, 1.0);
+        let reorder_bg = hsla(150. / 360., 0.72, 0.30, 0.98);
+        let reorder_border = hsla(145. / 360., 0.72, 0.66, 1.0);
 
         div()
             .absolute()
@@ -6836,7 +6882,7 @@ impl TinyShell {
             .bottom_0()
             .bg(scrim)
             .when(
-                self.tab_drag.outside() && self.tab_drag.merge_target().is_none(),
+                self.tab_drag.reorder_index().is_some() && self.incoming_tab_drag.is_none(),
                 |this| {
                     this.child(
                         div()
@@ -6850,10 +6896,61 @@ impl TinyShell {
                             .justify_center()
                             .child(
                                 h_flex()
-                                    .gap_2()
+                                    .gap_3()
+                                    .max_w(px(420.))
                                     .px(px(20.))
                                     .py(px(12.))
-                                    .rounded_lg()
+                                    .rounded(px(8.))
+                                    .border_2()
+                                    .border_color(reorder_border)
+                                    .bg(reorder_bg)
+                                    .shadow_lg()
+                                    .text_color(card_text)
+                                    .child(
+                                        Icon::new(IconName::ArrowRight)
+                                            .with_size(Size::Medium)
+                                            .text_color(card_text),
+                                    )
+                                    .child(
+                                        v_flex()
+                                            .gap_1()
+                                            .child(
+                                                div()
+                                                    .text_base()
+                                                    .font_weight(FontWeight::BOLD)
+                                                    .child(t!("drag_reorder_title").to_string()),
+                                            )
+                                            .child(
+                                                div()
+                                                    .text_sm()
+                                                    .text_color(card_text.opacity(0.82))
+                                                    .child(t!("drag_reorder_hint").to_string()),
+                                            ),
+                                    ),
+                            ),
+                    )
+                },
+            )
+            .when(
+                self.tab_drag.outside() && self.incoming_tab_drag.is_none(),
+                |this| {
+                    this.child(
+                        div()
+                            .absolute()
+                            .top_0()
+                            .left_0()
+                            .right_0()
+                            .bottom_0()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(
+                                h_flex()
+                                    .gap_3()
+                                    .max_w(px(420.))
+                                    .px(px(20.))
+                                    .py(px(12.))
+                                    .rounded(px(8.))
                                     .border_2()
                                     .border_color(card_border)
                                     .bg(card_bg)
@@ -6861,14 +6958,24 @@ impl TinyShell {
                                     .text_color(card_text)
                                     .child(
                                         Icon::new(IconName::ExternalLink)
-                                            .with_size(Size::Small)
+                                            .with_size(Size::Medium)
                                             .text_color(card_text),
                                     )
                                     .child(
-                                        div()
-                                            .text_base()
-                                            .font_weight(FontWeight::BOLD)
-                                            .child(t!("drag_detach_hint").to_string()),
+                                        v_flex()
+                                            .gap_1()
+                                            .child(
+                                                div()
+                                                    .text_base()
+                                                    .font_weight(FontWeight::BOLD)
+                                                    .child(t!("drag_detach_title").to_string()),
+                                            )
+                                            .child(
+                                                div()
+                                                    .text_sm()
+                                                    .text_color(card_text.opacity(0.82))
+                                                    .child(t!("drag_detach_hint").to_string()),
+                                            ),
                                     ),
                             ),
                     )
@@ -6877,7 +6984,6 @@ impl TinyShell {
             .when(
                 self.tab_drag.is_dragging()
                     && !self.tab_drag.outside()
-                    && self.tab_drag.merge_target().is_none()
                     && self.tab_drag.reorder_index().is_none()
                     && self.incoming_tab_drag.is_none(),
                 |this| {
@@ -6893,10 +6999,11 @@ impl TinyShell {
                             .justify_center()
                             .child(
                                 h_flex()
-                                    .gap_2()
+                                    .gap_3()
+                                    .max_w(px(420.))
                                     .px(px(20.))
                                     .py(px(12.))
-                                    .rounded_lg()
+                                    .rounded(px(8.))
                                     .border_2()
                                     .border_color(neutral_border)
                                     .bg(neutral_bg)
@@ -6904,58 +7011,76 @@ impl TinyShell {
                                     .text_color(card_text)
                                     .child(
                                         Icon::new(IconName::Close)
-                                            .with_size(Size::Small)
+                                            .with_size(Size::Medium)
                                             .text_color(card_text),
                                     )
                                     .child(
-                                        div()
-                                            .text_base()
-                                            .font_weight(FontWeight::BOLD)
-                                            .child(t!("drag_cancel_hint").to_string()),
+                                        v_flex()
+                                            .gap_1()
+                                            .child(
+                                                div()
+                                                    .text_base()
+                                                    .font_weight(FontWeight::BOLD)
+                                                    .child(t!("drag_cancel_title").to_string()),
+                                            )
+                                            .child(
+                                                div()
+                                                    .text_sm()
+                                                    .text_color(card_text.opacity(0.82))
+                                                    .child(t!("drag_cancel_hint").to_string()),
+                                            ),
                                     ),
                             ),
                     )
                 },
             )
-            .when(
-                self.incoming_tab_drag.is_some() || self.tab_drag.merge_target().is_some(),
-                |this| {
-                    this.child(
-                        div()
-                            .absolute()
-                            .top_0()
-                            .left_0()
-                            .right_0()
-                            .bottom_0()
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .child(
-                                h_flex()
-                                    .gap_2()
-                                    .px(px(20.))
-                                    .py(px(12.))
-                                    .rounded_lg()
-                                    .border_2()
-                                    .border_color(card_border)
-                                    .bg(card_bg)
-                                    .shadow_lg()
-                                    .text_color(card_text)
-                                    .child(
-                                        Icon::new(IconName::ArrowDown)
-                                            .with_size(Size::Small)
-                                            .text_color(card_text),
-                                    )
-                                    .child(
-                                        div()
-                                            .text_base()
-                                            .font_weight(FontWeight::BOLD)
-                                            .child(t!("drag_merge_hint").to_string()),
-                                    ),
-                            ),
-                    )
-                },
-            )
+            .when(self.incoming_tab_drag.is_some(), |this| {
+                this.child(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .right_0()
+                        .bottom_0()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(
+                            h_flex()
+                                .gap_3()
+                                .max_w(px(420.))
+                                .px(px(20.))
+                                .py(px(12.))
+                                .rounded(px(8.))
+                                .border_2()
+                                .border_color(card_border)
+                                .bg(card_bg)
+                                .shadow_lg()
+                                .text_color(card_text)
+                                .child(
+                                    Icon::new(IconName::ArrowDown)
+                                        .with_size(Size::Medium)
+                                        .text_color(card_text),
+                                )
+                                .child(
+                                    v_flex()
+                                        .gap_1()
+                                        .child(
+                                            div()
+                                                .text_base()
+                                                .font_weight(FontWeight::BOLD)
+                                                .child(t!("drag_merge_title").to_string()),
+                                        )
+                                        .child(
+                                            div()
+                                                .text_sm()
+                                                .text_color(card_text.opacity(0.82))
+                                                .child(t!("drag_merge_hint").to_string()),
+                                        ),
+                                ),
+                        ),
+                )
+            })
     }
 
     fn render_pane_tree(
@@ -7942,7 +8067,7 @@ impl Render for TinyShell {
                                             .bg(cx.theme().tab_bar)
                                             .border_b_1()
                                             .border_color(cx.theme().border)
-                                            .child(self.render_tab_bar(cx)),
+                                            .child(self.render_tab_bar(window.window_handle(), cx)),
                                     )
                                 },
                             )
@@ -7984,7 +8109,7 @@ impl Render for TinyShell {
                                     .bg(cx.theme().tab_bar)
                                     .border_b_1()
                                     .border_color(cx.theme().border)
-                                    .child(self.render_tab_bar(cx)),
+                                    .child(self.render_tab_bar(window.window_handle(), cx)),
                             )
                         },
                     )
@@ -7999,6 +8124,9 @@ impl Render for TinyShell {
                 .into_any_element()
         };
 
+        let drag_move_view = cx.entity();
+        let drop_view = drag_move_view.clone();
+
         v_flex()
             .id("tiny-shell-root")
             .size_full()
@@ -8006,10 +8134,72 @@ impl Render for TinyShell {
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
             .font_family(self.ui_font_family.clone())
+            .on_drag_move::<IncomingTabDrag>(move |event, window, cx| {
+                let drag = event.drag(cx).clone();
+                let target_window = window.window_handle();
+                if drag.source_window == target_window {
+                    return;
+                }
+
+                let changed = drag_move_view.update(cx, |target, cx| {
+                    if target
+                        .incoming_tab_drag
+                        .as_ref()
+                        .is_some_and(|current| current.drag_id == drag.drag_id)
+                    {
+                        return false;
+                    }
+                    target.incoming_tab_drag = Some(drag.clone());
+                    cx.notify();
+                    true
+                });
+                if changed {
+                    let generation = crate::app::set_tab_drag_hover(drag.drag_id, target_window);
+                    window.defer(cx, move |_window, cx| {
+                        if crate::app::tab_drag_hover_is_current(
+                            drag.drag_id,
+                            target_window,
+                            generation,
+                        ) {
+                            crate::app::clear_incoming_tab_drag_except(
+                                drag.drag_id,
+                                Some(target_window),
+                                cx,
+                            );
+                        }
+                    });
+                }
+            })
+            .on_drop::<IncomingTabDrag>(move |drag, window, cx| {
+                let drag = drag.clone();
+                let target_window = window.window_handle();
+                let target = drop_view.clone();
+                crate::app::clear_tab_drag_hover();
+                if drag.source_window == target_window {
+                    let drag_id = drag.drag_id;
+                    let position = window.mouse_position();
+                    target.update(cx, |target, cx| {
+                        target.finish_native_local_tab_drop(drag.group_id, position, window, cx);
+                    });
+                    window.defer(cx, move |_window, cx| {
+                        crate::app::clear_incoming_tab_drag_except(drag_id, None, cx);
+                    });
+                    return;
+                }
+
+                window.defer(cx, move |_window, cx| {
+                    crate::app::clear_incoming_tab_drag_except(drag.drag_id, None, cx);
+                    TinyShell::finish_native_tab_drop(drag, target_window, target, cx);
+                });
+            })
             // Keep tab-drag tracking on the root element. Registering a window
             // listener from Render is invalid during GPUI's layout phase.
             .on_mouse_move(cx.listener(Self::on_tab_drag_mouse_move))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_tab_drag_mouse_up))
+            .on_mouse_up_out(
+                MouseButton::Left,
+                cx.listener(Self::on_tab_drag_mouse_up_out),
+            )
             .on_action(cx.listener(|this, _: &crate::OpenSettings, window, cx| {
                 this.show_settings_window(window, cx)
             }))
@@ -8160,7 +8350,7 @@ impl Render for TinyShell {
                                             }),
                                         )
                                     })
-                                    .child(self.render_tab_bar(cx)),
+                                    .child(self.render_tab_bar(window.window_handle(), cx)),
                             ),
                     )
                 },

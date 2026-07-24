@@ -21,8 +21,8 @@ use crate::{
         IncomingTabDrag, SystemInfoTab,
         constants::{DEFAULT_COLS, DEFAULT_ROWS},
         tab_drag::{
-            DragTarget, DropIntent, TargetUpdate, cursor_inside_viewport, reorder_index_at_x,
-            should_close_empty_source, should_offer_detach,
+            DropIntent, cursor_inside_viewport, reorder_index_at_x, should_close_empty_source,
+            should_offer_detach,
         },
     },
     backend::{local, ssh},
@@ -2116,6 +2116,7 @@ impl TinyShell {
     /// terminal or SFTP backends. Window creation and route handoff form the
     /// prepare step; any failure restores the original group in place.
     fn detach_group_to_new_window(source: Entity<Self>, group_id: String, cx: &mut App) {
+        tracing::info!(group_id, "[tab-drag] preparing detached window");
         let prepared = source.update(cx, |this, _| {
             this.take_group_transfer(&group_id)
                 .map(|transfer| (transfer, this.session_owner_id, this.session_store.clone()))
@@ -2142,9 +2143,11 @@ impl TinyShell {
         source.update(cx, |this, cx| {
             match result {
                 Ok(()) => {
+                    tracing::info!(group_id, "[tab-drag] detached window opened");
                     this.status = "tab group detached to new window".into();
                 }
                 Err((message, transfer)) => {
+                    tracing::warn!(group_id, %message, "[tab-drag] detached window failed");
                     this.restore_group_transfer(transfer, cx);
                     this.status = format!("failed to detach tab group: {message}").into();
                 }
@@ -2248,12 +2251,12 @@ impl TinyShell {
     }
 
     /// Called on every root-level mouse move. Once the drag threshold is
-    /// exceeded, the tab bar reorders within this window, any other source
-    /// position detaches, and a hit on another window takes merge priority.
+    /// exceeded, the source tab bar reorders, another main window merges, and
+    /// every remaining drop position detaches when the source has other tabs.
     pub(crate) fn on_tab_drag_mouse_move(
         &mut self,
         event: &MouseMoveEvent,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         self.on_connection_group_drag_mouse_move(event, cx);
@@ -2264,22 +2267,7 @@ impl TinyShell {
             return;
         }
 
-        let source_handle = window.window_handle();
-        let source_entity = cx.entity();
-        let screen_pos = Self::screen_position(window, event.position);
-        let allow_merge_target = !cursor_inside_viewport(event.position, window.viewport_size());
-        self.update_tab_drag_merge_target(
-            source_handle,
-            source_entity,
-            screen_pos,
-            allow_merge_target,
-            cx,
-        );
-
-        let has_merge_target = self.tab_drag.merge_target().is_some();
-        let reorder_index = if has_merge_target {
-            None
-        } else if self
+        let reorder_index = if self
             .tab_bar_bounds
             .as_ref()
             .is_some_and(|bounds| bounds.contains(&event.position))
@@ -2305,9 +2293,8 @@ impl TinyShell {
         let should_detach = should_offer_detach(
             self.tab_groups.len(),
             event.position,
-            window.viewport_size(),
             self.tab_bar_bounds,
-            has_merge_target,
+            false,
         );
 
         let reorder_changed = self.tab_drag.set_reorder_index(reorder_index);
@@ -2317,54 +2304,11 @@ impl TinyShell {
         }
     }
 
-    fn update_tab_drag_merge_target(
-        &mut self,
-        source_handle: AnyWindowHandle,
-        source_entity: Entity<TinyShell>,
-        screen_pos: Point<Pixels>,
-        allow_target: bool,
-        cx: &mut Context<Self>,
-    ) {
-        let new_target = allow_target
-            .then(|| crate::app::find_window_at_screen_pos(&source_handle, screen_pos))
-            .flatten()
-            .map(|(window_id, entity, _)| DragTarget {
-                window_id,
-                payload: (window_id, entity),
-            });
-
-        if let TargetUpdate::Changed { previous } = self.tab_drag.set_merge_target(new_target) {
-            if let Some((_, previous)) = previous {
-                previous.update(cx, |target, cx| {
-                    target.incoming_tab_drag = None;
-                    cx.notify();
-                });
-            }
-            if let Some(target) = self.tab_drag.merge_target() {
-                let (_, entity) = target.payload.clone();
-                let incoming = IncomingTabDrag {
-                    source_window: source_handle,
-                    source: source_entity,
-                    group_id: self
-                        .tab_drag
-                        .dragging_group()
-                        .expect("dragging state must contain a group")
-                        .to_string(),
-                };
-                entity.update(cx, |target, cx| {
-                    target.incoming_tab_drag = Some(incoming);
-                    cx.notify();
-                });
-            }
-            cx.notify();
-        }
-    }
-
     fn prepare_tab_drag_release(
         &mut self,
         event: &MouseUpEvent,
         window: &mut Window,
-        cx: &mut Context<Self>,
+        _cx: &mut Context<Self>,
     ) {
         if !self.tab_drag.is_dragging() {
             return;
@@ -2372,71 +2316,39 @@ impl TinyShell {
 
         let source_handle = window.window_handle();
         let screen_pos = Self::screen_position(window, event.position);
-        let actual_target_window = if cursor_inside_viewport(event.position, window.viewport_size())
+        let over_other_window = !cursor_inside_viewport(event.position, window.viewport_size())
+            && crate::app::find_window_at_screen_pos(&source_handle, screen_pos).is_some();
+        let release_index = if !over_other_window
+            && self
+                .tab_bar_bounds
+                .as_ref()
+                .is_some_and(|bounds| bounds.contains(&event.position))
         {
-            None
-        } else {
-            crate::app::find_window_at_screen_pos(&source_handle, screen_pos)
-                .map(|(window_handle, _, _)| window_handle)
-        };
-        let presented_target_is_valid = self
-            .tab_drag
-            .merge_target()
-            .is_some_and(|target| Some(target.window_id) == actual_target_window);
-
-        if self.tab_drag.merge_target().is_some() && !presented_target_is_valid {
-            if let TargetUpdate::Changed {
-                previous: Some((_, previous)),
-            } = self.tab_drag.set_merge_target(None)
-            {
-                previous.update(cx, |target, cx| {
-                    target.incoming_tab_drag = None;
-                    cx.notify();
-                });
-            }
-        }
-
-        let has_merge_target = self.tab_drag.merge_target().is_some();
-        if let Some(presented_index) = self.tab_drag.reorder_index() {
-            let release_index = if !has_merge_target
-                && self
-                    .tab_bar_bounds
-                    .as_ref()
-                    .is_some_and(|bounds| bounds.contains(&event.position))
-            {
-                let ordered_bounds = self
-                    .tab_groups
-                    .iter()
-                    .filter_map(|group| {
-                        self.tab_group_bounds
-                            .get(&group.id)
-                            .copied()
-                            .map(|bounds| (group.id.clone(), bounds))
-                    })
-                    .collect::<Vec<_>>();
-                self.tab_drag.dragging_group().and_then(|group_id| {
-                    reorder_index_at_x(group_id, event.position.x, &ordered_bounds)
+            let ordered_bounds = self
+                .tab_groups
+                .iter()
+                .filter_map(|group| {
+                    self.tab_group_bounds
+                        .get(&group.id)
+                        .copied()
+                        .map(|bounds| (group.id.clone(), bounds))
                 })
-            } else {
-                None
-            };
-            if release_index != Some(presented_index) {
-                self.tab_drag.set_reorder_index(None);
-            }
-        }
+                .collect::<Vec<_>>();
+            self.tab_drag.dragging_group().and_then(|group_id| {
+                reorder_index_at_x(group_id, event.position.x, &ordered_bounds)
+            })
+        } else {
+            None
+        };
+        self.tab_drag.set_reorder_index(release_index);
 
-        if self.tab_drag.outside() {
-            let detach_is_still_valid = should_offer_detach(
-                self.tab_groups.len(),
-                event.position,
-                window.viewport_size(),
-                self.tab_bar_bounds,
-                has_merge_target,
-            );
-            if !detach_is_still_valid {
-                self.tab_drag.set_outside(false);
-            }
-        }
+        let should_detach = should_offer_detach(
+            self.tab_groups.len(),
+            event.position,
+            self.tab_bar_bounds,
+            over_other_window,
+        );
+        self.tab_drag.set_outside(should_detach);
     }
 
     /// Convert a window-local cursor position to a screen-space position by
@@ -2452,12 +2364,8 @@ impl TinyShell {
 
     /// Cancel a tab drag and clear the target window's incoming indicator.
     pub(crate) fn cancel_tab_drag(&mut self, cx: &mut Context<Self>) {
-        if let Some((_, target)) = self.tab_drag.cancel() {
-            target.update(cx, |target, cx| {
-                target.incoming_tab_drag = None;
-                cx.notify();
-            });
-        }
+        self.tab_drag.cancel();
+        self.incoming_tab_drag = None;
         cx.notify();
     }
 
@@ -2472,56 +2380,22 @@ impl TinyShell {
         if self.finish_connection_group_drag(event, cx) {
             return;
         }
-        if let Some(incoming) = self.incoming_tab_drag.take() {
-            let source_window = incoming.source_window;
-            let source = incoming.source;
-            let group_id = incoming.group_id;
-            let target = cx.entity();
-            let target_window = window.window_handle();
-            window.defer(cx, move |_window, cx| {
-                let source_window_for_commit = source_window;
-                let should_close_source = source.update(cx, |source, cx| {
-                    source.finish_tab_drag_on_target(
-                        group_id,
-                        source_window_for_commit,
-                        target_window,
-                        target,
-                        cx,
-                    )
-                });
-                if should_close_source {
-                    if let Err(error) = source_window.update(cx, |_, window, _| {
-                        window.remove_window();
-                    }) {
-                        tracing::warn!(
-                            "[tab-drag] failed to close empty source window after target-forwarded merge: {error:?}"
-                        );
-                    }
-                }
-            });
-            cx.notify();
+
+        // Native tab drops are committed by the root on_drop handler later in
+        // the same mouse-up dispatch. Committing here as well can reorder or
+        // detach the source before a cross-window merge runs.
+        if cx.has_active_drag() {
             return;
         }
 
         self.prepare_tab_drag_release(event, window, cx);
-        match self.tab_drag.finish() {
+        let intent = self.tab_drag.finish();
+        window.defer(cx, move |_window, cx| {
+            crate::app::clear_all_incoming_tab_drags(cx);
+        });
+        match intent {
             DropIntent::Reorder { group_id, index } => {
                 self.reorder_tab_group(&group_id, index, window, cx);
-            }
-            DropIntent::Merge {
-                group_id,
-                target: (target_window, target),
-            } => {
-                let source_window = window.window_handle();
-                let merged = self.commit_group_merge(group_id, target_window, target, cx);
-                if should_close_empty_source(
-                    merged,
-                    self.tab_groups.is_empty(),
-                    &source_window,
-                    &target_window,
-                ) {
-                    window.remove_window();
-                }
             }
             DropIntent::Detach { group_id } => {
                 self.defer_group_detach(group_id, window, cx);
@@ -2530,37 +2404,120 @@ impl TinyShell {
         }
     }
 
-    fn finish_tab_drag_on_target(
+    /// Finish a native tab drag released outside this window. No root drop
+    /// target receives that release, so desktop detaches need this fallback.
+    pub(crate) fn on_tab_drag_mouse_up_out(
         &mut self,
-        group_id: String,
-        source_window: AnyWindowHandle,
-        target_window: AnyWindowHandle,
-        target: Entity<TinyShell>,
+        event: &MouseUpEvent,
+        window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> bool {
-        let intent = self.tab_drag.finish();
-        let valid_merge = matches!(
-            intent,
-            DropIntent::Merge {
-                group_id: active_group_id,
-                target: (active_target_window, _),
-            } if active_group_id == group_id && active_target_window == target_window
-        );
-        if !valid_merge {
-            target.update(cx, |target, cx| {
-                target.incoming_tab_drag = None;
-                cx.notify();
-            });
-            return false;
+    ) {
+        if self.finish_connection_group_drag(event, cx) {
+            return;
+        }
+        if !self.tab_drag.is_dragging() {
+            return;
         }
 
-        let merged = self.commit_group_merge(group_id, target_window, target, cx);
-        should_close_empty_source(
-            merged,
-            self.tab_groups.is_empty(),
-            &source_window,
-            &target_window,
-        )
+        // A desktop release has no drop target to consume GPUI's process-wide
+        // active drag. Clear it before opening another native window so the new
+        // window cannot paint the source window's drag preview while mouse-up
+        // dispatch is still unwinding.
+        cx.stop_active_drag(window);
+        self.prepare_tab_drag_release(event, window, cx);
+        let intent = self.tab_drag.finish();
+        tracing::info!(
+            detach = matches!(intent, DropIntent::Detach { .. }),
+            "[tab-drag] native drag released outside source window"
+        );
+        window.defer(cx, move |_window, cx| {
+            crate::app::clear_all_incoming_tab_drags(cx);
+        });
+        match intent {
+            DropIntent::Detach { group_id } => {
+                self.defer_group_detach(group_id, window, cx);
+            }
+            DropIntent::Reorder { .. } | DropIntent::None | DropIntent::Cancelled => cx.notify(),
+        }
+    }
+
+    pub(crate) fn finish_native_tab_drop(
+        drag: IncomingTabDrag,
+        target_window: AnyWindowHandle,
+        target: Entity<TinyShell>,
+        cx: &mut App,
+    ) {
+        if drag.source_window == target_window {
+            return;
+        }
+
+        tracing::info!(
+            drag_id = drag.drag_id,
+            group_id = drag.group_id,
+            "[tab-drag] committing cross-window merge"
+        );
+        let source_window = drag.source_window;
+        let source = drag.source;
+        let group_id = drag.group_id;
+        let should_close_source = source.update(cx, |source, cx| {
+            source.tab_drag.cancel();
+            let merged = source.commit_group_merge(group_id, target_window, target, cx);
+            should_close_empty_source(
+                merged,
+                source.tab_groups.is_empty(),
+                &source_window,
+                &target_window,
+            )
+        });
+        if should_close_source {
+            if let Err(error) = source_window.update(cx, |_, window, _| {
+                window.remove_window();
+            }) {
+                tracing::warn!(
+                    "[tab-drag] failed to close empty source window after native drop: {error:?}"
+                );
+            }
+        }
+    }
+
+    pub(crate) fn finish_native_local_tab_drop(
+        &mut self,
+        group_id: String,
+        position: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.tab_drag.cancel();
+        if !self.tab_groups.iter().any(|group| group.id == group_id) {
+            cx.notify();
+            return;
+        }
+
+        if self
+            .tab_bar_bounds
+            .as_ref()
+            .is_some_and(|bounds| bounds.contains(&position))
+        {
+            let ordered_bounds = self
+                .tab_groups
+                .iter()
+                .filter_map(|group| {
+                    self.tab_group_bounds
+                        .get(&group.id)
+                        .copied()
+                        .map(|bounds| (group.id.clone(), bounds))
+                })
+                .collect::<Vec<_>>();
+            if let Some(index) = reorder_index_at_x(&group_id, position.x, &ordered_bounds) {
+                self.reorder_tab_group(&group_id, index, window, cx);
+                return;
+            }
+        } else if self.tab_groups.len() > 1 {
+            self.defer_group_detach(group_id, window, cx);
+            return;
+        }
+
+        cx.notify();
     }
 
     #[allow(clippy::result_large_err)]

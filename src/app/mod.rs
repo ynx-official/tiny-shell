@@ -89,13 +89,17 @@ pub(crate) struct WindowEntry {
 
 #[derive(Clone)]
 pub(crate) struct IncomingTabDrag {
+    pub(crate) drag_id: u64,
     pub(crate) source_window: AnyWindowHandle,
     pub(crate) source: Entity<TinyShell>,
     pub(crate) group_id: String,
 }
 
 static WINDOW_REGISTRY: OnceLock<Arc<Mutex<Vec<WindowEntry>>>> = OnceLock::new();
+static TAB_DRAG_HOVER: OnceLock<Mutex<Option<(u64, AnyWindowHandle, u64)>>> = OnceLock::new();
 static WINDOW_ACTIVATION_SEQ: AtomicU64 = AtomicU64::new(1);
+static TAB_DRAG_SEQ: AtomicU64 = AtomicU64::new(1);
+static TAB_DRAG_HOVER_SEQ: AtomicU64 = AtomicU64::new(1);
 static SESSION_OWNER_SEQ: AtomicU64 = AtomicU64::new(1);
 static CONFIG_PREFERENCES_SAVE_SEQ: AtomicU64 = AtomicU64::new(0);
 static CONFIG_PREFERENCES_SAVE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -104,6 +108,39 @@ pub(crate) fn window_registry() -> Arc<Mutex<Vec<WindowEntry>>> {
     WINDOW_REGISTRY
         .get_or_init(|| Arc::new(Mutex::new(Vec::new())))
         .clone()
+}
+
+pub(crate) fn next_tab_drag_id() -> u64 {
+    TAB_DRAG_SEQ.fetch_add(1, Ordering::Relaxed)
+}
+
+pub(crate) fn set_tab_drag_hover(drag_id: u64, target_window: AnyWindowHandle) -> u64 {
+    let generation = TAB_DRAG_HOVER_SEQ.fetch_add(1, Ordering::Relaxed);
+    *TAB_DRAG_HOVER
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .unwrap() = Some((drag_id, target_window, generation));
+    generation
+}
+
+pub(crate) fn tab_drag_hover_is_current(
+    drag_id: u64,
+    target_window: AnyWindowHandle,
+    generation: u64,
+) -> bool {
+    TAB_DRAG_HOVER
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .unwrap()
+        .as_ref()
+        .is_some_and(|current| *current == (drag_id, target_window, generation))
+}
+
+pub(crate) fn clear_tab_drag_hover() {
+    *TAB_DRAG_HOVER
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .unwrap() = None;
 }
 
 /// Register a window when it opens.
@@ -136,7 +173,6 @@ pub(crate) fn deregister_window(window_handle: AnyWindowHandle, cx: &mut App) {
 
     for entity in remaining {
         entity.update(cx, |window, cx| {
-            window.tab_drag.clear_target_if(&window_handle);
             if window
                 .incoming_tab_drag
                 .as_ref()
@@ -234,6 +270,55 @@ pub(crate) fn find_window_at_screen_pos(
                 entry.screen_bounds,
             )
         })
+}
+
+pub(crate) fn clear_incoming_tab_drag_except(
+    drag_id: u64,
+    keep_window: Option<AnyWindowHandle>,
+    cx: &mut App,
+) {
+    let targets = {
+        let registry = window_registry();
+        let guard = registry.lock().unwrap();
+        guard
+            .iter()
+            .filter(|entry| keep_window != Some(entry.window_handle))
+            .map(|entry| entry.entity.clone())
+            .collect::<Vec<_>>()
+    };
+
+    for target in targets {
+        target.update(cx, |target, cx| {
+            if target
+                .incoming_tab_drag
+                .as_ref()
+                .is_some_and(|drag| drag.drag_id == drag_id)
+            {
+                target.incoming_tab_drag = None;
+                cx.notify();
+            }
+        });
+    }
+}
+
+pub(crate) fn clear_all_incoming_tab_drags(cx: &mut App) {
+    clear_tab_drag_hover();
+    let targets = {
+        let registry = window_registry();
+        let guard = registry.lock().unwrap();
+        guard
+            .iter()
+            .map(|entry| entry.entity.clone())
+            .collect::<Vec<_>>()
+    };
+
+    for target in targets {
+        target.update(cx, |target, cx| {
+            if target.incoming_tab_drag.take().is_some() {
+                cx.notify();
+            }
+        });
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -619,8 +704,7 @@ pub(crate) struct TinyShell {
     pub(crate) dragging_splitter: Option<(Vec<usize>, usize)>, // (parent_path, child_index)
     pub(crate) drag_split_origin: Option<gpui::Point<Pixels>>,
     // Tab drag state
-    pub(crate) tab_drag:
-        tab_drag::TabDragState<AnyWindowHandle, (AnyWindowHandle, Entity<TinyShell>)>,
+    pub(crate) tab_drag: tab_drag::TabDragState,
     /// Source drag currently hovering over this window.
     pub(crate) incoming_tab_drag: Option<IncomingTabDrag>,
     pub(crate) terminal_marked_text: Option<String>,
