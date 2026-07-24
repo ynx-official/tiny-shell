@@ -514,6 +514,7 @@ pub(crate) struct TinyShell {
     pub(crate) global_proxy_port_input: Entity<InputState>,
     pub(crate) global_proxy_user_input: Entity<InputState>,
     pub(crate) global_proxy_password_input: Entity<InputState>,
+    pub(crate) update_interval_hours_input: Entity<InputState>,
     pub(crate) sync_endpoint_input: Entity<InputState>,
     pub(crate) sync_username_input: Entity<InputState>,
     pub(crate) sync_webdav_password_input: Entity<InputState>,
@@ -639,6 +640,7 @@ pub(crate) struct TinyShell {
     pub(crate) recording_action: Option<String>,
     pub(crate) active_dialog: Option<DialogKind>,
     pub(crate) updater_status: Option<updater::UpdateStatus>,
+    pub(crate) update_schedule_generation: u64,
     /// Error message when a recorded keybinding conflicts with another
     pub(crate) keybind_error: Option<(String, String)>, // (action_id, error_message)
     /// Whether workspace keybindings are currently suspended (during settings)
@@ -838,6 +840,11 @@ impl TinyShell {
                 .masked(true)
                 .default_value(config.global_proxy_password())
         });
+        let update_interval_hours_input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("24")
+                .default_value(config.update_interval_hours().to_string())
+        });
         let sync_endpoint_input = cx.new(|cx| {
             InputState::new(window, cx)
                 .placeholder("https://dav.example.com/tiny-shell/")
@@ -908,6 +915,7 @@ impl TinyShell {
             cx.subscribe_in(&proxy_port_input, window, Self::on_input_event),
             cx.subscribe_in(&proxy_user_input, window, Self::on_input_event),
             cx.subscribe_in(&proxy_password_input, window, Self::on_input_event),
+            cx.subscribe_in(&update_interval_hours_input, window, Self::on_input_event),
             cx.subscribe_in(&sftp_path_input, window, Self::on_input_event),
             cx.subscribe_in(&sftp_new_folder_input, window, Self::on_input_event),
             cx.subscribe_in(&search_input, window, Self::on_input_event),
@@ -1013,6 +1021,7 @@ impl TinyShell {
             global_proxy_port_input,
             global_proxy_user_input,
             global_proxy_password_input,
+            update_interval_hours_input,
             sync_endpoint_input,
             sync_username_input,
             sync_webdav_password_input,
@@ -1137,6 +1146,7 @@ impl TinyShell {
             recording_action: None,
             active_dialog: None,
             updater_status: None,
+            update_schedule_generation: 0,
             keybind_error: None,
             keybinds_suspended: false,
             animated_cpu_percent: system.cpu_percent,
@@ -1198,6 +1208,28 @@ impl TinyShell {
                 .value()
                 .to_string();
             self.key_import.revalidate(&passphrase, &self.managed_keys);
+        } else if input == &self.update_interval_hours_input {
+            match event {
+                InputEvent::Change => {
+                    if let Ok(hours) = input.read(cx).value().trim().parse::<u32>()
+                        && (1..=8_760).contains(&hours)
+                    {
+                        self.config.set_update_interval_hours(hours);
+                        self.mark_config_preferences_dirty();
+                        self.schedule_automatic_update_checks(window.window_handle(), false, cx);
+                    }
+                }
+                InputEvent::Blur | InputEvent::PressEnter { .. } => {
+                    let hours = self.config.update_interval_hours().to_string();
+                    self.update_interval_hours_input
+                        .update(cx, |input, cx| input.set_value(hours, window, cx));
+                    if matches!(event, InputEvent::PressEnter { .. }) {
+                        window.prevent_default();
+                        cx.stop_propagation();
+                    }
+                }
+                _ => {}
+            }
         } else if input == &self.sftp_path_input {
             if let InputEvent::PressEnter { .. } = event {
                 let path = self

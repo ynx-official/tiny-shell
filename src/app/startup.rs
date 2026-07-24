@@ -431,7 +431,10 @@ fn open_window_with_initializer(
         crate::app::register_window(window.window_handle(), view.clone());
         let should_activate = initialize(view.clone(), cx);
         if !STARTUP_UPDATE_CHECK_STARTED.swap(true, Ordering::AcqRel) {
-            view.update(cx, |this, cx| this.check_for_updates(cx));
+            let window_handle = window.window_handle();
+            view.update(cx, |this, cx| {
+                this.schedule_automatic_update_checks(window_handle, true, cx)
+            });
         }
 
         tracing::info!("[ui] application window opened");

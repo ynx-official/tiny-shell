@@ -1,8 +1,8 @@
 use gpui::{
-    Anchor, Animation, AnimationExt as _, AppContext as _, Context, ElementId, Entity, FontWeight,
-    InteractiveElement as _, IntoElement, MouseButton, ParentElement as _, Render, SharedString,
-    StatefulInteractiveElement as _, Styled as _, Window, div, prelude::FluentBuilder as _, px,
-    rems,
+    Anchor, Animation, AnimationExt as _, AnyWindowHandle, AppContext as _, Context, ElementId,
+    Entity, FontWeight, InteractiveElement as _, IntoElement, MouseButton, ParentElement as _,
+    Render, SharedString, StatefulInteractiveElement as _, Styled as _, Window, div,
+    prelude::FluentBuilder as _, px, rems,
 };
 use gpui_component::{
     ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, Size, WindowExt as _,
@@ -3737,6 +3737,14 @@ impl TinyShell {
         });
     }
     pub(crate) fn check_for_updates(&mut self, cx: &mut Context<Self>) {
+        self.check_for_updates_with_notification(None, cx);
+    }
+
+    pub(crate) fn check_for_updates_with_notification(
+        &mut self,
+        notification_window: Option<AnyWindowHandle>,
+        cx: &mut Context<Self>,
+    ) {
         if matches!(
             self.updater_status,
             Some(crate::app::updater::UpdateStatus::Checking)
@@ -3750,7 +3758,7 @@ impl TinyShell {
         let view = cx.entity();
         cx.spawn({
             let view = view.clone();
-            |_, cx: &mut gpui::AsyncApp| {
+            move |_, cx: &mut gpui::AsyncApp| {
                 let cx = cx.clone();
                 async move {
                     let (tx, rx) = futures::channel::oneshot::channel();
@@ -3761,27 +3769,50 @@ impl TinyShell {
                     let result = rx
                         .await
                         .unwrap_or_else(|_| Err(anyhow::anyhow!("update check cancelled")));
-                    cx.update(|cx| match result {
-                        Ok(crate::app::updater::UpdateCheckResult::UpdateAvailable(info)) => {
-                            view.update(cx, |this, cx| {
-                                this.updater_status =
-                                    Some(crate::app::updater::UpdateStatus::UpdateAvailable(info));
-                                cx.notify();
-                            });
+                    cx.update(|cx| {
+                        let update_available = matches!(
+                            result,
+                            Ok(crate::app::updater::UpdateCheckResult::UpdateAvailable(_))
+                        );
+                        match result {
+                            Ok(crate::app::updater::UpdateCheckResult::UpdateAvailable(info)) => {
+                                view.update(cx, |this, cx| {
+                                    this.updater_status = Some(
+                                        crate::app::updater::UpdateStatus::UpdateAvailable(info),
+                                    );
+                                    this.record_update_check_completed();
+                                    cx.notify();
+                                });
+                            }
+                            Ok(crate::app::updater::UpdateCheckResult::UpToDate(info)) => {
+                                view.update(cx, |this, cx| {
+                                    this.updater_status =
+                                        Some(crate::app::updater::UpdateStatus::UpToDate(info));
+                                    this.record_update_check_completed();
+                                    cx.notify();
+                                });
+                            }
+                            Err(err) => {
+                                view.update(cx, |this, cx| {
+                                    this.updater_status =
+                                        Some(crate::app::updater::UpdateStatus::Error(format!(
+                                            "{err:#}"
+                                        )));
+                                    this.record_update_check_completed();
+                                    cx.notify();
+                                });
+                            }
                         }
-                        Ok(crate::app::updater::UpdateCheckResult::UpToDate(info)) => {
-                            view.update(cx, |this, cx| {
-                                this.updater_status =
-                                    Some(crate::app::updater::UpdateStatus::UpToDate(info));
-                                cx.notify();
-                            });
-                        }
-                        Err(err) => {
-                            view.update(cx, |this, cx| {
-                                this.updater_status = Some(
-                                    crate::app::updater::UpdateStatus::Error(format!("{err:#}")),
-                                );
-                                cx.notify();
+
+                        if update_available
+                            && let Some(window_handle) = notification_window
+                            && view.read(cx).config.update_notify()
+                        {
+                            let view = view.clone();
+                            let _ = window_handle.update(cx, move |_, window, cx| {
+                                view.update(cx, |this, cx| {
+                                    this.show_update_dialog(window, cx);
+                                });
                             });
                         }
                     });
@@ -3789,6 +3820,64 @@ impl TinyShell {
             }
         })
         .detach();
+    }
+
+    fn record_update_check_completed(&mut self) {
+        self.config
+            .set_update_last_checked_at(chrono::Utc::now().timestamp());
+        self.mark_config_preferences_dirty();
+    }
+
+    pub(crate) fn schedule_automatic_update_checks(
+        &mut self,
+        window_handle: AnyWindowHandle,
+        on_startup: bool,
+        cx: &mut Context<Self>,
+    ) {
+        use crate::session::config::UpdateCheckMode;
+
+        self.update_schedule_generation = self.update_schedule_generation.wrapping_add(1);
+        let generation = self.update_schedule_generation;
+
+        match self.config.update_check_mode() {
+            UpdateCheckMode::Disabled => {}
+            UpdateCheckMode::Startup => {
+                if on_startup {
+                    self.check_for_updates_with_notification(Some(window_handle), cx);
+                }
+            }
+            UpdateCheckMode::Interval => {
+                let interval_hours = self.config.update_interval_hours() as u64;
+                let interval = Duration::from_secs(interval_hours.saturating_mul(3_600));
+                let initial_delay = crate::app::updater::automatic_update_delay(
+                    self.config.update_interval_hours(),
+                    self.config.update_last_checked_at(),
+                    chrono::Utc::now().timestamp(),
+                );
+
+                cx.spawn(async move |this, cx| {
+                    cx.background_executor().timer(initial_delay).await;
+                    loop {
+                        let Ok(is_current_schedule) = this.update(cx, |this, cx| {
+                            if this.update_schedule_generation != generation
+                                || this.config.update_check_mode() != UpdateCheckMode::Interval
+                            {
+                                return false;
+                            }
+                            this.check_for_updates_with_notification(Some(window_handle), cx);
+                            true
+                        }) else {
+                            break;
+                        };
+                        if !is_current_schedule {
+                            break;
+                        }
+                        cx.background_executor().timer(interval).await;
+                    }
+                })
+                .detach();
+            }
+        }
     }
 
     pub(crate) fn download_available_update(&mut self, cx: &mut Context<Self>) {
@@ -3872,7 +3961,9 @@ impl TinyShell {
 
         let view = cx.entity();
         window.open_dialog(cx, move |dialog: Dialog, _window, _| {
-            let version = info.version.clone();
+            let display_version = info.version.clone();
+            let expected_version = info.version.clone();
+            let installation_kind = info.installation_kind;
             let path = path.clone();
             let view = view.clone();
             dialog
@@ -3880,7 +3971,11 @@ impl TinyShell {
                 .w(px(440.))
                 .content(move |content, _window, _cx| {
                     content.child(div().text_sm().child(
-                        t!("update_restart_confirm_desc", version = version.clone()).to_string(),
+                        t!(
+                            "update_restart_confirm_desc",
+                            version = display_version.clone()
+                        )
+                        .to_string(),
                     ))
                 })
                 .footer(
@@ -3901,9 +3996,14 @@ impl TinyShell {
                                 .on_click({
                                     let path = path.clone();
                                     let view = view.clone();
+                                    let expected_version = expected_version.clone();
                                     move |_, _window, _cx| {
                                         if let Err(error) =
-                                            crate::app::updater::install_and_restart(&path)
+                                            crate::app::updater::install_and_restart(
+                                                &path,
+                                                &expected_version,
+                                                installation_kind,
+                                            )
                                         {
                                             tracing::error!("failed to install update: {error:#}");
                                             view.update(_cx, |this, cx| {
@@ -4234,6 +4334,8 @@ impl TinyShell {
             SettingField, SettingGroup, SettingItem, SettingPage, Settings,
         };
         let version = env!("CARGO_PKG_VERSION");
+        let installation_kind = crate::app::updater::installation_kind();
+        let runtime_environment = crate::app::updater::runtime_environment_label();
         let view_clone_for_general = view.clone();
         let sync_endpoint_input = self.sync_endpoint_input.clone();
         let sync_username_input = self.sync_username_input.clone();
@@ -4246,6 +4348,7 @@ impl TinyShell {
         let sync_s3_secret_key_input = self.sync_s3_secret_key_input.clone();
         let sync_s3_session_token_input = self.sync_s3_session_token_input.clone();
         let sync_encryption_password_input = self.sync_encryption_password_input.clone();
+        let update_interval_hours_input = self.update_interval_hours_input.clone();
 
         let focus_handle = self.focus_handle.clone();
 
@@ -5077,13 +5180,116 @@ impl TinyShell {
                                         .icon(IconName::BookOpen)
                                 )
                                 .page(
-                                    SettingPage::new(t!("settings_about").to_string())
-                                        .icon(IconName::Info)
+                                    SettingPage::new(t!("settings_online_update").to_string())
+                                        .icon(IconName::ArrowDown)
                                         .group(
                                             SettingGroup::new()
+                                                .title(t!("update_settings_group").to_string())
+                                                .item(
+                                                    SettingItem::new(
+                                                        t!("update_check_frequency").to_string(),
+                                                        SettingField::render({
+                                                            let view = view.clone();
+                                                            move |_, _window, cx| {
+                                                                use crate::session::config::UpdateCheckMode;
+                                                                let mode = view.read(cx).config.update_check_mode();
+                                                                Button::new("update-frequency-dropdown")
+                                                                    .small()
+                                                                    .label(match mode {
+                                                                        UpdateCheckMode::Startup => t!("update_frequency_startup").to_string(),
+                                                                        UpdateCheckMode::Interval => t!("update_frequency_interval").to_string(),
+                                                                        UpdateCheckMode::Disabled => t!("update_frequency_disabled").to_string(),
+                                                                    })
+                                                                    .dropdown_menu_with_anchor(Anchor::BottomRight, {
+                                                                        let view = view.clone();
+                                                                        move |menu, window, cx| {
+                                                                            let current = view.read(cx).config.update_check_mode();
+                                                                            menu.min_w(180.)
+                                                                                .item(
+                                                                                    PopupMenuItem::new(t!("update_frequency_startup").to_string())
+                                                                                        .checked(current == UpdateCheckMode::Startup)
+                                                                                        .on_click(window.listener_for(&view, |this, _, window, cx| {
+                                                                                            this.config.set_update_check_mode(UpdateCheckMode::Startup);
+                                                                                            this.mark_config_preferences_dirty();
+                                                                                            this.schedule_automatic_update_checks(window.window_handle(), false, cx);
+                                                                                            cx.notify();
+                                                                                        }))
+                                                                                )
+                                                                                .item(
+                                                                                    PopupMenuItem::new(t!("update_frequency_interval").to_string())
+                                                                                        .checked(current == UpdateCheckMode::Interval)
+                                                                                        .on_click(window.listener_for(&view, |this, _, window, cx| {
+                                                                                            this.config.set_update_check_mode(UpdateCheckMode::Interval);
+                                                                                            this.mark_config_preferences_dirty();
+                                                                                            this.schedule_automatic_update_checks(window.window_handle(), false, cx);
+                                                                                            cx.notify();
+                                                                                        }))
+                                                                                )
+                                                                                .item(
+                                                                                    PopupMenuItem::new(t!("update_frequency_disabled").to_string())
+                                                                                        .checked(current == UpdateCheckMode::Disabled)
+                                                                                        .on_click(window.listener_for(&view, |this, _, window, cx| {
+                                                                                            this.config.set_update_check_mode(UpdateCheckMode::Disabled);
+                                                                                            this.mark_config_preferences_dirty();
+                                                                                            this.schedule_automatic_update_checks(window.window_handle(), false, cx);
+                                                                                            cx.notify();
+                                                                                        }))
+                                                                                )
+                                                                        }
+                                                                    })
+                                                                    .into_any_element()
+                                                            }
+                                                        })
+                                                    )
+                                                    .description(t!("update_check_frequency_desc").to_string())
+                                                )
+                                                .item(
+                                                    SettingItem::new(
+                                                        t!("update_interval_hours").to_string(),
+                                                        SettingField::render({
+                                                            let view = view.clone();
+                                                            let input = update_interval_hours_input.clone();
+                                                            move |_, _window, cx| {
+                                                                let enabled = view.read(cx).config.update_check_mode()
+                                                                    == crate::session::config::UpdateCheckMode::Interval;
+                                                                h_flex()
+                                                                    .gap_2()
+                                                                    .items_center()
+                                                                    .child(Input::new(&input).small().w(px(96.)).disabled(!enabled))
+                                                                    .child(div().text_sm().text_color(cx.theme().muted_foreground).child(t!("update_hours_unit").to_string()))
+                                                                    .into_any_element()
+                                                            }
+                                                        })
+                                                    )
+                                                    .description(t!("update_interval_hours_desc").to_string())
+                                                )
+                                                .item(
+                                                    SettingItem::new(
+                                                        t!("update_notify").to_string(),
+                                                        SettingField::render({
+                                                            let view = view.clone();
+                                                            move |_, window, cx| {
+                                                                Switch::new("update-notify")
+                                                                    .small()
+                                                                    .checked(view.read(cx).config.update_notify())
+                                                                    .on_click(window.listener_for(&view, |this, checked, _, cx| {
+                                                                        this.config.set_update_notify(*checked);
+                                                                        this.mark_config_preferences_dirty();
+                                                                        cx.notify();
+                                                                    }))
+                                                                    .into_any_element()
+                                                            }
+                                                        })
+                                                    )
+                                                    .description(t!("update_notify_desc").to_string())
+                                                )
+                                        )
+                                        .group(
+                                            SettingGroup::new()
+                                                .title(t!("update_status").to_string())
                                                 .item(SettingItem::render({
                                                     let view = view.clone();
-                                                    move |_, _window, cx| {
+                                                    move |_, window, cx| {
                                                         let status_text = {
                                                             let state = view.read(cx);
                                                             match &state.updater_status {
@@ -5112,46 +5318,38 @@ impl TinyShell {
                                                             view.read(cx).updater_status,
                                                             Some(crate::app::updater::UpdateStatus::UpdateAvailable(_))
                                                         );
+                                                        let can_restart = matches!(
+                                                            view.read(cx).updater_status,
+                                                            Some(crate::app::updater::UpdateStatus::ReadyToRestart(_, _))
+                                                        );
 
-                                                        v_flex()
-                                                            .gap_2()
+                                                        h_flex()
+                                                            .w_full()
+                                                            .justify_between()
+                                                            .gap_3()
                                                             .items_center()
-                                                            .child(div().text_size(rems(1.5)).font_weight(FontWeight::BOLD).child(t!("app_name")))
-                                                            .child(div().text_size(rems(0.9)).child(format!("Version {}", version)))
                                                             .child(
                                                                 div()
-                                                                    .text_size(rems(0.9))
-                                                                    .text_color(cx.theme().muted_foreground)
-                                                                    .child("A GPUI Component based SSH and local terminal client"),
-                                                            )
-                                                            .child(
-                                                                div()
-                                                                    .text_size(rems(0.9))
-                                                                    .text_color(cx.theme().muted_foreground)
-                                                                    .child(t!("about_feedback_hint")),
-                                                            )
-                                                            .child(
-                                                                Button::new("github-link")
-                                                                    .label("https://github.com/ynx-official/tiny-shell")
-                                                                    .ghost()
-                                                                    .on_click(|_, _window, _cx| {
-                                                                        let _ = open::that("https://github.com/ynx-official/tiny-shell");
-                                                                    }),
+                                                                    .min_w_0()
+                                                                    .flex_1()
+                                                                    .text_sm()
+                                                                    .child(status_text.unwrap_or_else(|| t!("update_not_checked").to_string()))
                                                             )
                                                             .child(
                                                                 h_flex()
+                                                                    .flex_shrink_0()
                                                                     .gap_2()
                                                                     .items_center()
                                                                     .child(
-                                        Button::new("check-update")
-                                            .label(t!("check_update").to_string())
-                                            .on_click({
-                                                let view = view.clone();
-                                                move |_, _window, cx| {
-                                                    view.update(cx, |this, cx| this.check_for_updates(cx));
-                                                }
-                                            }),
-                                    )
+                                                                        Button::new("check-update")
+                                                                            .label(t!("check_update").to_string())
+                                                                            .on_click({
+                                                                                let view = view.clone();
+                                                                                move |_, _window, cx| {
+                                                                                    view.update(cx, |this, cx| this.check_for_updates(cx));
+                                                                                }
+                                                                            }),
+                                                                    )
                                                                     .when(has_update, |this| {
                                                                         this.child(
                                                                             Button::new("download-update")
@@ -5165,16 +5363,82 @@ impl TinyShell {
                                                                                 }),
                                                                         )
                                                                     })
-                                                                    .when_some(status_text, |this, text| {
+                                                                    .when(can_restart, |this| {
                                                                         this.child(
-                                                                            div()
-                                                                                .text_size(rems(0.85))
-                                                                                .text_color(cx.theme().muted_foreground)
-                                                                                .child(text),
+                                                                            Button::new("restart-update")
+                                                                                .primary()
+                                                                                .label(t!("update_restart_now").to_string())
+                                                                                .on_click(window.listener_for(
+                                                                                    &view,
+                                                                                    |this, _, window, cx| {
+                                                                                        this.confirm_update_restart(window, cx)
+                                                                                    },
+                                                                                )),
                                                                         )
                                                                     }),
                                                             )
                                                     }
+                                                }))
+                                        )
+                                )
+                                .page(
+                                    SettingPage::new(t!("settings_about").to_string())
+                                        .icon(IconName::Info)
+                                        .group(
+                                            SettingGroup::new()
+                                                .title(t!("about_title").to_string())
+                                                .item(
+                                                    SettingItem::new(
+                                                        t!("about_app_version").to_string(),
+                                                        SettingField::render(move |_, _, _| {
+                                                            div().text_sm().child(format!("v{version}"))
+                                                        })
+                                                    )
+                                                )
+                                                .item(
+                                                    SettingItem::new(
+                                                        t!("about_installation_type").to_string(),
+                                                        SettingField::render(move |_, _, _| {
+                                                            let label = match installation_kind {
+                                                                crate::app::updater::InstallationKind::WindowsInstaller => t!("installation_setup").to_string(),
+                                                                crate::app::updater::InstallationKind::Portable => t!("installation_portable").to_string(),
+                                                                crate::app::updater::InstallationKind::MacApp => t!("installation_app_bundle").to_string(),
+                                                                crate::app::updater::InstallationKind::LinuxPackage => t!("installation_system_package").to_string(),
+                                                            };
+                                                            div().text_sm().child(label)
+                                                        })
+                                                    )
+                                                )
+                                                .item(
+                                                    SettingItem::new(
+                                                        t!("about_runtime").to_string(),
+                                                        SettingField::render(move |_, _, _| {
+                                                            div().text_sm().child(runtime_environment.clone())
+                                                        })
+                                                    )
+                                                )
+                                        )
+                                        .group(
+                                            SettingGroup::new()
+                                                .item(SettingItem::render(move |_, _, cx| {
+                                                    v_flex()
+                                                        .w_full()
+                                                        .gap_2()
+                                                        .items_center()
+                                                        .child(
+                                                            div()
+                                                                .text_sm()
+                                                                .text_color(cx.theme().muted_foreground)
+                                                                .child(t!("about_feedback_hint")),
+                                                        )
+                                                        .child(
+                                                            Button::new("github-link")
+                                                                .label("https://github.com/ynx-official/tiny-shell")
+                                                                .ghost()
+                                                                .on_click(|_, _, _| {
+                                                                    let _ = open::that("https://github.com/ynx-official/tiny-shell");
+                                                                }),
+                                                        )
                                                 }))
                                         )
                                 )

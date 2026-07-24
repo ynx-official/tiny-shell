@@ -249,6 +249,15 @@ pub enum CursorStyle {
     BeamBlink,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum UpdateCheckMode {
+    #[default]
+    Startup,
+    Interval,
+    Disabled,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConfigFile {
     #[serde(default = "default_follow_system_theme")]
@@ -345,6 +354,14 @@ pub struct ConfigFile {
     pub global_proxy_user: String,
     #[serde(default)]
     pub global_proxy_password: String,
+    #[serde(default)]
+    pub update_check_mode: UpdateCheckMode,
+    #[serde(default = "default_update_interval_hours")]
+    pub update_interval_hours: u32,
+    #[serde(default = "default_update_notify")]
+    pub update_notify: bool,
+    #[serde(default)]
+    pub update_last_checked_at: i64,
 }
 
 fn default_read_env_proxy() -> bool {
@@ -385,6 +402,14 @@ fn default_terminal_font_size() -> f32 {
 
 fn default_ui_font_size() -> f32 {
     14.0
+}
+
+fn default_update_interval_hours() -> u32 {
+    24
+}
+
+fn default_update_notify() -> bool {
+    true
 }
 
 pub fn default_ui_font_family() -> String {
@@ -447,6 +472,10 @@ impl Default for ConfigFile {
             global_proxy_port: None,
             global_proxy_user: String::new(),
             global_proxy_password: String::new(),
+            update_check_mode: UpdateCheckMode::default(),
+            update_interval_hours: default_update_interval_hours(),
+            update_notify: default_update_notify(),
+            update_last_checked_at: 0,
         }
     }
 }
@@ -973,6 +1002,38 @@ impl ConfigStore {
         self.cache.global_proxy_password = val;
     }
 
+    pub fn update_check_mode(&self) -> UpdateCheckMode {
+        self.cache.update_check_mode
+    }
+
+    pub fn set_update_check_mode(&mut self, mode: UpdateCheckMode) {
+        self.cache.update_check_mode = mode;
+    }
+
+    pub fn update_interval_hours(&self) -> u32 {
+        self.cache.update_interval_hours.clamp(1, 8_760)
+    }
+
+    pub fn set_update_interval_hours(&mut self, hours: u32) {
+        self.cache.update_interval_hours = hours.clamp(1, 8_760);
+    }
+
+    pub fn update_notify(&self) -> bool {
+        self.cache.update_notify
+    }
+
+    pub fn set_update_notify(&mut self, notify: bool) {
+        self.cache.update_notify = notify;
+    }
+
+    pub fn update_last_checked_at(&self) -> i64 {
+        self.cache.update_last_checked_at
+    }
+
+    pub fn set_update_last_checked_at(&mut self, timestamp: i64) {
+        self.cache.update_last_checked_at = timestamp.max(0);
+    }
+
     pub fn lock_layout(&self) -> bool {
         self.cache.lock_layout
     }
@@ -1161,6 +1222,10 @@ impl ConfigStore {
         self.cache.global_proxy_port = source.cache.global_proxy_port;
         self.cache.global_proxy_user = source.cache.global_proxy_user.clone();
         self.cache.global_proxy_password = source.cache.global_proxy_password.clone();
+        self.cache.update_check_mode = source.cache.update_check_mode;
+        self.cache.update_interval_hours = source.cache.update_interval_hours;
+        self.cache.update_notify = source.cache.update_notify;
+        self.cache.update_last_checked_at = source.cache.update_last_checked_at;
     }
 
     pub fn get(&self, id: &str) -> Option<&Session> {
@@ -1614,6 +1679,9 @@ mod tests {
         let config = ConfigFile::default();
         assert_eq!(config.terminal_font_size, 14.0);
         assert_eq!(config.ui_font_size, 14.0);
+        assert_eq!(config.update_check_mode, UpdateCheckMode::Startup);
+        assert_eq!(config.update_interval_hours, 24);
+        assert!(config.update_notify);
     }
 
     #[test]
@@ -1623,10 +1691,16 @@ mod tests {
         let mut source = ConfigStore::in_memory();
         source.cache.connection_groups = vec!["stale".to_string()];
         source.set_ui_font_size(18.0);
+        source.set_update_check_mode(UpdateCheckMode::Interval);
+        source.set_update_interval_hours(12);
+        source.set_update_notify(false);
         latest.merge_interactive_preferences_from(&source);
 
         assert_eq!(latest.cache.connection_groups, ["production"]);
         assert_eq!(latest.ui_font_size(), 18.0);
+        assert_eq!(latest.update_check_mode(), UpdateCheckMode::Interval);
+        assert_eq!(latest.update_interval_hours(), 12);
+        assert!(!latest.update_notify());
     }
 
     #[test]
