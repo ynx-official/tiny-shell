@@ -187,23 +187,13 @@ fn parse_version(version: &str) -> anyhow::Result<Version> {
 fn is_newer_version(current: &str, latest: &str) -> anyhow::Result<bool> {
     let current_version = parse_version(current)?;
     let latest_version = parse_version(latest)?;
-    let current_segments = [
-        current_version.major.to_string(),
-        current_version.minor.to_string(),
-        current_version.patch.to_string(),
-    ];
-    let latest_segments = [
-        latest_version.major.to_string(),
-        latest_version.minor.to_string(),
-        latest_version.patch.to_string(),
-    ];
-
-    // Release numbers follow the project's textual segment ordering instead
-    // of SemVer's numeric ordering: "2" > "11" and "21" > "2".
-    Ok(match latest_segments.cmp(&current_segments) {
-        std::cmp::Ordering::Equal => latest_version > current_version,
-        ordering => ordering.is_gt(),
-    })
+    // Compare as numeric SemVer, not as text. The previous implementation
+    // compared the string forms of each segment, which made "10" sort below
+    // "9" (since '1' < '9') and broke the update chain the moment the patch
+    // number reached double digits. Numeric comparison matches the actual
+    // release timeline (1.0.7 < 1.0.8 < 1.0.9 < 1.0.10 < ... < 1.0.63 < 1.0.71)
+    // and lets pre-release / build metadata from semver still break ties.
+    Ok(latest_version > current_version)
 }
 
 /// Maps the cargo target triple to the release asset naming convention used in
@@ -1361,11 +1351,22 @@ mod tests {
 
     #[test]
     fn compares_version_segments_using_release_order() {
+        // Numeric SemVer ordering: matches the actual release timeline
+        // (1.0.7 < 1.0.8 < 1.0.9 < 1.0.10 < ... < 1.0.63 < 1.0.71).
         assert!(is_newer_version("v1.0.1", "v1.0.2").unwrap());
-        assert!(is_newer_version("v1.0.11", "v1.0.2").unwrap());
+        // 11 is newer than 2 under numeric ordering (the old text-based
+        // comparison wrongly treated "2" as greater than "11").
+        assert!(is_newer_version("v1.0.2", "v1.0.11").unwrap());
+        assert!(!is_newer_version("v1.0.11", "v1.0.2").unwrap());
         assert!(is_newer_version("v1.0.2", "v1.0.21").unwrap());
         assert!(!is_newer_version("v1.0.21", "v1.0.2").unwrap());
         assert!(!is_newer_version("v1.0.11", "v1.0.11").unwrap());
+        // Double-digit transitions that the old text comparison broke:
+        // "10" must sort above "9", "71" above "9".
+        assert!(is_newer_version("v1.0.9", "v1.0.10").unwrap());
+        assert!(!is_newer_version("v1.0.10", "v1.0.9").unwrap());
+        assert!(is_newer_version("v1.0.9", "v1.0.71").unwrap());
+        assert!(is_newer_version("v1.0.63", "v1.0.71").unwrap());
     }
 
     #[test]

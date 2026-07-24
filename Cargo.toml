@@ -1,6 +1,6 @@
 [package]
 name = "tiny-shell"
-version = "1.0.71"
+version = "1.0.11"
 edition = "2024"
 authors = ["tiny-shell contributors"]
 description = "A modern, fast, GPUI Component-based desktop terminal client"
