@@ -916,7 +916,7 @@ impl TinyShell {
                                     .icon(IconName::Settings)
                                     .label(t!("settings").to_string())
                                     .on_click(cx.listener(|this, _, window, cx| {
-                                        this.show_settings_dialog(window, cx)
+                                        this.show_settings_window(window, cx)
                                     })),
                             ),
                     ),
@@ -1709,6 +1709,7 @@ impl TinyShell {
 
     fn render_settings_page(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let view = cx.entity();
+        let settings_inputs = crate::app::settings_window::SettingsInputs::from_main(self);
         div()
             .size_full()
             .p_6()
@@ -1723,7 +1724,13 @@ impl TinyShell {
                     .border_1()
                     .border_color(cx.theme().border)
                     .bg(cx.theme().background)
-                    .child(self.render_settings_content(&view, "settings-page", cx)),
+                    .child(self.render_settings_content(
+                        &view,
+                        "settings-page",
+                        &self.focus_handle,
+                        &settings_inputs,
+                        cx,
+                    )),
             )
     }
 
@@ -6701,7 +6708,7 @@ impl TinyShell {
                             .on_click(cx.listener(|this, _, window, cx| {
                                 window.prevent_default();
                                 cx.stop_propagation();
-                                this.show_settings_dialog(window, cx);
+                                this.show_settings_window(window, cx);
                             })),
                     ),
             )
@@ -8005,7 +8012,7 @@ impl Render for TinyShell {
             .on_mouse_move(cx.listener(Self::on_tab_drag_mouse_move))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_tab_drag_mouse_up))
             .on_action(cx.listener(|this, _: &crate::OpenSettings, window, cx| {
-                this.show_settings_dialog(window, cx)
+                this.show_settings_window(window, cx)
             }))
             .on_action(cx.listener(|this, _: &crate::OpenSession, window, cx| {
                 this.show_selector_dialog(window, cx)

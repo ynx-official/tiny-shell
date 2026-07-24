@@ -5,6 +5,7 @@ pub mod input_focus;
 pub mod keybinding_recorder;
 pub mod resizable;
 pub mod search;
+pub mod settings_window;
 pub mod sftp_editor;
 pub mod sftp_editor_window;
 pub mod ssh_key_import;
@@ -402,7 +403,6 @@ impl ScrollbarHandle for TerminalScrollbarHandle {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DialogKind {
-    Settings,
     Updater,
     SessionSelector,
     QuickConnectionManager,
@@ -639,14 +639,14 @@ pub(crate) struct TinyShell {
     pub(crate) system_sampler: Arc<std::sync::Mutex<SharedSystemSampler>>,
     pub(crate) recording_action: Option<String>,
     pub(crate) active_dialog: Option<DialogKind>,
+    pub(crate) settings_window: Option<AnyWindowHandle>,
+    pub(crate) settings_window_opening: bool,
     pub(crate) updater_status: Option<updater::UpdateStatus>,
     pub(crate) update_download_cancellation: Option<updater::DownloadCancellation>,
     pub(crate) update_download_generation: u64,
     pub(crate) update_schedule_generation: u64,
     /// Error message when a recorded keybinding conflicts with another
     pub(crate) keybind_error: Option<(String, String)>, // (action_id, error_message)
-    /// Whether workspace keybindings are currently suspended (during settings)
-    pub(crate) keybinds_suspended: bool,
     pub(crate) system: SystemSnapshot,
     pub(crate) animated_cpu_percent: f32,
     pub(crate) animated_mem_percent: f32,
@@ -1147,12 +1147,13 @@ impl TinyShell {
             system_sampler,
             recording_action: None,
             active_dialog: None,
+            settings_window: None,
+            settings_window_opening: false,
             updater_status: None,
             update_download_cancellation: None,
             update_download_generation: 0,
             update_schedule_generation: 0,
             keybind_error: None,
-            keybinds_suspended: false,
             animated_cpu_percent: system.cpu_percent,
             animated_mem_percent: system.mem_percent,
             animated_swap_percent: system.swap_percent,

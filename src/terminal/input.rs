@@ -82,7 +82,7 @@ impl TinyShell {
         }
 
         if event.keystroke.modifiers.secondary() && event.keystroke.key == "," {
-            self.show_settings_dialog(window, cx);
+            self.show_settings_window(window, cx);
             window.prevent_default();
             cx.stop_propagation();
             return;

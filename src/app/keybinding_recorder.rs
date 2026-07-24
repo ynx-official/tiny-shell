@@ -1,5 +1,6 @@
 use gpui::{
-    Action as _, App, Entity, IntoElement, KeyBinding, KeyDownEvent, Keystroke, Unbind, prelude::*,
+    Action as _, App, Entity, FocusHandle, IntoElement, KeyBinding, KeyDownEvent, Keystroke,
+    Unbind, prelude::*,
 };
 use gpui_component::{
     Sizable,
@@ -218,8 +219,7 @@ pub(crate) fn bind_workspace_keys_from_config(cx: &mut App, config: &ConfigStore
     bind_workspace_actions(cx, config);
 }
 
-/// Unbind all workspace keybindings (used when entering keybinding settings to prevent interference).
-pub(crate) fn unbind_all_workspace_keys(cx: &mut App, config: &ConfigStore) {
+pub(crate) fn unbind_workspace_keys_from_config(cx: &mut App, config: &ConfigStore) {
     let mut bindings = Vec::new();
 
     macro_rules! unbind_action {
@@ -228,7 +228,6 @@ pub(crate) fn unbind_all_workspace_keys(cx: &mut App, config: &ConfigStore) {
             let configured = configured_keystroke(config, $id).unwrap_or_else(|| default.clone());
             let action_name = $action.name();
 
-            // Unbind both the default and configured keystroke
             bindings.push(KeyBinding::new(&default, Unbind(action_name.into()), None));
             if configured != default {
                 bindings.push(KeyBinding::new(
@@ -321,7 +320,11 @@ fn bind_workspace_actions(cx: &mut App, config: &ConfigStore) {
 }
 
 impl KeybindingsPage {
-    pub fn render_groups(state: &TinyShell, view: &Entity<TinyShell>) -> Vec<SettingGroup> {
+    pub fn render_groups(
+        state: &TinyShell,
+        view: &Entity<TinyShell>,
+        focus_handle: &FocusHandle,
+    ) -> Vec<SettingGroup> {
         let groups = [
             (
                 "settings_group_keybind_general",
@@ -400,6 +403,7 @@ impl KeybindingsPage {
                     SettingField::render({
                         let view = view.clone();
                         let action_id = action.id.to_string();
+                        let focus_handle = focus_handle.clone();
                         move |_, _window, _cx| {
                             Button::new(gpui::SharedString::from(format!("keybind-{action_id}")))
                                 .label(btn_label.clone())
@@ -409,12 +413,13 @@ impl KeybindingsPage {
                                 .on_click({
                                     let view = view.clone();
                                     let action_id = action_id.clone();
+                                    let focus_handle = focus_handle.clone();
                                     move |_event, window, cx| {
                                         view.update(cx, |this, cx| {
                                             // Clear any previous error when starting new recording
                                             this.keybind_error = None;
                                             this.recording_action = Some(action_id.clone());
-                                            this.focus_handle.focus(window, cx);
+                                            focus_handle.focus(window, cx);
                                             cx.notify();
                                         });
                                     }

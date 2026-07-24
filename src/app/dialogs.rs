@@ -4482,7 +4482,9 @@ impl TinyShell {
         &self,
         view: &gpui::Entity<Self>,
         settings_id: &'static str,
-        cx: &mut gpui::App,
+        focus_handle: &gpui::FocusHandle,
+        settings_inputs: &crate::app::settings_window::SettingsInputs,
+        cx: &gpui::App,
     ) -> gpui::AnyElement {
         use gpui::IntoElement;
         use gpui_component::setting::{
@@ -4506,20 +4508,24 @@ impl TinyShell {
         };
         let runtime_environment = crate::app::updater::runtime_environment_label();
         let view_clone_for_general = view.clone();
-        let sync_endpoint_input = self.sync_endpoint_input.clone();
-        let sync_username_input = self.sync_username_input.clone();
-        let sync_webdav_password_input = self.sync_webdav_password_input.clone();
-        let sync_s3_endpoint_input = self.sync_s3_endpoint_input.clone();
-        let sync_s3_region_input = self.sync_s3_region_input.clone();
-        let sync_s3_bucket_input = self.sync_s3_bucket_input.clone();
-        let sync_s3_object_key_input = self.sync_s3_object_key_input.clone();
-        let sync_s3_access_key_input = self.sync_s3_access_key_input.clone();
-        let sync_s3_secret_key_input = self.sync_s3_secret_key_input.clone();
-        let sync_s3_session_token_input = self.sync_s3_session_token_input.clone();
-        let sync_encryption_password_input = self.sync_encryption_password_input.clone();
-        let update_interval_hours_input = self.update_interval_hours_input.clone();
+        let global_proxy_host_input = settings_inputs.global_proxy_host.clone();
+        let global_proxy_port_input = settings_inputs.global_proxy_port.clone();
+        let global_proxy_user_input = settings_inputs.global_proxy_user.clone();
+        let global_proxy_password_input = settings_inputs.global_proxy_password.clone();
+        let sync_endpoint_input = settings_inputs.sync_endpoint.clone();
+        let sync_username_input = settings_inputs.sync_username.clone();
+        let sync_webdav_password_input = settings_inputs.sync_webdav_password.clone();
+        let sync_s3_endpoint_input = settings_inputs.sync_s3_endpoint.clone();
+        let sync_s3_region_input = settings_inputs.sync_s3_region.clone();
+        let sync_s3_bucket_input = settings_inputs.sync_s3_bucket.clone();
+        let sync_s3_object_key_input = settings_inputs.sync_s3_object_key.clone();
+        let sync_s3_access_key_input = settings_inputs.sync_s3_access_key.clone();
+        let sync_s3_secret_key_input = settings_inputs.sync_s3_secret_key.clone();
+        let sync_s3_session_token_input = settings_inputs.sync_s3_session_token.clone();
+        let sync_encryption_password_input = settings_inputs.sync_encryption_password.clone();
+        let update_interval_hours_input = settings_inputs.update_interval_hours.clone();
 
-        let focus_handle = self.focus_handle.clone();
+        let focus_handle = focus_handle.clone();
 
         div()
             .size_full()
@@ -4982,26 +4988,44 @@ impl TinyShell {
                                         .group(
                                             SettingGroup::new()
                                                 .title(t!("settings_group_download").to_string())
-                                                .item(
-                                                    SettingItem::new(
-                                                        t!("download_directory").to_string(),
-                                                        SettingField::render({
-                                                            let view = view_clone_for_general.clone();
-                                                            move |_, window, cx| {
-                                                                let directory = view
-                                                                    .read(cx)
-                                                                    .config
-                                                                    .download_directory();
+                                                .item(SettingItem::render({
+                                                    let view = view_clone_for_general.clone();
+                                                    move |_, window, cx| {
+                                                        let directory = view
+                                                            .read(cx)
+                                                            .config
+                                                            .download_directory();
+                                                        v_flex()
+                                                            .w_full()
+                                                            .gap_2()
+                                                            .child(
+                                                                div()
+                                                                    .text_sm()
+                                                                    .font_weight(FontWeight::MEDIUM)
+                                                                    .child(t!("download_directory").to_string()),
+                                                            )
+                                                            .child(
+                                                                div()
+                                                                    .text_size(rems(0.78))
+                                                                    .text_color(cx.theme().muted_foreground)
+                                                                    .child(t!("download_directory_desc").to_string()),
+                                                            )
+                                                            .child(
                                                                 h_flex()
-                                                                    .max_w(px(520.))
+                                                                    .w_full()
+                                                                    .min_w_0()
                                                                     .gap_2()
                                                                     .items_center()
                                                                     .child(
                                                                         div()
-                                                                            .min_w(px(180.))
-                                                                            .max_w(px(320.))
+                                                                            .min_w_0()
                                                                             .flex_1()
                                                                             .truncate()
+                                                                            .rounded_md()
+                                                                            .border_1()
+                                                                            .border_color(cx.theme().border)
+                                                                            .px_3()
+                                                                            .py_2()
                                                                             .text_sm()
                                                                             .text_color(if directory.is_some() {
                                                                                 cx.theme().foreground
@@ -5017,6 +5041,7 @@ impl TinyShell {
                                                                     )
                                                                     .child(
                                                                         Button::new("choose-download-directory")
+                                                                            .flex_shrink_0()
                                                                             .small()
                                                                             .icon(IconName::FolderOpen)
                                                                             .label(t!("choose_directory").to_string())
@@ -5030,6 +5055,7 @@ impl TinyShell {
                                                                     .when(directory.is_some(), |this| {
                                                                         this.child(
                                                                             Button::new("clear-download-directory")
+                                                                                .flex_shrink_0()
                                                                                 .small()
                                                                                 .ghost()
                                                                                 .icon(IconName::Close)
@@ -5043,13 +5069,10 @@ impl TinyShell {
                                                                                     }
                                                                                 }),
                                                                         )
-                                                                    })
-                                                                    .into_any_element()
-                                                            }
-                                                        }),
-                                                    )
-                                                    .description(t!("download_directory_desc").to_string()),
-                                                )
+                                                                    }),
+                                                            )
+                                                    }
+                                                }))
                                         )
                                         .group(
                                             SettingGroup::new()
@@ -5340,10 +5363,10 @@ impl TinyShell {
                                                 )
                                                 .item(SettingItem::render({
                                                     let view = view.clone();
-                                                    let global_proxy_host_input = self.global_proxy_host_input.clone();
-                                                    let global_proxy_port_input = self.global_proxy_port_input.clone();
-                                                    let global_proxy_user_input = self.global_proxy_user_input.clone();
-                                                    let global_proxy_password_input = self.global_proxy_password_input.clone();
+                                                    let global_proxy_host_input = global_proxy_host_input.clone();
+                                                    let global_proxy_port_input = global_proxy_port_input.clone();
+                                                    let global_proxy_user_input = global_proxy_user_input.clone();
+                                                    let global_proxy_password_input = global_proxy_password_input.clone();
                                                     move |_, window, cx| {
                                                         let proxy_type = view.read(cx).global_proxy_type.clone();
                                                         v_flex()
@@ -5411,7 +5434,7 @@ impl TinyShell {
                                     let mut page = SettingPage::new(t!("settings_key_bindings").to_string())
                                         .icon(IconName::SquareTerminal)
                                         .default_open(true);
-                                    for group in crate::app::keybinding_recorder::KeybindingsPage::render_groups(self, &view) {
+                                    for group in crate::app::keybinding_recorder::KeybindingsPage::render_groups(self, view, &focus_handle) {
                                         page = page.group(group);
                                     }
                                     page
@@ -5798,50 +5821,32 @@ impl TinyShell {
         .into_any_element()
     }
 
-    pub(crate) fn show_settings_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.active_dialog.is_some() {
+    pub(crate) fn show_settings_window(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(handle) = self.settings_window {
+            if handle
+                .update(cx, |_, window, _| window.activate_window())
+                .is_ok()
+            {
+                return;
+            }
+            self.settings_window = None;
+        }
+        if self.settings_window_opening {
             return;
         }
-        self.active_dialog = Some(crate::app::DialogKind::Settings);
 
-        let view = cx.entity();
-
-        // Unbind all workspace keys so they don't interfere with keybinding recording
-        crate::app::keybinding_recorder::unbind_all_workspace_keys(cx, &self.config);
-        self.keybinds_suspended = true;
-
-        window.open_dialog(cx, move |dialog: Dialog, _window, _| {
-            dialog
-                .title(t!("settings").to_string())
-                .w(px(840.))
-                .h(px(560.))
-                .on_close({
-                    let view = view.clone();
-                    move |_, _window, cx| {
-                        // Re-register all workspace keys when closing settings
-                        view.update(cx, |this, cx| {
-                            this.active_dialog = None;
-                            this.keybinds_suspended = false;
-                            this.recording_action = None;
-                            this.keybind_error = None;
-                            this.persist_config_preferences_async();
-                            crate::app::keybinding_recorder::bind_workspace_keys_from_config(
-                                cx,
-                                &this.config,
-                            );
-                            cx.notify();
-                        });
-                    }
-                })
-                .content({
-                    let view = view.clone();
-                    move |content, _window, cx| {
-                        let settings = view.update(cx, |this, cx| {
-                            this.render_settings_content(&view, "settings-dialog", cx)
-                        });
-                        content.child(settings)
-                    }
-                })
+        let owner = cx.entity();
+        let config = self.config.clone();
+        let main_window = window.window_handle();
+        self.settings_window_opening = true;
+        window.defer(cx, move |_window, cx| {
+            let settings_window =
+                crate::app::settings_window::open(owner.clone(), config, main_window, cx);
+            owner.update(cx, |this, cx| {
+                this.settings_window = settings_window;
+                this.settings_window_opening = false;
+                cx.notify();
+            });
         });
     }
 }
