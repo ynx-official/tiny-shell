@@ -4502,6 +4502,9 @@ impl TinyShell {
             crate::app::updater::InstallationKind::MacApp => {
                 t!("installation_app_bundle").to_string()
             }
+            crate::app::updater::InstallationKind::MacInstaller => {
+                t!("installation_macos_pkg").to_string()
+            }
             crate::app::updater::InstallationKind::LinuxPackage => {
                 t!("installation_system_package").to_string()
             }

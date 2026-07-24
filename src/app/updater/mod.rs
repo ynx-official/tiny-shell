@@ -20,6 +20,11 @@ const HTTP_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 const HTTP_READ_TIMEOUT: Duration = Duration::from_secs(60);
 #[cfg(target_os = "windows")]
 const INNO_UNINSTALL_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\{8E091D1C-6D7C-4C29-9CA2-8B3D84A42CF8}_is1";
+// Matches the --identifier passed to pkgbuild in release.yml. pkgutil records
+// a receipt under this id only when the .pkg is installed via installer or
+// the GUI installer, which lets us distinguish it from a portable .app.
+#[cfg(target_os = "macos")]
+const MACOS_PKG_IDENTIFIER: &str = "dev.tiny-shell.app";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(dead_code)]
@@ -27,6 +32,7 @@ pub enum InstallationKind {
     WindowsInstaller,
     Portable,
     MacApp,
+    MacInstaller,
     LinuxPackage,
 }
 
@@ -46,7 +52,11 @@ pub fn installation_kind() -> InstallationKind {
             path.ancestors()
                 .any(|ancestor| ancestor.extension().is_some_and(|ext| ext == "app"))
         }) {
-            InstallationKind::MacApp
+            if macos_pkg_receipt_present() {
+                InstallationKind::MacInstaller
+            } else {
+                InstallationKind::MacApp
+            }
         } else {
             InstallationKind::Portable
         };
@@ -97,6 +107,17 @@ pub(crate) fn automatic_update_delay(
     let interval_seconds = (interval_hours.clamp(1, 8_760) as i64).saturating_mul(3_600);
     let elapsed = now.saturating_sub(last_checked_at).max(0);
     Duration::from_secs(interval_seconds.saturating_sub(elapsed).max(0) as u64)
+}
+
+#[cfg(target_os = "macos")]
+fn macos_pkg_receipt_present() -> bool {
+    // pkgutil returns a non-zero exit when no receipt exists for the id, so
+    // success is a reliable signal that the .pkg installer was used.
+    std::process::Command::new("pkgutil")
+        .args(["--pkg-info-plist", MACOS_PKG_IDENTIFIER])
+        .output()
+        .map(|output| output.status.success())
+        .unwrap_or(false)
 }
 
 #[cfg(target_os = "windows")]
@@ -243,6 +264,20 @@ fn select_release_asset<'a>(
             InstallationKind::WindowsInstaller => assets
                 .iter()
                 .find(|asset| asset.name.contains(platform) && asset.name.ends_with("-setup.exe")),
+            _ => assets.iter().find(|asset| {
+                asset.name.contains(platform)
+                    && asset.name.contains("-portable.")
+                    && asset.name.ends_with(archive_extension)
+            }),
+        }
+    } else if platform.starts_with("macos-") {
+        // macOS releases contain a portable .zip and a .pkg installer.
+        // Mirror Windows: a .pkg-installed app updates via the .pkg, every
+        // other .app (portable zip) updates via the portable .zip.
+        match installation_kind {
+            InstallationKind::MacInstaller => assets
+                .iter()
+                .find(|asset| asset.name.contains(platform) && asset.name.ends_with("-setup.pkg")),
             _ => assets.iter().find(|asset| {
                 asset.name.contains(platform)
                     && asset.name.contains("-portable.")
@@ -456,6 +491,23 @@ where
         return Ok(installer_path);
     }
 
+    if installation_kind == InstallationKind::MacInstaller {
+        // The .pkg is run through the system installer, not unpacked here.
+        let pkg_path = temp_dir.join(format!("tiny-shell-v{version}-setup.pkg"));
+        std::fs::write(&pkg_path, &bytes).with_context(|| {
+            format!("failed to write downloaded installer {}", pkg_path.display())
+        })?;
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&pkg_path)
+            .with_context(|| {
+                format!("failed to open downloaded installer {}", pkg_path.display())
+            })?
+            .sync_all()
+            .context("failed to flush downloaded installer to disk")?;
+        return Ok(pkg_path);
+    }
+
     let cursor = std::io::Cursor::new(bytes);
 
     if url.ends_with(".tar.gz") {
@@ -588,7 +640,7 @@ pub fn install_and_restart(
     installation_kind: InstallationKind,
 ) -> anyhow::Result<()> {
     let current_exe = std::env::current_exe().context("failed to get current executable path")?;
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(target_os = "linux")]
     let _ = (expected_version, installation_kind);
 
     #[cfg(target_os = "linux")]
@@ -598,7 +650,11 @@ pub fn install_and_restart(
 
     #[cfg(target_os = "macos")]
     {
-        install_macos(new_path, &current_exe)?;
+        let _ = expected_version;
+        match installation_kind {
+            InstallationKind::MacInstaller => install_macos_pkg(new_path, &current_exe)?,
+            _ => install_macos(new_path, &current_exe)?,
+        }
     }
 
     #[cfg(target_os = "windows")]
@@ -744,6 +800,33 @@ fn install_macos(new_path: &std::path::Path, current_exe: &std::path::Path) -> a
         install_linux(new_path, current_exe)?;
     }
 
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn install_macos_pkg(pkg_path: &std::path::Path, _current_exe: &std::path::Path) -> anyhow::Result<()> {
+    // The .pkg's install-location targets /Applications, so install into the
+    // root domain and let the package lay the bundle down itself. installer
+    // requires root; elevate via osascript, which shows the standard macOS
+    // admin password prompt. The running process keeps its old inode alive,
+    // and restart() relaunches the freshly installed bundle.
+    let pkg = pkg_path.to_string_lossy().replace('\'', "'\\''");
+    let shell_command = format!("/usr/sbin/installer -pkg '{pkg}' -target /");
+    let apple_script = format!(
+        "do shell script \"{}\" with administrator privileges",
+        shell_command.replace('"', "\\\"")
+    );
+
+    let output = std::process::Command::new("osascript")
+        .args(["-e", &apple_script])
+        .output()
+        .context("failed to invoke installer via osascript")?;
+    if !output.status.success() {
+        anyhow::bail!(
+            "pkg installer failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
     Ok(())
 }
 
@@ -1110,6 +1193,42 @@ mod tests {
         )
         .unwrap();
         assert_eq!(selected.name, "tiny-shell-v1.1.0-windows-x86_64-setup.exe");
+    }
+
+    #[test]
+    fn macos_installer_selects_pkg_asset() {
+        let assets = vec![
+            asset("tiny-shell-v1.1.0-macos-aarch64-portable.zip"),
+            asset("tiny-shell-v1.1.0-macos-aarch64-setup.pkg"),
+        ];
+
+        let selected = select_release_asset(
+            &assets,
+            "macos-aarch64",
+            "zip",
+            InstallationKind::MacInstaller,
+        )
+        .unwrap();
+        assert_eq!(
+            selected.name,
+            "tiny-shell-v1.1.0-macos-aarch64-setup.pkg"
+        );
+    }
+
+    #[test]
+    fn macos_portable_selects_zip_asset() {
+        let assets = vec![
+            asset("tiny-shell-v1.1.0-macos-aarch64-portable.zip"),
+            asset("tiny-shell-v1.1.0-macos-aarch64-setup.pkg"),
+        ];
+
+        let selected =
+            select_release_asset(&assets, "macos-aarch64", "zip", InstallationKind::MacApp)
+                .unwrap();
+        assert_eq!(
+            selected.name,
+            "tiny-shell-v1.1.0-macos-aarch64-portable.zip"
+        );
     }
 
     #[test]
