@@ -362,6 +362,8 @@ pub struct ConfigFile {
     pub update_notify: bool,
     #[serde(default)]
     pub update_last_checked_at: i64,
+    #[serde(default)]
+    pub download_directory: String,
 }
 
 fn default_read_env_proxy() -> bool {
@@ -476,6 +478,7 @@ impl Default for ConfigFile {
             update_interval_hours: default_update_interval_hours(),
             update_notify: default_update_notify(),
             update_last_checked_at: 0,
+            download_directory: String::new(),
         }
     }
 }
@@ -1034,6 +1037,17 @@ impl ConfigStore {
         self.cache.update_last_checked_at = timestamp.max(0);
     }
 
+    pub fn download_directory(&self) -> Option<PathBuf> {
+        let path = self.cache.download_directory.trim();
+        (!path.is_empty()).then(|| PathBuf::from(path))
+    }
+
+    pub fn set_download_directory(&mut self, path: Option<&Path>) {
+        self.cache.download_directory = path
+            .map(|path| path.to_string_lossy().to_string())
+            .unwrap_or_default();
+    }
+
     pub fn lock_layout(&self) -> bool {
         self.cache.lock_layout
     }
@@ -1226,6 +1240,7 @@ impl ConfigStore {
         self.cache.update_interval_hours = source.cache.update_interval_hours;
         self.cache.update_notify = source.cache.update_notify;
         self.cache.update_last_checked_at = source.cache.update_last_checked_at;
+        self.cache.download_directory = source.cache.download_directory.clone();
     }
 
     pub fn get(&self, id: &str) -> Option<&Session> {
@@ -1682,6 +1697,7 @@ mod tests {
         assert_eq!(config.update_check_mode, UpdateCheckMode::Startup);
         assert_eq!(config.update_interval_hours, 24);
         assert!(config.update_notify);
+        assert!(config.download_directory.is_empty());
     }
 
     #[test]
@@ -1694,6 +1710,7 @@ mod tests {
         source.set_update_check_mode(UpdateCheckMode::Interval);
         source.set_update_interval_hours(12);
         source.set_update_notify(false);
+        source.set_download_directory(Some(Path::new("downloads")));
         latest.merge_interactive_preferences_from(&source);
 
         assert_eq!(latest.cache.connection_groups, ["production"]);
@@ -1701,6 +1718,10 @@ mod tests {
         assert_eq!(latest.update_check_mode(), UpdateCheckMode::Interval);
         assert_eq!(latest.update_interval_hours(), 12);
         assert!(!latest.update_notify());
+        assert_eq!(
+            latest.download_directory(),
+            Some(PathBuf::from("downloads"))
+        );
     }
 
     #[test]

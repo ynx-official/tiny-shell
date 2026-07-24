@@ -1,4 +1,8 @@
 use std::path::{Path, PathBuf};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 use std::time::Duration;
 
 use anyhow::Context;
@@ -279,8 +283,39 @@ pub enum UpdateStatus {
     UpToDate(ReleaseInfo),
     UpdateAvailable(UpdateInfo),
     Downloading(UpdateInfo, u64, u64),
+    DownloadCancelled(UpdateInfo),
+    DownloadFailed(UpdateInfo, String),
     ReadyToRestart(UpdateInfo, PathBuf),
     Error(String),
+}
+
+#[derive(Debug, Default)]
+struct DownloadCancellationInner {
+    cancelled: AtomicBool,
+    notify: tokio::sync::Notify,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct DownloadCancellation {
+    inner: Arc<DownloadCancellationInner>,
+}
+
+impl DownloadCancellation {
+    pub fn cancel(&self) {
+        self.inner.cancelled.store(true, Ordering::Relaxed);
+        self.inner.notify.notify_one();
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.inner.cancelled.load(Ordering::Relaxed)
+    }
+
+    async fn cancelled(&self) {
+        if self.is_cancelled() {
+            return;
+        }
+        self.inner.notify.notified().await;
+    }
 }
 
 /// Check GitHub Releases and return both availability and release notes.
@@ -346,6 +381,7 @@ async fn download_and_extract<F>(
     version: &str,
     expected_size: u64,
     installation_kind: InstallationKind,
+    cancellation: &DownloadCancellation,
     mut on_progress: F,
 ) -> anyhow::Result<PathBuf>
 where
@@ -358,23 +394,33 @@ where
         .build()
         .context("failed to build HTTP client")?;
 
-    let response = client
-        .get(url)
-        .send()
-        .await
-        .context("failed to download update")?
-        .error_for_status()
-        .context("update download returned an error status")?;
+    let response = tokio::select! {
+        _ = cancellation.cancelled() => anyhow::bail!("update download cancelled"),
+        response = client.get(url).send() => response.context("failed to download update")?,
+    }
+    .error_for_status()
+    .context("update download returned an error status")?;
 
     let total = response.content_length().unwrap_or(expected_size);
     let mut downloaded = 0_u64;
     let mut bytes = Vec::with_capacity(total.min(usize::MAX as u64) as usize);
     let mut stream = response.bytes_stream();
-    while let Some(chunk) = stream.next().await {
+    loop {
+        let chunk = tokio::select! {
+            _ = cancellation.cancelled() => anyhow::bail!("update download cancelled"),
+            chunk = stream.next() => chunk,
+        };
+        let Some(chunk) = chunk else {
+            break;
+        };
         let chunk = chunk.context("failed to read update bytes")?;
         downloaded += chunk.len() as u64;
         bytes.extend_from_slice(&chunk);
         on_progress(downloaded, total);
+    }
+
+    if cancellation.is_cancelled() {
+        anyhow::bail!("update download cancelled");
     }
 
     if expected_size > 0 && downloaded != expected_size {
@@ -453,7 +499,11 @@ where
 }
 
 /// Download and extract an update without touching the running application.
-pub async fn download_update<F>(info: &UpdateInfo, on_progress: F) -> anyhow::Result<PathBuf>
+pub async fn download_update<F>(
+    info: &UpdateInfo,
+    cancellation: &DownloadCancellation,
+    on_progress: F,
+) -> anyhow::Result<PathBuf>
 where
     F: FnMut(u64, u64),
 {
@@ -463,6 +513,7 @@ where
         &info.version,
         info.size,
         info.installation_kind,
+        cancellation,
         on_progress,
     )
     .await?;
@@ -973,7 +1024,8 @@ mod tests {
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     use super::{
-        GitHubAsset, InstallationKind, is_newer_version, prepare_update_dir, select_release_asset,
+        DownloadCancellation, GitHubAsset, InstallationKind, is_newer_version, prepare_update_dir,
+        select_release_asset,
     };
     #[cfg(target_os = "windows")]
     use super::{
@@ -988,6 +1040,17 @@ mod tests {
             browser_download_url: format!("https://example.invalid/{name}"),
             size: 1,
         }
+    }
+
+    #[test]
+    fn update_download_cancellation_is_shared_between_clones() {
+        let cancellation = DownloadCancellation::default();
+        let cloned = cancellation.clone();
+        assert!(!cancellation.is_cancelled());
+
+        cloned.cancel();
+
+        assert!(cancellation.is_cancelled());
     }
 
     #[cfg(target_os = "windows")]

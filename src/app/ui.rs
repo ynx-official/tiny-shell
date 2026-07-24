@@ -2645,6 +2645,8 @@ impl TinyShell {
         let has_update = matches!(
             self.updater_status,
             Some(crate::app::updater::UpdateStatus::UpdateAvailable(_))
+                | Some(crate::app::updater::UpdateStatus::DownloadCancelled(_))
+                | Some(crate::app::updater::UpdateStatus::DownloadFailed(_, _))
         );
         v_flex()
             .w_full()
@@ -5434,6 +5436,8 @@ impl TinyShell {
         let has_update = matches!(
             self.updater_status,
             Some(crate::app::updater::UpdateStatus::UpdateAvailable(_))
+                | Some(crate::app::updater::UpdateStatus::DownloadCancelled(_))
+                | Some(crate::app::updater::UpdateStatus::DownloadFailed(_, _))
         );
         let active_tab = self
             .active_tab

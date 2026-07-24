@@ -1,5 +1,27 @@
-use gpui::{Context, PathPromptOptions, Pixels, Point, Window};
+use gpui::{
+    Context, ParentElement as _, PathPromptOptions, Pixels, Point, Styled as _, Window, div, px,
+};
+use gpui_component::{
+    ActiveTheme as _, WindowExt as _,
+    button::{Button, ButtonVariants as _},
+    checkbox::Checkbox,
+    dialog::Dialog,
+    h_flex, v_flex,
+};
 use rust_i18n::t;
+
+#[derive(Clone)]
+enum SftpDownloadRequest {
+    Entries {
+        handle: SftpHandle,
+        remote_paths: Vec<String>,
+    },
+    Archive {
+        handle: SftpHandle,
+        remote_paths: Vec<String>,
+        suggested_name: String,
+    },
+}
 
 #[derive(Clone)]
 pub(crate) struct SftpTreeRow {
@@ -437,6 +459,191 @@ impl TinyShell {
         self.upload_sftp_files_to(remote_dir, window, cx);
     }
 
+    fn request_sftp_download_destination(
+        &mut self,
+        request: SftpDownloadRequest,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(directory) = self.config.download_directory() {
+            self.start_sftp_download(request, directory, cx);
+            return;
+        }
+
+        self.show_sftp_download_directory_prompt(request, window, cx);
+    }
+
+    fn show_sftp_download_directory_prompt(
+        &mut self,
+        request: SftpDownloadRequest,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let remember = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let view = cx.entity();
+        window.open_dialog(cx, move |dialog: Dialog, _window, _| {
+            dialog
+                .title(t!("confirm_download_directory_title").to_string())
+                .w(px(500.))
+                .content({
+                    let remember = remember.clone();
+                    move |content, _, cx| {
+                        content.child(
+                            v_flex()
+                                .w_full()
+                                .gap_3()
+                                .child(
+                                    div()
+                                        .text_sm()
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child(t!("confirm_download_directory_desc").to_string()),
+                                )
+                                .child(
+                                    Checkbox::new("remember-download-directory")
+                                        .label(t!("remember_download_directory").to_string())
+                                        .checked(
+                                            remember.load(std::sync::atomic::Ordering::Relaxed),
+                                        )
+                                        .on_click({
+                                            let remember = remember.clone();
+                                            move |checked, window, _| {
+                                                remember.store(
+                                                    *checked,
+                                                    std::sync::atomic::Ordering::Relaxed,
+                                                );
+                                                window.refresh();
+                                            }
+                                        }),
+                                ),
+                        )
+                    }
+                })
+                .footer(
+                    h_flex()
+                        .w_full()
+                        .justify_end()
+                        .gap_2()
+                        .child(
+                            Button::new("cancel-download-directory")
+                                .ghost()
+                                .label(t!("cancel").to_string())
+                                .on_click(|_, window, cx| window.close_dialog(cx)),
+                        )
+                        .child(
+                            Button::new("choose-download-directory")
+                                .primary()
+                                .label(t!("choose_directory").to_string())
+                                .on_click({
+                                    let remember = remember.clone();
+                                    let view = view.clone();
+                                    let request = request.clone();
+                                    move |_, window, cx| {
+                                        let remember =
+                                            remember.load(std::sync::atomic::Ordering::Relaxed);
+                                        window.close_dialog(cx);
+                                        view.update(cx, |this, cx| {
+                                            this.pick_sftp_download_destination(
+                                                request.clone(),
+                                                remember,
+                                                window,
+                                                cx,
+                                            );
+                                        });
+                                    }
+                                }),
+                        ),
+                )
+        });
+    }
+
+    fn pick_sftp_download_destination(
+        &mut self,
+        request: SftpDownloadRequest,
+        remember: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let prompt = cx.prompt_for_paths(PathPromptOptions {
+            files: false,
+            directories: true,
+            multiple: false,
+            prompt: Some(t!("select_download_directory").to_string().into()),
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            match prompt.await {
+                Ok(Ok(Some(mut paths))) => {
+                    if let Some(directory) = paths.pop() {
+                        this.update(cx, |this, cx| {
+                            if remember {
+                                this.config.set_download_directory(Some(&directory));
+                                this.mark_config_preferences_dirty();
+                            }
+                            this.start_sftp_download(request, directory, cx);
+                        })?;
+                    }
+                }
+                Ok(Err(error)) => {
+                    this.update(cx, |this, cx| {
+                        this.status = t!(
+                            "download_directory_picker_failed",
+                            error = error.to_string()
+                        )
+                        .to_string()
+                        .into();
+                        cx.notify();
+                    })?;
+                }
+                _ => {}
+            }
+            Ok::<(), anyhow::Error>(())
+        })
+        .detach();
+    }
+
+    fn start_sftp_download(
+        &mut self,
+        request: SftpDownloadRequest,
+        directory: std::path::PathBuf,
+        cx: &mut Context<Self>,
+    ) {
+        match request {
+            SftpDownloadRequest::Entries {
+                handle,
+                remote_paths,
+            } => {
+                let local_dir = directory.to_string_lossy().to_string();
+                if remote_paths.len() == 1 {
+                    handle.download(remote_paths[0].clone(), local_dir);
+                } else {
+                    for remote in remote_paths {
+                        let _ = handle.commands.send(crate::sftp::SftpCommand::Download {
+                            remote,
+                            local_dir: local_dir.clone(),
+                        });
+                    }
+                }
+                if let Some(sftp) = self.active_sftp_mut() {
+                    sftp.selected_entries.clear();
+                }
+            }
+            SftpDownloadRequest::Archive {
+                handle,
+                remote_paths,
+                suggested_name,
+            } => {
+                let local_zip = directory.join(suggested_name);
+                let _ = handle
+                    .commands
+                    .send(crate::sftp::SftpCommand::PackDownload {
+                        remote_paths,
+                        local_zip: local_zip.to_string_lossy().to_string(),
+                    });
+            }
+        }
+        self.show_transfers_dialog = true;
+        cx.notify();
+    }
+
     pub(crate) fn trigger_sftp_context_pack_download(
         &mut self,
         window: &mut Window,
@@ -461,26 +668,18 @@ impl TinyShell {
         } else {
             "selection.zip".to_string()
         };
-        let prompt = cx.prompt_for_new_path(std::path::Path::new("."), Some(&suggested_name));
         let Some(handle) = self.active_sftp_handle().cloned() else {
             return;
         };
-        cx.spawn_in(window, async move |this, cx| {
-            if let Ok(Ok(Some(path))) = prompt.await {
-                let _ = handle
-                    .commands
-                    .send(crate::sftp::SftpCommand::PackDownload {
-                        remote_paths,
-                        local_zip: path.to_string_lossy().to_string(),
-                    });
-                this.update(cx, |this, cx| {
-                    this.show_transfers_dialog = true;
-                    cx.notify();
-                })?;
-            }
-            Ok::<(), anyhow::Error>(())
-        })
-        .detach();
+        self.request_sftp_download_destination(
+            SftpDownloadRequest::Archive {
+                handle,
+                remote_paths,
+                suggested_name,
+            },
+            window,
+            cx,
+        );
     }
 
     pub(crate) fn trigger_sftp_context_new_file(
@@ -569,40 +768,14 @@ impl TinyShell {
         let Some(handle) = self.active_sftp_handle().cloned() else {
             return;
         };
-        let path_prompt = cx.prompt_for_paths(PathPromptOptions {
-            files: false,
-            directories: true,
-            multiple: false,
-            prompt: Some("Select Download Folder".into()),
-        });
-        cx.spawn_in(window, async move |this, cx| {
-            match path_prompt.await {
-                Ok(Ok(Some(mut paths))) => {
-                    if let Some(folder) = paths.pop() {
-                        let local_path = folder.to_string_lossy().to_string();
-                        tracing::info!(
-                            "[sftp] initiating download of '{}' to '{}'",
-                            remote_path,
-                            local_path
-                        );
-                        handle.download(remote_path, local_path);
-                        this.update(cx, |this, cx| {
-                            this.show_transfers_dialog = true;
-                            cx.notify();
-                        })?;
-                    }
-                }
-                Ok(Err(err)) => {
-                    this.update(cx, |this, cx| {
-                        this.status = format!("download picker failed: {err}").into();
-                        cx.notify();
-                    })?;
-                }
-                _ => {}
-            }
-            Ok::<(), anyhow::Error>(())
-        })
-        .detach();
+        self.request_sftp_download_destination(
+            SftpDownloadRequest::Entries {
+                handle,
+                remote_paths: vec![remote_path],
+            },
+            window,
+            cx,
+        );
     }
 
     pub(crate) fn upload_sftp_files(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -749,41 +922,14 @@ impl TinyShell {
             return;
         };
 
-        let path_prompt = cx.prompt_for_paths(PathPromptOptions {
-            files: false,
-            directories: true,
-            multiple: false,
-            prompt: Some("Select Download Folder".into()),
-        });
-
-        cx.spawn_in(window, async move |this, cx| {
-            if let Ok(Ok(Some(mut paths))) = path_prompt.await {
-                if let Some(folder) = paths.pop() {
-                    let local_dir = folder.to_string_lossy().to_string();
-                    tracing::info!(
-                        "[sftp] initiating batch download of {} entries to '{}'",
-                        selected.len(),
-                        local_dir
-                    );
-                    for remote in selected {
-                        let _ = handle.commands.send(crate::sftp::SftpCommand::Download {
-                            remote,
-                            local_dir: local_dir.clone(),
-                        });
-                    }
-
-                    let _ = this.update(cx, |this, cx| {
-                        if let Some(sftp_mut) = this.active_sftp_mut() {
-                            sftp_mut.selected_entries.clear();
-                        }
-                        this.show_transfers_dialog = true;
-                        cx.notify();
-                    });
-                }
-            }
-            Ok::<(), anyhow::Error>(())
-        })
-        .detach();
+        self.request_sftp_download_destination(
+            SftpDownloadRequest::Entries {
+                handle,
+                remote_paths: selected,
+            },
+            window,
+            cx,
+        );
     }
 
     pub(crate) fn upload_sftp_files_batch(&mut self, paths: Vec<String>, cx: &mut Context<Self>) {

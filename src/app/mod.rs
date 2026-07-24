@@ -640,6 +640,8 @@ pub(crate) struct TinyShell {
     pub(crate) recording_action: Option<String>,
     pub(crate) active_dialog: Option<DialogKind>,
     pub(crate) updater_status: Option<updater::UpdateStatus>,
+    pub(crate) update_download_cancellation: Option<updater::DownloadCancellation>,
+    pub(crate) update_download_generation: u64,
     pub(crate) update_schedule_generation: u64,
     /// Error message when a recorded keybinding conflicts with another
     pub(crate) keybind_error: Option<(String, String)>, // (action_id, error_message)
@@ -1146,6 +1148,8 @@ impl TinyShell {
             recording_action: None,
             active_dialog: None,
             updater_status: None,
+            update_download_cancellation: None,
+            update_download_generation: 0,
             update_schedule_generation: 0,
             keybind_error: None,
             keybinds_suspended: false,

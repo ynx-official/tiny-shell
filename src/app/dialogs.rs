@@ -1,8 +1,8 @@
 use gpui::{
     Anchor, Animation, AnimationExt as _, AnyWindowHandle, AppContext as _, Context, ElementId,
     Entity, FontWeight, InteractiveElement as _, IntoElement, MouseButton, ParentElement as _,
-    Render, SharedString, StatefulInteractiveElement as _, Styled as _, Window, div,
-    prelude::FluentBuilder as _, px, rems,
+    PathPromptOptions, Render, SharedString, StatefulInteractiveElement as _, Styled as _, Window,
+    div, prelude::FluentBuilder as _, px, rems,
 };
 use gpui_component::{
     ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, Size, WindowExt as _,
@@ -19,6 +19,17 @@ use gpui_component::{
     v_flex,
 };
 use std::time::Duration;
+
+fn update_progress_percent(done: u64, total: u64) -> u64 {
+    if total == 0 {
+        0
+    } else {
+        done.saturating_mul(100)
+            .checked_div(total)
+            .unwrap_or(0)
+            .min(100)
+    }
+}
 
 #[derive(Clone)]
 struct QuickCommandDialogInputs {
@@ -3882,9 +3893,15 @@ impl TinyShell {
 
     pub(crate) fn download_available_update(&mut self, cx: &mut Context<Self>) {
         let info = match self.updater_status.clone() {
-            Some(crate::app::updater::UpdateStatus::UpdateAvailable(info)) => info,
+            Some(crate::app::updater::UpdateStatus::UpdateAvailable(info))
+            | Some(crate::app::updater::UpdateStatus::DownloadCancelled(info))
+            | Some(crate::app::updater::UpdateStatus::DownloadFailed(info, _)) => info,
             _ => return,
         };
+        self.update_download_generation = self.update_download_generation.wrapping_add(1);
+        let generation = self.update_download_generation;
+        let cancellation = crate::app::updater::DownloadCancellation::default();
+        self.update_download_cancellation = Some(cancellation.clone());
         self.updater_status = Some(crate::app::updater::UpdateStatus::Downloading(
             info.clone(),
             0,
@@ -3895,24 +3912,31 @@ impl TinyShell {
         let view = cx.entity();
         cx.spawn({
             let view = view.clone();
-            |_, cx: &mut gpui::AsyncApp| {
+            move |_, cx: &mut gpui::AsyncApp| {
                 let cx = cx.clone();
                 async move {
                     let (result_tx, result_rx) = futures::channel::oneshot::channel();
                     let (progress_tx, mut progress_rx) = futures::channel::mpsc::unbounded();
                     let update_info = info.clone();
+                    let download_cancellation = cancellation.clone();
                     crate::app::shared_runtime().spawn(async move {
-                        let result =
-                            crate::app::updater::download_update(&update_info, |done, total| {
+                        let result = crate::app::updater::download_update(
+                            &update_info,
+                            &download_cancellation,
+                            |done, total| {
                                 let _ = progress_tx.unbounded_send((done, total));
-                            })
-                            .await;
+                            },
+                        )
+                        .await;
                         let _ = result_tx.send(result);
                     });
                     use futures::StreamExt as _;
                     while let Some((done, total)) = progress_rx.next().await {
                         cx.update(|cx| {
                             view.update(cx, |this, cx| {
+                                if this.update_download_generation != generation {
+                                    return;
+                                }
                                 this.updater_status =
                                     Some(crate::app::updater::UpdateStatus::Downloading(
                                         info.clone(),
@@ -3926,30 +3950,55 @@ impl TinyShell {
                     let result = result_rx
                         .await
                         .unwrap_or_else(|_| Err(anyhow::anyhow!("update download cancelled")));
-                    cx.update(|cx| match result {
-                        Ok(path) => {
-                            view.update(cx, |this, cx| {
-                                this.updater_status =
-                                    Some(crate::app::updater::UpdateStatus::ReadyToRestart(
-                                        info.clone(),
-                                        path,
-                                    ));
-                                cx.notify();
-                            });
-                        }
-                        Err(err) => {
-                            view.update(cx, |this, cx| {
-                                this.updater_status = Some(
-                                    crate::app::updater::UpdateStatus::Error(format!("{err:#}")),
-                                );
-                                cx.notify();
-                            });
-                        }
+                    cx.update(|cx| {
+                        view.update(cx, |this, cx| {
+                            if this.update_download_generation != generation {
+                                return;
+                            }
+                            this.update_download_cancellation = None;
+                            match result {
+                                Ok(path) => {
+                                    this.updater_status =
+                                        Some(crate::app::updater::UpdateStatus::ReadyToRestart(
+                                            info.clone(),
+                                            path,
+                                        ));
+                                }
+                                Err(_err) if cancellation.is_cancelled() => {
+                                    this.updater_status =
+                                        Some(crate::app::updater::UpdateStatus::DownloadCancelled(
+                                            info.clone(),
+                                        ));
+                                }
+                                Err(err) => {
+                                    this.updater_status =
+                                        Some(crate::app::updater::UpdateStatus::DownloadFailed(
+                                            info.clone(),
+                                            format!("{err:#}"),
+                                        ));
+                                }
+                            }
+                            cx.notify();
+                        });
                     });
                 }
             }
         })
         .detach();
+    }
+
+    pub(crate) fn cancel_update_download(&mut self, cx: &mut Context<Self>) {
+        let Some(crate::app::updater::UpdateStatus::Downloading(info, _, _)) =
+            self.updater_status.clone()
+        else {
+            return;
+        };
+        if let Some(cancellation) = self.update_download_cancellation.take() {
+            cancellation.cancel();
+        }
+        self.update_download_generation = self.update_download_generation.wrapping_add(1);
+        self.updater_status = Some(crate::app::updater::UpdateStatus::DownloadCancelled(info));
+        cx.notify();
     }
 
     pub(crate) fn confirm_update_restart(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -4057,6 +4106,15 @@ impl TinyShell {
                             &status,
                             Some(crate::app::updater::UpdateStatus::ReadyToRestart(_, _))
                         );
+                        let is_downloading = matches!(
+                            &status,
+                            Some(crate::app::updater::UpdateStatus::Downloading(_, _, _))
+                        );
+                        let can_retry = matches!(
+                            &status,
+                            Some(crate::app::updater::UpdateStatus::DownloadCancelled(_))
+                                | Some(crate::app::updater::UpdateStatus::DownloadFailed(_, _))
+                        );
                         let (title, detail, notes, has_update, is_busy, is_error) = match status.clone() {
                             Some(crate::app::updater::UpdateStatus::Checking) => (
                                 t!("checking_update").to_string(),
@@ -4095,7 +4153,12 @@ impl TinyShell {
                             Some(crate::app::updater::UpdateStatus::Downloading(info, done, total)) => (
                                 t!("update_downloading").to_string(),
                                 if total > 0 {
-                                    format!("{} / {}", format_bytes(done), format_bytes(total))
+                                    format!(
+                                        "{}%  ·  {} / {}",
+                                        update_progress_percent(done, total),
+                                        format_bytes(done),
+                                        format_bytes(total)
+                                    )
                                 } else {
                                     format_bytes(done)
                                 },
@@ -4103,6 +4166,22 @@ impl TinyShell {
                                 false,
                                 true,
                                 false,
+                            ),
+                            Some(crate::app::updater::UpdateStatus::DownloadCancelled(info)) => (
+                                t!("update_download_cancelled").to_string(),
+                                t!("update_download_cancelled_desc").to_string(),
+                                info.notes,
+                                true,
+                                false,
+                                false,
+                            ),
+                            Some(crate::app::updater::UpdateStatus::DownloadFailed(info, error)) => (
+                                t!("update_download_failed").to_string(),
+                                error,
+                                info.notes,
+                                true,
+                                false,
+                                true,
                             ),
                             Some(crate::app::updater::UpdateStatus::ReadyToRestart(info, _)) => (
                                 t!("update_install_complete").to_string(),
@@ -4257,11 +4336,28 @@ impl TinyShell {
                                             _ => unreachable!(),
                                         };
                                         this.child(
-                                            Progress::new("update-download-progress")
-                                                .with_size(px(5.))
-                                                .value(if total > 0 { done as f32 / total as f32 } else { 0.0 })
-                                                .color(cx.theme().primary)
-                                                .w_full(),
+                                            v_flex()
+                                                .w_full()
+                                                .gap_1()
+                                                .child(
+                                                    h_flex()
+                                                        .w_full()
+                                                        .justify_between()
+                                                        .text_size(rems(0.75))
+                                                        .text_color(cx.theme().muted_foreground)
+                                                        .child(t!("update_download_progress").to_string())
+                                                        .child(format!(
+                                                            "{}%",
+                                                            update_progress_percent(done, total)
+                                                        )),
+                                                )
+                                                .child(
+                                                    Progress::new("update-download-progress")
+                                                        .with_size(px(6.))
+                                                        .value(if total > 0 { done as f32 / total as f32 } else { 0.0 })
+                                                        .color(cx.theme().primary)
+                                                        .w_full(),
+                                                ),
                                         )
                                     },
                                 )
@@ -4290,11 +4386,28 @@ impl TinyShell {
                                                     |this, _, _, cx| this.check_for_updates(cx),
                                                 )),
                                         )
+                                        .when(is_downloading, |this| {
+                                            this.child(
+                                                Button::new("update-cancel-download")
+                                                    .secondary()
+                                                    .label(t!("update_cancel_download").to_string())
+                                                    .on_click(window.listener_for(
+                                                        &view,
+                                                        |this, _, _, cx| {
+                                                            this.cancel_update_download(cx)
+                                                        },
+                                                    )),
+                                            )
+                                        })
                                         .when(has_update, |this| {
                                             this.child(
                                                 Button::new("update-download")
                                                     .primary()
-                                                    .label(t!("update_download").to_string())
+                                                    .label(if can_retry {
+                                                        t!("update_download_again").to_string()
+                                                    } else {
+                                                        t!("update_download").to_string()
+                                                    })
                                                     .on_click(window.listener_for(
                                                         &view,
                                                         |this, _, _, cx| {
@@ -4323,6 +4436,48 @@ impl TinyShell {
         });
     }
 
+    fn choose_download_directory(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let prompt = cx.prompt_for_paths(PathPromptOptions {
+            files: false,
+            directories: true,
+            multiple: false,
+            prompt: Some(t!("select_download_directory").to_string().into()),
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            match prompt.await {
+                Ok(Ok(Some(mut paths))) => {
+                    if let Some(path) = paths.pop() {
+                        this.update(cx, |this, cx| {
+                            this.config.set_download_directory(Some(&path));
+                            this.mark_config_preferences_dirty();
+                            cx.notify();
+                        })?;
+                    }
+                }
+                Ok(Err(error)) => {
+                    this.update(cx, |this, cx| {
+                        this.status = t!(
+                            "download_directory_picker_failed",
+                            error = error.to_string()
+                        )
+                        .to_string()
+                        .into();
+                        cx.notify();
+                    })?;
+                }
+                _ => {}
+            }
+            Ok::<(), anyhow::Error>(())
+        })
+        .detach();
+    }
+
+    fn clear_download_directory(&mut self, cx: &mut Context<Self>) {
+        self.config.set_download_directory(None);
+        self.mark_config_preferences_dirty();
+        cx.notify();
+    }
+
     pub(crate) fn render_settings_content(
         &self,
         view: &gpui::Entity<Self>,
@@ -4335,6 +4490,20 @@ impl TinyShell {
         };
         let version = env!("CARGO_PKG_VERSION");
         let installation_kind = crate::app::updater::installation_kind();
+        let installation_label = match installation_kind {
+            crate::app::updater::InstallationKind::WindowsInstaller => {
+                t!("installation_setup").to_string()
+            }
+            crate::app::updater::InstallationKind::Portable => {
+                t!("installation_portable").to_string()
+            }
+            crate::app::updater::InstallationKind::MacApp => {
+                t!("installation_app_bundle").to_string()
+            }
+            crate::app::updater::InstallationKind::LinuxPackage => {
+                t!("installation_system_package").to_string()
+            }
+        };
         let runtime_environment = crate::app::updater::runtime_environment_label();
         let view_clone_for_general = view.clone();
         let sync_endpoint_input = self.sync_endpoint_input.clone();
@@ -4808,6 +4977,78 @@ impl TinyShell {
                                                             }
                                                         })
                                                     )
+                                                )
+                                        )
+                                        .group(
+                                            SettingGroup::new()
+                                                .title(t!("settings_group_download").to_string())
+                                                .item(
+                                                    SettingItem::new(
+                                                        t!("download_directory").to_string(),
+                                                        SettingField::render({
+                                                            let view = view_clone_for_general.clone();
+                                                            move |_, window, cx| {
+                                                                let directory = view
+                                                                    .read(cx)
+                                                                    .config
+                                                                    .download_directory();
+                                                                h_flex()
+                                                                    .max_w(px(520.))
+                                                                    .gap_2()
+                                                                    .items_center()
+                                                                    .child(
+                                                                        div()
+                                                                            .min_w(px(180.))
+                                                                            .max_w(px(320.))
+                                                                            .flex_1()
+                                                                            .truncate()
+                                                                            .text_sm()
+                                                                            .text_color(if directory.is_some() {
+                                                                                cx.theme().foreground
+                                                                            } else {
+                                                                                cx.theme().muted_foreground
+                                                                            })
+                                                                            .child(
+                                                                                directory
+                                                                                    .as_ref()
+                                                                                    .map(|path| path.to_string_lossy().to_string())
+                                                                                    .unwrap_or_else(|| t!("download_directory_not_set").to_string()),
+                                                                            ),
+                                                                    )
+                                                                    .child(
+                                                                        Button::new("choose-download-directory")
+                                                                            .small()
+                                                                            .icon(IconName::FolderOpen)
+                                                                            .label(t!("choose_directory").to_string())
+                                                                            .on_click(window.listener_for(
+                                                                                &view,
+                                                                                |this, _, window, cx| {
+                                                                                    this.choose_download_directory(window, cx)
+                                                                                },
+                                                                            )),
+                                                                    )
+                                                                    .when(directory.is_some(), |this| {
+                                                                        this.child(
+                                                                            Button::new("clear-download-directory")
+                                                                                .small()
+                                                                                .ghost()
+                                                                                .icon(IconName::Close)
+                                                                                .label(t!("clear").to_string())
+                                                                                .on_click({
+                                                                                    let view = view.clone();
+                                                                                    move |_, _, cx| {
+                                                                                        view.update(cx, |this, cx| {
+                                                                                            this.clear_download_directory(cx)
+                                                                                        });
+                                                                                    }
+                                                                                }),
+                                                                        )
+                                                                    })
+                                                                    .into_any_element()
+                                                            }
+                                                        }),
+                                                    )
+                                                    .description(t!("download_directory_desc").to_string()),
                                                 )
                                         )
                                         .group(
@@ -5290,93 +5531,142 @@ impl TinyShell {
                                                 .item(SettingItem::render({
                                                     let view = view.clone();
                                                     move |_, window, cx| {
-                                                        let status_text = {
+                                                        let (status_text, progress) = {
                                                             let state = view.read(cx);
                                                             match &state.updater_status {
                                                                 Some(crate::app::updater::UpdateStatus::Checking) => {
-                                                                    Some(t!("checking_update").to_string())
+                                                                    (t!("checking_update").to_string(), None)
                                                                 }
                                                                 Some(crate::app::updater::UpdateStatus::UpToDate(_)) => {
-                                                                    Some(t!("update_latest").to_string())
+                                                                    (t!("update_latest").to_string(), None)
                                                                 }
                                                                 Some(crate::app::updater::UpdateStatus::UpdateAvailable(info)) => {
-                                                                    Some(t!("update_available", version = info.version.clone()).to_string())
+                                                                    (t!("update_available", version = info.version.clone()).to_string(), None)
                                                                 }
-                                                                Some(crate::app::updater::UpdateStatus::Downloading(_, _, _)) => {
-                                                                    Some(t!("update_downloading").to_string())
+                                                                Some(crate::app::updater::UpdateStatus::Downloading(_, done, total)) => {
+                                                                    (
+                                                                        format!(
+                                                                            "{} · {}%",
+                                                                            t!("update_downloading"),
+                                                                            update_progress_percent(*done, *total)
+                                                                        ),
+                                                                        Some((*done, *total)),
+                                                                    )
+                                                                }
+                                                                Some(crate::app::updater::UpdateStatus::DownloadCancelled(_)) => {
+                                                                    (t!("update_download_cancelled").to_string(), None)
+                                                                }
+                                                                Some(crate::app::updater::UpdateStatus::DownloadFailed(_, error)) => {
+                                                                    (t!("update_download_error", error = error.clone()).to_string(), None)
                                                                 }
                                                                 Some(crate::app::updater::UpdateStatus::ReadyToRestart(_, _)) => {
-                                                                    Some(t!("update_install_complete").to_string())
+                                                                    (t!("update_install_complete").to_string(), None)
                                                                 }
                                                                 Some(crate::app::updater::UpdateStatus::Error(msg)) => {
-                                                                    Some(t!("update_error", error = msg.clone()).to_string())
+                                                                    (t!("update_error", error = msg.clone()).to_string(), None)
                                                                 }
-                                                                None => None,
+                                                                None => (t!("update_not_checked").to_string(), None),
                                                             }
                                                         };
                                                         let has_update = matches!(
                                                             view.read(cx).updater_status,
                                                             Some(crate::app::updater::UpdateStatus::UpdateAvailable(_))
+                                                                | Some(crate::app::updater::UpdateStatus::DownloadCancelled(_))
+                                                                | Some(crate::app::updater::UpdateStatus::DownloadFailed(_, _))
+                                                        );
+                                                        let is_downloading = progress.is_some();
+                                                        let can_retry = matches!(
+                                                            view.read(cx).updater_status,
+                                                            Some(crate::app::updater::UpdateStatus::DownloadCancelled(_))
+                                                                | Some(crate::app::updater::UpdateStatus::DownloadFailed(_, _))
                                                         );
                                                         let can_restart = matches!(
                                                             view.read(cx).updater_status,
                                                             Some(crate::app::updater::UpdateStatus::ReadyToRestart(_, _))
                                                         );
 
-                                                        h_flex()
+                                                        v_flex()
                                                             .w_full()
-                                                            .justify_between()
-                                                            .gap_3()
-                                                            .items_center()
-                                                            .child(
-                                                                div()
-                                                                    .min_w_0()
-                                                                    .flex_1()
-                                                                    .text_sm()
-                                                                    .child(status_text.unwrap_or_else(|| t!("update_not_checked").to_string()))
-                                                            )
+                                                            .gap_2()
                                                             .child(
                                                                 h_flex()
-                                                                    .flex_shrink_0()
-                                                                    .gap_2()
+                                                                    .w_full()
+                                                                    .justify_between()
+                                                                    .gap_3()
                                                                     .items_center()
                                                                     .child(
-                                                                        Button::new("check-update")
-                                                                            .label(t!("check_update").to_string())
-                                                                            .on_click({
-                                                                                let view = view.clone();
-                                                                                move |_, _window, cx| {
-                                                                                    view.update(cx, |this, cx| this.check_for_updates(cx));
-                                                                                }
-                                                                            }),
+                                                                        div()
+                                                                            .min_w_0()
+                                                                            .flex_1()
+                                                                            .text_sm()
+                                                                            .child(status_text)
                                                                     )
-                                                                    .when(has_update, |this| {
-                                                                        this.child(
-                                                                            Button::new("download-update")
-                                                                                .primary()
-                                                                                .label(t!("update_download").to_string())
-                                                                                .on_click({
-                                                                                    let view = view.clone();
-                                                                                    move |_, _window, cx| {
-                                                                                        view.update(cx, |this, cx| this.download_available_update(cx));
-                                                                                    }
-                                                                                }),
-                                                                        )
-                                                                    })
-                                                                    .when(can_restart, |this| {
-                                                                        this.child(
-                                                                            Button::new("restart-update")
-                                                                                .primary()
-                                                                                .label(t!("update_restart_now").to_string())
-                                                                                .on_click(window.listener_for(
-                                                                                    &view,
-                                                                                    |this, _, window, cx| {
-                                                                                        this.confirm_update_restart(window, cx)
-                                                                                    },
-                                                                                )),
-                                                                        )
-                                                                    }),
+                                                                    .child(
+                                                                        h_flex()
+                                                                            .flex_shrink_0()
+                                                                            .gap_2()
+                                                                            .items_center()
+                                                                            .child(
+                                                                                Button::new("check-update")
+                                                                                    .disabled(is_downloading)
+                                                                                    .label(t!("check_update").to_string())
+                                                                                    .on_click({
+                                                                                        let view = view.clone();
+                                                                                        move |_, _window, cx| {
+                                                                                            view.update(cx, |this, cx| this.check_for_updates(cx));
+                                                                                        }
+                                                                                    }),
+                                                                            )
+                                                                            .when(is_downloading, |this| {
+                                                                                this.child(
+                                                                                    Button::new("cancel-update-download")
+                                                                                        .secondary()
+                                                                                        .label(t!("update_cancel_download").to_string())
+                                                                                        .on_click({
+                                                                                            let view = view.clone();
+                                                                                            move |_, _window, cx| {
+                                                                                                view.update(cx, |this, cx| this.cancel_update_download(cx));
+                                                                                            }
+                                                                                        }),
+                                                                                )
+                                                                            })
+                                                                            .when(has_update, |this| {
+                                                                                this.child(
+                                                                                    Button::new("download-update")
+                                                                                        .primary()
+                                                                                        .label(if can_retry { t!("update_download_again").to_string() } else { t!("update_download").to_string() })
+                                                                                        .on_click({
+                                                                                            let view = view.clone();
+                                                                                            move |_, _window, cx| {
+                                                                                                view.update(cx, |this, cx| this.download_available_update(cx));
+                                                                                            }
+                                                                                        }),
+                                                                                )
+                                                                            })
+                                                                            .when(can_restart, |this| {
+                                                                                this.child(
+                                                                                    Button::new("restart-update")
+                                                                                        .primary()
+                                                                                        .label(t!("update_restart_now").to_string())
+                                                                                        .on_click(window.listener_for(
+                                                                                            &view,
+                                                                                            |this, _, window, cx| {
+                                                                                                this.confirm_update_restart(window, cx)
+                                                                                            },
+                                                                                        )),
+                                                                                )
+                                                                            }),
+                                                                    ),
                                                             )
+                                                            .when_some(progress, |this, (done, total)| {
+                                                                this.child(
+                                                                    Progress::new("settings-update-progress")
+                                                                        .with_size(px(6.))
+                                                                        .value(if total > 0 { done as f32 / total as f32 } else { 0.0 })
+                                                                        .color(cx.theme().primary)
+                                                                        .w_full(),
+                                                                )
+                                                            })
                                                     }
                                                 }))
                                         )
@@ -5386,7 +5676,65 @@ impl TinyShell {
                                         .icon(IconName::Info)
                                         .group(
                                             SettingGroup::new()
-                                                .title(t!("about_title").to_string())
+                                                .item(SettingItem::render(move |_, _, cx| {
+                                                    h_flex()
+                                                        .w_full()
+                                                        .items_center()
+                                                        .gap_4()
+                                                        .py_2()
+                                                        .child(
+                                                            div()
+                                                                .size(px(56.))
+                                                                .flex_shrink_0()
+                                                                .flex()
+                                                                .items_center()
+                                                                .justify_center()
+                                                                .rounded_md()
+                                                                .bg(cx.theme().primary.opacity(0.12))
+                                                                .text_color(cx.theme().primary)
+                                                                .child(
+                                                                    Icon::new(IconName::SquareTerminal)
+                                                                        .with_size(Size::Large),
+                                                                ),
+                                                        )
+                                                        .child(
+                                                            v_flex()
+                                                                .min_w_0()
+                                                                .flex_1()
+                                                                .gap_1()
+                                                                .child(
+                                                                    div()
+                                                                        .text_size(rems(1.2))
+                                                                        .font_weight(FontWeight::SEMIBOLD)
+                                                                        .child(t!("app_name").to_string()),
+                                                                )
+                                                                .child(
+                                                                    div()
+                                                                        .text_sm()
+                                                                        .text_color(cx.theme().muted_foreground)
+                                                                        .child(t!("about_subtitle").to_string()),
+                                                                )
+                                                                .child(
+                                                                    div()
+                                                                        .text_size(rems(0.75))
+                                                                        .text_color(cx.theme().muted_foreground)
+                                                                        .child(format!("v{version}")),
+                                                                ),
+                                                        )
+                                                        .child(
+                                                            Button::new("about-github")
+                                                                .secondary()
+                                                                .icon(IconName::Github)
+                                                                .label(t!("about_view_project").to_string())
+                                                                .on_click(|_, _, _| {
+                                                                    let _ = open::that("https://github.com/ynx-official/tiny-shell");
+                                                                }),
+                                                        )
+                                                }))
+                                        )
+                                        .group(
+                                            SettingGroup::new()
+                                                .title(t!("about_version_info").to_string())
                                                 .item(
                                                     SettingItem::new(
                                                         t!("about_app_version").to_string(),
@@ -5399,13 +5747,7 @@ impl TinyShell {
                                                     SettingItem::new(
                                                         t!("about_installation_type").to_string(),
                                                         SettingField::render(move |_, _, _| {
-                                                            let label = match installation_kind {
-                                                                crate::app::updater::InstallationKind::WindowsInstaller => t!("installation_setup").to_string(),
-                                                                crate::app::updater::InstallationKind::Portable => t!("installation_portable").to_string(),
-                                                                crate::app::updater::InstallationKind::MacApp => t!("installation_app_bundle").to_string(),
-                                                                crate::app::updater::InstallationKind::LinuxPackage => t!("installation_system_package").to_string(),
-                                                            };
-                                                            div().text_sm().child(label)
+                                                            div().text_sm().child(installation_label.clone())
                                                         })
                                                     )
                                                 )
@@ -5421,22 +5763,26 @@ impl TinyShell {
                                         .group(
                                             SettingGroup::new()
                                                 .item(SettingItem::render(move |_, _, cx| {
-                                                    v_flex()
+                                                    h_flex()
                                                         .w_full()
-                                                        .gap_2()
                                                         .items_center()
+                                                        .justify_between()
+                                                        .gap_4()
                                                         .child(
                                                             div()
+                                                                .min_w_0()
+                                                                .flex_1()
                                                                 .text_sm()
                                                                 .text_color(cx.theme().muted_foreground)
                                                                 .child(t!("about_feedback_hint")),
                                                         )
                                                         .child(
                                                             Button::new("github-link")
-                                                                .label("https://github.com/ynx-official/tiny-shell")
-                                                                .ghost()
+                                                                .icon(IconName::ExternalLink)
+                                                                .label(t!("about_open_feedback").to_string())
+                                                                .secondary()
                                                                 .on_click(|_, _, _| {
-                                                                    let _ = open::that("https://github.com/ynx-official/tiny-shell");
+                                                                    let _ = open::that("https://github.com/ynx-official/tiny-shell/issues");
                                                                 }),
                                                         )
                                                 }))
