@@ -1,41 +1,22 @@
+mod merge;
+mod model;
+mod secrets;
+
 use std::fmt;
 
 use anyhow::{Context, Result, anyhow};
 use hmac::{Hmac, Mac};
 use reqwest::{Client, StatusCode, header};
-use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use uuid::Uuid;
 
+#[cfg(test)]
 use crate::crypto;
-use crate::session::config::{ManagedKey, Session};
+use crate::session::config::{ManagedKey, QuickCommandCategory, Session};
+
+pub use merge::{MergedConfig, merge_payload};
+pub use model::SyncPayload;
 
 const SYNC_FILE_NAME: &str = "tiny-shell-sync.json";
-const FORMAT_VERSION: u32 = 1;
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SyncPayload {
-    pub schema_version: u32,
-    pub revision: String,
-    pub updated_at: String,
-    pub device_id: String,
-    pub sessions: Vec<Session>,
-    #[serde(default)]
-    pub managed_keys: Vec<ManagedKey>,
-}
-
-impl SyncPayload {
-    pub fn new(device_id: String, sessions: Vec<Session>, managed_keys: Vec<ManagedKey>) -> Self {
-        Self {
-            schema_version: FORMAT_VERSION,
-            revision: Uuid::new_v4().to_string(),
-            updated_at: chrono::Utc::now().to_rfc3339(),
-            device_id,
-            sessions,
-            managed_keys,
-        }
-    }
-}
 
 #[derive(Clone)]
 pub struct SyncCredentials {
@@ -132,7 +113,9 @@ pub enum SyncResult {
     },
     Downloaded {
         sessions: Vec<Session>,
+        connection_groups: Vec<String>,
         managed_keys: Vec<ManagedKey>,
+        quick_command_categories: Vec<QuickCommandCategory>,
         etag: Option<String>,
         /// 本次下载成功解密的敏感字段数。
         decrypted_count: u32,
@@ -163,14 +146,21 @@ impl fmt::Debug for SyncResult {
                 .finish(),
             Self::Downloaded {
                 sessions,
+                connection_groups,
                 managed_keys,
+                quick_command_categories,
                 etag,
                 decrypted_count,
                 unavailable_secret_count,
             } => formatter
                 .debug_struct("Downloaded")
                 .field("session_count", &sessions.len())
+                .field("connection_group_count", &connection_groups.len())
                 .field("managed_key_count", &managed_keys.len())
+                .field(
+                    "quick_command_category_count",
+                    &quick_command_categories.len(),
+                )
                 .field("etag", etag)
                 .field("decrypted_count", decrypted_count)
                 .field("unavailable_secret_count", unavailable_secret_count)
@@ -196,10 +186,29 @@ pub enum UploadMode {
     Force,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum UploadCondition<'a> {
+    IfMatch(&'a str),
+    IfNoneMatch,
+    None,
+}
+
 impl UploadMode {
     /// 便捷构造：使用本地已记录的 etag 做条件上传。
     pub fn conditional(expected_etag: Option<String>) -> Self {
         UploadMode::Conditional { expected_etag }
+    }
+
+    fn condition(&self) -> UploadCondition<'_> {
+        match self {
+            Self::Conditional {
+                expected_etag: Some(etag),
+            } => UploadCondition::IfMatch(etag),
+            Self::Conditional {
+                expected_etag: None,
+            } => UploadCondition::IfNoneMatch,
+            Self::Force => UploadCondition::None,
+        }
     }
 }
 
@@ -254,18 +263,14 @@ async fn upload_webdav(
         .basic_auth(username, Some(password))
         .header(header::CONTENT_TYPE, "application/json")
         .body(body);
-    request = match mode {
-        UploadMode::Conditional {
-            expected_etag: Some(etag),
-        } => request.header(header::IF_MATCH, etag),
-        UploadMode::Conditional {
-            expected_etag: None,
-        } => {
+    request = match mode.condition() {
+        UploadCondition::IfMatch(etag) => request.header(header::IF_MATCH, etag),
+        UploadCondition::IfNoneMatch => {
             // An uninitialized client may only create a new remote file. This keeps
             // it from silently replacing configuration uploaded by another device.
             request.header(header::IF_NONE_MATCH, "*")
         }
-        UploadMode::Force => request,
+        UploadCondition::None => request,
     };
     let response = request.send().await.map_err(|error| {
         SyncFailure::other(
@@ -274,7 +279,7 @@ async fn upload_webdav(
         )
     })?;
     let status = response.status();
-    if status == StatusCode::PRECONDITION_FAILED || status == StatusCode::CONFLICT {
+    if is_conflict_status(status) {
         return Err(SyncFailure::new(
             Some(SyncBackendKind::WebDav),
             SyncErrorCategory::Conflict,
@@ -310,6 +315,7 @@ async fn upload_webdav(
 
 pub async fn download(
     credentials: SyncCredentials,
+    legacy_password: &str,
 ) -> SyncOperationResult<(SyncPayload, Option<String>)> {
     validate_credentials(&credentials)?;
     let backend = credentials.backend.kind();
@@ -340,7 +346,7 @@ pub async fn download(
             download_s3(&config).await?
         }
     };
-    let payload = parse_payload(&body)
+    let payload = parse_payload(&body, legacy_password)
         .map_err(|error| SyncFailure::other(Some(backend), format!("{error:#}")))?;
     Ok((payload, etag))
 }
@@ -531,21 +537,17 @@ async fn upload_s3(
         header::CONTENT_TYPE,
         header::HeaderValue::from_static("application/json"),
     );
-    match mode {
-        UploadMode::Conditional {
-            expected_etag: Some(etag),
-        } => {
-            let etag = header_value(&etag, "S3 ETag").map_err(|error| {
+    match mode.condition() {
+        UploadCondition::IfMatch(etag) => {
+            let etag = header_value(etag, "S3 ETag").map_err(|error| {
                 SyncFailure::other(Some(SyncBackendKind::S3), format!("{error:#}"))
             })?;
             headers.insert(header::IF_MATCH, etag);
         }
-        UploadMode::Conditional {
-            expected_etag: None,
-        } => {
+        UploadCondition::IfNoneMatch => {
             headers.insert(header::IF_NONE_MATCH, header::HeaderValue::from_static("*"));
         }
-        UploadMode::Force => {}
+        UploadCondition::None => {}
     }
     let response = Client::new()
         .put(url)
@@ -560,7 +562,7 @@ async fn upload_s3(
             )
         })?;
     let status = response.status();
-    if status == StatusCode::PRECONDITION_FAILED || status == StatusCode::CONFLICT {
+    if is_conflict_status(status) {
         return Err(SyncFailure::new(
             Some(SyncBackendKind::S3),
             SyncErrorCategory::Conflict,
@@ -717,6 +719,13 @@ fn signed_s3_headers(
     Ok(headers)
 }
 
+fn is_conflict_status(status: StatusCode) -> bool {
+    matches!(
+        status,
+        StatusCode::PRECONDITION_FAILED | StatusCode::CONFLICT
+    )
+}
+
 fn header_value(value: &str, name: &str) -> Result<header::HeaderValue> {
     header::HeaderValue::from_str(value).with_context(|| format!("invalid {name}"))
 }
@@ -748,16 +757,11 @@ fn aws_uri_encode(value: &str, encode_slash: bool) -> String {
 }
 
 fn serialize_payload(payload: &SyncPayload) -> Result<Vec<u8>> {
-    serde_json::to_vec_pretty(payload).context("serialize sync payload")
+    model::serialize_payload(payload)
 }
 
-fn parse_payload(raw: &[u8]) -> Result<SyncPayload> {
-    let payload: SyncPayload =
-        serde_json::from_slice(raw).context("parse synchronized configuration JSON")?;
-    if payload.schema_version != FORMAT_VERSION {
-        return Err(anyhow!("unsupported synchronized configuration version"));
-    }
-    Ok(payload)
+fn parse_payload(raw: &[u8], legacy_password: &str) -> Result<SyncPayload> {
+    model::parse_payload(raw, legacy_password)
 }
 
 /// 对上传到同步后端的快照做敏感字段处理。
@@ -766,8 +770,10 @@ fn parse_payload(raw: &[u8]) -> Result<SyncPayload> {
 ///   下载时这些空字段会被 `merge` 保留为本地原值。
 /// - `include_secrets=true`：用隐私密码对每个敏感字段做字段级加密，
 ///   密文带 `v1:` 前缀，下载时由 `merge` 解密还原。
+#[cfg(test)]
 pub struct SecretScrubber;
 
+#[cfg(test)]
 impl SecretScrubber {
     /// 处理一份 sessions + managed_keys 副本，返回脱敏或加密后的快照。
     pub fn scrub(
@@ -876,6 +882,7 @@ impl SecretScrubber {
     }
 }
 
+#[cfg(test)]
 pub struct MergedSecrets {
     pub sessions: Vec<Session>,
     pub managed_keys: Vec<ManagedKey>,
@@ -883,10 +890,12 @@ pub struct MergedSecrets {
     pub unavailable_secret_count: u32,
 }
 
+#[cfg(test)]
 fn sessions_match(a: &Session, b: &Session) -> bool {
     a.host == b.host && a.port == b.port && a.user == b.user
 }
 
+#[cfg(test)]
 fn merge_session_secrets(
     remote: &mut Session,
     local: Option<&Session>,
@@ -924,6 +933,7 @@ fn merge_session_secrets(
     );
 }
 
+#[cfg(test)]
 fn merge_key_secrets(
     remote: &mut ManagedKey,
     local: Option<&ManagedKey>,
@@ -947,6 +957,7 @@ fn merge_key_secrets(
     );
 }
 
+#[cfg(test)]
 fn merge_secret_field(
     local: &str,
     remote: &str,
@@ -975,13 +986,23 @@ fn merge_secret_field(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use uuid::Uuid;
 
     #[test]
     fn payload_is_plain_json_with_readable_basic_information() {
         let sessions = vec![sample_session("example.test", "alice", "secret")];
         let (sessions, managed_keys) =
             SecretScrubber::scrub(sessions, Vec::new(), true, "privacy-password").unwrap();
-        let payload = SyncPayload::new("test-device".into(), sessions, managed_keys);
+        let payload = SyncPayload::new(
+            "test-device".into(),
+            sessions,
+            Vec::new(),
+            managed_keys,
+            Vec::new(),
+            true,
+            "privacy-password",
+        )
+        .unwrap();
 
         let serialized = serialize_payload(&payload).unwrap();
         let json: serde_json::Value = serde_json::from_slice(&serialized).unwrap();
@@ -990,12 +1011,12 @@ mod tests {
         assert_eq!(json["sessions"][0]["host"], "example.test");
         assert_eq!(json["sessions"][0]["user"], "alice");
         assert!(
-            json["sessions"][0]["password"]
+            json["sessions"][0]["password"]["value"]
                 .as_str()
                 .is_some_and(crypto::is_sealed_field)
         );
         assert_eq!(
-            parse_payload(&serialized).unwrap().revision,
+            parse_payload(&serialized, "").unwrap().revision,
             payload.revision
         );
     }
@@ -1010,6 +1031,24 @@ mod tests {
             },
         };
         assert!(validate_credentials(&credentials).is_ok());
+    }
+
+    #[test]
+    fn upload_mode_maps_to_safe_conditional_headers() {
+        let etag = UploadMode::conditional(Some("etag-1".into()));
+        let create = UploadMode::conditional(None);
+        let force = UploadMode::Force;
+
+        assert_eq!(etag.condition(), UploadCondition::IfMatch("etag-1"));
+        assert_eq!(create.condition(), UploadCondition::IfNoneMatch);
+        assert_eq!(force.condition(), UploadCondition::None);
+    }
+
+    #[test]
+    fn precondition_and_conflict_responses_never_count_as_success() {
+        assert!(is_conflict_status(StatusCode::PRECONDITION_FAILED));
+        assert!(is_conflict_status(StatusCode::CONFLICT));
+        assert!(!is_conflict_status(StatusCode::OK));
     }
 
     #[test]

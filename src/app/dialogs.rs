@@ -5279,7 +5279,8 @@ impl TinyShell {
                                                         let is_s3 = view.read(cx).config.sync_backend() == "s3";
                                                         let include_secrets = view.read(cx).config.sync_include_secrets();
                                                         let privacy_password_valid = privacy_password.read(cx).value().chars().count() >= 8;
-                                                        let can_sync = !in_progress && (!include_secrets || privacy_password_valid);
+                                                        let can_download = !in_progress;
+                                                        let can_upload = !in_progress && (!include_secrets || privacy_password_valid);
                                                         let verify_inputs = sync_form_inputs.clone();
                                                         let reset_inputs = sync_form_inputs.clone();
                                                         let download_inputs = sync_form_inputs.clone();
@@ -5373,14 +5374,14 @@ impl TinyShell {
                                                             .child(
                                                                 h_flex()
                                                                     .gap_2()
-                                                                    .child(Button::new("sync-download").small().secondary().disabled(!can_sync).label(t!("sync_download").to_string()).on_click(window.listener_for(&view, {
+                                                                    .child(Button::new("sync-download").small().secondary().disabled(!can_download).label(t!("sync_download").to_string()).on_click(window.listener_for(&view, {
                                                                         let download_inputs = download_inputs.clone();
                                                                         move |this, _, _, cx| {
                                                                             let form = crate::app::config_sync::SyncFormSnapshot::capture(this.config.sync_backend(), &download_inputs, cx);
                                                                             this.download_sync_config(form, cx);
                                                                         }
                                                                     })))
-                                                                    .child(Button::new("sync-upload").small().primary().disabled(!can_sync).label(t!("sync_upload").to_string()).on_click(window.listener_for(&view, move |this, _, _, cx| {
+                                                                    .child(Button::new("sync-upload").small().primary().disabled(!can_upload).label(t!("sync_upload").to_string()).on_click(window.listener_for(&view, move |this, _, _, cx| {
                                                                         let form = crate::app::config_sync::SyncFormSnapshot::capture(this.config.sync_backend(), &upload_inputs, cx);
                                                                         this.upload_sync_config(form, cx);
                                                                     }))),

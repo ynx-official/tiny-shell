@@ -1812,31 +1812,54 @@ impl TinyShell {
                         }
                         crate::sync::SyncResult::Downloaded {
                             sessions,
+                            connection_groups,
                             managed_keys,
+                            quick_command_categories,
                             etag,
                             decrypted_count,
                             unavailable_secret_count,
                         } => {
+                            let session_count = sessions.len();
+                            let group_count = connection_groups.len();
+                            let key_count = managed_keys.len();
+                            let command_count = quick_command_categories
+                                .iter()
+                                .map(|category| category.commands.len())
+                                .sum::<usize>();
                             self.config.replace_sessions(sessions);
-                            // 用合并后的 managed_keys 整体替换：merge 已保留本地
-                            // 仅有的 key 并按 fingerprint 覆盖/追加远端
+                            self.config.replace_connection_groups(connection_groups);
                             self.config.replace_managed_keys(managed_keys);
+                            self.config
+                                .set_quick_command_categories(quick_command_categories);
                             self.config.set_sync_etag(etag);
                             match self.config.save() {
                                 Ok(()) => {
-                                    if unavailable_secret_count > 0 {
-                                        self.sync_status = t!(
-                                            "sync_secrets_unavailable",
-                                            count = unavailable_secret_count
+                                    let summary = t!(
+                                        "sync_download_summary",
+                                        sessions = session_count,
+                                        groups = group_count,
+                                        keys = key_count,
+                                        commands = command_count
+                                    )
+                                    .to_string();
+                                    self.sync_status = if unavailable_secret_count > 0 {
+                                        format!(
+                                            "{summary}; {}",
+                                            t!(
+                                                "sync_secrets_unavailable",
+                                                count = unavailable_secret_count
+                                            )
                                         )
-                                        .into();
+                                        .into()
                                     } else if decrypted_count > 0 {
-                                        self.sync_status =
+                                        format!(
+                                            "{summary}; {}",
                                             t!("sync_secrets_decrypted", count = decrypted_count)
-                                                .into();
+                                        )
+                                        .into()
                                     } else {
-                                        self.sync_status = t!("sync_download_complete").into();
-                                    }
+                                        summary.into()
+                                    };
                                 }
                                 Err(err) => {
                                     self.sync_status =

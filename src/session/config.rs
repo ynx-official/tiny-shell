@@ -765,7 +765,10 @@ impl ConfigStore {
         self.cache.sessions = sessions;
     }
 
-    /// 用同步合并后的列表整体替换本地 managed_keys。
+    pub fn replace_connection_groups(&mut self, groups: Vec<String>) {
+        self.cache.connection_groups = groups;
+    }
+
     pub fn replace_managed_keys(&mut self, keys: Vec<ManagedKey>) {
         self.cache.managed_keys = keys;
     }

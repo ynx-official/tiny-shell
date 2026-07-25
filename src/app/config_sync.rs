@@ -7,8 +7,8 @@ use crate::{
     crypto,
     session::config::hardware_uuid,
     sync::{
-        self, MergedSecrets, SecretScrubber, SyncBackendCredentials, SyncBackendKind,
-        SyncCredentials, SyncErrorCategory, SyncFailure, SyncPayload, SyncResult, UploadMode,
+        self, MergedConfig, SyncBackendCredentials, SyncBackendKind, SyncCredentials,
+        SyncErrorCategory, SyncFailure, SyncPayload, SyncResult, UploadMode,
     },
     terminal::BackendEvent,
 };
@@ -188,12 +188,19 @@ impl TinyShell {
             return;
         }
 
-        let sessions = self.config.sessions().to_vec();
-        let managed_keys = self.config.managed_keys().to_vec();
-        let scrub_result =
-            SecretScrubber::scrub(sessions, managed_keys, include_secrets, &privacy_password);
-        let (scrubbed_sessions, scrubbed_keys) = match scrub_result {
-            Ok(v) => v,
+        let payload = match SyncPayload::new(
+            self.config.sync_device_id().to_string(),
+            self.config.sessions().to_vec(),
+            self.config.connection_groups().to_vec(),
+            self.config.managed_keys().to_vec(),
+            self.config
+                .quick_command_categories()
+                .unwrap_or_default()
+                .to_vec(),
+            include_secrets,
+            &privacy_password,
+        ) {
+            Ok(payload) => payload,
             Err(err) => {
                 self.sync_in_progress = false;
                 self.sync_status = format!("{}: {err:#}", t!("sync_failed")).into();
@@ -201,12 +208,6 @@ impl TinyShell {
                 return;
             }
         };
-
-        let payload = SyncPayload::new(
-            self.config.sync_device_id().to_string(),
-            scrubbed_sessions,
-            scrubbed_keys,
-        );
         let mode = UploadMode::conditional(self.config.sync_etag().map(str::to_string));
         let uploaded_privacy_password = include_secrets.then_some(privacy_password);
         let events = self.events_tx.clone();
@@ -232,28 +233,38 @@ impl TinyShell {
             return;
         };
 
-        // 下载需要在异步任务里做字段级合并，先把本地副本克隆进去
         let local_sessions = self.config.sessions().to_vec();
+        let local_connection_groups = self.config.connection_groups().to_vec();
         let local_keys = self.config.managed_keys().to_vec();
+        let local_commands = self
+            .config
+            .quick_command_categories()
+            .unwrap_or_default()
+            .to_vec();
         let events = self.events_tx.clone();
         self.runtime.spawn(async move {
-            let result = match sync::download(credentials).await {
+            let result = match sync::download(credentials, &privacy_password).await {
                 Ok((payload, etag)) => {
-                    let MergedSecrets {
+                    let MergedConfig {
                         sessions,
+                        connection_groups,
                         managed_keys,
+                        quick_command_categories,
                         decrypted_count,
                         unavailable_secret_count,
-                    } = SecretScrubber::merge(
+                    } = sync::merge_payload(
                         &local_sessions,
-                        payload.sessions,
+                        &local_connection_groups,
                         &local_keys,
-                        payload.managed_keys,
+                        &local_commands,
+                        payload,
                         &privacy_password,
                     );
                     SyncResult::Downloaded {
                         sessions,
+                        connection_groups,
                         managed_keys,
+                        quick_command_categories,
                         etag,
                         decrypted_count,
                         unavailable_secret_count,
@@ -298,23 +309,25 @@ impl TinyShell {
             return;
         }
 
-        let sessions = self.config.sessions().to_vec();
-        let managed_keys = self.config.managed_keys().to_vec();
-        let scrub_result = SecretScrubber::scrub(sessions, managed_keys, true, &new_password);
-        let (scrubbed_sessions, scrubbed_keys) = match scrub_result {
-            Ok(v) => v,
+        let payload = match SyncPayload::new(
+            self.config.sync_device_id().to_string(),
+            self.config.sessions().to_vec(),
+            self.config.connection_groups().to_vec(),
+            self.config.managed_keys().to_vec(),
+            self.config
+                .quick_command_categories()
+                .unwrap_or_default()
+                .to_vec(),
+            true,
+            &new_password,
+        ) {
+            Ok(payload) => payload,
             Err(err) => {
                 self.sync_status = format!("{}: {err:#}", t!("sync_failed")).into();
                 cx.notify();
                 return;
             }
         };
-
-        let payload = SyncPayload::new(
-            self.config.sync_device_id().to_string(),
-            scrubbed_sessions,
-            scrubbed_keys,
-        );
 
         self.sync_in_progress = true;
         self.sync_status = t!("sync_reset_uploading").into();
