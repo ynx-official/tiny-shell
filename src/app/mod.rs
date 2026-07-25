@@ -613,11 +613,7 @@ pub(crate) struct TinyShell {
     pub(crate) sync_s3_access_key_input: Entity<InputState>,
     pub(crate) sync_s3_secret_key_input: Entity<InputState>,
     pub(crate) sync_s3_session_token_input: Entity<InputState>,
-    pub(crate) sync_encryption_password_input: Entity<InputState>,
     pub(crate) sync_privacy_password_input: Entity<InputState>,
-    /// 重置隐私密码对话框用：新密码 + 确认密码
-    pub(crate) reset_privacy_password_input: Entity<InputState>,
-    pub(crate) reset_privacy_password_confirm_input: Entity<InputState>,
     pub(crate) sync_in_progress: bool,
     pub(crate) sync_status: SharedString,
     pub(crate) sftp_path_input: Entity<InputState>,
@@ -986,11 +982,6 @@ impl TinyShell {
                 .placeholder(t!("sync_s3_session_token").to_string())
                 .masked(true)
         });
-        let sync_encryption_password_input = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder(t!("sync_encryption_password").to_string())
-                .masked(true)
-        });
         // 隐私信息加密密码：若本机已硬件绑定落盘，启动时解密回填到输入框；
         // 解密失败（如换设备）则留空，由用户重新输入或重置。
         let sync_privacy_password_input = cx.new(|cx| {
@@ -1006,16 +997,6 @@ impl TinyShell {
                 }
             }
             state
-        });
-        let reset_privacy_password_input = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder(t!("sync_reset_new_password").to_string())
-                .masked(true)
-        });
-        let reset_privacy_password_confirm_input = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder(t!("sync_reset_confirm_password").to_string())
-                .masked(true)
         });
 
         let _subscriptions = vec![
@@ -1049,18 +1030,7 @@ impl TinyShell {
             cx.subscribe_in(&sync_s3_access_key_input, window, Self::on_input_event),
             cx.subscribe_in(&sync_s3_secret_key_input, window, Self::on_input_event),
             cx.subscribe_in(&sync_s3_session_token_input, window, Self::on_input_event),
-            cx.subscribe_in(
-                &sync_encryption_password_input,
-                window,
-                Self::on_input_event,
-            ),
             cx.subscribe_in(&sync_privacy_password_input, window, Self::on_input_event),
-            cx.subscribe_in(&reset_privacy_password_input, window, Self::on_input_event),
-            cx.subscribe_in(
-                &reset_privacy_password_confirm_input,
-                window,
-                Self::on_input_event,
-            ),
         ];
 
         let (events_tx, events_rx) = mpsc::channel();
@@ -1158,10 +1128,7 @@ impl TinyShell {
             sync_s3_access_key_input,
             sync_s3_secret_key_input,
             sync_s3_session_token_input,
-            sync_encryption_password_input,
             sync_privacy_password_input,
-            reset_privacy_password_input,
-            reset_privacy_password_confirm_input,
             sync_in_progress: false,
             sync_status: t!("sync_not_run").into(),
             sftp_path_input,
@@ -1820,18 +1787,35 @@ impl TinyShell {
                 BackendEvent::SyncFinished(result) => {
                     self.sync_in_progress = false;
                     match result {
-                        crate::sync::SyncResult::Uploaded { etag } => {
+                        crate::sync::SyncResult::Uploaded {
+                            etag,
+                            privacy_password,
+                        } => {
                             if etag.is_some() {
                                 self.config.set_sync_etag(etag);
                             }
-                            self.sync_status = t!("sync_upload_complete").into();
-                            let _ = self.config.save();
+                            let password_result = privacy_password.map_or(Ok(()), |password| {
+                                crate::app::config_sync::seal_privacy_password(&password).map(
+                                    |(sealed, hash)| {
+                                        self.config.set_sync_secrets_password_sealed(sealed);
+                                        self.config.set_sync_secrets_password_hash(hash);
+                                    },
+                                )
+                            });
+                            match password_result.and_then(|()| self.config.save()) {
+                                Ok(()) => self.sync_status = t!("sync_upload_complete").into(),
+                                Err(err) => {
+                                    self.sync_status =
+                                        format!("{}: {err:#}", t!("sync_failed")).into();
+                                }
+                            }
                         }
                         crate::sync::SyncResult::Downloaded {
                             sessions,
                             managed_keys,
                             etag,
                             decrypted_count,
+                            unavailable_secret_count,
                         } => {
                             self.config.replace_sessions(sessions);
                             // 用合并后的 managed_keys 整体替换：merge 已保留本地
@@ -1840,12 +1824,18 @@ impl TinyShell {
                             self.config.set_sync_etag(etag);
                             match self.config.save() {
                                 Ok(()) => {
-                                    if decrypted_count > 0 {
+                                    if unavailable_secret_count > 0 {
+                                        self.sync_status = t!(
+                                            "sync_secrets_unavailable",
+                                            count = unavailable_secret_count
+                                        )
+                                        .into();
+                                    } else if decrypted_count > 0 {
                                         self.sync_status =
                                             t!("sync_secrets_decrypted", count = decrypted_count)
                                                 .into();
                                     } else {
-                                        self.sync_status = t!("sync_secrets_kept_local").into();
+                                        self.sync_status = t!("sync_download_complete").into();
                                     }
                                 }
                                 Err(err) => {
@@ -1868,8 +1858,12 @@ impl TinyShell {
                                 }
                             }
                         }
+                        crate::sync::SyncResult::ConnectionVerified => {
+                            self.sync_status = t!("sync_connection_verified").into();
+                        }
                         crate::sync::SyncResult::Failed(error) => {
-                            self.sync_status = format!("{}: {error}", t!("sync_failed")).into();
+                            self.sync_status =
+                                crate::app::config_sync::sync_failure_status(&error).into();
                         }
                     }
                 }

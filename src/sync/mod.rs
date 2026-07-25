@@ -1,13 +1,7 @@
 use std::fmt;
 
 use anyhow::{Context, Result, anyhow};
-use base64::{Engine as _, engine::general_purpose::STANDARD};
-use chacha20poly1305::{
-    XChaCha20Poly1305, XNonce,
-    aead::{Aead, KeyInit},
-};
 use hmac::{Hmac, Mac};
-use rand::{RngCore, rngs::OsRng};
 use reqwest::{Client, StatusCode, header};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -43,20 +37,9 @@ impl SyncPayload {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct EncryptedEnvelope {
-    format_version: u32,
-    kdf: String,
-    cipher: String,
-    salt: String,
-    nonce: String,
-    payload: String,
-}
-
 #[derive(Clone)]
 pub struct SyncCredentials {
     pub backend: SyncBackendCredentials,
-    pub encryption_password: String,
 }
 
 #[derive(Clone)]
@@ -77,48 +60,126 @@ pub enum SyncBackendCredentials {
     },
 }
 
+impl SyncBackendCredentials {
+    pub fn kind(&self) -> SyncBackendKind {
+        match self {
+            Self::WebDav { .. } => SyncBackendKind::WebDav,
+            Self::S3 { .. } => SyncBackendKind::S3,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SyncBackendKind {
+    WebDav,
+    S3,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SyncErrorCategory {
+    EndpointRequired,
+    EndpointInvalid,
+    AuthenticationFailed,
+    NotFound,
+    Conflict,
+    RemoteMissing,
+    Other,
+}
+
+#[derive(Clone)]
+pub struct SyncFailure {
+    pub backend: Option<SyncBackendKind>,
+    pub category: SyncErrorCategory,
+    pub detail: String,
+}
+
+impl SyncFailure {
+    fn new(
+        backend: Option<SyncBackendKind>,
+        category: SyncErrorCategory,
+        detail: impl Into<String>,
+    ) -> Self {
+        Self {
+            backend,
+            category,
+            detail: detail.into(),
+        }
+    }
+
+    pub fn other(backend: Option<SyncBackendKind>, error: impl fmt::Display) -> Self {
+        Self::new(backend, SyncErrorCategory::Other, error.to_string())
+    }
+}
+
+impl fmt::Debug for SyncFailure {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("SyncFailure")
+            .field("backend", &self.backend)
+            .field("category", &self.category)
+            .field("detail", &"<redacted>")
+            .finish()
+    }
+}
+
+pub type SyncOperationResult<T> = std::result::Result<T, SyncFailure>;
+
 #[derive(Clone)]
 pub enum SyncResult {
     Uploaded {
         etag: Option<String>,
+        privacy_password: Option<String>,
     },
     Downloaded {
         sessions: Vec<Session>,
         managed_keys: Vec<ManagedKey>,
         etag: Option<String>,
-        /// 本次下载实际解密覆盖的字段数（远端密文被解密的次数）。
+        /// 本次下载成功解密的敏感字段数。
         decrypted_count: u32,
+        /// 因密码缺失、错误或密文损坏而未能解密的敏感字段数。
+        unavailable_secret_count: u32,
     },
     /// 本地强行重置隐私密码成功，需把新密码硬件绑定落盘。
     PrivacyPasswordReset {
         new_password: String,
     },
-    Failed(String),
+    ConnectionVerified,
+    Failed(SyncFailure),
 }
 
 impl fmt::Debug for SyncResult {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Uploaded { etag } => formatter
+            Self::Uploaded {
+                etag,
+                privacy_password,
+            } => formatter
                 .debug_struct("Uploaded")
                 .field("etag", etag)
+                .field(
+                    "privacy_password",
+                    &privacy_password.as_ref().map(|_| "<redacted>"),
+                )
                 .finish(),
             Self::Downloaded {
                 sessions,
                 managed_keys,
                 etag,
                 decrypted_count,
+                unavailable_secret_count,
             } => formatter
                 .debug_struct("Downloaded")
                 .field("session_count", &sessions.len())
                 .field("managed_key_count", &managed_keys.len())
                 .field("etag", etag)
                 .field("decrypted_count", decrypted_count)
+                .field("unavailable_secret_count", unavailable_secret_count)
                 .finish(),
             Self::PrivacyPasswordReset { .. } => formatter
                 .debug_struct("PrivacyPasswordReset")
                 .field("new_password", &"<redacted>")
                 .finish(),
+            Self::ConnectionVerified => formatter.write_str("ConnectionVerified"),
             Self::Failed(_) => formatter.write_str("Failed(<redacted>)"),
         }
     }
@@ -146,9 +207,11 @@ pub async fn upload(
     credentials: SyncCredentials,
     payload: SyncPayload,
     mode: UploadMode,
-) -> Result<Option<String>> {
+) -> SyncOperationResult<Option<String>> {
     validate_credentials(&credentials)?;
-    let body = encrypt_payload(&payload, &credentials.encryption_password)?;
+    let backend = credentials.backend.kind();
+    let body = serialize_payload(&payload)
+        .map_err(|error| SyncFailure::other(Some(backend), format!("{error:#}")))?;
     match credentials.backend {
         SyncBackendCredentials::WebDav {
             endpoint,
@@ -184,10 +247,10 @@ async fn upload_webdav(
     password: &str,
     body: Vec<u8>,
     mode: UploadMode,
-) -> Result<Option<String>> {
+) -> SyncOperationResult<Option<String>> {
     let client = Client::new();
     let mut request = client
-        .put(sync_url(endpoint))
+        .put(webdav_sync_url(endpoint)?)
         .basic_auth(username, Some(password))
         .header(header::CONTENT_TYPE, "application/json")
         .body(body);
@@ -202,21 +265,41 @@ async fn upload_webdav(
             // it from silently replacing configuration uploaded by another device.
             request.header(header::IF_NONE_MATCH, "*")
         }
-        UploadMode::Force => {
-            // 不带条件头，WebDAV PUT 默认覆盖已存在资源。
-            request
-        }
+        UploadMode::Force => request,
     };
-    let response = request.send().await.context("send WebDAV upload")?;
-    if response.status() == StatusCode::PRECONDITION_FAILED
-        || response.status() == StatusCode::CONFLICT
-    {
-        return Err(anyhow!(
-            "remote configuration changed; download it before uploading"
+    let response = request.send().await.map_err(|error| {
+        SyncFailure::other(
+            Some(SyncBackendKind::WebDav),
+            format!("send WebDAV upload: {error}"),
+        )
+    })?;
+    let status = response.status();
+    if status == StatusCode::PRECONDITION_FAILED || status == StatusCode::CONFLICT {
+        return Err(SyncFailure::new(
+            Some(SyncBackendKind::WebDav),
+            SyncErrorCategory::Conflict,
+            "remote configuration changed; download it before uploading",
         ));
     }
-    if !response.status().is_success() {
-        return Err(anyhow!("WebDAV upload failed: HTTP {}", response.status()));
+    if status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN {
+        return Err(SyncFailure::new(
+            Some(SyncBackendKind::WebDav),
+            SyncErrorCategory::AuthenticationFailed,
+            format!("WebDAV upload failed: HTTP {status}"),
+        ));
+    }
+    if status == StatusCode::NOT_FOUND {
+        return Err(SyncFailure::new(
+            Some(SyncBackendKind::WebDav),
+            SyncErrorCategory::NotFound,
+            format!("WebDAV upload failed: HTTP {status}"),
+        ));
+    }
+    if !status.is_success() {
+        return Err(SyncFailure::other(
+            Some(SyncBackendKind::WebDav),
+            format!("WebDAV upload failed: HTTP {status}"),
+        ));
     }
     Ok(response
         .headers()
@@ -225,9 +308,11 @@ async fn upload_webdav(
         .map(str::to_string))
 }
 
-pub async fn download(credentials: SyncCredentials) -> Result<(SyncPayload, Option<String>)> {
+pub async fn download(
+    credentials: SyncCredentials,
+) -> SyncOperationResult<(SyncPayload, Option<String>)> {
     validate_credentials(&credentials)?;
-    let encryption_password = credentials.encryption_password;
+    let backend = credentials.backend.kind();
     let (body, etag) = match credentials.backend {
         SyncBackendCredentials::WebDav {
             endpoint,
@@ -255,7 +340,8 @@ pub async fn download(credentials: SyncCredentials) -> Result<(SyncPayload, Opti
             download_s3(&config).await?
         }
     };
-    let payload = decrypt_payload(&body, &encryption_password)?;
+    let payload = parse_payload(&body)
+        .map_err(|error| SyncFailure::other(Some(backend), format!("{error:#}")))?;
     Ok((payload, etag))
 }
 
@@ -263,20 +349,37 @@ async fn download_webdav(
     endpoint: &str,
     username: &str,
     password: &str,
-) -> Result<(Vec<u8>, Option<String>)> {
+) -> SyncOperationResult<(Vec<u8>, Option<String>)> {
     let response = Client::new()
-        .get(sync_url(endpoint))
+        .get(webdav_sync_url(endpoint)?)
         .basic_auth(username, Some(password))
         .send()
         .await
-        .context("send WebDAV download")?;
-    if response.status() == StatusCode::NOT_FOUND {
-        return Err(anyhow!("no remote configuration exists yet"));
+        .map_err(|error| {
+            SyncFailure::other(
+                Some(SyncBackendKind::WebDav),
+                format!("send WebDAV download: {error}"),
+            )
+        })?;
+    let status = response.status();
+    if status == StatusCode::NOT_FOUND {
+        return Err(SyncFailure::new(
+            Some(SyncBackendKind::WebDav),
+            SyncErrorCategory::RemoteMissing,
+            "no remote configuration exists yet",
+        ));
     }
-    if !response.status().is_success() {
-        return Err(anyhow!(
-            "WebDAV download failed: HTTP {}",
-            response.status()
+    if status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN {
+        return Err(SyncFailure::new(
+            Some(SyncBackendKind::WebDav),
+            SyncErrorCategory::AuthenticationFailed,
+            format!("WebDAV download failed: HTTP {status}"),
+        ));
+    }
+    if !status.is_success() {
+        return Err(SyncFailure::other(
+            Some(SyncBackendKind::WebDav),
+            format!("WebDAV download failed: HTTP {status}"),
         ));
     }
     let etag = response
@@ -287,20 +390,66 @@ async fn download_webdav(
     let body = response
         .bytes()
         .await
-        .context("read WebDAV response")?
+        .map_err(|error| {
+            SyncFailure::other(
+                Some(SyncBackendKind::WebDav),
+                format!("read WebDAV response: {error}"),
+            )
+        })?
         .to_vec();
     Ok((body, etag))
 }
 
-fn validate_credentials(credentials: &SyncCredentials) -> Result<()> {
-    if credentials.encryption_password.len() < 8 {
-        return Err(anyhow!(
-            "encryption password must contain at least 8 characters"
+pub async fn verify_webdav_connection(
+    endpoint: &str,
+    username: &str,
+    password: &str,
+) -> SyncOperationResult<()> {
+    let verify_url = webdav_verification_url(endpoint)?;
+    let response = Client::new()
+        .request(
+            reqwest::Method::from_bytes(b"PROPFIND")
+                .map_err(|error| SyncFailure::other(Some(SyncBackendKind::WebDav), error))?,
+            verify_url,
+        )
+        .basic_auth(username, Some(password))
+        .header("Depth", "0")
+        .send()
+        .await
+        .map_err(|error| {
+            SyncFailure::other(
+                Some(SyncBackendKind::WebDav),
+                format!("send WebDAV connection check: {error}"),
+            )
+        })?;
+    let status = response.status();
+    if status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN {
+        return Err(SyncFailure::new(
+            Some(SyncBackendKind::WebDav),
+            SyncErrorCategory::AuthenticationFailed,
+            format!("WebDAV connection check failed: HTTP {status}"),
         ));
     }
+    if status == StatusCode::NOT_FOUND {
+        return Err(SyncFailure::new(
+            Some(SyncBackendKind::WebDav),
+            SyncErrorCategory::NotFound,
+            format!("WebDAV connection check failed: HTTP {status}"),
+        ));
+    }
+    if !status.is_success() {
+        return Err(SyncFailure::other(
+            Some(SyncBackendKind::WebDav),
+            format!("WebDAV connection check failed: HTTP {status}"),
+        ));
+    }
+    Ok(())
+}
+
+pub fn validate_credentials(credentials: &SyncCredentials) -> SyncOperationResult<()> {
     match &credentials.backend {
-        SyncBackendCredentials::WebDav { endpoint, .. } if endpoint.trim().is_empty() => {
-            Err(anyhow!("WebDAV endpoint is required"))
+        SyncBackendCredentials::WebDav { endpoint, .. } => {
+            validate_webdav_endpoint(endpoint).map(|_| ())
         }
         SyncBackendCredentials::S3 {
             region,
@@ -313,12 +462,50 @@ fn validate_credentials(credentials: &SyncCredentials) -> Result<()> {
             || access_key.trim().is_empty()
             || secret_key.is_empty() =>
         {
-            Err(anyhow!(
-                "S3 region, bucket, access key and secret key are required"
+            Err(SyncFailure::other(
+                Some(SyncBackendKind::S3),
+                "S3 region, bucket, access key and secret key are required",
             ))
         }
-        _ => Ok(()),
+        SyncBackendCredentials::S3 { .. } => Ok(()),
     }
+}
+
+fn validate_webdav_endpoint(endpoint: &str) -> SyncOperationResult<reqwest::Url> {
+    if endpoint.trim().is_empty() {
+        return Err(SyncFailure::new(
+            Some(SyncBackendKind::WebDav),
+            SyncErrorCategory::EndpointRequired,
+            "WebDAV directory URL is required",
+        ));
+    }
+    reqwest::Url::parse(endpoint.trim()).map_err(|error| {
+        SyncFailure::new(
+            Some(SyncBackendKind::WebDav),
+            SyncErrorCategory::EndpointInvalid,
+            format!("parse WebDAV directory URL: {error}"),
+        )
+    })
+}
+
+fn webdav_collection_url(endpoint: &str) -> SyncOperationResult<reqwest::Url> {
+    let mut url = validate_webdav_endpoint(endpoint)?;
+    if !url.path().ends_with('/') {
+        let path = format!("{}/", url.path());
+        url.set_path(&path);
+    }
+    Ok(url)
+}
+
+fn webdav_sync_url(endpoint: &str) -> SyncOperationResult<reqwest::Url> {
+    let mut url = webdav_collection_url(endpoint)?;
+    let path = format!("{}{SYNC_FILE_NAME}", url.path());
+    url.set_path(&path);
+    Ok(url)
+}
+
+fn webdav_verification_url(endpoint: &str) -> SyncOperationResult<reqwest::Url> {
+    webdav_collection_url(endpoint)
 }
 
 struct S3Config {
@@ -331,9 +518,15 @@ struct S3Config {
     session_token: String,
 }
 
-async fn upload_s3(config: &S3Config, body: Vec<u8>, mode: UploadMode) -> Result<Option<String>> {
-    let url = s3_url(config)?;
-    let mut headers = signed_s3_headers("PUT", &url, &body, config)?;
+async fn upload_s3(
+    config: &S3Config,
+    body: Vec<u8>,
+    mode: UploadMode,
+) -> SyncOperationResult<Option<String>> {
+    let url = s3_url(config)
+        .map_err(|error| SyncFailure::other(Some(SyncBackendKind::S3), format!("{error:#}")))?;
+    let mut headers = signed_s3_headers("PUT", &url, &body, config)
+        .map_err(|error| SyncFailure::other(Some(SyncBackendKind::S3), format!("{error:#}")))?;
     headers.insert(
         header::CONTENT_TYPE,
         header::HeaderValue::from_static("application/json"),
@@ -342,16 +535,17 @@ async fn upload_s3(config: &S3Config, body: Vec<u8>, mode: UploadMode) -> Result
         UploadMode::Conditional {
             expected_etag: Some(etag),
         } => {
-            headers.insert(header::IF_MATCH, header_value(&etag, "S3 ETag")?);
+            let etag = header_value(&etag, "S3 ETag").map_err(|error| {
+                SyncFailure::other(Some(SyncBackendKind::S3), format!("{error:#}"))
+            })?;
+            headers.insert(header::IF_MATCH, etag);
         }
         UploadMode::Conditional {
             expected_etag: None,
         } => {
             headers.insert(header::IF_NONE_MATCH, header::HeaderValue::from_static("*"));
         }
-        UploadMode::Force => {
-            // S3 PUT 本身就是覆盖语义，无需额外条件头。
-        }
+        UploadMode::Force => {}
     }
     let response = Client::new()
         .put(url)
@@ -359,18 +553,26 @@ async fn upload_s3(config: &S3Config, body: Vec<u8>, mode: UploadMode) -> Result
         .body(body)
         .send()
         .await
-        .context("send S3 upload")?;
-    if response.status() == StatusCode::PRECONDITION_FAILED
-        || response.status() == StatusCode::CONFLICT
-    {
-        return Err(anyhow!(
-            "remote configuration changed; download it before uploading"
+        .map_err(|error| {
+            SyncFailure::other(
+                Some(SyncBackendKind::S3),
+                format!("send S3 upload: {error}"),
+            )
+        })?;
+    let status = response.status();
+    if status == StatusCode::PRECONDITION_FAILED || status == StatusCode::CONFLICT {
+        return Err(SyncFailure::new(
+            Some(SyncBackendKind::S3),
+            SyncErrorCategory::Conflict,
+            "remote configuration changed; download it before uploading",
         ));
     }
-    if !response.status().is_success() {
-        let status = response.status();
+    if !status.is_success() {
         let detail = response.text().await.unwrap_or_default();
-        return Err(anyhow!("S3 upload failed: HTTP {status}: {detail}"));
+        return Err(SyncFailure::other(
+            Some(SyncBackendKind::S3),
+            format!("S3 upload failed: HTTP {status}: {detail}"),
+        ));
     }
     Ok(response
         .headers()
@@ -379,29 +581,52 @@ async fn upload_s3(config: &S3Config, body: Vec<u8>, mode: UploadMode) -> Result
         .map(str::to_string))
 }
 
-async fn download_s3(config: &S3Config) -> Result<(Vec<u8>, Option<String>)> {
-    let url = s3_url(config)?;
-    let headers = signed_s3_headers("GET", &url, &[], config)?;
+async fn download_s3(config: &S3Config) -> SyncOperationResult<(Vec<u8>, Option<String>)> {
+    let url = s3_url(config)
+        .map_err(|error| SyncFailure::other(Some(SyncBackendKind::S3), format!("{error:#}")))?;
+    let headers = signed_s3_headers("GET", &url, &[], config)
+        .map_err(|error| SyncFailure::other(Some(SyncBackendKind::S3), format!("{error:#}")))?;
     let response = Client::new()
         .get(url)
         .headers(headers)
         .send()
         .await
-        .context("send S3 download")?;
-    if response.status() == StatusCode::NOT_FOUND {
-        return Err(anyhow!("no remote configuration exists yet"));
+        .map_err(|error| {
+            SyncFailure::other(
+                Some(SyncBackendKind::S3),
+                format!("send S3 download: {error}"),
+            )
+        })?;
+    let status = response.status();
+    if status == StatusCode::NOT_FOUND {
+        return Err(SyncFailure::new(
+            Some(SyncBackendKind::S3),
+            SyncErrorCategory::RemoteMissing,
+            "no remote configuration exists yet",
+        ));
     }
-    if !response.status().is_success() {
-        let status = response.status();
+    if !status.is_success() {
         let detail = response.text().await.unwrap_or_default();
-        return Err(anyhow!("S3 download failed: HTTP {status}: {detail}"));
+        return Err(SyncFailure::other(
+            Some(SyncBackendKind::S3),
+            format!("S3 download failed: HTTP {status}: {detail}"),
+        ));
     }
     let etag = response
         .headers()
         .get(header::ETAG)
         .and_then(|value| value.to_str().ok())
         .map(str::to_string);
-    let body = response.bytes().await.context("read S3 response")?.to_vec();
+    let body = response
+        .bytes()
+        .await
+        .map_err(|error| {
+            SyncFailure::other(
+                Some(SyncBackendKind::S3),
+                format!("read S3 response: {error}"),
+            )
+        })?
+        .to_vec();
     Ok((body, etag))
 }
 
@@ -522,63 +747,13 @@ fn aws_uri_encode(value: &str, encode_slash: bool) -> String {
     encoded
 }
 
-fn sync_url(endpoint: &str) -> String {
-    let endpoint = endpoint.trim();
-    if endpoint.ends_with('/') {
-        format!("{endpoint}{SYNC_FILE_NAME}")
-    } else if endpoint.ends_with(".json") {
-        endpoint.to_string()
-    } else {
-        format!("{endpoint}/{SYNC_FILE_NAME}")
-    }
+fn serialize_payload(payload: &SyncPayload) -> Result<Vec<u8>> {
+    serde_json::to_vec_pretty(payload).context("serialize sync payload")
 }
 
-fn encrypt_payload(payload: &SyncPayload, password: &str) -> Result<Vec<u8>> {
-    let mut salt = [0u8; 16];
-    let mut nonce = [0u8; 24];
-    OsRng.fill_bytes(&mut salt);
-    OsRng.fill_bytes(&mut nonce);
-    let key = crypto::derive_key(password, &salt)?;
-    let plaintext = serde_json::to_vec(payload).context("serialize sync payload")?;
-    let ciphertext = XChaCha20Poly1305::new((&key).into())
-        .encrypt(XNonce::from_slice(&nonce), plaintext.as_ref())
-        .map_err(|_| anyhow!("encrypt sync payload"))?;
-    serde_json::to_vec_pretty(&EncryptedEnvelope {
-        format_version: FORMAT_VERSION,
-        kdf: "argon2id".to_string(),
-        cipher: "xchacha20poly1305".to_string(),
-        salt: STANDARD.encode(salt),
-        nonce: STANDARD.encode(nonce),
-        payload: STANDARD.encode(ciphertext),
-    })
-    .context("serialize encrypted sync envelope")
-}
-
-fn decrypt_payload(raw: &[u8], password: &str) -> Result<SyncPayload> {
-    let envelope: EncryptedEnvelope =
-        serde_json::from_slice(raw).context("parse encrypted sync envelope")?;
-    if envelope.format_version != FORMAT_VERSION
-        || envelope.kdf != "argon2id"
-        || envelope.cipher != "xchacha20poly1305"
-    {
-        return Err(anyhow!("unsupported remote sync format"));
-    }
-    let salt = STANDARD.decode(envelope.salt).context("decode sync salt")?;
-    let nonce = STANDARD
-        .decode(envelope.nonce)
-        .context("decode sync nonce")?;
-    if nonce.len() != 24 {
-        return Err(anyhow!("invalid sync nonce"));
-    }
-    let ciphertext = STANDARD
-        .decode(envelope.payload)
-        .context("decode encrypted sync payload")?;
-    let key = crypto::derive_key(password, &salt)?;
-    let plaintext = XChaCha20Poly1305::new((&key).into())
-        .decrypt(XNonce::from_slice(&nonce), ciphertext.as_ref())
-        .map_err(|_| anyhow!("cannot decrypt remote configuration; check the password"))?;
+fn parse_payload(raw: &[u8]) -> Result<SyncPayload> {
     let payload: SyncPayload =
-        serde_json::from_slice(&plaintext).context("parse decrypted sync payload")?;
+        serde_json::from_slice(raw).context("parse synchronized configuration JSON")?;
     if payload.schema_version != FORMAT_VERSION {
         return Err(anyhow!("unsupported synchronized configuration version"));
     }
@@ -630,152 +805,171 @@ impl SecretScrubber {
 
     /// 把远端下载的 sessions/managed_keys 与本地合并。
     ///
-    /// 合并规则（按字段）：
-    /// - 远端字段为空串 → 保留本地原值（远端未勾选同步密码时）
-    /// - 远端字段为密文（`v1:` 前缀）→ 用隐私密码解密后覆盖本地
-    /// - 远端字段为明文 → 直接覆盖本地（兼容旧版未加密 payload）
-    ///
-    /// session 按 `host+port+user` 匹配，managed_keys 按 `fingerprint` 匹配。
-    /// 仅本地存在的 session/key 保留不动。
+    /// 远端对象提供基础信息；敏感字段则按状态独立处理：空字段保留本地值，
+    /// 可解密密文覆盖本地值，无法解密的密文保留本地值或在新对象中置空。
     pub fn merge(
         local_sessions: &[Session],
         remote_sessions: Vec<Session>,
         local_keys: &[ManagedKey],
         remote_keys: Vec<ManagedKey>,
         privacy_password: &str,
-    ) -> Result<MergedSecrets> {
-        let mut merged: Vec<Session> = Vec::with_capacity(local_sessions.len());
-        let mut decrypted_count: u32 = 0;
+    ) -> MergedSecrets {
+        let mut decrypted_count = 0;
+        let mut unavailable_secret_count = 0;
 
-        // 本地 session 先入队（保留顺序），远端匹配项覆盖字段
-        for mut local in local_sessions.iter().cloned() {
-            if let Some(remote) = find_remote_session(&remote_sessions, &local) {
-                merge_session_fields(&mut local, remote, privacy_password, &mut decrypted_count)?;
-            }
-            merged.push(local);
-        }
-        // 远端新增的 session（本地无匹配）追加到末尾
-        for remote in remote_sessions {
-            if !merged.iter().any(|s| sessions_match(s, &remote)) {
-                merged.push(remote);
-            }
-        }
+        let mut sessions: Vec<Session> = remote_sessions
+            .into_iter()
+            .map(|mut remote| {
+                let local = local_sessions
+                    .iter()
+                    .find(|local| sessions_match(local, &remote));
+                merge_session_secrets(
+                    &mut remote,
+                    local,
+                    privacy_password,
+                    &mut decrypted_count,
+                    &mut unavailable_secret_count,
+                );
+                remote
+            })
+            .collect();
+        let local_only_sessions: Vec<_> = local_sessions
+            .iter()
+            .filter(|local| !sessions.iter().any(|remote| sessions_match(local, remote)))
+            .cloned()
+            .collect();
+        sessions.extend(local_only_sessions);
 
-        let mut merged_keys: Vec<ManagedKey> = Vec::with_capacity(local_keys.len());
-        for mut local in local_keys.iter().cloned() {
-            if let Some(remote) = remote_keys
-                .iter()
-                .find(|r| r.fingerprint == local.fingerprint)
-            {
-                merge_key_fields(&mut local, remote, privacy_password, &mut decrypted_count)?;
-            }
-            merged_keys.push(local);
-        }
-        for remote in remote_keys {
-            if !merged_keys
-                .iter()
-                .any(|k| k.fingerprint == remote.fingerprint)
-            {
-                merged_keys.push(remote);
-            }
-        }
+        let mut managed_keys: Vec<ManagedKey> = remote_keys
+            .into_iter()
+            .map(|mut remote| {
+                let local = local_keys
+                    .iter()
+                    .find(|local| local.fingerprint == remote.fingerprint);
+                merge_key_secrets(
+                    &mut remote,
+                    local,
+                    privacy_password,
+                    &mut decrypted_count,
+                    &mut unavailable_secret_count,
+                );
+                remote
+            })
+            .collect();
+        let local_only_keys: Vec<_> = local_keys
+            .iter()
+            .filter(|local| {
+                !managed_keys
+                    .iter()
+                    .any(|remote| remote.fingerprint == local.fingerprint)
+            })
+            .cloned()
+            .collect();
+        managed_keys.extend(local_only_keys);
 
-        Ok(MergedSecrets {
-            sessions: merged,
-            managed_keys: merged_keys,
+        MergedSecrets {
+            sessions,
+            managed_keys,
             decrypted_count,
-        })
+            unavailable_secret_count,
+        }
     }
 }
 
-/// 合并结果。
 pub struct MergedSecrets {
     pub sessions: Vec<Session>,
     pub managed_keys: Vec<ManagedKey>,
-    /// 本次实际解密覆盖的字段数（不含保留本地的空字段）。
     pub decrypted_count: u32,
+    pub unavailable_secret_count: u32,
 }
 
 fn sessions_match(a: &Session, b: &Session) -> bool {
     a.host == b.host && a.port == b.port && a.user == b.user
 }
 
-fn find_remote_session<'a>(remote: &'a [Session], local: &Session) -> Option<&'a Session> {
-    remote.iter().find(|r| sessions_match(r, local))
-}
-
-fn merge_session_fields(
-    local: &mut Session,
-    remote: &Session,
+fn merge_session_secrets(
+    remote: &mut Session,
+    local: Option<&Session>,
     privacy_password: &str,
     decrypted_count: &mut u32,
-) -> Result<()> {
-    local.password = merge_field(
-        &local.password,
+    unavailable_secret_count: &mut u32,
+) {
+    remote.password = merge_secret_field(
+        local.map_or("", |value| value.password.as_str()),
         &remote.password,
         privacy_password,
         decrypted_count,
-    )?;
-    local.passphrase = merge_field(
-        &local.passphrase,
+        unavailable_secret_count,
+    );
+    remote.passphrase = merge_secret_field(
+        local.map_or("", |value| value.passphrase.as_str()),
         &remote.passphrase,
         privacy_password,
         decrypted_count,
-    )?;
-    local.private_key_inline = merge_field(
-        &local.private_key_inline,
+        unavailable_secret_count,
+    );
+    remote.private_key_inline = merge_secret_field(
+        local.map_or("", |value| value.private_key_inline.as_str()),
         &remote.private_key_inline,
         privacy_password,
         decrypted_count,
-    )?;
-    local.proxy_password = merge_field(
-        &local.proxy_password,
+        unavailable_secret_count,
+    );
+    remote.proxy_password = merge_secret_field(
+        local.map_or("", |value| value.proxy_password.as_str()),
         &remote.proxy_password,
         privacy_password,
         decrypted_count,
-    )?;
-    Ok(())
+        unavailable_secret_count,
+    );
 }
 
-fn merge_key_fields(
-    local: &mut ManagedKey,
-    remote: &ManagedKey,
+fn merge_key_secrets(
+    remote: &mut ManagedKey,
+    local: Option<&ManagedKey>,
     privacy_password: &str,
     decrypted_count: &mut u32,
-) -> Result<()> {
-    local.inline_content = merge_field(
-        &local.inline_content,
+    unavailable_secret_count: &mut u32,
+) {
+    remote.inline_content = merge_secret_field(
+        local.map_or("", |value| value.inline_content.as_str()),
         &remote.inline_content,
         privacy_password,
         decrypted_count,
-    )?;
-    local.passphrase = merge_field(
-        &local.passphrase,
+        unavailable_secret_count,
+    );
+    remote.passphrase = merge_secret_field(
+        local.map_or("", |value| value.passphrase.as_str()),
         &remote.passphrase,
         privacy_password,
         decrypted_count,
-    )?;
-    Ok(())
+        unavailable_secret_count,
+    );
 }
 
-/// 单字段合并：空串保留本地，密文解密覆盖，明文直接覆盖。
-fn merge_field(
-    _local: &str,
+fn merge_secret_field(
+    local: &str,
     remote: &str,
     privacy_password: &str,
     decrypted_count: &mut u32,
-) -> Result<String> {
+    unavailable_secret_count: &mut u32,
+) -> String {
     if remote.is_empty() {
-        // 保留本地原值
-        return Ok(_local.to_string());
+        return local.to_string();
     }
-    if crypto::is_sealed_field(remote) {
-        let plaintext = crypto::decrypt_field(remote, privacy_password)?;
-        *decrypted_count += 1;
-        return Ok(plaintext);
+    if !crypto::is_sealed_field(remote) {
+        return remote.to_string();
     }
-    // 明文（旧版 payload 或未启用字段级加密）
-    Ok(remote.to_string())
+    match crypto::decrypt_field(remote, privacy_password) {
+        Ok(plaintext) => {
+            *decrypted_count += 1;
+            plaintext
+        }
+        Err(_) => {
+            *unavailable_secret_count += 1;
+            local.to_string()
+        }
+    }
 }
 
 #[cfg(test)]
@@ -783,30 +977,78 @@ mod tests {
     use super::*;
 
     #[test]
-    fn encrypted_payload_round_trip() {
-        let payload = SyncPayload::new("test-device".into(), Vec::new(), Vec::new());
-        let encrypted = encrypt_payload(&payload, "correct horse battery staple").unwrap();
-        assert!(!String::from_utf8_lossy(&encrypted).contains("test-device"));
-        let decrypted = decrypt_payload(&encrypted, "correct horse battery staple").unwrap();
-        assert_eq!(decrypted.revision, payload.revision);
-    }
+    fn payload_is_plain_json_with_readable_basic_information() {
+        let sessions = vec![sample_session("example.test", "alice", "secret")];
+        let (sessions, managed_keys) =
+            SecretScrubber::scrub(sessions, Vec::new(), true, "privacy-password").unwrap();
+        let payload = SyncPayload::new("test-device".into(), sessions, managed_keys);
 
-    #[test]
-    fn wrong_password_is_rejected() {
-        let payload = SyncPayload::new("test-device".into(), Vec::new(), Vec::new());
-        let encrypted = encrypt_payload(&payload, "correct horse battery staple").unwrap();
-        assert!(decrypt_payload(&encrypted, "incorrect password").is_err());
-    }
+        let serialized = serialize_payload(&payload).unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&serialized).unwrap();
 
-    #[test]
-    fn endpoint_can_be_a_collection_or_file() {
+        assert_eq!(json["device_id"], "test-device");
+        assert_eq!(json["sessions"][0]["host"], "example.test");
+        assert_eq!(json["sessions"][0]["user"], "alice");
+        assert!(
+            json["sessions"][0]["password"]
+                .as_str()
+                .is_some_and(crypto::is_sealed_field)
+        );
         assert_eq!(
-            sync_url("https://example.test/dav/"),
+            parse_payload(&serialized).unwrap().revision,
+            payload.revision
+        );
+    }
+
+    #[test]
+    fn backend_credentials_do_not_require_a_sync_file_password() {
+        let credentials = SyncCredentials {
+            backend: SyncBackendCredentials::WebDav {
+                endpoint: "https://example.test/dav/".to_string(),
+                username: "user".to_string(),
+                password: "password".to_string(),
+            },
+        };
+        assert!(validate_credentials(&credentials).is_ok());
+    }
+
+    #[test]
+    fn webdav_sync_url_appends_the_project_file_name() {
+        assert_eq!(
+            webdav_sync_url("https://example.test/dav/")
+                .unwrap()
+                .as_str(),
             "https://example.test/dav/tiny-shell-sync.json"
         );
         assert_eq!(
-            sync_url("https://example.test/config.json"),
-            "https://example.test/config.json"
+            webdav_sync_url("https://example.test/dav")
+                .unwrap()
+                .as_str(),
+            "https://example.test/dav/tiny-shell-sync.json"
+        );
+    }
+
+    #[test]
+    fn webdav_endpoint_requires_a_valid_directory_url() {
+        assert!(validate_webdav_endpoint("").is_err());
+        assert!(validate_webdav_endpoint("not a url").is_err());
+        assert!(validate_webdav_endpoint("https://example.test/dav/").is_ok());
+        assert!(validate_webdav_endpoint("https://example.test/dav").is_ok());
+    }
+
+    #[test]
+    fn webdav_verification_uses_the_collection_url() {
+        assert_eq!(
+            webdav_verification_url("https://example.test/dav/")
+                .unwrap()
+                .as_str(),
+            "https://example.test/dav/"
+        );
+        assert_eq!(
+            webdav_verification_url("https://example.test/dav")
+                .unwrap()
+                .as_str(),
+            "https://example.test/dav/"
         );
     }
 
@@ -909,7 +1151,7 @@ mod tests {
     fn merge_keeps_local_when_remote_empty() {
         let local = vec![sample_session("h1", "u1", "local-pw")];
         let remote = vec![sample_session("h1", "u1", "")];
-        let merged = SecretScrubber::merge(&local, remote, &[], Vec::new(), "privacy-pw").unwrap();
+        let merged = SecretScrubber::merge(&local, remote, &[], Vec::new(), "privacy-pw");
         assert_eq!(merged.sessions[0].password, "local-pw");
         assert_eq!(merged.decrypted_count, 0);
     }
@@ -921,9 +1163,28 @@ mod tests {
         let (remote, _) =
             SecretScrubber::scrub(std::mem::take(&mut remote_sessions), Vec::new(), true, "pw")
                 .unwrap();
-        let merged = SecretScrubber::merge(&local, remote, &[], Vec::new(), "pw").unwrap();
+        let merged = SecretScrubber::merge(&local, remote, &[], Vec::new(), "pw");
         assert_eq!(merged.sessions[0].password, "remote-pw");
         assert!(merged.decrypted_count >= 1);
+    }
+
+    #[test]
+    fn wrong_password_still_recovers_remote_basic_information() {
+        let mut remote_sessions = vec![sample_session("recover.example", "alice", "remote-pw")];
+        remote_sessions[0].name = "Recovered session".to_string();
+        let (remote_sessions, _) =
+            SecretScrubber::scrub(remote_sessions, Vec::new(), true, "correct-password").unwrap();
+
+        let merged =
+            SecretScrubber::merge(&[], remote_sessions, &[], Vec::new(), "forgotten-password");
+
+        assert_eq!(merged.sessions.len(), 1);
+        assert_eq!(merged.sessions[0].name, "Recovered session");
+        assert_eq!(merged.sessions[0].host, "recover.example");
+        assert_eq!(merged.sessions[0].user, "alice");
+        assert!(merged.sessions[0].password.is_empty());
+        assert!(merged.sessions[0].private_key_inline.is_empty());
+        assert!(merged.unavailable_secret_count > 0);
     }
 
     #[test]
@@ -931,7 +1192,7 @@ mod tests {
         // 兼容旧版 payload：远端字段为明文时直接覆盖
         let local = vec![sample_session("h1", "u1", "old-pw")];
         let remote = vec![sample_session("h1", "u1", "legacy-pw")];
-        let merged = SecretScrubber::merge(&local, remote, &[], Vec::new(), "privacy-pw").unwrap();
+        let merged = SecretScrubber::merge(&local, remote, &[], Vec::new(), "privacy-pw");
         assert_eq!(merged.sessions[0].password, "legacy-pw");
         assert_eq!(merged.decrypted_count, 0);
     }
@@ -943,7 +1204,7 @@ mod tests {
             sample_session("h1", "u1", "pw1"),
             sample_session("h2", "u2", "pw2"),
         ];
-        let merged = SecretScrubber::merge(&local, remote, &[], Vec::new(), "privacy-pw").unwrap();
+        let merged = SecretScrubber::merge(&local, remote, &[], Vec::new(), "privacy-pw");
         assert_eq!(merged.sessions.len(), 2);
         assert!(merged.sessions.iter().any(|s| s.host == "h2"));
     }
@@ -952,7 +1213,7 @@ mod tests {
     fn merge_keeps_local_only_sessions() {
         let local = vec![sample_session("h1", "u1", "pw1")];
         let remote: Vec<Session> = Vec::new();
-        let merged = SecretScrubber::merge(&local, remote, &[], Vec::new(), "privacy-pw").unwrap();
+        let merged = SecretScrubber::merge(&local, remote, &[], Vec::new(), "privacy-pw");
         assert_eq!(merged.sessions.len(), 1);
         assert_eq!(merged.sessions[0].password, "pw1");
     }
@@ -965,8 +1226,7 @@ mod tests {
             SecretScrubber::scrub(Vec::new(), std::mem::take(&mut remote_keys), true, "pw")
                 .unwrap();
         let merged =
-            SecretScrubber::merge(&[], Vec::new(), &local_keys, remote_keys_scrubbed, "pw")
-                .unwrap();
+            SecretScrubber::merge(&[], Vec::new(), &local_keys, remote_keys_scrubbed, "pw");
         assert_eq!(merged.managed_keys.len(), 1);
         assert_eq!(merged.managed_keys[0].inline_content, "remote-content");
         assert_eq!(merged.managed_keys[0].passphrase, "remote-pass");

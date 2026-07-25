@@ -1,13 +1,14 @@
-use gpui::{Context, Entity, SharedString};
-use gpui_component::input::InputState;
+use gpui::{App, Context, SharedString};
 use rust_i18n::t;
 
 use crate::{
-    TinyShell, crypto,
+    TinyShell,
+    app::settings_window::SettingsInputs,
+    crypto,
     session::config::hardware_uuid,
     sync::{
-        self, MergedSecrets, SecretScrubber, SyncBackendCredentials, SyncCredentials, SyncPayload,
-        SyncResult, UploadMode,
+        self, MergedSecrets, SecretScrubber, SyncBackendCredentials, SyncBackendKind,
+        SyncCredentials, SyncErrorCategory, SyncFailure, SyncPayload, SyncResult, UploadMode,
     },
     terminal::BackendEvent,
 };
@@ -16,60 +17,77 @@ use base64::Engine as _;
 
 const PRIVACY_PASSWORD_MIN_LEN: usize = 8;
 
-impl TinyShell {
-    fn sync_input_value(input: &Entity<InputState>, cx: &Context<Self>) -> String {
-        input.read(cx).value().trim().to_string()
-    }
+#[derive(Clone)]
+pub(crate) struct SyncFormSnapshot {
+    credentials: SyncCredentials,
+    privacy_password: String,
+}
 
-    fn sync_credentials(&self, cx: &Context<Self>) -> SyncCredentials {
-        let backend = if self.config.sync_backend() == "s3" {
+impl SyncFormSnapshot {
+    pub(crate) fn capture(backend: &str, inputs: &SettingsInputs, cx: &App) -> Self {
+        let input_value = |input: &gpui::Entity<gpui_component::input::InputState>| {
+            input.read(cx).value().trim().to_string()
+        };
+        let backend = if backend == "s3" {
             SyncBackendCredentials::S3 {
-                endpoint: Self::sync_input_value(&self.sync_s3_endpoint_input, cx),
-                region: Self::sync_input_value(&self.sync_s3_region_input, cx),
-                bucket: Self::sync_input_value(&self.sync_s3_bucket_input, cx),
-                object_key: Self::sync_input_value(&self.sync_s3_object_key_input, cx),
-                access_key: Self::sync_input_value(&self.sync_s3_access_key_input, cx),
-                secret_key: self.sync_s3_secret_key_input.read(cx).value().to_string(),
-                session_token: self
-                    .sync_s3_session_token_input
-                    .read(cx)
-                    .value()
-                    .to_string(),
+                endpoint: input_value(&inputs.sync_s3_endpoint),
+                region: input_value(&inputs.sync_s3_region),
+                bucket: input_value(&inputs.sync_s3_bucket),
+                object_key: input_value(&inputs.sync_s3_object_key),
+                access_key: input_value(&inputs.sync_s3_access_key),
+                secret_key: inputs.sync_s3_secret_key.read(cx).value().to_string(),
+                session_token: inputs.sync_s3_session_token.read(cx).value().to_string(),
             }
         } else {
             SyncBackendCredentials::WebDav {
-                endpoint: Self::sync_input_value(&self.sync_endpoint_input, cx),
-                username: Self::sync_input_value(&self.sync_username_input, cx),
-                password: self.sync_webdav_password_input.read(cx).value().to_string(),
+                endpoint: input_value(&inputs.sync_endpoint),
+                username: input_value(&inputs.sync_username),
+                password: inputs.sync_webdav_password.read(cx).value().to_string(),
             }
         };
-        SyncCredentials {
-            backend,
-            encryption_password: self
-                .sync_encryption_password_input
-                .read(cx)
-                .value()
-                .to_string(),
+        Self {
+            credentials: SyncCredentials { backend },
+            privacy_password: inputs.sync_privacy_password.read(cx).value().to_string(),
         }
     }
+}
 
-    /// 当前隐私信息加密密码（仅内存，不落盘明文）。
-    fn sync_privacy_password(&self, cx: &Context<Self>) -> String {
-        self.sync_privacy_password_input
-            .read(cx)
-            .value()
-            .to_string()
-    }
+pub(crate) fn sync_failure_status(failure: &SyncFailure) -> String {
+    let detail = match (failure.backend, failure.category) {
+        (Some(SyncBackendKind::WebDav), SyncErrorCategory::EndpointRequired) => {
+            t!("sync_webdav_endpoint_required").to_string()
+        }
+        (Some(SyncBackendKind::WebDav), SyncErrorCategory::EndpointInvalid) => {
+            t!("sync_webdav_endpoint_invalid").to_string()
+        }
+        (Some(SyncBackendKind::WebDav), SyncErrorCategory::AuthenticationFailed) => {
+            t!("sync_webdav_auth_failed").to_string()
+        }
+        (Some(SyncBackendKind::WebDav), SyncErrorCategory::NotFound) => {
+            t!("sync_webdav_not_found").to_string()
+        }
+        (_, SyncErrorCategory::Conflict) => t!("sync_remote_conflict").to_string(),
+        (_, SyncErrorCategory::RemoteMissing) => t!("sync_remote_missing").to_string(),
+        _ => failure.detail.clone(),
+    };
+    format!("{}: {detail}", t!("sync_failed"))
+}
 
+impl TinyShell {
     fn begin_sync(
         &mut self,
+        credentials: SyncCredentials,
         status: SharedString,
         cx: &mut Context<Self>,
     ) -> Option<SyncCredentials> {
         if self.sync_in_progress {
             return None;
         }
-        let credentials = self.sync_credentials(cx);
+        if let Err(failure) = sync::validate_credentials(&credentials) {
+            self.sync_status = sync_failure_status(&failure).into();
+            cx.notify();
+            return None;
+        }
         match &credentials.backend {
             SyncBackendCredentials::WebDav {
                 endpoint, username, ..
@@ -103,6 +121,38 @@ impl TinyShell {
         Some(credentials)
     }
 
+    pub(crate) fn verify_sync_connection(
+        &mut self,
+        form: SyncFormSnapshot,
+        cx: &mut Context<Self>,
+    ) {
+        if self.sync_in_progress {
+            return;
+        }
+        let SyncBackendCredentials::WebDav {
+            endpoint,
+            username,
+            password,
+        } = form.credentials.backend
+        else {
+            return;
+        };
+
+        self.sync_in_progress = true;
+        self.sync_status = t!("sync_verifying_connection").into();
+        cx.notify();
+
+        let events = self.events_tx.clone();
+        self.runtime.spawn(async move {
+            let result = match sync::verify_webdav_connection(&endpoint, &username, &password).await
+            {
+                Ok(()) => SyncResult::ConnectionVerified,
+                Err(failure) => SyncResult::Failed(failure),
+            };
+            let _ = events.send(BackendEvent::SyncFinished(result));
+        });
+    }
+
     pub(crate) fn set_sync_backend(&mut self, backend: &str, cx: &mut Context<Self>) {
         self.config.set_sync_backend(backend);
         let _ = self.config.save();
@@ -118,37 +168,24 @@ impl TinyShell {
         cx.notify();
     }
 
-    pub(crate) fn upload_sync_config(&mut self, cx: &mut Context<Self>) {
-        let Some(credentials) = self.begin_sync(t!("sync_uploading").into(), cx) else {
+    pub(crate) fn upload_sync_config(&mut self, form: SyncFormSnapshot, cx: &mut Context<Self>) {
+        let SyncFormSnapshot {
+            credentials,
+            privacy_password,
+        } = form;
+        let Some(credentials) = self.begin_sync(credentials, t!("sync_uploading").into(), cx)
+        else {
             return;
         };
 
         let include_secrets = self.config.sync_include_secrets();
-        let privacy_password = self.sync_privacy_password(cx);
 
         // 勾选了同步密码但隐私密码不达标：中止上传，避免把脱敏数据当加密数据传错
-        if include_secrets && privacy_password.len() < PRIVACY_PASSWORD_MIN_LEN {
+        if include_secrets && privacy_password.chars().count() < PRIVACY_PASSWORD_MIN_LEN {
             self.sync_in_progress = false;
             self.sync_status = t!("sync_privacy_password_required").into();
             cx.notify();
             return;
-        }
-
-        // 首次启用密码同步：把隐私密码硬件绑定加密后落盘 + 记录哈希
-        if include_secrets && self.config.sync_secrets_password_sealed().is_empty() {
-            match seal_privacy_password(&privacy_password) {
-                Ok((sealed, hash)) => {
-                    self.config.set_sync_secrets_password_sealed(sealed);
-                    self.config.set_sync_secrets_password_hash(hash);
-                    let _ = self.config.save();
-                }
-                Err(err) => {
-                    self.sync_in_progress = false;
-                    self.sync_status = format!("{}: {err:#}", t!("sync_failed")).into();
-                    cx.notify();
-                    return;
-                }
-            }
         }
 
         let sessions = self.config.sessions().to_vec();
@@ -171,22 +208,30 @@ impl TinyShell {
             scrubbed_keys,
         );
         let mode = UploadMode::conditional(self.config.sync_etag().map(str::to_string));
+        let uploaded_privacy_password = include_secrets.then_some(privacy_password);
         let events = self.events_tx.clone();
         self.runtime.spawn(async move {
             let result = match sync::upload(credentials, payload, mode).await {
-                Ok(etag) => SyncResult::Uploaded { etag },
-                Err(err) => SyncResult::Failed(format!("{err:#}")),
+                Ok(etag) => SyncResult::Uploaded {
+                    etag,
+                    privacy_password: uploaded_privacy_password,
+                },
+                Err(failure) => SyncResult::Failed(failure),
             };
             let _ = events.send(BackendEvent::SyncFinished(result));
         });
     }
 
-    pub(crate) fn download_sync_config(&mut self, cx: &mut Context<Self>) {
-        let Some(credentials) = self.begin_sync(t!("sync_downloading").into(), cx) else {
+    pub(crate) fn download_sync_config(&mut self, form: SyncFormSnapshot, cx: &mut Context<Self>) {
+        let SyncFormSnapshot {
+            credentials,
+            privacy_password,
+        } = form;
+        let Some(credentials) = self.begin_sync(credentials, t!("sync_downloading").into(), cx)
+        else {
             return;
         };
 
-        let privacy_password = self.sync_privacy_password(cx);
         // 下载需要在异步任务里做字段级合并，先把本地副本克隆进去
         let local_sessions = self.config.sessions().to_vec();
         let local_keys = self.config.managed_keys().to_vec();
@@ -194,28 +239,27 @@ impl TinyShell {
         self.runtime.spawn(async move {
             let result = match sync::download(credentials).await {
                 Ok((payload, etag)) => {
-                    // 字段级合并：远端空字段保留本地，远端密文解密覆盖
-                    match SecretScrubber::merge(
+                    let MergedSecrets {
+                        sessions,
+                        managed_keys,
+                        decrypted_count,
+                        unavailable_secret_count,
+                    } = SecretScrubber::merge(
                         &local_sessions,
                         payload.sessions,
                         &local_keys,
                         payload.managed_keys,
                         &privacy_password,
-                    ) {
-                        Ok(MergedSecrets {
-                            sessions,
-                            managed_keys,
-                            decrypted_count,
-                        }) => SyncResult::Downloaded {
-                            sessions,
-                            managed_keys,
-                            etag,
-                            decrypted_count,
-                        },
-                        Err(err) => SyncResult::Failed(format!("{err:#}")),
+                    );
+                    SyncResult::Downloaded {
+                        sessions,
+                        managed_keys,
+                        etag,
+                        decrypted_count,
+                        unavailable_secret_count,
                     }
                 }
-                Err(err) => SyncResult::Failed(format!("{err:#}")),
+                Err(failure) => SyncResult::Failed(failure),
             };
             let _ = events.send(BackendEvent::SyncFinished(result));
         });
@@ -227,8 +271,10 @@ impl TinyShell {
     pub(crate) fn reset_sync_privacy_password(
         &mut self,
         new_password: String,
+        form: SyncFormSnapshot,
         cx: &mut Context<Self>,
     ) {
+        let credentials = form.credentials;
         if self.sync_in_progress {
             self.sync_status = t!("sync_failed").into();
             cx.notify();
@@ -252,7 +298,6 @@ impl TinyShell {
             return;
         }
 
-        let credentials = self.sync_credentials(cx);
         let sessions = self.config.sessions().to_vec();
         let managed_keys = self.config.managed_keys().to_vec();
         let scrub_result = SecretScrubber::scrub(sessions, managed_keys, true, &new_password);
@@ -279,7 +324,7 @@ impl TinyShell {
         self.runtime.spawn(async move {
             let result = match sync::upload(credentials, payload, UploadMode::Force).await {
                 Ok(_) => SyncResult::PrivacyPasswordReset { new_password },
-                Err(err) => SyncResult::Failed(format!("{err:#}")),
+                Err(failure) => SyncResult::Failed(failure),
             };
             let _ = events.send(BackendEvent::SyncFinished(result));
         });
@@ -299,4 +344,23 @@ pub(crate) fn seal_privacy_password(privacy_password: &str) -> anyhow::Result<(S
     let key = crypto::derive_key(privacy_password, &salt)?;
     let hash = base64::engine::general_purpose::STANDARD.encode(key);
     Ok((sealed, hash))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn s3_http_status_is_not_mapped_to_webdav_authentication() {
+        let failure = SyncFailure {
+            backend: Some(SyncBackendKind::S3),
+            category: SyncErrorCategory::AuthenticationFailed,
+            detail: "S3 upload failed: HTTP 401 Unauthorized".to_string(),
+        };
+
+        let status = sync_failure_status(&failure);
+
+        assert!(status.contains("S3 upload failed: HTTP 401 Unauthorized"));
+        assert!(!status.contains(t!("sync_webdav_auth_failed").as_ref()));
+    }
 }

@@ -4525,8 +4525,8 @@ impl TinyShell {
         let sync_s3_access_key_input = settings_inputs.sync_s3_access_key.clone();
         let sync_s3_secret_key_input = settings_inputs.sync_s3_secret_key.clone();
         let sync_s3_session_token_input = settings_inputs.sync_s3_session_token.clone();
-        let sync_encryption_password_input = settings_inputs.sync_encryption_password.clone();
         let sync_privacy_password_input = settings_inputs.sync_privacy_password.clone();
+        let sync_form_inputs = settings_inputs.clone();
         let update_interval_hours_input = settings_inputs.update_interval_hours.clone();
 
         let focus_handle = focus_handle.clone();
@@ -5269,14 +5269,21 @@ impl TinyShell {
                                                     let s3_access_key = sync_s3_access_key_input.clone();
                                                     let s3_secret_key = sync_s3_secret_key_input.clone();
                                                     let s3_session_token = sync_s3_session_token_input.clone();
-                                                    let encryption_password = sync_encryption_password_input.clone();
                                                     let privacy_password = sync_privacy_password_input.clone();
+                                                    let sync_form_inputs = sync_form_inputs.clone();
                                                     let view_for_reset = view.clone();
+                                                    let view_for_verify = view.clone();
                                                     move |_, window, cx| {
                                                         let in_progress = view.read(cx).sync_in_progress;
                                                         let status = view.read(cx).sync_status.clone();
                                                         let is_s3 = view.read(cx).config.sync_backend() == "s3";
                                                         let include_secrets = view.read(cx).config.sync_include_secrets();
+                                                        let privacy_password_valid = privacy_password.read(cx).value().chars().count() >= 8;
+                                                        let can_sync = !in_progress && (!include_secrets || privacy_password_valid);
+                                                        let verify_inputs = sync_form_inputs.clone();
+                                                        let reset_inputs = sync_form_inputs.clone();
+                                                        let download_inputs = sync_form_inputs.clone();
+                                                        let upload_inputs = sync_form_inputs.clone();
                                                         v_flex()
                                                             .w_full()
                                                             .gap_3()
@@ -5299,9 +5306,26 @@ impl TinyShell {
                                                                     )
                                                             )
                                                             .when(!is_s3, |this| this
-                                                                .child(v_flex().gap_1().child(div().text_sm().child(t!("sync_endpoint").to_string())).child(Input::new(&endpoint).w_full()))
+                                                                .child(div().text_sm().font_weight(FontWeight::MEDIUM).child(t!("sync_webdav_section").to_string()))
+                                                                .child(v_flex().gap_1()
+                                                                    .child(div().text_sm().child(t!("sync_endpoint").to_string()))
+                                                                    .child(Input::new(&endpoint).w_full())
+                                                                    .child(div().text_xs().text_color(cx.theme().muted_foreground).child(t!("sync_endpoint_hint").to_string())))
                                                                 .child(v_flex().gap_1().child(div().text_sm().child(t!("sync_username").to_string())).child(Input::new(&username).w_full()))
-                                                                .child(v_flex().gap_1().child(div().text_sm().child(t!("sync_webdav_password").to_string())).child(Input::new(&webdav_password).w_full())))
+                                                                .child(v_flex().gap_1().child(div().text_sm().child(t!("sync_webdav_password").to_string())).child(Input::new(&webdav_password).w_full()))
+                                                                .child(Button::new("sync-verify-connection")
+                                                                    .small()
+                                                                    .secondary()
+                                                                    .disabled(in_progress)
+                                                                    .label(t!("sync_verify_connection").to_string())
+                                                                    .on_click(window.listener_for(&view_for_verify, move |this, _, _, cx| {
+                                                                        let form = crate::app::config_sync::SyncFormSnapshot::capture(
+                                                                            this.config.sync_backend(),
+                                                                            &verify_inputs,
+                                                                            cx,
+                                                                        );
+                                                                        this.verify_sync_connection(form, cx);
+                                                                    }))))
                                                             .when(is_s3, |this| this
                                                                 .child(v_flex().gap_1().child(div().text_sm().child(t!("sync_s3_endpoint").to_string())).child(Input::new(&s3_endpoint).w_full()))
                                                                 .child(h_flex().gap_2()
@@ -5311,9 +5335,8 @@ impl TinyShell {
                                                                 .child(v_flex().gap_1().child(div().text_sm().child(t!("sync_s3_access_key").to_string())).child(Input::new(&s3_access_key).w_full()))
                                                                 .child(v_flex().gap_1().child(div().text_sm().child(t!("sync_s3_secret_key").to_string())).child(Input::new(&s3_secret_key).w_full()))
                                                                 .child(v_flex().gap_1().child(div().text_sm().child(t!("sync_s3_session_token").to_string())).child(Input::new(&s3_session_token).w_full())))
-                                                            .child(v_flex().gap_1().child(div().text_sm().child(t!("sync_encryption_password").to_string())).child(Input::new(&encryption_password).w_full()))
+                                                            .child(div().text_sm().font_weight(FontWeight::MEDIUM).child(t!("sync_encryption_section").to_string()))
                                                             .child(div().text_sm().text_color(cx.theme().muted_foreground).child(t!("sync_security_hint").to_string()))
-                                                            // 同步密码和密钥开关 + 隐私信息加密密码
                                                             .child(
                                                                 Checkbox::new("sync-include-secrets")
                                                                     .checked(include_secrets)
@@ -5338,17 +5361,31 @@ impl TinyShell {
                                                                         .small()
                                                                         .label(t!("sync_reset_privacy_password").to_string())
                                                                         .disabled(in_progress)
-                                                                        .on_click(window.listener_for(&view_for_reset, |this, _, window, cx| {
-                                                                            this.show_reset_privacy_password_dialog(window, cx);
+                                                                        .on_click(window.listener_for(&view_for_reset, move |this, _, window, cx| {
+                                                                            let form = crate::app::config_sync::SyncFormSnapshot::capture(
+                                                                                this.config.sync_backend(),
+                                                                                &reset_inputs,
+                                                                                cx,
+                                                                            );
+                                                                            this.show_reset_privacy_password_dialog(form, window, cx);
                                                                         }))))
                                                             )
                                                             .child(
                                                                 h_flex()
                                                                     .gap_2()
-                                                                    .child(Button::new("sync-download").small().disabled(in_progress).label(t!("sync_download").to_string()).on_click(window.listener_for(&view, |this, _, _, cx| this.download_sync_config(cx))))
-                                                                    .child(Button::new("sync-upload").small().disabled(in_progress).label(t!("sync_upload").to_string()).on_click(window.listener_for(&view, |this, _, _, cx| this.upload_sync_config(cx)))),
+                                                                    .child(Button::new("sync-download").small().secondary().disabled(!can_sync).label(t!("sync_download").to_string()).on_click(window.listener_for(&view, {
+                                                                        let download_inputs = download_inputs.clone();
+                                                                        move |this, _, _, cx| {
+                                                                            let form = crate::app::config_sync::SyncFormSnapshot::capture(this.config.sync_backend(), &download_inputs, cx);
+                                                                            this.download_sync_config(form, cx);
+                                                                        }
+                                                                    })))
+                                                                    .child(Button::new("sync-upload").small().primary().disabled(!can_sync).label(t!("sync_upload").to_string()).on_click(window.listener_for(&view, move |this, _, _, cx| {
+                                                                        let form = crate::app::config_sync::SyncFormSnapshot::capture(this.config.sync_backend(), &upload_inputs, cx);
+                                                                        this.upload_sync_config(form, cx);
+                                                                    }))),
                                                             )
-                                                            .child(div().text_sm().text_color(cx.theme().muted_foreground).child(status))
+                                                            .child(div().px_3().py_2().rounded_md().border_1().border_color(if status.starts_with(t!("sync_failed").as_ref()) { cx.theme().danger.opacity(0.4) } else { cx.theme().border }).bg(if status.starts_with(t!("sync_failed").as_ref()) { cx.theme().danger.opacity(0.08) } else { cx.theme().muted.opacity(0.35) }).text_sm().text_color(if status.starts_with(t!("sync_failed").as_ref()) { cx.theme().danger } else { cx.theme().muted_foreground }).child(status))
                                                     }
                                                 }))
                                         )
@@ -5892,6 +5929,7 @@ impl TinyShell {
     /// 远端原有密文不可恢复，其他设备需用新密码才能解密。
     pub(crate) fn show_reset_privacy_password_dialog(
         &mut self,
+        form: crate::app::config_sync::SyncFormSnapshot,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -5900,15 +5938,17 @@ impl TinyShell {
         }
         self.active_dialog = Some(crate::app::DialogKind::ResetPrivacyPassword);
 
-        // 清空上次输入
-        self.reset_privacy_password_input
-            .update(cx, |s, cx| s.set_value("", window, cx));
-        self.reset_privacy_password_confirm_input
-            .update(cx, |s, cx| s.set_value("", window, cx));
-
+        let new_pw_input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(t!("sync_reset_new_password").to_string())
+                .masked(true)
+        });
+        let confirm_pw_input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(t!("sync_reset_confirm_password").to_string())
+                .masked(true)
+        });
         let view = cx.entity();
-        let new_pw_input = self.reset_privacy_password_input.clone();
-        let confirm_pw_input = self.reset_privacy_password_confirm_input.clone();
         let focus_input = new_pw_input.clone();
         let danger_color = cx.theme().danger;
         window.open_dialog(cx, move |dialog: Dialog, _window, _cx| {
@@ -5921,6 +5961,7 @@ impl TinyShell {
                     let view = view.clone();
                     let new_pw_input = new_pw_input.clone();
                     let confirm_pw_input = confirm_pw_input.clone();
+                    let form = form.clone();
                     move |_, window, cx| {
                         let new_pw = new_pw_input.read(cx).value().to_string();
                         let confirm_pw = confirm_pw_input.read(cx).value().to_string();
@@ -5931,7 +5972,7 @@ impl TinyShell {
                             });
                             return false;
                         }
-                        if new_pw.len() < 8 {
+                        if new_pw.chars().count() < 8 {
                             view.update(cx, |this, cx| {
                                 this.sync_status = t!("sync_privacy_password_required").into();
                                 cx.notify();
@@ -5939,7 +5980,7 @@ impl TinyShell {
                             return false;
                         }
                         view.update(cx, |this, cx| {
-                            this.confirm_reset_privacy_password(new_pw, window, cx);
+                            this.confirm_reset_privacy_password(new_pw, form.clone(), window, cx);
                         });
                         false
                     }
@@ -5990,11 +6031,12 @@ impl TinyShell {
     fn confirm_reset_privacy_password(
         &mut self,
         new_password: String,
+        form: crate::app::config_sync::SyncFormSnapshot,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         self.active_dialog = None;
         window.close_dialog(cx);
-        self.reset_sync_privacy_password(new_password, cx);
+        self.reset_sync_privacy_password(new_password, form, cx);
     }
 }

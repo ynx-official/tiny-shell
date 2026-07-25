@@ -10,6 +10,7 @@ use rust_i18n::t;
 
 use crate::{TinyShell, session::config::ConfigStore};
 
+#[derive(Clone)]
 pub(crate) struct SettingsInputs {
     pub(crate) global_proxy_host: Entity<InputState>,
     pub(crate) global_proxy_port: Entity<InputState>,
@@ -25,7 +26,6 @@ pub(crate) struct SettingsInputs {
     pub(crate) sync_s3_access_key: Entity<InputState>,
     pub(crate) sync_s3_secret_key: Entity<InputState>,
     pub(crate) sync_s3_session_token: Entity<InputState>,
-    pub(crate) sync_encryption_password: Entity<InputState>,
     pub(crate) sync_privacy_password: Entity<InputState>,
     pub(crate) update_interval_hours: Entity<InputState>,
 }
@@ -47,7 +47,6 @@ impl SettingsInputs {
             sync_s3_access_key: owner.sync_s3_access_key_input.clone(),
             sync_s3_secret_key: owner.sync_s3_secret_key_input.clone(),
             sync_s3_session_token: owner.sync_s3_session_token_input.clone(),
-            sync_encryption_password: owner.sync_encryption_password_input.clone(),
             sync_privacy_password: owner.sync_privacy_password_input.clone(),
             update_interval_hours: owner.update_interval_hours_input.clone(),
         }
@@ -129,11 +128,6 @@ impl SettingsInputs {
                     .placeholder(t!("sync_s3_session_token").to_string())
                     .masked(true)
             }),
-            sync_encryption_password: cx.new(|cx| {
-                InputState::new(window, cx)
-                    .placeholder(t!("sync_encryption_password").to_string())
-                    .masked(true)
-            }),
             sync_privacy_password: cx.new(|cx| {
                 let mut state = InputState::new(window, cx)
                     .placeholder(t!("sync_privacy_password").to_string())
@@ -209,12 +203,29 @@ impl SettingsWindow {
                 _ => {}
             },
         );
+        let mut input_subscriptions: Vec<_> = [
+            inputs.sync_endpoint.clone(),
+            inputs.sync_username.clone(),
+            inputs.sync_webdav_password.clone(),
+            inputs.sync_s3_endpoint.clone(),
+            inputs.sync_s3_region.clone(),
+            inputs.sync_s3_bucket.clone(),
+            inputs.sync_s3_object_key.clone(),
+            inputs.sync_s3_access_key.clone(),
+            inputs.sync_s3_secret_key.clone(),
+            inputs.sync_s3_session_token.clone(),
+            inputs.sync_privacy_password.clone(),
+        ]
+        .into_iter()
+        .map(|input| cx.subscribe_in(&input, window, |_, _, _: &InputEvent, _, cx| cx.notify()))
+        .collect();
+        input_subscriptions.push(interval_subscription);
         Self {
             owner,
             inputs,
             focus_handle: cx.focus_handle(),
             _owner_subscription: owner_subscription,
-            _input_subscriptions: vec![interval_subscription],
+            _input_subscriptions: input_subscriptions,
         }
     }
 }
