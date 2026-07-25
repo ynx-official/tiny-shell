@@ -505,6 +505,8 @@ sync_privacy_password: "Privacy encryption password"
 sync_privacy_password_hint: "When enabled, session passwords and private keys are encrypted with this password before syncing. You can forcibly reset it if forgotten."
 sync_privacy_password_required: "Privacy encryption password must be at least 8 characters"
 sync_secrets_kept_local: "Secret sync disabled; sensitive data stays local only"
+sync_secrets_decrypted:
+  other: "Decrypted %{count} sensitive field(s)"
 sync_reset_privacy_password: "Force reset"
 sync_reset_dialog_title: "Reset privacy encryption password"
 sync_reset_dialog_warning: "This will re-encrypt the current local plaintext configuration with the new password and forcibly overwrite the cloud. The previous cloud ciphertext is unrecoverable; other devices must use the new password to decrypt."

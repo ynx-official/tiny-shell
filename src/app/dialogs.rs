@@ -5910,6 +5910,7 @@ impl TinyShell {
         let new_pw_input = self.reset_privacy_password_input.clone();
         let confirm_pw_input = self.reset_privacy_password_confirm_input.clone();
         let focus_input = new_pw_input.clone();
+        let danger_color = cx.theme().danger;
         window.open_dialog(cx, move |dialog: Dialog, _window, _cx| {
             dialog
                 .title(t!("sync_reset_dialog_title").to_string())
@@ -5948,12 +5949,7 @@ impl TinyShell {
                 .content({
                     let new_pw_input = new_pw_input.clone();
                     let confirm_pw_input = confirm_pw_input.clone();
-                    let focus_input = focus_input.clone();
-                    move |content, window, cx| {
-                        // 自动聚焦新密码输入框
-                        focus_input.update(cx, |s, cx| {
-                            s.focus(window, cx);
-                        });
+                    move |content, _window, _cx| {
                         content.child(
                             v_flex()
                                 .w_full()
@@ -5961,7 +5957,7 @@ impl TinyShell {
                                 .child(
                                     div()
                                         .text_sm()
-                                        .text_color(cx.theme().danger)
+                                        .text_color(danger_color)
                                         .child(t!("sync_reset_dialog_warning").to_string()),
                                 )
                                 .child(
@@ -5988,6 +5984,8 @@ impl TinyShell {
                     }
                 })
         });
+        // 延迟聚焦到对话框显示完成后
+        crate::app::input_focus::defer_focus_input_at_end(focus_input, window, cx);
     }
 
     /// 确认重置：关闭对话框并触发强制上传。

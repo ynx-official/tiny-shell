@@ -60,7 +60,7 @@ pub fn encrypt_field(plaintext: &str, password: &str) -> Result<String> {
 /// 解密 `encrypt_field` 产生的密文。
 ///
 /// - 空串返回空串（脱敏占位，调用方负责保留本地原值）。
-/// - 不以 `v1:` 开头的输入视为明文原样返回，用于兼容旧版未加密的同步 payload。
+/// - 不以 `v1:` 开头的输入返回错误，调用方可据此判断是否为密文。
 /// - 格式错误或密码错误时返回 `Err`。
 pub fn decrypt_field(ciphertext: &str, password: &str) -> Result<String> {
     if ciphertext.is_empty() {

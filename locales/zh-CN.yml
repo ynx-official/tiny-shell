@@ -505,6 +505,8 @@ sync_privacy_password: "隐私信息加密密码"
 sync_privacy_password_hint: "勾选后会话密码、私钥等内容将以此密码加密后再同步；忘记密码可强制重置。"
 sync_privacy_password_required: "隐私信息加密密码至少 8 位"
 sync_secrets_kept_local: "未勾选同步密码和密钥，敏感信息仅保留在本机"
+sync_secrets_decrypted:
+  other: "已解密 %{count} 个敏感字段"
 sync_reset_privacy_password: "强制重置"
 sync_reset_dialog_title: "重置隐私信息加密密码"
 sync_reset_dialog_warning: "此操作会用本机当前明文配置与新密码重新加密并强制覆盖云端，远端原有密文不可恢复，其他设备需使用新密码才能解密。"
