@@ -51,7 +51,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          CARGO_VERSION="$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json, sys; data = json.load(sys.stdin); print(next(package["version"] for package in data["packages"] if package["name"] == "tiny-shell"))')"
+          PACKAGE_ID="$(cargo pkgid)"
+          CARGO_VERSION="${PACKAGE_ID##*@}"
           if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
             TAG_VERSION="${GITHUB_REF_NAME#v}"
             if [[ "${TAG_VERSION}" != "${CARGO_VERSION}" ]]; then
