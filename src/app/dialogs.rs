@@ -4526,6 +4526,7 @@ impl TinyShell {
         let sync_s3_secret_key_input = settings_inputs.sync_s3_secret_key.clone();
         let sync_s3_session_token_input = settings_inputs.sync_s3_session_token.clone();
         let sync_encryption_password_input = settings_inputs.sync_encryption_password.clone();
+        let sync_privacy_password_input = settings_inputs.sync_privacy_password.clone();
         let update_interval_hours_input = settings_inputs.update_interval_hours.clone();
 
         let focus_handle = focus_handle.clone();
@@ -5269,10 +5270,13 @@ impl TinyShell {
                                                     let s3_secret_key = sync_s3_secret_key_input.clone();
                                                     let s3_session_token = sync_s3_session_token_input.clone();
                                                     let encryption_password = sync_encryption_password_input.clone();
+                                                    let privacy_password = sync_privacy_password_input.clone();
+                                                    let view_for_reset = view.clone();
                                                     move |_, window, cx| {
                                                         let in_progress = view.read(cx).sync_in_progress;
                                                         let status = view.read(cx).sync_status.clone();
                                                         let is_s3 = view.read(cx).config.sync_backend() == "s3";
+                                                        let include_secrets = view.read(cx).config.sync_include_secrets();
                                                         v_flex()
                                                             .w_full()
                                                             .gap_3()
@@ -5309,6 +5313,35 @@ impl TinyShell {
                                                                 .child(v_flex().gap_1().child(div().text_sm().child(t!("sync_s3_session_token").to_string())).child(Input::new(&s3_session_token).w_full())))
                                                             .child(v_flex().gap_1().child(div().text_sm().child(t!("sync_encryption_password").to_string())).child(Input::new(&encryption_password).w_full()))
                                                             .child(div().text_sm().text_color(cx.theme().muted_foreground).child(t!("sync_security_hint").to_string()))
+                                                            // 同步密码和密钥开关 + 隐私信息加密密码
+                                                            .child(
+                                                                Checkbox::new("sync-include-secrets")
+                                                                    .checked(include_secrets)
+                                                                    .label(t!("sync_include_secrets").to_string())
+                                                                    .on_click({
+                                                                        let view = view.clone();
+                                                                        move |checked, _window, cx| {
+                                                                            view.update(cx, |this, cx| {
+                                                                                this.set_sync_include_secrets(*checked, cx);
+                                                                            });
+                                                                        }
+                                                                    })
+                                                            )
+                                                            .when(include_secrets, |this| this
+                                                                .child(v_flex().gap_1()
+                                                                    .child(div().text_sm().child(t!("sync_privacy_password").to_string()))
+                                                                    .child(Input::new(&privacy_password).w_full()))
+                                                                .child(h_flex().gap_2().justify_between()
+                                                                    .child(div().text_xs().text_color(cx.theme().muted_foreground).child(t!("sync_privacy_password_hint").to_string()))
+                                                                    .child(Button::new("sync-reset-privacy")
+                                                                        .ghost()
+                                                                        .small()
+                                                                        .label(t!("sync_reset_privacy_password").to_string())
+                                                                        .disabled(in_progress)
+                                                                        .on_click(window.listener_for(&view_for_reset, |this, _, window, cx| {
+                                                                            this.show_reset_privacy_password_dialog(window, cx);
+                                                                        }))))
+                                                            )
                                                             .child(
                                                                 h_flex()
                                                                     .gap_2()
@@ -5851,5 +5884,121 @@ impl TinyShell {
                 cx.notify();
             });
         });
+    }
+
+    /// 弹出"重置隐私信息加密密码"对话框。
+    ///
+    /// 危险操作：会用本机当前明文配置 + 新密码重新加密并强制覆盖云端，
+    /// 远端原有密文不可恢复，其他设备需用新密码才能解密。
+    pub(crate) fn show_reset_privacy_password_dialog(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.active_dialog.is_some() {
+            return;
+        }
+        self.active_dialog = Some(crate::app::DialogKind::ResetPrivacyPassword);
+
+        // 清空上次输入
+        self.reset_privacy_password_input
+            .update(cx, |s, cx| s.set_value("", window, cx));
+        self.reset_privacy_password_confirm_input
+            .update(cx, |s, cx| s.set_value("", window, cx));
+
+        let view = cx.entity();
+        let new_pw_input = self.reset_privacy_password_input.clone();
+        let confirm_pw_input = self.reset_privacy_password_confirm_input.clone();
+        let focus_input = new_pw_input.clone();
+        window.open_dialog(cx, move |dialog: Dialog, _window, _cx| {
+            dialog
+                .title(t!("sync_reset_dialog_title").to_string())
+                .w(px(440.))
+                .close_button(false)
+                .overlay_closable(true)
+                .on_ok({
+                    let view = view.clone();
+                    let new_pw_input = new_pw_input.clone();
+                    let confirm_pw_input = confirm_pw_input.clone();
+                    move |_, window, cx| {
+                        let new_pw = new_pw_input.read(cx).value().to_string();
+                        let confirm_pw = confirm_pw_input.read(cx).value().to_string();
+                        if new_pw != confirm_pw {
+                            view.update(cx, |this, cx| {
+                                this.sync_status =
+                                    t!("sync_reset_password_mismatch").into();
+                                cx.notify();
+                            });
+                            return false;
+                        }
+                        if new_pw.len() < 8 {
+                            view.update(cx, |this, cx| {
+                                this.sync_status =
+                                    t!("sync_privacy_password_required").into();
+                                cx.notify();
+                            });
+                            return false;
+                        }
+                        view.update(cx, |this, cx| {
+                            this.confirm_reset_privacy_password(new_pw, window, cx);
+                        });
+                        false
+                    }
+                })
+                .content({
+                    let new_pw_input = new_pw_input.clone();
+                    let confirm_pw_input = confirm_pw_input.clone();
+                    let focus_input = focus_input.clone();
+                    move |content, window, cx| {
+                        // 自动聚焦新密码输入框
+                        focus_input.update(cx, |s, cx| {
+                            s.focus(window, cx);
+                        });
+                        content.child(
+                            v_flex()
+                                .w_full()
+                                .gap_3()
+                                .child(
+                                    div()
+                                        .text_sm()
+                                        .text_color(cx.theme().danger)
+                                        .child(t!("sync_reset_dialog_warning").to_string()),
+                                )
+                                .child(
+                                    v_flex()
+                                        .gap_1()
+                                        .child(
+                                            div()
+                                                .text_sm()
+                                                .child(t!("sync_reset_new_password").to_string()),
+                                        )
+                                        .child(Input::new(&new_pw_input).w_full()),
+                                )
+                                .child(
+                                    v_flex()
+                                        .gap_1()
+                                        .child(
+                                            div().text_sm().child(
+                                                t!("sync_reset_confirm_password").to_string(),
+                                            ),
+                                        )
+                                        .child(Input::new(&confirm_pw_input).w_full()),
+                                ),
+                        )
+                    }
+                })
+        });
+    }
+
+    /// 确认重置：关闭对话框并触发强制上传。
+    fn confirm_reset_privacy_password(
+        &mut self,
+        new_password: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.active_dialog = None;
+        window.close_dialog(cx);
+        self.reset_sync_privacy_password(new_password, cx);
     }
 }

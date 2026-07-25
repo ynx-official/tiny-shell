@@ -26,6 +26,7 @@ pub(crate) struct SettingsInputs {
     pub(crate) sync_s3_secret_key: Entity<InputState>,
     pub(crate) sync_s3_session_token: Entity<InputState>,
     pub(crate) sync_encryption_password: Entity<InputState>,
+    pub(crate) sync_privacy_password: Entity<InputState>,
     pub(crate) update_interval_hours: Entity<InputState>,
 }
 
@@ -47,6 +48,7 @@ impl SettingsInputs {
             sync_s3_secret_key: owner.sync_s3_secret_key_input.clone(),
             sync_s3_session_token: owner.sync_s3_session_token_input.clone(),
             sync_encryption_password: owner.sync_encryption_password_input.clone(),
+            sync_privacy_password: owner.sync_privacy_password_input.clone(),
             update_interval_hours: owner.update_interval_hours_input.clone(),
         }
     }
@@ -131,6 +133,20 @@ impl SettingsInputs {
                 InputState::new(window, cx)
                     .placeholder(t!("sync_encryption_password").to_string())
                     .masked(true)
+            }),
+            sync_privacy_password: cx.new(|cx| {
+                let mut state = InputState::new(window, cx)
+                    .placeholder(t!("sync_privacy_password").to_string())
+                    .masked(true);
+                if !config.sync_secrets_password_sealed().is_empty() {
+                    let hw = crate::session::config::hardware_uuid();
+                    if let Ok(plaintext) =
+                        crate::crypto::open_with_hardware_key(config.sync_secrets_password_sealed(), &hw)
+                    {
+                        state = state.default_value(&plaintext);
+                    }
+                }
+                state
             }),
             update_interval_hours: cx.new(|cx| {
                 InputState::new(window, cx)

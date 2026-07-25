@@ -1,5 +1,4 @@
 use anyhow::{Context, Result, anyhow};
-use argon2::Argon2;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use chacha20poly1305::{
     XChaCha20Poly1305, XNonce,
@@ -12,7 +11,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-use crate::session::config::Session;
+use crate::crypto;
+use crate::session::config::{ManagedKey, Session};
 
 const SYNC_FILE_NAME: &str = "tiny-shell-sync.json";
 const FORMAT_VERSION: u32 = 1;
@@ -24,16 +24,19 @@ pub struct SyncPayload {
     pub updated_at: String,
     pub device_id: String,
     pub sessions: Vec<Session>,
+    #[serde(default)]
+    pub managed_keys: Vec<ManagedKey>,
 }
 
 impl SyncPayload {
-    pub fn new(device_id: String, sessions: Vec<Session>) -> Self {
+    pub fn new(device_id: String, sessions: Vec<Session>, managed_keys: Vec<ManagedKey>) -> Self {
         Self {
             schema_version: FORMAT_VERSION,
             revision: Uuid::new_v4().to_string(),
             updated_at: chrono::Utc::now().to_rfc3339(),
             device_id,
             sessions,
+            managed_keys,
         }
     }
 }
@@ -78,16 +81,41 @@ pub enum SyncResult {
         etag: Option<String>,
     },
     Downloaded {
-        payload: SyncPayload,
+        sessions: Vec<Session>,
+        managed_keys: Vec<ManagedKey>,
         etag: Option<String>,
+        /// 本次下载实际解密覆盖的字段数（远端密文被解密的次数）。
+        decrypted_count: u32,
+    },
+    /// 本地强行重置隐私密码成功，需把新密码硬件绑定落盘。
+    PrivacyPasswordReset {
+        new_password: String,
     },
     Failed(String),
+}
+
+/// 上传时的并发控制模式。
+pub enum UploadMode {
+    /// 基于已知 etag 的条件上传：
+    /// - `Some(etag)` → `If-Match: <etag>`，远端未变才覆盖
+    /// - `None` → `If-None-Match: *`，仅当远端不存在时创建
+    Conditional { expected_etag: Option<String> },
+    /// 强制覆盖远端，忽略当前 etag。
+    /// 用于"重置隐私密码"等需要无条件替换远端密文的场景。
+    Force,
+}
+
+impl UploadMode {
+    /// 便捷构造：使用本地已记录的 etag 做条件上传。
+    pub fn conditional(expected_etag: Option<String>) -> Self {
+        UploadMode::Conditional { expected_etag }
+    }
 }
 
 pub async fn upload(
     credentials: SyncCredentials,
     payload: SyncPayload,
-    expected_etag: Option<String>,
+    mode: UploadMode,
 ) -> Result<Option<String>> {
     validate_credentials(&credentials)?;
     let body = encrypt_payload(&payload, &credentials.encryption_password)?;
@@ -96,7 +124,7 @@ pub async fn upload(
             endpoint,
             username,
             password,
-        } => upload_webdav(&endpoint, &username, &password, body, expected_etag).await,
+        } => upload_webdav(&endpoint, &username, &password, body, mode).await,
         SyncBackendCredentials::S3 {
             endpoint,
             region,
@@ -115,7 +143,7 @@ pub async fn upload(
                 secret_key,
                 session_token,
             };
-            upload_s3(&config, body, expected_etag).await
+            upload_s3(&config, body, mode).await
         }
     }
 }
@@ -125,7 +153,7 @@ async fn upload_webdav(
     username: &str,
     password: &str,
     body: Vec<u8>,
-    expected_etag: Option<String>,
+    mode: UploadMode,
 ) -> Result<Option<String>> {
     let client = Client::new();
     let mut request = client
@@ -133,12 +161,21 @@ async fn upload_webdav(
         .basic_auth(username, Some(password))
         .header(header::CONTENT_TYPE, "application/json")
         .body(body);
-    request = if let Some(etag) = expected_etag {
-        request.header(header::IF_MATCH, etag)
-    } else {
-        // An uninitialized client may only create a new remote file. This keeps
-        // it from silently replacing configuration uploaded by another device.
-        request.header(header::IF_NONE_MATCH, "*")
+    request = match mode {
+        UploadMode::Conditional {
+            expected_etag: Some(etag),
+        } => request.header(header::IF_MATCH, etag),
+        UploadMode::Conditional {
+            expected_etag: None,
+        } => {
+            // An uninitialized client may only create a new remote file. This keeps
+            // it from silently replacing configuration uploaded by another device.
+            request.header(header::IF_NONE_MATCH, "*")
+        }
+        UploadMode::Force => {
+            // 不带条件头，WebDAV PUT 默认覆盖已存在资源。
+            request
+        }
     };
     let response = request.send().await.context("send WebDAV upload")?;
     if response.status() == StatusCode::PRECONDITION_FAILED
@@ -267,7 +304,7 @@ struct S3Config {
 async fn upload_s3(
     config: &S3Config,
     body: Vec<u8>,
-    expected_etag: Option<String>,
+    mode: UploadMode,
 ) -> Result<Option<String>> {
     let url = s3_url(config)?;
     let mut headers = signed_s3_headers("PUT", &url, &body, config)?;
@@ -275,10 +312,20 @@ async fn upload_s3(
         header::CONTENT_TYPE,
         header::HeaderValue::from_static("application/json"),
     );
-    if let Some(etag) = expected_etag {
-        headers.insert(header::IF_MATCH, header_value(&etag, "S3 ETag")?);
-    } else {
-        headers.insert(header::IF_NONE_MATCH, header::HeaderValue::from_static("*"));
+    match mode {
+        UploadMode::Conditional {
+            expected_etag: Some(etag),
+        } => {
+            headers.insert(header::IF_MATCH, header_value(&etag, "S3 ETag")?);
+        }
+        UploadMode::Conditional {
+            expected_etag: None,
+        } => {
+            headers.insert(header::IF_NONE_MATCH, header::HeaderValue::from_static("*"));
+        }
+        UploadMode::Force => {
+            // S3 PUT 本身就是覆盖语义，无需额外条件头。
+        }
     }
     let response = Client::new()
         .put(url)
@@ -465,7 +512,7 @@ fn encrypt_payload(payload: &SyncPayload, password: &str) -> Result<Vec<u8>> {
     let mut nonce = [0u8; 24];
     OsRng.fill_bytes(&mut salt);
     OsRng.fill_bytes(&mut nonce);
-    let key = derive_key(password, &salt)?;
+    let key = crypto::derive_key(password, &salt)?;
     let plaintext = serde_json::to_vec(payload).context("serialize sync payload")?;
     let ciphertext = XChaCha20Poly1305::new((&key).into())
         .encrypt(XNonce::from_slice(&nonce), plaintext.as_ref())
@@ -500,7 +547,7 @@ fn decrypt_payload(raw: &[u8], password: &str) -> Result<SyncPayload> {
     let ciphertext = STANDARD
         .decode(envelope.payload)
         .context("decode encrypted sync payload")?;
-    let key = derive_key(password, &salt)?;
+    let key = crypto::derive_key(password, &salt)?;
     let plaintext = XChaCha20Poly1305::new((&key).into())
         .decrypt(XNonce::from_slice(&nonce), ciphertext.as_ref())
         .map_err(|_| anyhow!("cannot decrypt remote configuration; check the password"))?;
@@ -512,12 +559,190 @@ fn decrypt_payload(raw: &[u8], password: &str) -> Result<SyncPayload> {
     Ok(payload)
 }
 
-fn derive_key(password: &str, salt: &[u8]) -> Result<[u8; 32]> {
-    let mut key = [0u8; 32];
-    Argon2::default()
-        .hash_password_into(password.as_bytes(), salt, &mut key)
-        .map_err(|err| anyhow!("derive encryption key: {err}"))?;
-    Ok(key)
+/// 对上传到同步后端的快照做敏感字段处理。
+///
+/// - `include_secrets=false`：把所有敏感字段清空，远端只保留连接骨架。
+///   下载时这些空字段会被 `merge` 保留为本地原值。
+/// - `include_secrets=true`：用隐私密码对每个敏感字段做字段级加密，
+///   密文带 `v1:` 前缀，下载时由 `merge` 解密还原。
+pub struct SecretScrubber;
+
+impl SecretScrubber {
+    /// 处理一份 sessions + managed_keys 副本，返回脱敏或加密后的快照。
+    pub fn scrub(
+        mut sessions: Vec<Session>,
+        mut managed_keys: Vec<ManagedKey>,
+        include_secrets: bool,
+        privacy_password: &str,
+    ) -> Result<(Vec<Session>, Vec<ManagedKey>)> {
+        if !include_secrets {
+            for s in &mut sessions {
+                s.password.clear();
+                s.passphrase.clear();
+                s.private_key_inline.clear();
+                s.proxy_password.clear();
+            }
+            for k in &mut managed_keys {
+                k.inline_content.clear();
+                k.passphrase.clear();
+            }
+            return Ok((sessions, managed_keys));
+        }
+
+        for s in &mut sessions {
+            s.password = crypto::encrypt_field(&s.password, privacy_password)?;
+            s.passphrase = crypto::encrypt_field(&s.passphrase, privacy_password)?;
+            s.private_key_inline = crypto::encrypt_field(&s.private_key_inline, privacy_password)?;
+            s.proxy_password = crypto::encrypt_field(&s.proxy_password, privacy_password)?;
+        }
+        for k in &mut managed_keys {
+            k.inline_content = crypto::encrypt_field(&k.inline_content, privacy_password)?;
+            k.passphrase = crypto::encrypt_field(&k.passphrase, privacy_password)?;
+        }
+        Ok((sessions, managed_keys))
+    }
+
+    /// 把远端下载的 sessions/managed_keys 与本地合并。
+    ///
+    /// 合并规则（按字段）：
+    /// - 远端字段为空串 → 保留本地原值（远端未勾选同步密码时）
+    /// - 远端字段为密文（`v1:` 前缀）→ 用隐私密码解密后覆盖本地
+    /// - 远端字段为明文 → 直接覆盖本地（兼容旧版未加密 payload）
+    ///
+    /// session 按 `host+port+user` 匹配，managed_keys 按 `fingerprint` 匹配。
+    /// 仅本地存在的 session/key 保留不动。
+    pub fn merge(
+        local_sessions: &[Session],
+        remote_sessions: Vec<Session>,
+        local_keys: &[ManagedKey],
+        remote_keys: Vec<ManagedKey>,
+        privacy_password: &str,
+    ) -> Result<MergedSecrets> {
+        let mut merged: Vec<Session> = Vec::with_capacity(local_sessions.len());
+        let mut decrypted_count: u32 = 0;
+
+        // 本地 session 先入队（保留顺序），远端匹配项覆盖字段
+        for mut local in local_sessions.iter().cloned() {
+            if let Some(remote) = find_remote_session(&remote_sessions, &local) {
+                merge_session_fields(&mut local, remote, privacy_password, &mut decrypted_count)?;
+            }
+            merged.push(local);
+        }
+        // 远端新增的 session（本地无匹配）追加到末尾
+        for remote in remote_sessions {
+            if !merged
+                .iter()
+                .any(|s| sessions_match(s, &remote))
+            {
+                merged.push(remote);
+            }
+        }
+
+        let mut merged_keys: Vec<ManagedKey> = Vec::with_capacity(local_keys.len());
+        for mut local in local_keys.iter().cloned() {
+            if let Some(remote) = remote_keys.iter().find(|r| r.fingerprint == local.fingerprint) {
+                merge_key_fields(&mut local, remote, privacy_password, &mut decrypted_count)?;
+            }
+            merged_keys.push(local);
+        }
+        for remote in remote_keys {
+            if !merged_keys.iter().any(|k| k.fingerprint == remote.fingerprint) {
+                merged_keys.push(remote);
+            }
+        }
+
+        Ok(MergedSecrets {
+            sessions: merged,
+            managed_keys: merged_keys,
+            decrypted_count,
+        })
+    }
+}
+
+/// 合并结果。
+pub struct MergedSecrets {
+    pub sessions: Vec<Session>,
+    pub managed_keys: Vec<ManagedKey>,
+    /// 本次实际解密覆盖的字段数（不含保留本地的空字段）。
+    pub decrypted_count: u32,
+}
+
+fn sessions_match(a: &Session, b: &Session) -> bool {
+    a.host == b.host && a.port == b.port && a.user == b.user
+}
+
+fn find_remote_session<'a>(remote: &'a [Session], local: &Session) -> Option<&'a Session> {
+    remote.iter().find(|r| sessions_match(r, local))
+}
+
+fn merge_session_fields(
+    local: &mut Session,
+    remote: &Session,
+    privacy_password: &str,
+    decrypted_count: &mut u32,
+) -> Result<()> {
+    local.password =
+        merge_field(&local.password, &remote.password, privacy_password, decrypted_count)?;
+    local.passphrase = merge_field(
+        &local.passphrase,
+        &remote.passphrase,
+        privacy_password,
+        decrypted_count,
+    )?;
+    local.private_key_inline = merge_field(
+        &local.private_key_inline,
+        &remote.private_key_inline,
+        privacy_password,
+        decrypted_count,
+    )?;
+    local.proxy_password = merge_field(
+        &local.proxy_password,
+        &remote.proxy_password,
+        privacy_password,
+        decrypted_count,
+    )?;
+    Ok(())
+}
+
+fn merge_key_fields(
+    local: &mut ManagedKey,
+    remote: &ManagedKey,
+    privacy_password: &str,
+    decrypted_count: &mut u32,
+) -> Result<()> {
+    local.inline_content = merge_field(
+        &local.inline_content,
+        &remote.inline_content,
+        privacy_password,
+        decrypted_count,
+    )?;
+    local.passphrase = merge_field(
+        &local.passphrase,
+        &remote.passphrase,
+        privacy_password,
+        decrypted_count,
+    )?;
+    Ok(())
+}
+
+/// 单字段合并：空串保留本地，密文解密覆盖，明文直接覆盖。
+fn merge_field(
+    _local: &str,
+    remote: &str,
+    privacy_password: &str,
+    decrypted_count: &mut u32,
+) -> Result<String> {
+    if remote.is_empty() {
+        // 保留本地原值
+        return Ok(_local.to_string());
+    }
+    if crypto::is_sealed_field(remote) {
+        let plaintext = crypto::decrypt_field(remote, privacy_password)?;
+        *decrypted_count += 1;
+        return Ok(plaintext);
+    }
+    // 明文（旧版 payload 或未启用字段级加密）
+    Ok(remote.to_string())
 }
 
 #[cfg(test)]
@@ -526,7 +751,7 @@ mod tests {
 
     #[test]
     fn encrypted_payload_round_trip() {
-        let payload = SyncPayload::new("test-device".into(), Vec::new());
+        let payload = SyncPayload::new("test-device".into(), Vec::new(), Vec::new());
         let encrypted = encrypt_payload(&payload, "correct horse battery staple").unwrap();
         assert!(!String::from_utf8_lossy(&encrypted).contains("test-device"));
         let decrypted = decrypt_payload(&encrypted, "correct horse battery staple").unwrap();
@@ -535,7 +760,7 @@ mod tests {
 
     #[test]
     fn wrong_password_is_rejected() {
-        let payload = SyncPayload::new("test-device".into(), Vec::new());
+        let payload = SyncPayload::new("test-device".into(), Vec::new(), Vec::new());
         let encrypted = encrypt_payload(&payload, "correct horse battery staple").unwrap();
         assert!(decrypt_payload(&encrypted, "incorrect password").is_err());
     }
@@ -573,5 +798,152 @@ mod tests {
     fn aws_uri_encoding_preserves_only_object_key_slashes() {
         assert_eq!(aws_uri_encode("a b/c", false), "a%20b/c");
         assert_eq!(aws_uri_encode("a/b", true), "a%2Fb");
+    }
+
+    fn sample_session(host: &str, user: &str, password: &str) -> Session {
+        Session {
+            id: Uuid::new_v4().to_string(),
+            name: format!("{user}@{host}"),
+            host: host.to_string(),
+            port: 22,
+            user: user.to_string(),
+            auth: crate::session::config::AuthMethod::Password,
+            password: password.to_string(),
+            private_key_path: String::new(),
+            private_key_inline: "-----BEGIN PRIVATE KEY-----\nxxx\n".to_string(),
+            passphrase: "key-pass".to_string(),
+            managed_key_id: None,
+            last_used: None,
+            group: None,
+            proxy_type: "none".to_string(),
+            proxy_host: String::new(),
+            proxy_port: None,
+            proxy_user: String::new(),
+            proxy_password: "proxy-pw".to_string(),
+        }
+    }
+
+    fn sample_key(fp: &str, content: &str, pass: &str) -> ManagedKey {
+        ManagedKey {
+            id: Uuid::new_v4().to_string(),
+            name: format!("key-{fp}"),
+            key_type: "ed25519".to_string(),
+            fingerprint: fp.to_string(),
+            inline_content: content.to_string(),
+            passphrase: pass.to_string(),
+            created_at: 0,
+        }
+    }
+
+    #[test]
+    fn scrub_without_secrets_clears_sensitive_fields() {
+        let sessions = vec![sample_session("h1", "u1", "secret-pw")];
+        let keys = vec![sample_key("FP1", "keydata", "keypass")];
+        let (s, k) = SecretScrubber::scrub(sessions, keys, false, "ignored").unwrap();
+        assert_eq!(s[0].password, "");
+        assert_eq!(s[0].passphrase, "");
+        assert_eq!(s[0].private_key_inline, "");
+        assert_eq!(s[0].proxy_password, "");
+        assert_eq!(k[0].inline_content, "");
+        assert_eq!(k[0].passphrase, "");
+    }
+
+    #[test]
+    fn scrub_with_secrets_encrypts_all_fields() {
+        let sessions = vec![sample_session("h1", "u1", "secret-pw")];
+        let keys = vec![sample_key("FP1", "keydata", "keypass")];
+        let (s, k) = SecretScrubber::scrub(sessions, keys, true, "privacy-pw").unwrap();
+        assert!(crypto::is_sealed_field(&s[0].password));
+        assert!(crypto::is_sealed_field(&s[0].passphrase));
+        assert!(crypto::is_sealed_field(&s[0].private_key_inline));
+        assert!(crypto::is_sealed_field(&s[0].proxy_password));
+        assert!(crypto::is_sealed_field(&k[0].inline_content));
+        assert!(crypto::is_sealed_field(&k[0].passphrase));
+    }
+
+    #[test]
+    fn scrub_no_plaintext_leak_in_encrypted_mode() {
+        let sessions = vec![sample_session("h1", "u1", "leaked-pw-123")];
+        let keys = vec![sample_key("FP1", "leaked-key-data", "leaked-pass")];
+        let (s, k) = SecretScrubber::scrub(sessions, keys, true, "privacy-pw").unwrap();
+        let blob = serde_json::to_string(&(s, k)).unwrap();
+        assert!(!blob.contains("leaked-pw-123"));
+        assert!(!blob.contains("leaked-key-data"));
+        assert!(!blob.contains("leaked-pass"));
+    }
+
+    #[test]
+    fn merge_keeps_local_when_remote_empty() {
+        let local = vec![sample_session("h1", "u1", "local-pw")];
+        let remote = vec![sample_session("h1", "u1", "")];
+        let merged =
+            SecretScrubber::merge(&local, remote, &[], Vec::new(), "privacy-pw").unwrap();
+        assert_eq!(merged.sessions[0].password, "local-pw");
+        assert_eq!(merged.decrypted_count, 0);
+    }
+
+    #[test]
+    fn merge_decrypts_when_remote_sealed() {
+        let local = vec![sample_session("h1", "u1", "old-pw")];
+        let mut remote_sessions = vec![sample_session("h1", "u1", "remote-pw")];
+        let (remote, _) =
+            SecretScrubber::scrub(remote_sessions.drain(..).collect(), Vec::new(), true, "pw")
+                .unwrap();
+        let merged = SecretScrubber::merge(&local, remote, &[], Vec::new(), "pw").unwrap();
+        assert_eq!(merged.sessions[0].password, "remote-pw");
+        assert!(merged.decrypted_count >= 1);
+    }
+
+    #[test]
+    fn merge_overwrites_when_remote_plaintext() {
+        // 兼容旧版 payload：远端字段为明文时直接覆盖
+        let local = vec![sample_session("h1", "u1", "old-pw")];
+        let remote = vec![sample_session("h1", "u1", "legacy-pw")];
+        let merged =
+            SecretScrubber::merge(&local, remote, &[], Vec::new(), "privacy-pw").unwrap();
+        assert_eq!(merged.sessions[0].password, "legacy-pw");
+        assert_eq!(merged.decrypted_count, 0);
+    }
+
+    #[test]
+    fn merge_appends_new_remote_sessions() {
+        let local = vec![sample_session("h1", "u1", "pw1")];
+        let remote = vec![
+            sample_session("h1", "u1", "pw1"),
+            sample_session("h2", "u2", "pw2"),
+        ];
+        let merged =
+            SecretScrubber::merge(&local, remote, &[], Vec::new(), "privacy-pw").unwrap();
+        assert_eq!(merged.sessions.len(), 2);
+        assert!(merged.sessions.iter().any(|s| s.host == "h2"));
+    }
+
+    #[test]
+    fn merge_keeps_local_only_sessions() {
+        let local = vec![sample_session("h1", "u1", "pw1")];
+        let remote: Vec<Session> = Vec::new();
+        let merged =
+            SecretScrubber::merge(&local, remote, &[], Vec::new(), "privacy-pw").unwrap();
+        assert_eq!(merged.sessions.len(), 1);
+        assert_eq!(merged.sessions[0].password, "pw1");
+    }
+
+    #[test]
+    fn merge_managed_keys_by_fingerprint() {
+        let local_keys = vec![sample_key("FP1", "local-content", "local-pass")];
+        let mut remote_keys = vec![sample_key("FP1", "remote-content", "remote-pass")];
+        let (_, remote_keys_scrubbed) = SecretScrubber::scrub(
+            Vec::new(),
+            remote_keys.drain(..).collect(),
+            true,
+            "pw",
+        )
+        .unwrap();
+        let merged =
+            SecretScrubber::merge(&[], Vec::new(), &local_keys, remote_keys_scrubbed, "pw")
+                .unwrap();
+        assert_eq!(merged.managed_keys.len(), 1);
+        assert_eq!(merged.managed_keys[0].inline_content, "remote-content");
+        assert_eq!(merged.managed_keys[0].passphrase, "remote-pass");
     }
 }

@@ -42,7 +42,8 @@ use rust_i18n::t;
 use tokio::runtime::Runtime;
 
 use crate::{
-    session::config::{AuthMethod, ConfigStore, ManagedKey, QuickCommandCategory},
+    crypto,
+    session::config::{AuthMethod, ConfigStore, ManagedKey, QuickCommandCategory, hardware_uuid},
     session::ssh_config::SshConfigEntry,
     system::{SharedSystemSampler, SystemSampler, SystemSnapshot},
     terminal::{self, BackendCommand, BackendEvent, TabKind, TerminalTab},
@@ -499,6 +500,8 @@ pub(crate) enum DialogKind {
     ConnectionGroupMove,
     QuickCommandCategory,
     QuickCommand,
+    /// 本地强行重置隐私信息加密密码。
+    ResetPrivacyPassword,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -611,6 +614,10 @@ pub(crate) struct TinyShell {
     pub(crate) sync_s3_secret_key_input: Entity<InputState>,
     pub(crate) sync_s3_session_token_input: Entity<InputState>,
     pub(crate) sync_encryption_password_input: Entity<InputState>,
+    pub(crate) sync_privacy_password_input: Entity<InputState>,
+    /// 重置隐私密码对话框用：新密码 + 确认密码
+    pub(crate) reset_privacy_password_input: Entity<InputState>,
+    pub(crate) reset_privacy_password_confirm_input: Entity<InputState>,
     pub(crate) sync_in_progress: bool,
     pub(crate) sync_status: SharedString,
     pub(crate) sftp_path_input: Entity<InputState>,
@@ -984,6 +991,32 @@ impl TinyShell {
                 .placeholder(t!("sync_encryption_password").to_string())
                 .masked(true)
         });
+        // 隐私信息加密密码：若本机已硬件绑定落盘，启动时解密回填到输入框；
+        // 解密失败（如换设备）则留空，由用户重新输入或重置。
+        let sync_privacy_password_input = cx.new(|cx| {
+            let mut state = InputState::new(window, cx)
+                .placeholder(t!("sync_privacy_password").to_string())
+                .masked(true);
+            if !config.sync_secrets_password_sealed().is_empty() {
+                let hw = hardware_uuid();
+                if let Ok(plaintext) =
+                    crypto::open_with_hardware_key(config.sync_secrets_password_sealed(), &hw)
+                {
+                    state = state.default_value(&plaintext);
+                }
+            }
+            state
+        });
+        let reset_privacy_password_input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(t!("sync_reset_new_password").to_string())
+                .masked(true)
+        });
+        let reset_privacy_password_confirm_input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(t!("sync_reset_confirm_password").to_string())
+                .masked(true)
+        });
 
         let _subscriptions = vec![
             cx.subscribe_in(&host_input, window, Self::on_input_event),
@@ -1018,6 +1051,21 @@ impl TinyShell {
             cx.subscribe_in(&sync_s3_session_token_input, window, Self::on_input_event),
             cx.subscribe_in(
                 &sync_encryption_password_input,
+                window,
+                Self::on_input_event,
+            ),
+            cx.subscribe_in(
+                &sync_privacy_password_input,
+                window,
+                Self::on_input_event,
+            ),
+            cx.subscribe_in(
+                &reset_privacy_password_input,
+                window,
+                Self::on_input_event,
+            ),
+            cx.subscribe_in(
+                &reset_privacy_password_confirm_input,
                 window,
                 Self::on_input_event,
             ),
@@ -1119,6 +1167,9 @@ impl TinyShell {
             sync_s3_secret_key_input,
             sync_s3_session_token_input,
             sync_encryption_password_input,
+            sync_privacy_password_input,
+            reset_privacy_password_input,
+            reset_privacy_password_confirm_input,
             sync_in_progress: false,
             sync_status: t!("sync_not_run").into(),
             sftp_path_input,
@@ -1783,14 +1834,48 @@ impl TinyShell {
                             self.sync_status = t!("sync_upload_complete").into();
                             let _ = self.config.save();
                         }
-                        crate::sync::SyncResult::Downloaded { payload, etag } => {
-                            self.config.replace_sessions(payload.sessions);
+                        crate::sync::SyncResult::Downloaded {
+                            sessions,
+                            managed_keys,
+                            etag,
+                            decrypted_count,
+                        } => {
+                            self.config.replace_sessions(sessions);
+                            // 用合并后的 managed_keys 整体替换：merge 已保留本地
+                            // 仅有的 key 并按 fingerprint 覆盖/追加远端
+                            self.config.replace_managed_keys(managed_keys);
                             self.config.set_sync_etag(etag);
                             match self.config.save() {
-                                Ok(()) => self.sync_status = t!("sync_download_complete").into(),
+                                Ok(()) => {
+                                    if decrypted_count > 0 {
+                                        self.sync_status = t!(
+                                            "sync_secrets_decrypted",
+                                            count = decrypted_count
+                                        )
+                                        .into();
+                                    } else {
+                                        self.sync_status =
+                                            t!("sync_secrets_kept_local").into();
+                                    }
+                                }
                                 Err(err) => {
                                     self.sync_status =
                                         format!("{}: {err:#}", t!("sync_failed")).into()
+                                }
+                            }
+                        }
+                        crate::sync::SyncResult::PrivacyPasswordReset { new_password } => {
+                            match crate::app::config_sync::seal_privacy_password(&new_password) {
+                                Ok((sealed, hash)) => {
+                                    self.config.set_sync_secrets_password_sealed(sealed);
+                                    self.config.set_sync_secrets_password_hash(hash);
+                                    let _ = self.config.save();
+                                    self.sync_status =
+                                        t!("sync_reset_complete").into();
+                                }
+                                Err(err) => {
+                                    self.sync_status =
+                                        format!("{}: {err:#}", t!("sync_failed")).into();
                                 }
                             }
                         }

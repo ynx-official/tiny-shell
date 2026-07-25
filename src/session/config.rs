@@ -5,7 +5,6 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use argon2::Argon2;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use chacha20poly1305::{
     XChaCha20Poly1305, XNonce,
@@ -332,6 +331,16 @@ pub struct ConfigFile {
     pub sync_backend: String,
     #[serde(default)]
     pub sync_etag_backend: String,
+    /// 是否把会话密码/私钥等敏感信息一并同步（脱敏上传或字段级加密）。
+    #[serde(default)]
+    pub sync_include_secrets: bool,
+    /// 隐私信息加密密码，经硬件 UUID 绑定加密后落盘。
+    /// 换设备无法解出，需用户重新输入；丢失后只能本地重置覆盖云端。
+    #[serde(default)]
+    pub sync_secrets_password_sealed: String,
+    /// 隐私信息加密密码的 Argon2id 哈希，用于校验输入一致性（不存明文）。
+    #[serde(default)]
+    pub sync_secrets_password_hash: String,
     #[serde(default)]
     pub sync_s3_endpoint: String,
     #[serde(default = "default_s3_region")]
@@ -463,6 +472,9 @@ impl Default for ConfigFile {
             sync_device_id: String::new(),
             sync_backend: String::new(),
             sync_etag_backend: String::new(),
+            sync_include_secrets: false,
+            sync_secrets_password_sealed: String::new(),
+            sync_secrets_password_hash: String::new(),
             sync_s3_endpoint: String::new(),
             sync_s3_region: default_s3_region(),
             sync_s3_bucket: String::new(),
@@ -711,6 +723,11 @@ impl ConfigStore {
         self.cache.sessions = sessions;
     }
 
+    /// 用同步合并后的列表整体替换本地 managed_keys。
+    pub fn replace_managed_keys(&mut self, keys: Vec<ManagedKey>) {
+        self.cache.managed_keys = keys;
+    }
+
     pub fn sync_endpoint(&self) -> &str {
         &self.cache.sync_endpoint
     }
@@ -786,6 +803,26 @@ impl ConfigStore {
     pub fn set_sync_etag(&mut self, etag: Option<String>) {
         self.cache.sync_etag = etag;
         self.cache.sync_etag_backend = self.sync_backend().to_string();
+    }
+
+    pub fn sync_include_secrets(&self) -> bool {
+        self.cache.sync_include_secrets
+    }
+
+    pub fn set_sync_include_secrets(&mut self, include: bool) {
+        self.cache.sync_include_secrets = include;
+    }
+
+    pub fn sync_secrets_password_sealed(&self) -> &str {
+        &self.cache.sync_secrets_password_sealed
+    }
+
+    pub fn set_sync_secrets_password_sealed(&mut self, sealed: String) {
+        self.cache.sync_secrets_password_sealed = sealed;
+    }
+
+    pub fn set_sync_secrets_password_hash(&mut self, hash: String) {
+        self.cache.sync_secrets_password_hash = hash;
     }
 
     pub fn tmp_dir(&self) -> Option<PathBuf> {
@@ -1561,6 +1598,11 @@ fn get_hardware_uuid() -> String {
     HARDWARE_UUID.get_or_init(query_hardware_uuid).clone()
 }
 
+/// 对外暴露的硬件 UUID，供 `crypto` 模块做硬件绑定加密使用。
+pub(crate) fn hardware_uuid() -> String {
+    get_hardware_uuid()
+}
+
 fn query_hardware_uuid() -> String {
     #[cfg(target_os = "macos")]
     {
@@ -1628,11 +1670,7 @@ fn encrypt_config(config: &ConfigFile, password: &str) -> Result<Vec<u8>> {
     OsRng.fill_bytes(&mut salt);
     OsRng.fill_bytes(&mut nonce);
 
-    let mut key = [0u8; 32];
-    Argon2::default()
-        .hash_password_into(password.as_bytes(), &salt, &mut key)
-        .map_err(|err| anyhow::anyhow!("derive encryption key: {err}"))?;
-
+    let key = crate::crypto::derive_key(password, &salt)?;
     let plaintext = serde_json::to_vec(config).context("serialize config")?;
     let ciphertext = XChaCha20Poly1305::new((&key).into())
         .encrypt(XNonce::from_slice(&nonce), plaintext.as_ref())
@@ -1671,11 +1709,7 @@ fn decrypt_config(raw: &[u8], password: &str) -> Result<ConfigFile> {
         .decode(envelope.payload)
         .context("decode encrypted config payload")?;
 
-    let mut key = [0u8; 32];
-    Argon2::default()
-        .hash_password_into(password.as_bytes(), &salt, &mut key)
-        .map_err(|err| anyhow::anyhow!("derive encryption key: {err}"))?;
-
+    let key = crate::crypto::derive_key(password, &salt)?;
     let plaintext = XChaCha20Poly1305::new((&key).into())
         .decrypt(XNonce::from_slice(&nonce), ciphertext.as_ref())
         .map_err(|_| {
