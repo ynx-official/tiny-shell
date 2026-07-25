@@ -1054,16 +1054,8 @@ impl TinyShell {
                 window,
                 Self::on_input_event,
             ),
-            cx.subscribe_in(
-                &sync_privacy_password_input,
-                window,
-                Self::on_input_event,
-            ),
-            cx.subscribe_in(
-                &reset_privacy_password_input,
-                window,
-                Self::on_input_event,
-            ),
+            cx.subscribe_in(&sync_privacy_password_input, window, Self::on_input_event),
+            cx.subscribe_in(&reset_privacy_password_input, window, Self::on_input_event),
             cx.subscribe_in(
                 &reset_privacy_password_confirm_input,
                 window,
@@ -1670,6 +1662,7 @@ impl TinyShell {
                     sftp_editor_window::mark_upload_failed(&tab_id, &remote_path, error, cx);
                 }
                 BackendEvent::RemoteSystem { tab_id, snapshot } => {
+                    let snapshot = *snapshot;
                     self.remote_sample_in_flight = false;
                     self.remote_system_snapshots
                         .insert(tab_id.clone(), snapshot.clone());
@@ -1848,14 +1841,11 @@ impl TinyShell {
                             match self.config.save() {
                                 Ok(()) => {
                                     if decrypted_count > 0 {
-                                        self.sync_status = t!(
-                                            "sync_secrets_decrypted",
-                                            count = decrypted_count
-                                        )
-                                        .into();
-                                    } else {
                                         self.sync_status =
-                                            t!("sync_secrets_kept_local").into();
+                                            t!("sync_secrets_decrypted", count = decrypted_count)
+                                                .into();
+                                    } else {
+                                        self.sync_status = t!("sync_secrets_kept_local").into();
                                     }
                                 }
                                 Err(err) => {
@@ -1870,8 +1860,7 @@ impl TinyShell {
                                     self.config.set_sync_secrets_password_sealed(sealed);
                                     self.config.set_sync_secrets_password_hash(hash);
                                     let _ = self.config.save();
-                                    self.sync_status =
-                                        t!("sync_reset_complete").into();
+                                    self.sync_status = t!("sync_reset_complete").into();
                                 }
                                 Err(err) => {
                                     self.sync_status =

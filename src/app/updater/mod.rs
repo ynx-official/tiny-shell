@@ -542,13 +542,19 @@ where
     if let Some(suffix) = installer_suffix {
         let installer_path = temp_dir.join(format!("tiny-shell-v{version}-setup.{suffix}"));
         std::fs::write(&installer_path, &bytes).with_context(|| {
-            format!("failed to write downloaded installer {}", installer_path.display())
+            format!(
+                "failed to write downloaded installer {}",
+                installer_path.display()
+            )
         })?;
         std::fs::OpenOptions::new()
             .write(true)
             .open(&installer_path)
             .with_context(|| {
-                format!("failed to open downloaded installer {}", installer_path.display())
+                format!(
+                    "failed to open downloaded installer {}",
+                    installer_path.display()
+                )
             })?
             .sync_all()
             .context("failed to flush downloaded installer to disk")?;
@@ -587,7 +593,7 @@ where
                 let app = walkdir::WalkDir::new(&temp_dir)
                     .into_iter()
                     .filter_map(|e| e.ok())
-                    .find(|e| e.path().extension().map_or(false, |ext| ext == "app"));
+                    .find(|e| e.path().extension().is_some_and(|ext| ext == "app"));
                 if let Some(app_entry) = app {
                     return Ok(app_entry.path().to_path_buf());
                 }
@@ -745,7 +751,7 @@ pub fn restart() -> ! {
         // On macOS, relaunch the app bundle.
         if let Some(app_path) = current_exe
             .ancestors()
-            .find(|p| p.extension().map_or(false, |ext| ext == "app"))
+            .find(|p| p.extension().is_some_and(|ext| ext == "app"))
         {
             let _ = std::process::Command::new("open")
                 .arg("-n")
@@ -826,16 +832,16 @@ fn install_macos(new_path: &std::path::Path, current_exe: &std::path::Path) -> a
     // Determine whether we are running from an .app bundle.
     let app_bundle = current_exe
         .ancestors()
-        .find(|p| p.extension().map_or(false, |ext| ext == "app"));
+        .find(|p| p.extension().is_some_and(|ext| ext == "app"));
 
     if let Some(app_bundle) = app_bundle {
         // new_path is either the extracted .app or a binary inside it.
-        let new_app = if new_path.extension().map_or(false, |ext| ext == "app") {
+        let new_app = if new_path.extension().is_some_and(|ext| ext == "app") {
             new_path.to_path_buf()
         } else {
             new_path
                 .ancestors()
-                .find(|p| p.extension().map_or(false, |ext| ext == "app"))
+                .find(|p| p.extension().is_some_and(|ext| ext == "app"))
                 .map(|p| p.to_path_buf())
                 .unwrap_or_else(|| new_path.to_path_buf())
         };
@@ -854,12 +860,12 @@ fn install_macos(new_path: &std::path::Path, current_exe: &std::path::Path) -> a
             app_bundle.file_name().unwrap_or_default().to_string_lossy()
         ));
         if staging.exists() {
-            std::fs::remove_dir_all(&staging)
-                .with_context(|| format!("failed to clear stale staging dir {}", staging.display()))?;
+            std::fs::remove_dir_all(&staging).with_context(|| {
+                format!("failed to clear stale staging dir {}", staging.display())
+            })?;
         }
-        copy_dir_all(&new_app, &staging).with_context(|| {
-            format!("failed to stage new app bundle at {}", staging.display())
-        })?;
+        copy_dir_all(&new_app, &staging)
+            .with_context(|| format!("failed to stage new app bundle at {}", staging.display()))?;
 
         // Swap: move the live bundle aside, move the staged one into place,
         // then delete the old bundle. If the move-into-place fails we restore
@@ -949,9 +955,7 @@ fn install_macos_pkg(
     let installed_version = std::process::Command::new("defaults")
         .args([
             "read",
-            &installed_app
-                .join("Contents/Info.plist")
-                .to_string_lossy(),
+            &installed_app.join("Contents/Info.plist").to_string_lossy(),
             "CFBundleShortVersionString",
         ])
         .output()
@@ -966,9 +970,7 @@ fn install_macos_pkg(
     let expected = expected_version.trim_start_matches('v');
     match installed_version.as_deref() {
         Some(v) if v == expected => Ok(()),
-        Some(v) => anyhow::bail!(
-            "installed pkg version mismatch: expected {expected}, got {v}"
-        ),
+        Some(v) => anyhow::bail!("installed pkg version mismatch: expected {expected}, got {v}"),
         None => anyhow::bail!(
             "failed to read installed version from {} after pkg install",
             installed_app.display()
@@ -992,8 +994,7 @@ fn install_windows_setup(
 
     let process_id = std::process::id();
     let suffix = unique_temp_suffix();
-    let script_path =
-        std::env::temp_dir().join(format!("tiny-shell-setup-update-{suffix}.ps1"));
+    let script_path = std::env::temp_dir().join(format!("tiny-shell-setup-update-{suffix}.ps1"));
     let log_path = std::env::temp_dir().join(format!("tiny-shell-update-{suffix}.log"));
     let plan = WindowsSetupUpdateScriptPlan {
         process_id,
@@ -1380,10 +1381,7 @@ mod tests {
             InstallationKind::MacInstaller,
         )
         .unwrap();
-        assert_eq!(
-            selected.name,
-            "tiny-shell-v1.1.0-macos-aarch64-setup.pkg"
-        );
+        assert_eq!(selected.name, "tiny-shell-v1.1.0-macos-aarch64-setup.pkg");
     }
 
     #[test]

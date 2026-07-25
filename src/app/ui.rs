@@ -22,6 +22,7 @@ use gpui_component::{
 };
 use rust_i18n::t;
 use std::{
+    cmp::Reverse,
     collections::{HashMap, HashSet},
     time::Duration,
 };
@@ -4748,8 +4749,9 @@ impl TinyShell {
         let process_view_epoch = process_view as u64;
         let mut displayed_processes = self.system.processes.clone();
         match process_view {
-            ProcessView::Memory => displayed_processes
-                .sort_by(|left, right| right.memory_bytes.cmp(&left.memory_bytes)),
+            ProcessView::Memory => {
+                displayed_processes.sort_by_key(|process| Reverse(process.memory_bytes))
+            }
             ProcessView::Cpu => displayed_processes.sort_by(|left, right| {
                 right
                     .cpu_percent

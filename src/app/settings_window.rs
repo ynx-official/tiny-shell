@@ -140,9 +140,10 @@ impl SettingsInputs {
                     .masked(true);
                 if !config.sync_secrets_password_sealed().is_empty() {
                     let hw = crate::session::config::hardware_uuid();
-                    if let Ok(plaintext) =
-                        crate::crypto::open_with_hardware_key(config.sync_secrets_password_sealed(), &hw)
-                    {
+                    if let Ok(plaintext) = crate::crypto::open_with_hardware_key(
+                        config.sync_secrets_password_sealed(),
+                        &hw,
+                    ) {
                         state = state.default_value(&plaintext);
                     }
                 }

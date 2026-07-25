@@ -105,7 +105,10 @@ pub fn is_sealed_field(value: &str) -> bool {
 /// 用于把"隐私信息加密密码"本身持久化到 ConfigFile：
 /// 落盘的是密文，与 `encrypt_config` 同源（依赖本机硬件 UUID），
 /// 因此换设备后无法解出，需用户重新输入。
-#[cfg_attr(not(any(target_os = "windows", target_os = "macos", target_os = "linux")), allow(dead_code))]
+#[cfg_attr(
+    not(any(target_os = "windows", target_os = "macos", target_os = "linux")),
+    allow(dead_code)
+)]
 pub fn seal_with_hardware_key(plaintext: &str, hardware_uuid: &str) -> Result<String> {
     if plaintext.is_empty() {
         return Ok(String::new());
@@ -114,7 +117,10 @@ pub fn seal_with_hardware_key(plaintext: &str, hardware_uuid: &str) -> Result<St
 }
 
 /// 与 `seal_with_hardware_key` 对应，解出硬件绑定的密文。
-#[cfg_attr(not(any(target_os = "windows", target_os = "macos", target_os = "linux")), allow(dead_code))]
+#[cfg_attr(
+    not(any(target_os = "windows", target_os = "macos", target_os = "linux")),
+    allow(dead_code)
+)]
 pub fn open_with_hardware_key(ciphertext: &str, hardware_uuid: &str) -> Result<String> {
     if ciphertext.is_empty() {
         return Ok(String::new());

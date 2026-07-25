@@ -1,3 +1,5 @@
+use std::fmt;
+
 use anyhow::{Context, Result, anyhow};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use chacha20poly1305::{
@@ -75,7 +77,7 @@ pub enum SyncBackendCredentials {
     },
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub enum SyncResult {
     Uploaded {
         etag: Option<String>,
@@ -92,6 +94,34 @@ pub enum SyncResult {
         new_password: String,
     },
     Failed(String),
+}
+
+impl fmt::Debug for SyncResult {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Uploaded { etag } => formatter
+                .debug_struct("Uploaded")
+                .field("etag", etag)
+                .finish(),
+            Self::Downloaded {
+                sessions,
+                managed_keys,
+                etag,
+                decrypted_count,
+            } => formatter
+                .debug_struct("Downloaded")
+                .field("session_count", &sessions.len())
+                .field("managed_key_count", &managed_keys.len())
+                .field("etag", etag)
+                .field("decrypted_count", decrypted_count)
+                .finish(),
+            Self::PrivacyPasswordReset { .. } => formatter
+                .debug_struct("PrivacyPasswordReset")
+                .field("new_password", &"<redacted>")
+                .finish(),
+            Self::Failed(_) => formatter.write_str("Failed(<redacted>)"),
+        }
+    }
 }
 
 /// 上传时的并发控制模式。
@@ -301,11 +331,7 @@ struct S3Config {
     session_token: String,
 }
 
-async fn upload_s3(
-    config: &S3Config,
-    body: Vec<u8>,
-    mode: UploadMode,
-) -> Result<Option<String>> {
+async fn upload_s3(config: &S3Config, body: Vec<u8>, mode: UploadMode) -> Result<Option<String>> {
     let url = s3_url(config)?;
     let mut headers = signed_s3_headers("PUT", &url, &body, config)?;
     headers.insert(
@@ -630,23 +656,26 @@ impl SecretScrubber {
         }
         // 远端新增的 session（本地无匹配）追加到末尾
         for remote in remote_sessions {
-            if !merged
-                .iter()
-                .any(|s| sessions_match(s, &remote))
-            {
+            if !merged.iter().any(|s| sessions_match(s, &remote)) {
                 merged.push(remote);
             }
         }
 
         let mut merged_keys: Vec<ManagedKey> = Vec::with_capacity(local_keys.len());
         for mut local in local_keys.iter().cloned() {
-            if let Some(remote) = remote_keys.iter().find(|r| r.fingerprint == local.fingerprint) {
+            if let Some(remote) = remote_keys
+                .iter()
+                .find(|r| r.fingerprint == local.fingerprint)
+            {
                 merge_key_fields(&mut local, remote, privacy_password, &mut decrypted_count)?;
             }
             merged_keys.push(local);
         }
         for remote in remote_keys {
-            if !merged_keys.iter().any(|k| k.fingerprint == remote.fingerprint) {
+            if !merged_keys
+                .iter()
+                .any(|k| k.fingerprint == remote.fingerprint)
+            {
                 merged_keys.push(remote);
             }
         }
@@ -681,8 +710,12 @@ fn merge_session_fields(
     privacy_password: &str,
     decrypted_count: &mut u32,
 ) -> Result<()> {
-    local.password =
-        merge_field(&local.password, &remote.password, privacy_password, decrypted_count)?;
+    local.password = merge_field(
+        &local.password,
+        &remote.password,
+        privacy_password,
+        decrypted_count,
+    )?;
     local.passphrase = merge_field(
         &local.passphrase,
         &remote.passphrase,
@@ -876,8 +909,7 @@ mod tests {
     fn merge_keeps_local_when_remote_empty() {
         let local = vec![sample_session("h1", "u1", "local-pw")];
         let remote = vec![sample_session("h1", "u1", "")];
-        let merged =
-            SecretScrubber::merge(&local, remote, &[], Vec::new(), "privacy-pw").unwrap();
+        let merged = SecretScrubber::merge(&local, remote, &[], Vec::new(), "privacy-pw").unwrap();
         assert_eq!(merged.sessions[0].password, "local-pw");
         assert_eq!(merged.decrypted_count, 0);
     }
@@ -887,7 +919,7 @@ mod tests {
         let local = vec![sample_session("h1", "u1", "old-pw")];
         let mut remote_sessions = vec![sample_session("h1", "u1", "remote-pw")];
         let (remote, _) =
-            SecretScrubber::scrub(remote_sessions.drain(..).collect(), Vec::new(), true, "pw")
+            SecretScrubber::scrub(std::mem::take(&mut remote_sessions), Vec::new(), true, "pw")
                 .unwrap();
         let merged = SecretScrubber::merge(&local, remote, &[], Vec::new(), "pw").unwrap();
         assert_eq!(merged.sessions[0].password, "remote-pw");
@@ -899,8 +931,7 @@ mod tests {
         // 兼容旧版 payload：远端字段为明文时直接覆盖
         let local = vec![sample_session("h1", "u1", "old-pw")];
         let remote = vec![sample_session("h1", "u1", "legacy-pw")];
-        let merged =
-            SecretScrubber::merge(&local, remote, &[], Vec::new(), "privacy-pw").unwrap();
+        let merged = SecretScrubber::merge(&local, remote, &[], Vec::new(), "privacy-pw").unwrap();
         assert_eq!(merged.sessions[0].password, "legacy-pw");
         assert_eq!(merged.decrypted_count, 0);
     }
@@ -912,8 +943,7 @@ mod tests {
             sample_session("h1", "u1", "pw1"),
             sample_session("h2", "u2", "pw2"),
         ];
-        let merged =
-            SecretScrubber::merge(&local, remote, &[], Vec::new(), "privacy-pw").unwrap();
+        let merged = SecretScrubber::merge(&local, remote, &[], Vec::new(), "privacy-pw").unwrap();
         assert_eq!(merged.sessions.len(), 2);
         assert!(merged.sessions.iter().any(|s| s.host == "h2"));
     }
@@ -922,8 +952,7 @@ mod tests {
     fn merge_keeps_local_only_sessions() {
         let local = vec![sample_session("h1", "u1", "pw1")];
         let remote: Vec<Session> = Vec::new();
-        let merged =
-            SecretScrubber::merge(&local, remote, &[], Vec::new(), "privacy-pw").unwrap();
+        let merged = SecretScrubber::merge(&local, remote, &[], Vec::new(), "privacy-pw").unwrap();
         assert_eq!(merged.sessions.len(), 1);
         assert_eq!(merged.sessions[0].password, "pw1");
     }
@@ -932,13 +961,9 @@ mod tests {
     fn merge_managed_keys_by_fingerprint() {
         let local_keys = vec![sample_key("FP1", "local-content", "local-pass")];
         let mut remote_keys = vec![sample_key("FP1", "remote-content", "remote-pass")];
-        let (_, remote_keys_scrubbed) = SecretScrubber::scrub(
-            Vec::new(),
-            remote_keys.drain(..).collect(),
-            true,
-            "pw",
-        )
-        .unwrap();
+        let (_, remote_keys_scrubbed) =
+            SecretScrubber::scrub(Vec::new(), std::mem::take(&mut remote_keys), true, "pw")
+                .unwrap();
         let merged =
             SecretScrubber::merge(&[], Vec::new(), &local_keys, remote_keys_scrubbed, "pw")
                 .unwrap();

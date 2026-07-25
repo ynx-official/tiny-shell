@@ -5926,16 +5926,14 @@ impl TinyShell {
                         let confirm_pw = confirm_pw_input.read(cx).value().to_string();
                         if new_pw != confirm_pw {
                             view.update(cx, |this, cx| {
-                                this.sync_status =
-                                    t!("sync_reset_password_mismatch").into();
+                                this.sync_status = t!("sync_reset_password_mismatch").into();
                                 cx.notify();
                             });
                             return false;
                         }
                         if new_pw.len() < 8 {
                             view.update(cx, |this, cx| {
-                                this.sync_status =
-                                    t!("sync_privacy_password_required").into();
+                                this.sync_status = t!("sync_privacy_password_required").into();
                                 cx.notify();
                             });
                             return false;

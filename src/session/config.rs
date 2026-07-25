@@ -1,4 +1,5 @@
 use std::{
+    fmt,
     fs::{self, OpenOptions},
     io::Write,
     path::{Path, PathBuf},
@@ -91,7 +92,7 @@ pub enum AuthMethod {
 /// The key file content is copied into `inline_content` at import time,
 /// so deleting the original file does not affect connections that use
 /// this managed key.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct ManagedKey {
     pub id: String,
     /// User-given name / remark for this key.
@@ -113,7 +114,22 @@ pub struct ManagedKey {
     pub created_at: i64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+impl fmt::Debug for ManagedKey {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ManagedKey")
+            .field("id", &self.id)
+            .field("name", &self.name)
+            .field("key_type", &self.key_type)
+            .field("fingerprint", &self.fingerprint)
+            .field("inline_content", &"<redacted>")
+            .field("passphrase", &"<redacted>")
+            .field("created_at", &self.created_at)
+            .finish()
+    }
+}
+
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Session {
     pub id: String,
     pub name: String,
@@ -204,6 +220,32 @@ impl Session {
             proxy_user: String::new(),
             proxy_password: String::new(),
         }
+    }
+}
+
+impl fmt::Debug for Session {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("Session")
+            .field("id", &self.id)
+            .field("name", &self.name)
+            .field("host", &self.host)
+            .field("port", &self.port)
+            .field("user", &self.user)
+            .field("auth", &self.auth)
+            .field("password", &"<redacted>")
+            .field("private_key_path", &self.private_key_path)
+            .field("private_key_inline", &"<redacted>")
+            .field("passphrase", &"<redacted>")
+            .field("managed_key_id", &self.managed_key_id)
+            .field("last_used", &self.last_used)
+            .field("group", &self.group)
+            .field("proxy_type", &self.proxy_type)
+            .field("proxy_host", &self.proxy_host)
+            .field("proxy_port", &self.proxy_port)
+            .field("proxy_user", &self.proxy_user)
+            .field("proxy_password", &"<redacted>")
+            .finish()
     }
 }
 
@@ -1400,13 +1442,26 @@ impl<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + Sync + 'st
 
 use std::sync::OnceLock;
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct EnvProxy {
     pub proxy_type: String,
     pub host: String,
     pub port: Option<u16>,
     pub user: String,
     pub pass: String,
+}
+
+impl fmt::Debug for EnvProxy {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("EnvProxy")
+            .field("proxy_type", &self.proxy_type)
+            .field("host", &self.host)
+            .field("port", &self.port)
+            .field("user", &self.user)
+            .field("pass", &"<redacted>")
+            .finish()
+    }
 }
 
 pub static ENV_PROXY: OnceLock<Option<EnvProxy>> = OnceLock::new();
@@ -1607,7 +1662,7 @@ fn query_hardware_uuid() -> String {
     #[cfg(target_os = "macos")]
     {
         if let Ok(output) = std::process::Command::new("ioreg")
-            .args(&["-rd1", "-c", "IOPlatformExpertDevice"])
+            .args(["-rd1", "-c", "IOPlatformExpertDevice"])
             .output()
         {
             let stdout = String::from_utf8_lossy(&output.stdout);
@@ -1722,6 +1777,40 @@ fn decrypt_config(raw: &[u8], password: &str) -> Result<ConfigFile> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sensitive_debug_output_is_redacted() {
+        let mut session = Session::password(
+            "host".to_string(),
+            22,
+            "user".to_string(),
+            "session-password".to_string(),
+        );
+        session.private_key_inline = "private-key-content".to_string();
+        session.passphrase = "key-passphrase".to_string();
+        session.proxy_password = "proxy-password".to_string();
+        let key = ManagedKey {
+            id: "key-id".to_string(),
+            name: "key-name".to_string(),
+            key_type: "ed25519".to_string(),
+            fingerprint: "fingerprint".to_string(),
+            inline_content: "managed-private-key".to_string(),
+            passphrase: "managed-passphrase".to_string(),
+            created_at: 0,
+        };
+
+        let debug = format!("{session:?} {key:?}");
+        for secret in [
+            "session-password",
+            "private-key-content",
+            "key-passphrase",
+            "proxy-password",
+            "managed-private-key",
+            "managed-passphrase",
+        ] {
+            assert!(!debug.contains(secret));
+        }
+    }
 
     #[test]
     fn default_font_sizes_are_14_px() {

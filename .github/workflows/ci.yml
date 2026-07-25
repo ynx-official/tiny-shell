@@ -16,11 +16,28 @@ permissions:
 
 jobs:
   quality:
-    name: format, clippy, and tests
-    runs-on: windows-latest
+    name: format, clippy, and tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-22.04, macos-14]
 
     steps:
       - uses: actions/checkout@v5
+
+      # GPUI needs these system libs for Linux quality checks too.
+      - name: Install Linux GUI dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config cmake \
+            libfontconfig1-dev libfreetype6-dev \
+            libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev \
+            libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev \
+            libgl1-mesa-dev libegl1-mesa-dev libgtk-3-dev \
+            libudev-dev
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -30,8 +47,8 @@ jobs:
       - name: Cache cargo build
         uses: Swatinem/rust-cache@v2
         with:
-          # Share the native Windows cache with the Windows build job.
-          shared-key: windows-x86_64
+          # Keep each platform's artifacts isolated while preserving warm caches.
+          shared-key: quality-${{ matrix.os }}
 
       - name: Check formatting
         run: cargo fmt --all -- --check

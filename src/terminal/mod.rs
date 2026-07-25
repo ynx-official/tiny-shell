@@ -102,7 +102,7 @@ pub enum BackendEvent {
     },
     RemoteSystem {
         tab_id: String,
-        snapshot: SystemSnapshot,
+        snapshot: Box<SystemSnapshot>,
     },
     RemoteSystemUnavailable {
         tab_id: String,
@@ -143,13 +143,12 @@ pub enum BackendTx {
 
 impl BackendTx {
     pub fn send(&self, command: BackendCommand) {
-        match self {
-            Self::Local(tx) => {
-                let _ = tx.send(command);
-            }
-            Self::Ssh(tx) => {
-                let _ = tx.send(command);
-            }
+        let sent = match self {
+            Self::Local(tx) => tx.send(command).is_ok(),
+            Self::Ssh(tx) => tx.send(command).is_ok(),
+        };
+        if !sent {
+            tracing::debug!("backend command dropped because its receiver is closed");
         }
     }
 }

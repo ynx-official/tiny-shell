@@ -3,12 +3,11 @@ use gpui_component::input::InputState;
 use rust_i18n::t;
 
 use crate::{
-    TinyShell,
-    crypto,
+    TinyShell, crypto,
     session::config::hardware_uuid,
     sync::{
-        self, MergedSecrets, SecretScrubber, SyncBackendCredentials, SyncCredentials,
-        SyncPayload, SyncResult, UploadMode,
+        self, MergedSecrets, SecretScrubber, SyncBackendCredentials, SyncCredentials, SyncPayload,
+        SyncResult, UploadMode,
     },
     terminal::BackendEvent,
 };
@@ -154,7 +153,8 @@ impl TinyShell {
 
         let sessions = self.config.sessions().to_vec();
         let managed_keys = self.config.managed_keys().to_vec();
-        let scrub_result = SecretScrubber::scrub(sessions, managed_keys, include_secrets, &privacy_password);
+        let scrub_result =
+            SecretScrubber::scrub(sessions, managed_keys, include_secrets, &privacy_password);
         let (scrubbed_sessions, scrubbed_keys) = match scrub_result {
             Ok(v) => v,
             Err(err) => {
@@ -236,16 +236,16 @@ impl TinyShell {
         }
 
         // 校验本地有可同步的隐私信息
-        let has_secrets = self
+        let has_secrets = self.config.sessions().iter().any(|s| {
+            !s.password.is_empty()
+                || !s.passphrase.is_empty()
+                || !s.private_key_inline.is_empty()
+                || !s.proxy_password.is_empty()
+        }) || self
             .config
-            .sessions()
+            .managed_keys()
             .iter()
-            .any(|s| !s.password.is_empty() || !s.passphrase.is_empty() || !s.private_key_inline.is_empty() || !s.proxy_password.is_empty())
-            || self
-                .config
-                .managed_keys()
-                .iter()
-                .any(|k| !k.inline_content.is_empty() || !k.passphrase.is_empty());
+            .any(|k| !k.inline_content.is_empty() || !k.passphrase.is_empty());
         if !has_secrets {
             self.sync_status = t!("sync_reset_no_local_secrets").into();
             cx.notify();
