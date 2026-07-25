@@ -125,7 +125,8 @@ cargo deb
 
 ## Version History
 
-### v1.1.2 (Pending Release)
+### v1.1.3 (Pending Release)
+- Fixed Windows release workflow parsing of the version returned by `cargo pkgid`
 - Fixed the update loop caused by a mismatch between the release tag and the application version
 - Enforced release-time validation that the Git tag matches the `Cargo.toml` version
 - Added SHA-256 integrity verification for online update downloads

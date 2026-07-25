@@ -52,7 +52,8 @@ jobs:
         run: |
           set -euo pipefail
           PACKAGE_ID="$(cargo pkgid)"
-          CARGO_VERSION="${PACKAGE_ID##*@}"
+          PACKAGE_FRAGMENT="${PACKAGE_ID##*#}"
+          CARGO_VERSION="${PACKAGE_FRAGMENT##*@}"
           if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
             TAG_VERSION="${GITHUB_REF_NAME#v}"
             if [[ "${TAG_VERSION}" != "${CARGO_VERSION}" ]]; then
