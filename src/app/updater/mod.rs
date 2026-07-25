@@ -261,6 +261,7 @@ struct GitHubAsset {
     name: String,
     browser_download_url: String,
     size: u64,
+    digest: Option<String>,
 }
 
 fn select_release_asset<'a>(
@@ -319,6 +320,7 @@ pub struct UpdateInfo {
     pub download_url: String,
     #[allow(dead_code)]
     pub size: u64,
+    pub digest: String,
     pub installation_kind: InstallationKind,
 }
 
@@ -424,13 +426,38 @@ pub async fn check_for_update() -> anyhow::Result<UpdateCheckResult> {
         );
     };
 
+    let digest = asset.digest.clone().with_context(|| {
+        format!(
+            "release asset '{}' does not provide a SHA-256 digest",
+            asset.name
+        )
+    })?;
+
     Ok(UpdateCheckResult::UpdateAvailable(UpdateInfo {
         version: parse_version(latest_version)?.to_string(),
         notes: release.body,
         download_url: asset.browser_download_url.clone(),
         size: asset.size,
+        digest,
         installation_kind,
     }))
+}
+
+fn verify_download_digest(bytes: &[u8], expected_digest: &str) -> anyhow::Result<()> {
+    use sha2::{Digest, Sha256};
+
+    let expected = expected_digest
+        .strip_prefix("sha256:")
+        .context("release asset digest is not SHA-256")?;
+    if expected.len() != 64 || !expected.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        anyhow::bail!("release asset contains an invalid SHA-256 digest");
+    }
+
+    let actual = hex::encode(Sha256::digest(bytes));
+    if !actual.eq_ignore_ascii_case(expected) {
+        anyhow::bail!("downloaded update SHA-256 mismatch: expected {expected}, received {actual}");
+    }
+    Ok(())
 }
 
 /// Download the update archive and extract the binary to a temp directory.
@@ -439,6 +466,7 @@ async fn download_and_extract<F>(
     url: &str,
     version: &str,
     expected_size: u64,
+    expected_digest: &str,
     installation_kind: InstallationKind,
     cancellation: &DownloadCancellation,
     mut on_progress: F,
@@ -495,6 +523,7 @@ where
             "downloaded update size mismatch: expected {expected_size} bytes, received {downloaded} bytes"
         );
     }
+    verify_download_digest(&bytes, expected_digest)?;
 
     // Release archives contain a versioned top-level directory. Reusing one
     // extraction directory lets older binaries accumulate, and a recursive
@@ -582,6 +611,7 @@ where
         &info.download_url,
         &info.version,
         info.size,
+        &info.digest,
         info.installation_kind,
         cancellation,
         on_progress,
@@ -1226,7 +1256,7 @@ mod tests {
 
     use super::{
         DownloadCancellation, GitHubAsset, InstallationKind, is_newer_version, prepare_update_dir,
-        select_release_asset,
+        select_release_asset, verify_download_digest,
     };
     #[cfg(target_os = "windows")]
     use super::{
@@ -1240,7 +1270,30 @@ mod tests {
             name: name.to_string(),
             browser_download_url: format!("https://example.invalid/{name}"),
             size: 1,
+            digest: Some(
+                "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+                    .to_string(),
+            ),
         }
+    }
+
+    #[test]
+    fn verifies_release_asset_sha256_digest() {
+        verify_download_digest(
+            b"",
+            "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn rejects_release_asset_sha256_mismatch() {
+        let error = verify_download_digest(
+            b"modified",
+            "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("SHA-256 mismatch"));
     }
 
     #[test]

@@ -47,6 +47,20 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      - name: Validate and export release version
+        shell: bash
+        run: |
+          set -euo pipefail
+          CARGO_VERSION="$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json, sys; data = json.load(sys.stdin); print(next(package["version"] for package in data["packages"] if package["name"] == "tiny-shell"))')"
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            TAG_VERSION="${GITHUB_REF_NAME#v}"
+            if [[ "${TAG_VERSION}" != "${CARGO_VERSION}" ]]; then
+              echo "release tag ${GITHUB_REF_NAME} does not match Cargo.toml version ${CARGO_VERSION}" >&2
+              exit 1
+            fi
+          fi
+          echo "RELEASE_VERSION=v${CARGO_VERSION}" >> "$GITHUB_ENV"
+
       # GPUI needs these system libs on Linux to compile.
       - name: Install Linux GUI dependencies
         if: runner.os == 'Linux'
@@ -88,7 +102,7 @@ jobs:
         shell: bash
         run: |
           set -eu
-          VERSION="${GITHUB_REF_NAME:-dev}"
+          VERSION="${RELEASE_VERSION}"
           STAGE="tiny-shell-${VERSION}-${{ matrix.name }}"
 
           if [ "${{ runner.os }}" = "macOS" ]; then
@@ -156,7 +170,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $version = $env:GITHUB_REF_NAME
+          $version = $env:RELEASE_VERSION
           ./scripts/package-windows.ps1 `
             -Version $version `
             -Target "${{ matrix.target }}" `

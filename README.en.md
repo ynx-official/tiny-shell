@@ -125,7 +125,12 @@ cargo deb
 
 ## Version History
 
-### v1.0.1 (Current)
+### v1.1.2 (Pending Release)
+- Fixed the update loop caused by a mismatch between the release tag and the application version
+- Enforced release-time validation that the Git tag matches the `Cargo.toml` version
+- Added SHA-256 integrity verification for online update downloads
+
+### v1.0.1
 - Rebranded from ashell to TinyShell, repository moved to [ynx-official/tiny-shell](https://github.com/ynx-official/tiny-shell)
 - Added cross-platform auto-update for Linux, macOS, and Windows
 - Added auto-update UI prompts in both English and Chinese
