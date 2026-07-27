@@ -125,7 +125,13 @@ cargo deb
 
 ## Version History
 
-### v1.1.3 (Pending Release)
+### v1.1.4 (Pending Release)
+- Added preflight checks and user guidance for sync uploads to prevent failures caused by invalid configuration
+- Improved WebDAV connection verification, configuration handling, and error messages
+- Expanded Chinese and English localization for sync workflows
+- Improved cross-platform release workflows and automated release note generation
+
+### v1.1.3
 - Fixed Windows release workflow parsing of the version returned by `cargo pkgid`
 - Fixed the update loop caused by a mismatch between the release tag and the application version
 - Enforced release-time validation that the Git tag matches the `Cargo.toml` version
