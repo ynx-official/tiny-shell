@@ -2284,6 +2284,7 @@ impl TinyShell {
             window.focus(&deferred_selector_focus_handle, cx);
         });
     }
+    #[allow(dead_code)]
     fn quick_connection_row(
         session: crate::session::config::Session,
         index: usize,
@@ -2441,6 +2442,7 @@ impl TinyShell {
             .into_any_element()
     }
 
+    #[allow(dead_code)]
     fn choose_connection_archive_path(
         &mut self,
         importing: bool,
@@ -2472,21 +2474,28 @@ impl TinyShell {
                                 path.join("tiny-shell-connections.json")
                             };
                             if importing {
-                                match fs::read_to_string(&path)
-                                    .map_err(anyhow::Error::from)
-                                    .and_then(|json| {
-                                        crate::session::connection_archive::import_json(&json, "")
-                                    })
-                                {
-                                    Ok(_) => {}
-                                    Err(_) => {
+                                match fs::read_to_string(&path) {
+                                    Ok(_) => {
                                         this.status = t!("connection_archive_password_required")
                                             .to_string()
                                             .into();
                                     }
+                                    Err(error) => {
+                                        this.status = t!(
+                                            "connection_archive_failed",
+                                            error = error.to_string()
+                                        )
+                                        .to_string()
+                                        .into();
+                                    }
                                 }
                             } else {
-                                this.show_connection_archive_password_dialog(path, false, window, cx);
+                                this.status = t!(
+                                    "connection_archive_export_path_selected",
+                                    path = path.display()
+                                )
+                                .to_string()
+                                .into();
                             }
                             cx.notify();
                         })?;
@@ -2510,7 +2519,7 @@ impl TinyShell {
         .detach();
     }
 
-    fn show_connection_archive_password_dialog(
+    pub(crate) fn show_connection_archive_password_dialog(
         &mut self,
         path: PathBuf,
         importing: bool,
@@ -2548,37 +2557,55 @@ impl TinyShell {
                 .content({
                     let view = view.clone();
                     let password = password.clone();
-                    move |content, window, cx| {
-                        content
-                            .child(Input::new(&password).mask_toggle())
-                            .child(
-                                h_flex()
-                                    .justify_end()
-                                    .gap_2()
-                                    .pt_3()
-                                    .child(
-                                        Button::new("connection-archive-cancel")
-                                            .secondary()
-                                            .label(t!("cancel").to_string())
-                                            .on_click(window.listener_for(&view, |this, _, window, cx| {
+                    let archive_path = path.clone();
+                    move |content, window, _cx| {
+                        content.child(Input::new(&password).mask_toggle()).child(
+                            h_flex()
+                                .justify_end()
+                                .gap_2()
+                                .pt_3()
+                                .child(
+                                    Button::new("connection-archive-cancel")
+                                        .secondary()
+                                        .label(t!("cancel").to_string())
+                                        .on_click(window.listener_for(
+                                            &view,
+                                            |this, _, window, cx| {
                                                 this.active_dialog = None;
                                                 window.close_dialog(cx);
                                                 cx.notify();
-                                            })),
-                                    )
-                                    .child(
-                                        Button::new("connection-archive-confirm")
-                                            .primary()
-                                            .label(t!("confirm").to_string())
-                                            .on_click(window.listener_for(&view, {
-                                                let path = path.clone();
-                                                let password = password.clone();
-                                                move |this, _, window, cx| {
-                                                    let secret = password.read(cx).value().to_string();
+                                            },
+                                        )),
+                                )
+                                .child(
+                                    Button::new("connection-archive-confirm")
+                                        .primary()
+                                        .label(t!("confirm").to_string())
+                                        .on_click(window.listener_for(&view, {
+                                            let path = archive_path.clone();
+                                            let password = password.clone();
+                                            move |this, _, window, cx| {
+                                                let secret = password.read(cx).value().to_string();
+                                                if secret.is_empty() {
+                                                    this.status =
+                                                        t!("connection_archive_password_required")
+                                                            .to_string()
+                                                            .into();
+                                                } else if path.as_os_str().is_empty() {
+                                                    this.active_dialog = None;
+                                                    window.close_dialog(cx);
+                                                    this.pick_connection_archive_with_password(
+                                                        importing, secret, window, cx,
+                                                    );
+                                                } else {
                                                     let result = if importing {
-                                                        this.import_connection_archive(&path, &secret)
+                                                        this.import_connection_archive(
+                                                            &path, &secret,
+                                                        )
                                                     } else {
-                                                        this.export_connection_archive(&path, &secret)
+                                                        this.export_connection_archive(
+                                                            &path, &secret,
+                                                        )
                                                     };
                                                     if let Err(error) = result {
                                                         this.status = t!(
@@ -2590,15 +2617,82 @@ impl TinyShell {
                                                     }
                                                     this.active_dialog = None;
                                                     window.close_dialog(cx);
-                                                    cx.notify();
                                                 }
-                                            })),
-                                    ),
-                            )
+                                                cx.notify();
+                                            }
+                                        })),
+                                ),
+                        )
                     }
                 })
         });
         crate::app::input_focus::defer_focus_input_at_end(focus, window, cx);
+    }
+
+    fn pick_connection_archive_with_password(
+        &mut self,
+        importing: bool,
+        password: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let prompt = cx.prompt_for_paths(PathPromptOptions {
+            files: importing,
+            directories: !importing,
+            multiple: false,
+            prompt: Some(
+                t!(if importing {
+                    "connection_archive_import"
+                } else {
+                    "connection_archive_export"
+                })
+                .to_string()
+                .into(),
+            ),
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            match prompt.await {
+                Ok(Ok(Some(mut paths))) => {
+                    if let Some(path) = paths.pop() {
+                        let path = if importing {
+                            path
+                        } else {
+                            path.join("tiny-shell-connections.json")
+                        };
+                        this.update(cx, |this, cx| {
+                            let result = if importing {
+                                this.import_connection_archive(&path, &password)
+                            } else {
+                                this.export_connection_archive(&path, &password)
+                            };
+                            this.status = match result {
+                                Ok(()) => this.status.clone(),
+                                Err(error) => {
+                                    t!("connection_archive_failed", error = error.to_string())
+                                        .to_string()
+                                        .into()
+                                }
+                            };
+                            cx.notify();
+                        })?;
+                    }
+                }
+                Ok(Err(error)) => {
+                    this.update(cx, |this, cx| {
+                        this.status = t!(
+                            "connection_archive_picker_failed",
+                            error = error.to_string()
+                        )
+                        .to_string()
+                        .into();
+                        cx.notify();
+                    })?;
+                }
+                _ => {}
+            }
+            Ok::<(), anyhow::Error>(())
+        })
+        .detach();
     }
 
     fn export_connection_archive(&mut self, path: &PathBuf, password: &str) -> anyhow::Result<()> {
@@ -2618,7 +2712,12 @@ impl TinyShell {
         let archive = crate::session::connection_archive::import_json(&json, password)?;
         let mut imported = 0usize;
         for group in archive.connection_groups {
-            if !self.config.connection_groups().iter().any(|item| item == &group) {
+            if !self
+                .config
+                .connection_groups()
+                .iter()
+                .any(|item| item == &group)
+            {
                 self.config.add_connection_group(group);
             }
         }
@@ -2626,9 +2725,12 @@ impl TinyShell {
             session.id = uuid::Uuid::new_v4().to_string();
             let original_name = session.name.clone();
             let mut suffix = 2u32;
-            while self.config.sessions().iter().any(|item| {
-                item.group == session.group && item.name == session.name
-            }) {
+            while self
+                .config
+                .sessions()
+                .iter()
+                .any(|item| item.group == session.group && item.name == session.name)
+            {
                 session.name = format!("{original_name} ({suffix})");
                 suffix += 1;
             }
@@ -2642,7 +2744,8 @@ impl TinyShell {
         Ok(())
     }
 
-    pub(crate) fn show_quick_connection_manager_dialog(
+    #[allow(dead_code)]
+    pub(crate) fn show_quick_connection_manager_dialog_legacy(
         &mut self,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -3035,6 +3138,32 @@ impl TinyShell {
                                                 )),
                                         )
                                         .child(
+                                            Button::new("quick-connection-import")
+                                                .small()
+                                                .label(t!("connection_archive_import").to_string())
+                                                .on_click(window.listener_for(&view, |this, _, window, cx| {
+                                                    this.show_connection_archive_password_dialog(
+                                                        PathBuf::new(),
+                                                        true,
+                                                        window,
+                                                        cx,
+                                                    );
+                                                })),
+                                        )
+                                        .child(
+                                            Button::new("quick-connection-export")
+                                                .small()
+                                                .label(t!("connection_archive_export").to_string())
+                                                .on_click(window.listener_for(&view, |this, _, window, cx| {
+                                                    this.show_connection_archive_password_dialog(
+                                                        PathBuf::new(),
+                                                        false,
+                                                        window,
+                                                        cx,
+                                                    );
+                                                })),
+                                        )
+                                        .child(
                                             Button::new("quick-connection-new")
                                                 .primary()
                                                 .small()
@@ -3138,6 +3267,59 @@ impl TinyShell {
                 })
         });
 
+        crate::app::input_focus::defer_focus_input_at_end(deferred_search_input, window, cx);
+    }
+
+    pub(crate) fn show_quick_connection_manager_dialog(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.active_dialog.is_some() {
+            return;
+        }
+        self.active_dialog = Some(crate::app::DialogKind::QuickConnectionManager);
+        self.quick_connection_search_input
+            .update(cx, |input, cx| input.set_value("", window, cx));
+        let groups = self.config.connection_groups().to_vec();
+        self.connection_manager_state.update(cx, move |state, _| {
+            state.query.clear();
+            state.expanded = groups.into_iter().collect();
+            state.show_deleted = false;
+            state.selected = None;
+        });
+
+        let view = cx.entity();
+        let search_input = self.quick_connection_search_input.clone();
+        let deferred_search_input = search_input.clone();
+        window.open_dialog(cx, move |dialog: Dialog, _window, _cx| {
+            dialog
+                .title(t!("quick_connection_title").to_string())
+                .w(px(860.))
+                .h(px(600.))
+                .overlay_closable(true)
+                .on_close({
+                    let view = view.clone();
+                    move |_, _, cx| {
+                        view.update(cx, |this, cx| {
+                            this.active_dialog = None;
+                            cx.notify();
+                        });
+                    }
+                })
+                .content({
+                    let view = view.clone();
+                    let search_input = search_input.clone();
+                    move |content, window, cx| {
+                        content.child(crate::app::connection_manager::view::render(
+                            &view,
+                            &search_input,
+                            window,
+                            cx,
+                        ))
+                    }
+                })
+        });
         crate::app::input_focus::defer_focus_input_at_end(deferred_search_input, window, cx);
     }
 

@@ -125,7 +125,13 @@ cargo deb
 
 ## Version History
 
-### v1.1.5 (Pending Release)
+### v1.1.6
+- Upgraded quick connect into an independent tree-based connection manager
+- Added connection and group search, sorting, expand/collapse, context actions, and moving
+- Added soft deletion, recycle-bin restoration, and synchronized tombstones for connections and groups
+- Added password-encrypted TinyShell JSON import/export with no plaintext sensitive fields
+
+### v1.1.5
 - Added privacy password verification for sensitive data sync to detect missing or mismatched passwords early
 - Enhanced sync settings and user prompts to make configuration and synchronization workflows clearer
 - Added the latest sync status to the SFTP footer and improved related visibility settings
