@@ -51,6 +51,7 @@ enum SftpToolbarItem {
 
 #[derive(Clone, Copy)]
 enum SftpFooterItem {
+    SyncStatus,
     Latency,
     Transfers,
     PanelToggle,
@@ -3051,6 +3052,7 @@ impl TinyShell {
     fn toggle_sftp_footer_item(&mut self, item: SftpFooterItem, cx: &mut Context<Self>) {
         let mut visibility = self.config.sftp_footer_visibility();
         match item {
+            SftpFooterItem::SyncStatus => visibility.webdav = !visibility.webdav,
             SftpFooterItem::Latency => visibility.latency = !visibility.latency,
             SftpFooterItem::Transfers => visibility.transfers = !visibility.transfers,
             SftpFooterItem::PanelToggle => visibility.panel_toggle = !visibility.panel_toggle,
@@ -3127,6 +3129,11 @@ impl TinyShell {
     ) -> PopupMenu {
         let visibility = view.read(cx).config.sftp_footer_visibility();
         let items = [
+            (
+                SftpFooterItem::SyncStatus,
+                t!("sftp_footer_latest_sync_status").to_string(),
+                visibility.webdav,
+            ),
             (
                 SftpFooterItem::Latency,
                 t!("sftp_latency").to_string(),
@@ -3436,20 +3443,7 @@ impl TinyShell {
         let has_transfers = dl_summary.is_some() || ul_summary.is_some();
         let webdav_enabled = self.config.sync_enabled() && self.config.sync_backend() == "webdav";
         let sync_failed = self.sync_status.starts_with(t!("sync_failed").as_ref());
-        let sync_state = if self.sync_in_progress {
-            t!("sync_status_running").to_string()
-        } else if sync_failed {
-            t!("sync_status_failed").to_string()
-        } else if self.config.sync_last_synced_at() > 0 {
-            t!("sync_status_succeeded").to_string()
-        } else {
-            t!("sync_status_enabled").to_string()
-        };
-        let last_synced =
-            crate::app::config_sync::format_sync_timestamp(self.config.sync_last_synced_at())
-                .unwrap_or_else(|| t!("sync_time_never").to_string());
-        let next_sync = crate::app::config_sync::format_sync_timestamp(self.config.sync_next_at())
-            .unwrap_or_else(|| t!("sync_time_pending").to_string());
+        let latest_sync_status = self.sync_status.clone();
         let view = cx.entity();
         h_flex()
             .w_full()
@@ -3462,7 +3456,7 @@ impl TinyShell {
             .bg(cx.theme().tab_bar)
             .occlude()
             .child(div().flex_1())
-            .when(webdav_enabled, |this| {
+            .when(visibility.webdav && webdav_enabled, |this| {
                 this.child(
                     h_flex()
                         .items_center()
@@ -3482,12 +3476,8 @@ impl TinyShell {
                                 } else {
                                     cx.theme().muted_foreground
                                 })
-                                .child(sync_state),
-                        )
-                        .child(div().child("·"))
-                        .child(t!("sync_last_short", time = last_synced))
-                        .child(div().child("·"))
-                        .child(t!("sync_next_short", time = next_sync)),
+                                .child(latest_sync_status),
+                        ),
                 )
             })
             .when(visibility.latency, |this| {

@@ -47,6 +47,7 @@ impl Default for SftpToolbarVisibility {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SftpFooterVisibility {
+    pub webdav: bool,
     pub latency: bool,
     pub transfers: bool,
     pub panel_toggle: bool,
@@ -72,6 +73,7 @@ pub struct QuickCommandCategory {
 impl Default for SftpFooterVisibility {
     fn default() -> Self {
         Self {
+            webdav: true,
             latency: true,
             transfers: true,
             panel_toggle: true,
@@ -1911,6 +1913,18 @@ mod tests {
         ] {
             assert!(!debug.contains(secret));
         }
+    }
+
+    #[test]
+    fn sftp_footer_visibility_defaults_missing_sync_status_to_visible() {
+        let visibility: SftpFooterVisibility =
+            serde_json::from_str(r#"{"latency":false,"transfers":false,"panel_toggle":false}"#)
+                .unwrap();
+
+        assert!(visibility.webdav);
+        assert!(!visibility.latency);
+        assert!(!visibility.transfers);
+        assert!(!visibility.panel_toggle);
     }
 
     #[test]
