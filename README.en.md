@@ -125,7 +125,12 @@ cargo deb
 
 ## Version History
 
-### v1.1.4 (Pending Release)
+### v1.1.5 (Pending Release)
+- Added privacy password verification for sensitive data sync to detect missing or mismatched passwords early
+- Enhanced sync settings and user prompts to make configuration and synchronization workflows clearer
+- Added the latest sync status to the SFTP footer and improved related visibility settings
+
+### v1.1.4
 - Added preflight checks and user guidance for sync uploads to prevent failures caused by invalid configuration
 - Improved WebDAV connection verification, configuration handling, and error messages
 - Expanded Chinese and English localization for sync workflows
