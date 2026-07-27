@@ -423,7 +423,8 @@ fn open_window_with_initializer(
             if !STARTUP_UPDATE_CHECK_STARTED.swap(true, Ordering::AcqRel) {
                 let window_handle = window.window_handle();
                 view.update(cx, |this, cx| {
-                    this.schedule_automatic_update_checks(window_handle, true, cx)
+                    this.schedule_automatic_update_checks(window_handle, true, cx);
+                    this.schedule_automatic_sync(false, cx);
                 });
             }
 

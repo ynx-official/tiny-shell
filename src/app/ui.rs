@@ -804,10 +804,25 @@ impl TinyShell {
                     .w_full()
                     .gap_3()
                     .child(
-                        div()
-                            .text_size(rems(1.25))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child(t!("overview_recent")),
+                        h_flex()
+                            .w_full()
+                            .items_center()
+                            .child(
+                                div()
+                                    .text_size(rems(1.25))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child(t!("overview_recent")),
+                            )
+                            .child(div().flex_1())
+                            .child(
+                                Button::new("overview-edit-recent")
+                                    .ghost()
+                                    .small()
+                                    .label(t!("edit").to_string())
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.set_home_page(HomePage::Connections, cx);
+                                    })),
+                            ),
                     )
                     .child(
                         v_flex().w_full().gap_2().children(
@@ -898,24 +913,6 @@ impl TinyShell {
                     .child(
                         h_flex()
                             .gap_3()
-                            .child(
-                                Button::new("overview-open-commands")
-                                    .secondary()
-                                    .icon(IconName::SquareTerminal)
-                                    .label(t!("command_manager").to_string())
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.set_home_page(HomePage::Commands, cx);
-                                    })),
-                            )
-                            .child(
-                                Button::new("overview-open-key-manager")
-                                    .secondary()
-                                    .icon(IconName::Folder)
-                                    .label(t!("overview_key_manager").to_string())
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.set_home_page(HomePage::KeyManager, cx);
-                                    })),
-                            )
                             .child(
                                 Button::new("overview-open-documentation")
                                     .ghost()
@@ -2118,7 +2115,22 @@ impl TinyShell {
                                                 .gap_3()
                                                 .border_b_1()
                                                 .border_color(cx.theme().border)
+                                                .cursor_pointer()
                                                 .hover(|this| this.bg(cx.theme().muted))
+                                                .on_mouse_down(
+                                                    MouseButton::Left,
+                                                    cx.listener({
+                                                        let connect_session = connect_session.clone();
+                                                        move |this, event: &MouseDownEvent, _, cx| {
+                                                            if event.click_count >= 2 {
+                                                                this.open_ssh_session(
+                                                                    connect_session.clone(),
+                                                                    cx,
+                                                                );
+                                                            }
+                                                        }
+                                                    }),
+                                                )
                                                 .context_menu({
                                                     let view = cx.entity();
                                                     move |mut menu, window, _| {
@@ -2225,6 +2237,10 @@ impl TinyShell {
                                                         .w(px(180.))
                                                         .justify_end()
                                                         .gap_1()
+                                                        .on_mouse_down(
+                                                            MouseButton::Left,
+                                                            |_, _, cx| cx.stop_propagation(),
+                                                        )
                                                         .child(
                                                             Button::new(format!(
                                                                 "connection-manager-connect-{ix}"
@@ -2264,11 +2280,13 @@ impl TinyShell {
                                                             ))
                                                             .ghost()
                                                             .small()
-                                                            .icon(IconName::Delete)
+                                                            .danger()
+                                                            .label(t!("delete").to_string())
                                                             .on_click(cx.listener(
-                                                                move |this, _, _, cx| {
-                                                                    this.remove_saved_session(
+                                                                move |this, _, window, cx| {
+                                                                    this.request_saved_session_deletion(
                                                                         delete_id.clone(),
+                                                                        window,
                                                                         cx,
                                                                     )
                                                                 },
@@ -3416,6 +3434,22 @@ impl TinyShell {
         let dl_summary = self.sftp_transfer_summary(crate::terminal::TransferType::Download);
         let ul_summary = self.sftp_transfer_summary(crate::terminal::TransferType::Upload);
         let has_transfers = dl_summary.is_some() || ul_summary.is_some();
+        let webdav_enabled = self.config.sync_enabled() && self.config.sync_backend() == "webdav";
+        let sync_failed = self.sync_status.starts_with(t!("sync_failed").as_ref());
+        let sync_state = if self.sync_in_progress {
+            t!("sync_status_running").to_string()
+        } else if sync_failed {
+            t!("sync_status_failed").to_string()
+        } else if self.config.sync_last_synced_at() > 0 {
+            t!("sync_status_succeeded").to_string()
+        } else {
+            t!("sync_status_enabled").to_string()
+        };
+        let last_synced =
+            crate::app::config_sync::format_sync_timestamp(self.config.sync_last_synced_at())
+                .unwrap_or_else(|| t!("sync_time_never").to_string());
+        let next_sync = crate::app::config_sync::format_sync_timestamp(self.config.sync_next_at())
+            .unwrap_or_else(|| t!("sync_time_pending").to_string());
         let view = cx.entity();
         h_flex()
             .w_full()
@@ -3428,6 +3462,34 @@ impl TinyShell {
             .bg(cx.theme().tab_bar)
             .occlude()
             .child(div().flex_1())
+            .when(webdav_enabled, |this| {
+                this.child(
+                    h_flex()
+                        .items_center()
+                        .gap_1()
+                        .mr_3()
+                        .text_size(rems(0.72))
+                        .text_color(cx.theme().muted_foreground)
+                        .child(Icon::new(IconName::Globe).with_size(Size::Small))
+                        .child(div().font_weight(FontWeight::SEMIBOLD).child("WebDAV"))
+                        .child(div().child("·"))
+                        .child(
+                            div()
+                                .text_color(if sync_failed {
+                                    cx.theme().danger
+                                } else if self.sync_in_progress {
+                                    cx.theme().primary
+                                } else {
+                                    cx.theme().muted_foreground
+                                })
+                                .child(sync_state),
+                        )
+                        .child(div().child("·"))
+                        .child(t!("sync_last_short", time = last_synced))
+                        .child(div().child("·"))
+                        .child(t!("sync_next_short", time = next_sync)),
+                )
+            })
             .when(visibility.latency, |this| {
                 this.child(
                     h_flex()
@@ -6073,9 +6135,10 @@ impl TinyShell {
                                                 PopupMenuItem::new(t!("delete").to_string())
                                                     .on_click(window.listener_for(
                                                         &view,
-                                                        move |this, _, _, cx| {
-                                                            this.remove_saved_session(
+                                                        move |this, _, window, cx| {
+                                                            this.request_saved_session_deletion(
                                                                 delete_value.clone(),
+                                                                window,
                                                                 cx,
                                                             )
                                                         },

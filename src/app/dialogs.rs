@@ -3077,6 +3077,65 @@ impl TinyShell {
                 })
         });
     }
+    pub(crate) fn request_saved_session_deletion(
+        &mut self,
+        session_id: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(session_name) = self
+            .config
+            .sessions()
+            .iter()
+            .find(|session| session.id == session_id)
+            .map(|session| session.name.clone())
+        else {
+            return;
+        };
+
+        let view = cx.entity();
+        window.open_dialog(cx, move |dialog: Dialog, _window, _| {
+            dialog
+                .title(t!("confirm_delete").to_string())
+                .w(px(420.))
+                .content({
+                    let session_name = session_name.clone();
+                    move |content, _window, _cx| {
+                        content.child(div().text_sm().child(
+                            t!("session_delete_confirm", name = session_name.clone()).to_string(),
+                        ))
+                    }
+                })
+                .footer(
+                    h_flex()
+                        .w_full()
+                        .justify_end()
+                        .gap_2()
+                        .child(
+                            Button::new("cancel-delete-saved-session")
+                                .ghost()
+                                .label(t!("cancel").to_string())
+                                .on_click(|_, window, cx| window.close_dialog(cx)),
+                        )
+                        .child(
+                            Button::new(format!("confirm-delete-saved-session-{session_id}"))
+                                .danger()
+                                .label(t!("delete").to_string())
+                                .on_click({
+                                    let view = view.clone();
+                                    let session_id = session_id.clone();
+                                    move |_, window, cx| {
+                                        view.update(cx, |this, cx| {
+                                            this.remove_saved_session(session_id.clone(), cx);
+                                        });
+                                        window.close_dialog(cx);
+                                    }
+                                }),
+                        ),
+                )
+        });
+    }
+
     pub(crate) fn request_managed_key_deletion(
         &mut self,
         key_id: String,
@@ -4526,6 +4585,7 @@ impl TinyShell {
         let sync_s3_secret_key_input = settings_inputs.sync_s3_secret_key.clone();
         let sync_s3_session_token_input = settings_inputs.sync_s3_session_token.clone();
         let sync_privacy_password_input = settings_inputs.sync_privacy_password.clone();
+        let sync_interval_hours_input = settings_inputs.sync_interval_hours.clone();
         let sync_form_inputs = settings_inputs.clone();
         let update_interval_hours_input = settings_inputs.update_interval_hours.clone();
 
@@ -5270,6 +5330,7 @@ impl TinyShell {
                                                     let s3_secret_key = sync_s3_secret_key_input.clone();
                                                     let s3_session_token = sync_s3_session_token_input.clone();
                                                     let privacy_password = sync_privacy_password_input.clone();
+                                                    let sync_interval_hours = sync_interval_hours_input.clone();
                                                     let sync_form_inputs = sync_form_inputs.clone();
                                                     let view_for_reset = view.clone();
                                                     let view_for_verify = view.clone();
@@ -5277,11 +5338,19 @@ impl TinyShell {
                                                         let in_progress = view.read(cx).sync_in_progress;
                                                         let status = view.read(cx).sync_status.clone();
                                                         let is_s3 = view.read(cx).config.sync_backend() == "s3";
+                                                        let automatic_enabled = view.read(cx).config.sync_enabled();
+                                                        let last_synced_at = view.read(cx).config.sync_last_synced_at();
+                                                        let next_sync_at = view.read(cx).config.sync_next_at();
+                                                        let last_synced = crate::app::config_sync::format_sync_timestamp(last_synced_at)
+                                                            .unwrap_or_else(|| t!("sync_time_never").to_string());
+                                                        let next_sync = crate::app::config_sync::format_sync_timestamp(next_sync_at)
+                                                            .unwrap_or_else(|| t!("sync_time_pending").to_string());
                                                         let include_secrets = view.read(cx).config.sync_include_secrets();
                                                         let privacy_password_valid = privacy_password.read(cx).value().chars().count() >= 8;
                                                         let can_download = !in_progress;
                                                         let can_upload = !in_progress && (!include_secrets || privacy_password_valid);
                                                         let verify_inputs = sync_form_inputs.clone();
+                                                        let automatic_inputs = sync_form_inputs.clone();
                                                         let reset_inputs = sync_form_inputs.clone();
                                                         let toggle_inputs = sync_form_inputs.clone();
                                                         let download_inputs = sync_form_inputs.clone();
@@ -5306,6 +5375,54 @@ impl TinyShell {
                                                                             .when(is_s3, |button| button.primary())
                                                                             .on_click(window.listener_for(&view, |this, _, _, cx| this.set_sync_backend("s3", cx)))
                                                                     )
+                                                            )
+                                                            .when(!is_s3, |this| this
+                                                                .child(
+                                                                    h_flex()
+                                                                        .items_center()
+                                                                        .justify_between()
+                                                                        .child(v_flex()
+                                                                            .gap_1()
+                                                                            .child(div().text_sm().font_weight(FontWeight::MEDIUM).child(t!("sync_automatic_enabled").to_string()))
+                                                                            .child(div().text_xs().text_color(cx.theme().muted_foreground).child(t!("sync_automatic_enabled_desc").to_string())))
+                                                                        .child(
+                                                                            Switch::new("sync-automatic-enabled")
+                                                                                .small()
+                                                                                .checked(automatic_enabled)
+                                                                                .disabled(in_progress)
+                                                                                .on_click({
+                                                                                    let view = view.clone();
+                                                                                    move |checked, _, cx| {
+                                                                                        view.update(cx, |this, cx| {
+                                                                                            let form = crate::app::config_sync::SyncFormSnapshot::capture(
+                                                                                                this.config.sync_backend(),
+                                                                                                &automatic_inputs,
+                                                                                                cx,
+                                                                                            );
+                                                                                            this.set_automatic_sync_enabled(*checked, form, cx);
+                                                                                        });
+                                                                                    }
+                                                                                }))
+                                                                )
+                                                                .child(v_flex()
+                                                                    .gap_1()
+                                                                    .child(div().text_sm().child(t!("sync_interval_hours").to_string()))
+                                                                    .child(h_flex()
+                                                                        .items_center()
+                                                                        .gap_2()
+                                                                        .child(Input::new(&sync_interval_hours).small().w(px(96.)).disabled(!automatic_enabled))
+                                                                        .child(div().text_sm().text_color(cx.theme().muted_foreground).child(t!("update_hours_unit").to_string())))
+                                                                    .child(div().text_xs().text_color(cx.theme().muted_foreground).child(t!("sync_interval_hours_desc").to_string())))
+                                                                .child(
+                                                                    h_flex()
+                                                                        .w_full()
+                                                                        .gap_4()
+                                                                        .child(v_flex().flex_1().gap_1()
+                                                                            .child(div().text_xs().text_color(cx.theme().muted_foreground).child(t!("sync_last_updated").to_string()))
+                                                                            .child(div().text_sm().child(last_synced)))
+                                                                        .child(v_flex().flex_1().gap_1()
+                                                                            .child(div().text_xs().text_color(cx.theme().muted_foreground).child(t!("sync_next_updated").to_string()))
+                                                                            .child(div().text_sm().child(next_sync))))
                                                             )
                                                             .when(!is_s3, |this| this
                                                                 .child(div().text_sm().font_weight(FontWeight::MEDIUM).child(t!("sync_webdav_section").to_string()))
@@ -5342,30 +5459,28 @@ impl TinyShell {
                                                             .child(
                                                                 Checkbox::new("sync-include-secrets")
                                                                     .checked(include_secrets)
+                                                                    .disabled(in_progress)
                                                                     .label(t!("sync_include_secrets").to_string())
-                                                                    .on_click({
-                                                                        let view = view.clone();
+                                                                    .on_click(window.listener_for(&view, {
                                                                         let privacy_password = privacy_password.clone();
-                                                                        move |checked, window, cx| {
-                                                                            view.update(cx, |this, cx| {
-                                                                                if !*checked {
-                                                                                    let _ = this.set_sync_include_secrets(false, cx);
-                                                                                    return;
-                                                                                }
-                                                                                let form = crate::app::config_sync::SyncFormSnapshot::capture(
-                                                                                    this.config.sync_backend(),
-                                                                                    &toggle_inputs,
-                                                                                    cx,
-                                                                                );
-                                                                                this.show_sync_secrets_password_dialog(
-                                                                                    form,
-                                                                                    privacy_password.clone(),
-                                                                                    window,
-                                                                                    cx,
-                                                                                );
-                                                                            });
+                                                                        move |this, checked: &bool, window, cx| {
+                                                                            if !*checked {
+                                                                                let _ = this.set_sync_include_secrets(false, cx);
+                                                                                return;
+                                                                            }
+                                                                            let form = crate::app::config_sync::SyncFormSnapshot::capture(
+                                                                                this.config.sync_backend(),
+                                                                                &toggle_inputs,
+                                                                                cx,
+                                                                            );
+                                                                            this.show_sync_secrets_password_dialog(
+                                                                                form,
+                                                                                privacy_password.clone(),
+                                                                                window,
+                                                                                cx,
+                                                                            );
                                                                         }
-                                                                    })
+                                                                    }))
                                                             )
                                                             .when(include_secrets, |this| this
                                                                 .child(v_flex().gap_1()

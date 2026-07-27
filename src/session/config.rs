@@ -372,6 +372,14 @@ pub struct ConfigFile {
     #[serde(default)]
     pub sync_backend: String,
     #[serde(default)]
+    pub sync_enabled: bool,
+    #[serde(default = "default_sync_interval_hours")]
+    pub sync_interval_hours: u32,
+    #[serde(default)]
+    pub sync_last_synced_at: i64,
+    #[serde(default)]
+    pub sync_webdav_password_sealed: String,
+    #[serde(default)]
     pub sync_etag_backend: String,
     #[serde(default)]
     pub sync_etag_target: String,
@@ -477,6 +485,10 @@ fn default_ui_font_size() -> f32 {
     14.0
 }
 
+fn default_sync_interval_hours() -> u32 {
+    24
+}
+
 fn default_update_interval_hours() -> u32 {
     24
 }
@@ -533,6 +545,10 @@ impl Default for ConfigFile {
             sync_etag: None,
             sync_device_id: String::new(),
             sync_backend: String::new(),
+            sync_enabled: false,
+            sync_interval_hours: default_sync_interval_hours(),
+            sync_last_synced_at: 0,
+            sync_webdav_password_sealed: String::new(),
             sync_etag_backend: String::new(),
             sync_etag_target: String::new(),
             sync_include_secrets: false,
@@ -829,6 +845,47 @@ impl ConfigStore {
 
     pub fn set_sync_backend(&mut self, backend: &str) {
         self.cache.sync_backend = if backend == "s3" { "s3" } else { "webdav" }.to_string();
+    }
+
+    pub fn sync_enabled(&self) -> bool {
+        self.cache.sync_enabled
+    }
+
+    pub fn set_sync_enabled(&mut self, enabled: bool) {
+        self.cache.sync_enabled = enabled;
+    }
+
+    pub fn sync_interval_hours(&self) -> u32 {
+        self.cache.sync_interval_hours.clamp(1, 8_760)
+    }
+
+    pub fn set_sync_interval_hours(&mut self, hours: u32) {
+        self.cache.sync_interval_hours = hours.clamp(1, 8_760);
+    }
+
+    pub fn sync_last_synced_at(&self) -> i64 {
+        self.cache.sync_last_synced_at
+    }
+
+    pub fn set_sync_last_synced_at(&mut self, timestamp: i64) {
+        self.cache.sync_last_synced_at = timestamp.max(0);
+    }
+
+    pub fn sync_next_at(&self) -> i64 {
+        if self.sync_last_synced_at() <= 0 {
+            0
+        } else {
+            self.sync_last_synced_at()
+                .saturating_add(i64::from(self.sync_interval_hours()).saturating_mul(3_600))
+        }
+    }
+
+    pub fn sync_webdav_password_sealed(&self) -> &str {
+        &self.cache.sync_webdav_password_sealed
+    }
+
+    pub fn set_sync_webdav_password_sealed(&mut self, password: String) {
+        self.cache.sync_webdav_password_sealed = password;
     }
 
     pub fn sync_s3_endpoint(&self) -> &str {
@@ -1355,6 +1412,10 @@ impl ConfigStore {
         self.cache.global_proxy_port = source.cache.global_proxy_port;
         self.cache.global_proxy_user = source.cache.global_proxy_user.clone();
         self.cache.global_proxy_password = source.cache.global_proxy_password.clone();
+        self.cache.sync_enabled = source.cache.sync_enabled;
+        self.cache.sync_interval_hours = source.cache.sync_interval_hours;
+        self.cache.sync_last_synced_at = source.cache.sync_last_synced_at;
+        self.cache.sync_webdav_password_sealed = source.cache.sync_webdav_password_sealed.clone();
         self.cache.update_check_mode = source.cache.update_check_mode;
         self.cache.update_interval_hours = source.cache.update_interval_hours;
         self.cache.update_notify = source.cache.update_notify;
@@ -1860,6 +1921,10 @@ mod tests {
         assert_eq!(config.update_check_mode, UpdateCheckMode::Startup);
         assert_eq!(config.update_interval_hours, 24);
         assert!(config.update_notify);
+        assert!(!config.sync_enabled);
+        assert_eq!(config.sync_interval_hours, 24);
+        assert_eq!(config.sync_last_synced_at, 0);
+        assert!(config.sync_webdav_password_sealed.is_empty());
         assert!(config.download_directory.is_empty());
     }
 
@@ -1918,6 +1983,17 @@ mod tests {
         );
         store.remove_quick_command_category("category-1");
         assert!(store.quick_command_categories().unwrap().is_empty());
+    }
+
+    #[test]
+    fn synchronization_next_time_is_derived_from_last_success() {
+        let mut store = ConfigStore::in_memory();
+        assert_eq!(store.sync_next_at(), 0);
+
+        store.set_sync_interval_hours(6);
+        store.set_sync_last_synced_at(1_700_000_000);
+
+        assert_eq!(store.sync_next_at(), 1_700_021_600);
     }
 
     #[test]

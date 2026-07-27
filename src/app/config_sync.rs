@@ -15,8 +15,40 @@ use crate::{
 };
 
 use base64::Engine as _;
+use std::time::Duration;
 
 const PRIVACY_PASSWORD_MIN_LEN: usize = 8;
+
+pub(crate) fn automatic_sync_delay(interval_hours: u32, last_synced_at: i64, now: i64) -> Duration {
+    if last_synced_at <= 0 {
+        return Duration::ZERO;
+    }
+    let interval_seconds = i64::from(interval_hours.clamp(1, 8_760)).saturating_mul(3_600);
+    let elapsed = now.saturating_sub(last_synced_at).max(0);
+    Duration::from_secs(interval_seconds.saturating_sub(elapsed).max(0) as u64)
+}
+
+pub(crate) fn open_webdav_password(sealed: &str) -> anyhow::Result<String> {
+    if sealed.is_empty() {
+        return Ok(String::new());
+    }
+    crypto::open_with_hardware_key(sealed, &hardware_uuid())
+}
+
+fn seal_webdav_password(password: &str) -> anyhow::Result<String> {
+    if password.is_empty() {
+        return Ok(String::new());
+    }
+    crypto::seal_with_hardware_key(password, &hardware_uuid())
+}
+
+pub(crate) fn format_sync_timestamp(timestamp: i64) -> Option<String> {
+    chrono::DateTime::from_timestamp(timestamp, 0).map(|time| {
+        time.with_timezone(&chrono::Local)
+            .format("%Y-%m-%d %H:%M:%S")
+            .to_string()
+    })
+}
 
 #[derive(Clone)]
 pub(crate) struct SyncFormSnapshot {
@@ -58,6 +90,16 @@ impl SyncFormSnapshot {
             privacy_password: String::new(),
         }
     }
+
+    pub(crate) fn with_privacy_password(
+        credentials: SyncCredentials,
+        privacy_password: String,
+    ) -> Self {
+        Self {
+            credentials,
+            privacy_password,
+        }
+    }
 }
 
 pub(crate) fn sync_failure_status(failure: &SyncFailure) -> String {
@@ -79,6 +121,34 @@ pub(crate) fn sync_failure_status(failure: &SyncFailure) -> String {
         _ => failure.detail.clone(),
     };
     format!("{}: {detail}", t!("sync_failed"))
+}
+
+fn privacy_password_verification_result(
+    credentials: SyncCredentials,
+    password: String,
+    downloaded: sync::SyncOperationResult<(SyncPayload, Option<String>)>,
+) -> SyncResult {
+    match downloaded {
+        Ok((payload, _)) => match payload.privacy_password_status(&password) {
+            Ok(PrivacyPasswordStatus::NotConfigured) => {
+                SyncResult::PrivacyPasswordInitializationReady {
+                    credentials,
+                    password,
+                }
+            }
+            Ok(status) => SyncResult::PrivacyPasswordChecked { password, status },
+            Err(error) => {
+                SyncResult::Failed(SyncFailure::other(Some(credentials.backend.kind()), error))
+            }
+        },
+        Err(failure) if failure.category == SyncErrorCategory::RemoteMissing => {
+            SyncResult::PrivacyPasswordInitializationReady {
+                credentials,
+                password,
+            }
+        }
+        Err(failure) => SyncResult::Failed(failure),
+    }
 }
 
 fn upload_preflight_result(
@@ -124,10 +194,21 @@ impl TinyShell {
         }
         match &credentials.backend {
             SyncBackendCredentials::WebDav {
-                endpoint, username, ..
+                endpoint,
+                username,
+                password,
             } => {
+                let sealed_password = match seal_webdav_password(password) {
+                    Ok(sealed_password) => sealed_password,
+                    Err(error) => {
+                        self.sync_status = format!("{}: {error:#}", t!("sync_failed")).into();
+                        cx.notify();
+                        return None;
+                    }
+                };
                 self.config
                     .set_sync_connection(endpoint.clone(), username.clone());
+                self.config.set_sync_webdav_password_sealed(sealed_password);
             }
             SyncBackendCredentials::S3 {
                 endpoint,
@@ -188,13 +269,189 @@ impl TinyShell {
     }
 
     pub(crate) fn set_sync_backend(&mut self, backend: &str, cx: &mut Context<Self>) {
+        let previous_backend = self.config.sync_backend().to_string();
+        let previous_enabled = self.config.sync_enabled();
         self.config.set_sync_backend(backend);
-        let _ = self.config.save();
-        self.sync_status = t!("sync_not_run").into();
+        if backend == "s3" {
+            self.config.set_sync_enabled(false);
+        }
+        match self.config.save() {
+            Ok(()) => {
+                self.sync_status = if backend == "s3" {
+                    t!("sync_disabled").into()
+                } else {
+                    t!("sync_not_run").into()
+                };
+                self.schedule_automatic_sync(false, cx);
+            }
+            Err(error) => {
+                self.config.set_sync_backend(&previous_backend);
+                self.config.set_sync_enabled(previous_enabled);
+                self.sync_status = format!("{}: {error:#}", t!("sync_failed")).into();
+            }
+        }
         cx.notify();
     }
 
-    /// 切换"同步密码和密钥"开关。启用操作必须先通过远端密码校验。
+    pub(crate) fn set_automatic_sync_enabled(
+        &mut self,
+        enabled: bool,
+        form: SyncFormSnapshot,
+        cx: &mut Context<Self>,
+    ) {
+        let previous_config = self.config.clone();
+        if enabled {
+            if !matches!(
+                form.credentials.backend,
+                SyncBackendCredentials::WebDav { .. }
+            ) {
+                self.sync_status = t!("sync_webdav_required_for_auto").into();
+                cx.notify();
+                return;
+            }
+            if let Err(failure) = sync::validate_credentials(&form.credentials) {
+                self.sync_status = sync_failure_status(&failure).into();
+                cx.notify();
+                return;
+            }
+            let sealed_privacy_password = if self.config.sync_include_secrets() {
+                match seal_privacy_password(&form.privacy_password) {
+                    Ok(sealed_password) => Some(sealed_password),
+                    Err(error) => {
+                        self.sync_status = format!("{}: {error:#}", t!("sync_failed")).into();
+                        cx.notify();
+                        return;
+                    }
+                }
+            } else {
+                None
+            };
+            if let SyncBackendCredentials::WebDav {
+                endpoint,
+                username,
+                password,
+            } = form.credentials.backend
+            {
+                let sealed_password = match seal_webdav_password(&password) {
+                    Ok(sealed_password) => sealed_password,
+                    Err(error) => {
+                        self.sync_status = format!("{}: {error:#}", t!("sync_failed")).into();
+                        cx.notify();
+                        return;
+                    }
+                };
+                self.config.set_sync_connection(endpoint, username);
+                self.config.set_sync_webdav_password_sealed(sealed_password);
+            }
+            if let Some((sealed, hash)) = sealed_privacy_password {
+                self.config.set_sync_secrets_password_sealed(sealed);
+                self.config.set_sync_secrets_password_hash(hash);
+            }
+        }
+
+        self.config.set_sync_enabled(enabled);
+        match self.config.save() {
+            Ok(()) => {
+                self.sync_status = if enabled {
+                    t!("sync_status_enabled").into()
+                } else {
+                    t!("sync_disabled").into()
+                };
+                self.schedule_automatic_sync(enabled, cx);
+            }
+            Err(error) => {
+                self.config = previous_config;
+                self.sync_status = format!("{}: {error:#}", t!("sync_failed")).into();
+            }
+        }
+        cx.notify();
+    }
+
+    fn automatic_sync_form(&self) -> anyhow::Result<SyncFormSnapshot> {
+        if self.config.sync_backend() != "webdav" {
+            anyhow::bail!("automatic sync requires WebDAV");
+        }
+        let privacy_password = if self.config.sync_include_secrets() {
+            crypto::open_with_hardware_key(
+                self.config.sync_secrets_password_sealed(),
+                &hardware_uuid(),
+            )?
+        } else {
+            String::new()
+        };
+        Ok(SyncFormSnapshot {
+            credentials: SyncCredentials {
+                backend: SyncBackendCredentials::WebDav {
+                    endpoint: self.config.sync_endpoint().to_string(),
+                    username: self.config.sync_username().to_string(),
+                    password: open_webdav_password(self.config.sync_webdav_password_sealed())?,
+                },
+            },
+            privacy_password,
+        })
+    }
+
+    fn run_automatic_sync(&mut self, cx: &mut Context<Self>) {
+        if !self.config.sync_enabled() || self.sync_in_progress {
+            return;
+        }
+        match self.automatic_sync_form() {
+            Ok(form) => self.upload_sync_config(form, cx),
+            Err(error) => {
+                self.sync_status = format!("{}: {error:#}", t!("sync_failed")).into();
+                cx.notify();
+            }
+        }
+    }
+
+    pub(crate) fn schedule_automatic_sync(
+        &mut self,
+        run_immediately: bool,
+        cx: &mut Context<Self>,
+    ) {
+        self.sync_schedule_generation = self.sync_schedule_generation.wrapping_add(1);
+        let generation = self.sync_schedule_generation;
+        if !self.config.sync_enabled() || self.config.sync_backend() != "webdav" {
+            return;
+        }
+
+        let interval =
+            Duration::from_secs(u64::from(self.config.sync_interval_hours()).saturating_mul(3_600));
+        let initial_delay = if run_immediately {
+            Duration::ZERO
+        } else {
+            automatic_sync_delay(
+                self.config.sync_interval_hours(),
+                self.config.sync_last_synced_at(),
+                chrono::Utc::now().timestamp(),
+            )
+        };
+
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(initial_delay).await;
+            loop {
+                let Ok(is_current_schedule) = this.update(cx, |this, cx| {
+                    if this.sync_schedule_generation != generation
+                        || !this.config.sync_enabled()
+                        || this.config.sync_backend() != "webdav"
+                    {
+                        return false;
+                    }
+                    this.run_automatic_sync(cx);
+                    true
+                }) else {
+                    break;
+                };
+                if !is_current_schedule {
+                    break;
+                }
+                cx.background_executor().timer(interval).await;
+            }
+        })
+        .detach();
+    }
+
+    /// 切换“同步密码和密钥”开关。远端已有加密信息时需先校验；首次同步可直接初始化。
     pub(crate) fn set_sync_include_secrets(
         &mut self,
         include: bool,
@@ -226,10 +483,10 @@ impl TinyShell {
         if self.sync_in_progress {
             return;
         }
-        if password.is_empty() {
+        if password.chars().count() < PRIVACY_PASSWORD_MIN_LEN {
             if let Some(dialog) = self.sync_secrets_password_dialog.as_mut() {
                 dialog.status = crate::app::SyncSecretsPasswordDialogStatus::PasswordRequired;
-                dialog.message = Some(t!("sync_secret_toggle_password_required").into());
+                dialog.message = Some(t!("sync_privacy_password_required").into());
             }
             cx.notify();
             return;
@@ -255,16 +512,8 @@ impl TinyShell {
 
         let events = self.events_tx.clone();
         self.runtime.spawn(async move {
-            let result = match sync::download(credentials.clone(), &password).await {
-                Ok((payload, _)) => match payload.privacy_password_status(&password) {
-                    Ok(status) => SyncResult::PrivacyPasswordChecked { password, status },
-                    Err(error) => SyncResult::Failed(SyncFailure::other(
-                        Some(credentials.backend.kind()),
-                        error,
-                    )),
-                },
-                Err(failure) => SyncResult::Failed(failure),
-            };
+            let downloaded = sync::download(credentials.clone(), &password).await;
+            let result = privacy_password_verification_result(credentials, password, downloaded);
             let _ = events.send(BackendEvent::SyncFinished(result));
         });
     }
@@ -574,6 +823,23 @@ mod tests {
     use super::*;
 
     #[test]
+    fn automatic_sync_delay_runs_immediately_without_previous_success() {
+        assert_eq!(automatic_sync_delay(24, 0, 1_700_000_000), Duration::ZERO);
+    }
+
+    #[test]
+    fn automatic_sync_delay_uses_remaining_interval() {
+        assert_eq!(
+            automatic_sync_delay(6, 1_700_000_000, 1_700_003_600),
+            Duration::from_secs(18_000)
+        );
+        assert_eq!(
+            automatic_sync_delay(6, 1_700_000_000, 1_700_021_600),
+            Duration::ZERO
+        );
+    }
+
+    #[test]
     fn s3_http_status_is_not_mapped_to_webdav_authentication() {
         let failure = SyncFailure {
             backend: Some(SyncBackendKind::S3),
@@ -647,6 +913,52 @@ mod tests {
                 etag: Some(etag),
                 ..
             } if connection_groups == ["remote"] && etag == "etag-2"
+        ));
+    }
+
+    #[test]
+    fn missing_remote_initializes_privacy_password_instead_of_failing() {
+        let credentials = webdav_credentials();
+        let result = privacy_password_verification_result(
+            credentials,
+            "privacy-password".into(),
+            Err(SyncFailure {
+                backend: Some(SyncBackendKind::WebDav),
+                category: SyncErrorCategory::RemoteMissing,
+                detail: "remote configuration is missing".into(),
+            }),
+        );
+
+        assert!(matches!(
+            result,
+            SyncResult::PrivacyPasswordInitializationReady { password, .. }
+                if password == "privacy-password"
+        ));
+    }
+
+    #[test]
+    fn remote_without_password_verifier_initializes_secret_sync() {
+        let Ok(payload) = SyncPayload::new(
+            "device-1".into(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            false,
+            "",
+        ) else {
+            panic!("public-only sync payload should be constructible");
+        };
+        let result = privacy_password_verification_result(
+            webdav_credentials(),
+            "privacy-password".into(),
+            Ok((payload, Some("etag-1".into()))),
+        );
+
+        assert!(matches!(
+            result,
+            SyncResult::PrivacyPasswordInitializationReady { password, .. }
+                if password == "privacy-password"
         ));
     }
 

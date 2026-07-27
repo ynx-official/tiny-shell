@@ -156,6 +156,10 @@ pub enum SyncResult {
         password: String,
         status: PrivacyPasswordStatus,
     },
+    PrivacyPasswordInitializationReady {
+        credentials: SyncCredentials,
+        password: String,
+    },
     ConnectionVerified,
     Failed(SyncFailure),
 }
@@ -221,6 +225,10 @@ impl fmt::Debug for SyncResult {
                 .debug_struct("PrivacyPasswordChecked")
                 .field("password", &"<redacted>")
                 .field("status", status)
+                .finish(),
+            Self::PrivacyPasswordInitializationReady { .. } => formatter
+                .debug_struct("PrivacyPasswordInitializationReady")
+                .field("password", &"<redacted>")
                 .finish(),
             Self::ConnectionVerified => formatter.write_str("ConnectionVerified"),
             Self::Failed(_) => formatter.write_str("Failed(<redacted>)"),

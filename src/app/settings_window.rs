@@ -27,6 +27,7 @@ pub(crate) struct SettingsInputs {
     pub(crate) sync_s3_secret_key: Entity<InputState>,
     pub(crate) sync_s3_session_token: Entity<InputState>,
     pub(crate) sync_privacy_password: Entity<InputState>,
+    pub(crate) sync_interval_hours: Entity<InputState>,
     pub(crate) update_interval_hours: Entity<InputState>,
 }
 
@@ -48,6 +49,7 @@ impl SettingsInputs {
             sync_s3_secret_key: owner.sync_s3_secret_key_input.clone(),
             sync_s3_session_token: owner.sync_s3_session_token_input.clone(),
             sync_privacy_password: owner.sync_privacy_password_input.clone(),
+            sync_interval_hours: owner.sync_interval_hours_input.clone(),
             update_interval_hours: owner.update_interval_hours_input.clone(),
         }
     }
@@ -94,6 +96,12 @@ impl SettingsInputs {
                 InputState::new(window, cx)
                     .placeholder(t!("sync_webdav_password").to_string())
                     .masked(true)
+                    .default_value(
+                        crate::app::config_sync::open_webdav_password(
+                            config.sync_webdav_password_sealed(),
+                        )
+                        .unwrap_or_default(),
+                    )
             }),
             sync_s3_endpoint: cx.new(|cx| {
                 InputState::new(window, cx)
@@ -143,6 +151,11 @@ impl SettingsInputs {
                 }
                 state
             }),
+            sync_interval_hours: cx.new(|cx| {
+                InputState::new(window, cx)
+                    .placeholder("24")
+                    .default_value(config.sync_interval_hours().to_string())
+            }),
             update_interval_hours: cx.new(|cx| {
                 InputState::new(window, cx)
                     .placeholder("24")
@@ -170,6 +183,39 @@ impl SettingsWindow {
     ) -> Self {
         let inputs = SettingsInputs::new(&config, window, cx);
         let owner_subscription = cx.observe(&owner, |_, _, cx| cx.notify());
+        let sync_interval_hours = inputs.sync_interval_hours.clone();
+        let owner_for_sync_interval = owner.clone();
+        let sync_interval_subscription = cx.subscribe_in(
+            &sync_interval_hours,
+            window,
+            move |_, input, event, window, cx| match event {
+                InputEvent::Change => {
+                    if let Ok(hours) = input.read(cx).value().trim().parse::<u32>()
+                        && (1..=8_760).contains(&hours)
+                    {
+                        owner_for_sync_interval.update(cx, |this, cx| {
+                            this.config.set_sync_interval_hours(hours);
+                            this.mark_config_preferences_dirty();
+                            this.schedule_automatic_sync(false, cx);
+                            cx.notify();
+                        });
+                    }
+                }
+                InputEvent::Blur | InputEvent::PressEnter { .. } => {
+                    let hours = owner_for_sync_interval
+                        .read(cx)
+                        .config
+                        .sync_interval_hours()
+                        .to_string();
+                    input.update(cx, |input, cx| input.set_value(hours, window, cx));
+                    if matches!(event, InputEvent::PressEnter { .. }) {
+                        window.prevent_default();
+                        cx.stop_propagation();
+                    }
+                }
+                _ => {}
+            },
+        );
         let update_interval_hours = inputs.update_interval_hours.clone();
         let owner_for_interval = owner.clone();
         let interval_subscription = cx.subscribe_in(
@@ -219,6 +265,7 @@ impl SettingsWindow {
         .into_iter()
         .map(|input| cx.subscribe_in(&input, window, |_, _, _: &InputEvent, _, cx| cx.notify()))
         .collect();
+        input_subscriptions.push(sync_interval_subscription);
         input_subscriptions.push(interval_subscription);
         Self {
             owner,

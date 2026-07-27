@@ -624,6 +624,7 @@ pub(crate) struct TinyShell {
     pub(crate) global_proxy_user_input: Entity<InputState>,
     pub(crate) global_proxy_password_input: Entity<InputState>,
     pub(crate) update_interval_hours_input: Entity<InputState>,
+    pub(crate) sync_interval_hours_input: Entity<InputState>,
     pub(crate) sync_endpoint_input: Entity<InputState>,
     pub(crate) sync_username_input: Entity<InputState>,
     pub(crate) sync_webdav_password_input: Entity<InputState>,
@@ -754,6 +755,7 @@ pub(crate) struct TinyShell {
     pub(crate) update_download_cancellation: Option<updater::DownloadCancellation>,
     pub(crate) update_download_generation: u64,
     pub(crate) update_schedule_generation: u64,
+    pub(crate) sync_schedule_generation: u64,
     /// Error message when a recorded keybinding conflicts with another
     pub(crate) keybind_error: Option<(String, String)>, // (action_id, error_message)
     pub(crate) system: SystemSnapshot,
@@ -956,6 +958,11 @@ impl TinyShell {
                 .placeholder("24")
                 .default_value(config.update_interval_hours().to_string())
         });
+        let sync_interval_hours_input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("24")
+                .default_value(config.sync_interval_hours().to_string())
+        });
         let sync_endpoint_input = cx.new(|cx| {
             InputState::new(window, cx)
                 .placeholder("https://dav.example.com/tiny-shell/")
@@ -970,6 +977,12 @@ impl TinyShell {
             InputState::new(window, cx)
                 .placeholder(t!("sync_webdav_password").to_string())
                 .masked(true)
+                .default_value(
+                    crate::app::config_sync::open_webdav_password(
+                        config.sync_webdav_password_sealed(),
+                    )
+                    .unwrap_or_default(),
+                )
         });
         let sync_s3_endpoint_input = cx.new(|cx| {
             InputState::new(window, cx)
@@ -1038,6 +1051,7 @@ impl TinyShell {
             cx.subscribe_in(&proxy_user_input, window, Self::on_input_event),
             cx.subscribe_in(&proxy_password_input, window, Self::on_input_event),
             cx.subscribe_in(&update_interval_hours_input, window, Self::on_input_event),
+            cx.subscribe_in(&sync_interval_hours_input, window, Self::on_input_event),
             cx.subscribe_in(&sftp_path_input, window, Self::on_input_event),
             cx.subscribe_in(&sftp_new_folder_input, window, Self::on_input_event),
             cx.subscribe_in(&search_input, window, Self::on_input_event),
@@ -1140,6 +1154,7 @@ impl TinyShell {
             global_proxy_user_input,
             global_proxy_password_input,
             update_interval_hours_input,
+            sync_interval_hours_input,
             sync_endpoint_input,
             sync_username_input,
             sync_webdav_password_input,
@@ -1270,6 +1285,7 @@ impl TinyShell {
             update_download_cancellation: None,
             update_download_generation: 0,
             update_schedule_generation: 0,
+            sync_schedule_generation: 0,
             keybind_error: None,
             animated_cpu_percent: system.cpu_percent,
             animated_mem_percent: system.mem_percent,
@@ -1344,6 +1360,28 @@ impl TinyShell {
                 InputEvent::Blur | InputEvent::PressEnter { .. } => {
                     let hours = self.config.update_interval_hours().to_string();
                     self.update_interval_hours_input
+                        .update(cx, |input, cx| input.set_value(hours, window, cx));
+                    if matches!(event, InputEvent::PressEnter { .. }) {
+                        window.prevent_default();
+                        cx.stop_propagation();
+                    }
+                }
+                _ => {}
+            }
+        } else if input == &self.sync_interval_hours_input {
+            match event {
+                InputEvent::Change => {
+                    if let Ok(hours) = input.read(cx).value().trim().parse::<u32>()
+                        && (1..=8_760).contains(&hours)
+                    {
+                        self.config.set_sync_interval_hours(hours);
+                        self.mark_config_preferences_dirty();
+                        self.schedule_automatic_sync(false, cx);
+                    }
+                }
+                InputEvent::Blur | InputEvent::PressEnter { .. } => {
+                    let hours = self.config.sync_interval_hours().to_string();
+                    self.sync_interval_hours_input
                         .update(cx, |input, cx| input.set_value(hours, window, cx));
                     if matches!(event, InputEvent::PressEnter { .. }) {
                         window.prevent_default();
@@ -1815,6 +1853,9 @@ impl TinyShell {
                             privacy_password,
                         } => {
                             self.config.set_sync_etag(etag);
+                            let previous_synced_at = self.config.sync_last_synced_at();
+                            self.config
+                                .set_sync_last_synced_at(chrono::Utc::now().timestamp());
                             let password_result = privacy_password.map_or(Ok(()), |password| {
                                 crate::app::config_sync::seal_privacy_password(&password).map(
                                     |(sealed, hash)| {
@@ -1824,8 +1865,12 @@ impl TinyShell {
                                 )
                             });
                             match password_result.and_then(|()| self.config.save()) {
-                                Ok(()) => self.sync_status = t!("sync_upload_complete").into(),
+                                Ok(()) => {
+                                    self.sync_status = t!("sync_upload_complete").into();
+                                    self.schedule_automatic_sync(false, cx);
+                                }
                                 Err(err) => {
+                                    self.config.set_sync_last_synced_at(previous_synced_at);
                                     self.sync_status =
                                         format!("{}: {err:#}", t!("sync_failed")).into();
                                 }
@@ -1911,6 +1956,9 @@ impl TinyShell {
                             self.config
                                 .set_quick_command_categories(quick_command_categories);
                             self.config.set_sync_etag(etag);
+                            let previous_synced_at = self.config.sync_last_synced_at();
+                            self.config
+                                .set_sync_last_synced_at(chrono::Utc::now().timestamp());
                             match self.config.save() {
                                 Ok(()) => {
                                     let summary = t!(
@@ -1966,8 +2014,10 @@ impl TinyShell {
                                             });
                                         });
                                     }
+                                    self.schedule_automatic_sync(false, cx);
                                 }
                                 Err(err) => {
+                                    self.config.set_sync_last_synced_at(previous_synced_at);
                                     self.sync_status =
                                         format!("{}: {err:#}", t!("sync_failed")).into()
                                 }
@@ -1979,11 +2029,16 @@ impl TinyShell {
                                     self.config.set_sync_secrets_password_sealed(sealed);
                                     self.config.set_sync_secrets_password_hash(hash);
                                     self.config.set_sync_etag(etag);
+                                    let previous_synced_at = self.config.sync_last_synced_at();
+                                    self.config
+                                        .set_sync_last_synced_at(chrono::Utc::now().timestamp());
                                     match self.config.save() {
                                         Ok(()) => {
-                                            self.sync_status = t!("sync_reset_complete").into()
+                                            self.sync_status = t!("sync_reset_complete").into();
+                                            self.schedule_automatic_sync(false, cx);
                                         }
                                         Err(err) => {
+                                            self.config.set_sync_last_synced_at(previous_synced_at);
                                             self.sync_status = format!(
                                                 "{}: {err:#}; {}",
                                                 t!("sync_failed"),
@@ -1996,6 +2051,36 @@ impl TinyShell {
                                 Err(err) => {
                                     self.sync_status =
                                         format!("{}: {err:#}", t!("sync_failed")).into();
+                                }
+                            }
+                        }
+                        crate::sync::SyncResult::PrivacyPasswordInitializationReady {
+                            credentials,
+                            password,
+                        } => {
+                            if self.set_sync_include_secrets(true, cx) {
+                                if let Some(dialog) = self.sync_secrets_password_dialog.take() {
+                                    self.active_dialog = None;
+                                    let input = dialog.settings_password_input;
+                                    let input_password = password.clone();
+                                    let _ = dialog.window.update(cx, move |_, window, cx| {
+                                        input.update(cx, |input, cx| {
+                                            input.set_value(input_password.clone(), window, cx);
+                                        });
+                                        window.close_dialog(cx);
+                                    });
+                                }
+                                let form = crate::app::config_sync::SyncFormSnapshot::with_privacy_password(
+                                    credentials,
+                                    password,
+                                );
+                                self.upload_sync_config(form, cx);
+                            } else {
+                                let message = self.sync_status.clone();
+                                if let Some(dialog) = self.sync_secrets_password_dialog.as_mut() {
+                                    dialog.status =
+                                        crate::app::SyncSecretsPasswordDialogStatus::Failed;
+                                    dialog.message = Some(message);
                                 }
                             }
                         }
