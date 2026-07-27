@@ -198,6 +198,95 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout release history
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Generate release notes from commits
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          NOTES_FILE="${RUNNER_TEMP}/release-notes.md"
+          CURRENT_TAG="${GITHUB_REF_NAME}"
+          PREVIOUS_TAG="$(git describe --tags --abbrev=0 "${CURRENT_TAG}^" 2>/dev/null || true)"
+
+          if [[ -n "${PREVIOUS_TAG}" ]]; then
+            COMMIT_RANGE="${PREVIOUS_TAG}..${CURRENT_TAG}"
+          else
+            COMMIT_RANGE="${CURRENT_TAG}"
+          fi
+
+          declare -A TITLES=(
+            [breaking]="Breaking Changes"
+            [feat]="New Features"
+            [fix]="Bug Fixes"
+            [perf]="Performance Improvements"
+            [refactor]="Refactoring"
+            [docs]="Documentation"
+            [build]="Build and CI"
+            [other]="Other Changes"
+          )
+          CATEGORIES=(breaking feat fix perf refactor docs build other)
+          WORK_DIR="$(mktemp -d)"
+          trap 'rm -rf "${WORK_DIR}"' EXIT
+
+          while IFS=$'\t' read -r hash subject; do
+            [[ -n "${hash}" ]] || continue
+
+            type="${subject%%:*}"
+            type="${type%%(*}"
+            type="${type%!}"
+            description="${subject#*:}"
+            description="${description# }"
+
+            if [[ "${type}" == "chore" && "${description,,}" == bump\ version* ]]; then
+              continue
+            fi
+
+            if [[ "${subject}" == *"!:"* ]]; then
+              category="breaking"
+            else
+              case "${type}" in
+                feat|fix|perf|refactor|docs) category="${type}" ;;
+                build|ci) category="build" ;;
+                *) category="other" ;;
+              esac
+            fi
+
+            if [[ "${description}" == "${subject}" ]]; then
+              description="${subject}"
+            fi
+            printf -- '- %s (`%s`)\n' "${description}" "${hash}" >> "${WORK_DIR}/${category}.md"
+          done < <(git log "${COMMIT_RANGE}" --format='%h%x09%s')
+
+          {
+            printf '# tiny-shell %s\n\n' "${CURRENT_TAG}"
+            has_entries=false
+            for category in "${CATEGORIES[@]}"; do
+              category_file="${WORK_DIR}/${category}.md"
+              if [[ -s "${category_file}" ]]; then
+                has_entries=true
+                printf '## %s\n\n' "${TITLES[${category}]}"
+                cat "${category_file}"
+                printf '\n'
+              fi
+            done
+
+            if [[ "${has_entries}" == false ]]; then
+              printf 'No user-facing changes in this release.\n\n'
+            fi
+
+            if [[ -n "${PREVIOUS_TAG}" ]]; then
+              printf '## Full Changelog\n\n'
+              printf '**Full Changelog**: https://github.com/%s/compare/%s...%s\n' \
+                "${GITHUB_REPOSITORY}" "${PREVIOUS_TAG}" "${CURRENT_TAG}"
+            fi
+          } > "${NOTES_FILE}"
+
+          echo "RELEASE_NOTES_PATH=${NOTES_FILE}" >> "${GITHUB_ENV}"
+
       - name: Download all workflow artifacts
         uses: actions/download-artifact@v7
         with:
@@ -207,7 +296,5 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: dist/**/*
-          generate_release_notes: true
+          body_path: ${{ env.RELEASE_NOTES_PATH }}
           fail_on_unmatched_files: true
-
-  
