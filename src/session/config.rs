@@ -373,6 +373,8 @@ pub struct ConfigFile {
     pub sync_backend: String,
     #[serde(default)]
     pub sync_etag_backend: String,
+    #[serde(default)]
+    pub sync_etag_target: String,
     /// 是否把会话密码/私钥等敏感信息一并同步（脱敏上传或字段级加密）。
     #[serde(default)]
     pub sync_include_secrets: bool,
@@ -439,6 +441,24 @@ fn default_s3_region() -> String {
 
 fn default_s3_object_key() -> String {
     "tiny-shell-sync.json".to_string()
+}
+
+fn webdav_sync_target(endpoint: &str, username: &str) -> String {
+    format!(
+        "webdav:{}:{}",
+        endpoint.trim().trim_end_matches('/'),
+        username.trim()
+    )
+}
+
+fn s3_sync_target(endpoint: &str, region: &str, bucket: &str, object_key: &str) -> String {
+    format!(
+        "s3:{}:{}:{}:{}",
+        endpoint.trim().trim_end_matches('/'),
+        region.trim(),
+        bucket.trim(),
+        object_key.trim().trim_start_matches('/')
+    )
 }
 
 fn default_follow_system_theme() -> bool {
@@ -514,6 +534,7 @@ impl Default for ConfigFile {
             sync_device_id: String::new(),
             sync_backend: String::new(),
             sync_etag_backend: String::new(),
+            sync_etag_target: String::new(),
             sync_include_secrets: false,
             sync_secrets_password_sealed: String::new(),
             sync_secrets_password_hash: String::new(),
@@ -781,10 +802,17 @@ impl ConfigStore {
         &self.cache.sync_username
     }
 
-    pub fn sync_etag(&self) -> Option<&str> {
-        (self.cache.sync_etag_backend == self.sync_backend())
-            .then_some(self.cache.sync_etag.as_deref())
-            .flatten()
+    pub fn sync_target_id(&self) -> String {
+        if self.sync_backend() == "s3" {
+            s3_sync_target(
+                self.sync_s3_endpoint(),
+                self.sync_s3_region(),
+                self.sync_s3_bucket(),
+                self.sync_s3_object_key(),
+            )
+        } else {
+            webdav_sync_target(self.sync_endpoint(), self.sync_username())
+        }
     }
 
     pub fn sync_device_id(&self) -> &str {
@@ -828,6 +856,10 @@ impl ConfigStore {
     }
 
     pub fn set_sync_connection(&mut self, endpoint: String, username: String) {
+        let target = webdav_sync_target(&endpoint, &username);
+        if self.cache.sync_etag_target != target {
+            self.cache.sync_etag = None;
+        }
         self.cache.sync_endpoint = endpoint;
         self.cache.sync_username = username;
     }
@@ -839,6 +871,10 @@ impl ConfigStore {
         bucket: String,
         object_key: String,
     ) {
+        let target = s3_sync_target(&endpoint, &region, &bucket, &object_key);
+        if self.cache.sync_etag_target != target {
+            self.cache.sync_etag = None;
+        }
         self.cache.sync_s3_endpoint = endpoint;
         self.cache.sync_s3_region = region;
         self.cache.sync_s3_bucket = bucket;
@@ -848,6 +884,7 @@ impl ConfigStore {
     pub fn set_sync_etag(&mut self, etag: Option<String>) {
         self.cache.sync_etag = etag;
         self.cache.sync_etag_backend = self.sync_backend().to_string();
+        self.cache.sync_etag_target = self.sync_target_id();
     }
 
     pub fn sync_include_secrets(&self) -> bool {
@@ -1929,6 +1966,42 @@ mod tests {
         assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
 
         fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn sync_etag_is_bound_to_the_exact_remote_target() {
+        let mut store = ConfigStore::in_memory();
+        store.set_sync_connection("https://dav.example.test/first/".into(), "alice".into());
+        store.set_sync_etag(Some("etag-first".into()));
+        assert_eq!(store.cache.sync_etag.as_deref(), Some("etag-first"));
+
+        store.set_sync_connection("https://dav.example.test/first".into(), "bob".into());
+        assert!(store.cache.sync_etag.is_none());
+
+        store.set_sync_etag(Some("etag-bob".into()));
+        store.set_sync_connection("https://dav.example.test/second/".into(), "bob".into());
+        assert!(store.cache.sync_etag.is_none());
+    }
+
+    #[test]
+    fn switching_s3_objects_invalidates_the_previous_etag() {
+        let mut store = ConfigStore::in_memory();
+        store.set_sync_backend("s3");
+        store.set_sync_s3_connection(
+            "https://s3.example.test".into(),
+            "us-east-1".into(),
+            "configs".into(),
+            "first.json".into(),
+        );
+        store.set_sync_etag(Some("etag-first".into()));
+
+        store.set_sync_s3_connection(
+            "https://s3.example.test/".into(),
+            "us-east-1".into(),
+            "configs".into(),
+            "/second.json".into(),
+        );
+        assert!(store.cache.sync_etag.is_none());
     }
 
     #[test]

@@ -500,6 +500,8 @@ pub(crate) enum DialogKind {
     ConnectionGroupMove,
     QuickCommandCategory,
     QuickCommand,
+    /// 上传预检发现远端敏感字段无法解密。
+    SyncUploadSecretsBlocked,
     /// 本地强行重置隐私信息加密密码。
     ResetPrivacyPassword,
 }
@@ -1791,9 +1793,7 @@ impl TinyShell {
                             etag,
                             privacy_password,
                         } => {
-                            if etag.is_some() {
-                                self.config.set_sync_etag(etag);
-                            }
+                            self.config.set_sync_etag(etag);
                             let password_result = privacy_password.map_or(Ok(()), |password| {
                                 crate::app::config_sync::seal_privacy_password(&password).map(
                                     |(sealed, hash)| {
@@ -1808,6 +1808,52 @@ impl TinyShell {
                                     self.sync_status =
                                         format!("{}: {err:#}", t!("sync_failed")).into();
                                 }
+                            }
+                        }
+                        crate::sync::SyncResult::UploadPreflightReady {
+                            credentials,
+                            privacy_password,
+                            include_secrets,
+                            merged,
+                            etag,
+                        } => {
+                            self.continue_sync_upload(
+                                credentials,
+                                privacy_password,
+                                include_secrets,
+                                merged,
+                                etag,
+                                cx,
+                            );
+                        }
+                        crate::sync::SyncResult::UploadPreflightBlocked {
+                            credentials,
+                            unavailable_session_secret_count,
+                            unavailable_managed_key_secret_count,
+                        } => {
+                            self.sync_status = t!(
+                                "sync_upload_secrets_blocked",
+                                sessions = unavailable_session_secret_count,
+                                keys = unavailable_managed_key_secret_count
+                            )
+                            .into();
+                            if let Some(handle) = self.settings_window {
+                                let owner = cx.entity();
+                                let form =
+                                    crate::app::config_sync::SyncFormSnapshot::from_credentials(
+                                        credentials,
+                                    );
+                                let _ = handle.update(cx, move |_, window, cx| {
+                                    owner.update(cx, |this, cx| {
+                                        this.show_sync_upload_secrets_blocked_dialog(
+                                            form.clone(),
+                                            unavailable_session_secret_count,
+                                            unavailable_managed_key_secret_count,
+                                            window,
+                                            cx,
+                                        );
+                                    });
+                                });
                             }
                         }
                         crate::sync::SyncResult::Downloaded {
@@ -1829,6 +1875,7 @@ impl TinyShell {
                             self.config.replace_sessions(sessions);
                             self.config.replace_connection_groups(connection_groups);
                             self.config.replace_managed_keys(managed_keys);
+                            self.managed_keys = self.config.managed_keys().to_vec();
                             self.config
                                 .set_quick_command_categories(quick_command_categories);
                             self.config.set_sync_etag(etag);
@@ -1867,13 +1914,25 @@ impl TinyShell {
                                 }
                             }
                         }
-                        crate::sync::SyncResult::PrivacyPasswordReset { new_password } => {
+                        crate::sync::SyncResult::PrivacyPasswordReset { new_password, etag } => {
                             match crate::app::config_sync::seal_privacy_password(&new_password) {
                                 Ok((sealed, hash)) => {
                                     self.config.set_sync_secrets_password_sealed(sealed);
                                     self.config.set_sync_secrets_password_hash(hash);
-                                    let _ = self.config.save();
-                                    self.sync_status = t!("sync_reset_complete").into();
+                                    self.config.set_sync_etag(etag);
+                                    match self.config.save() {
+                                        Ok(()) => {
+                                            self.sync_status = t!("sync_reset_complete").into()
+                                        }
+                                        Err(err) => {
+                                            self.sync_status = format!(
+                                                "{}: {err:#}; {}",
+                                                t!("sync_failed"),
+                                                t!("sync_reset_local_save_failed")
+                                            )
+                                            .into();
+                                        }
+                                    }
                                 }
                                 Err(err) => {
                                     self.sync_status =

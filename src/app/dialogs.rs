@@ -5924,6 +5924,101 @@ impl TinyShell {
         });
     }
 
+    /// 上传预检发现远端敏感字段无法解密时，阻止覆盖并引导用户重置。
+    pub(crate) fn show_sync_upload_secrets_blocked_dialog(
+        &mut self,
+        form: crate::app::config_sync::SyncFormSnapshot,
+        unavailable_session_secret_count: u32,
+        unavailable_managed_key_secret_count: u32,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.active_dialog.is_some() {
+            return;
+        }
+        self.active_dialog = Some(crate::app::DialogKind::SyncUploadSecretsBlocked);
+
+        let view = cx.entity();
+        let danger_color = cx.theme().danger;
+        window.open_dialog(cx, move |dialog: Dialog, _window, _cx| {
+            dialog
+                .title(t!("sync_upload_blocked_dialog_title").to_string())
+                .w(px(460.))
+                .close_button(false)
+                .overlay_closable(false)
+                .content(move |content, _window, _cx| {
+                    content.child(
+                        v_flex()
+                            .w_full()
+                            .gap_3()
+                            .child(
+                                div().text_sm().text_color(danger_color).child(
+                                    t!(
+                                        "sync_upload_blocked_dialog_message",
+                                        sessions = unavailable_session_secret_count,
+                                        keys = unavailable_managed_key_secret_count
+                                    )
+                                    .to_string(),
+                                ),
+                            )
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .child(t!("sync_upload_blocked_dialog_hint").to_string()),
+                            ),
+                    )
+                })
+                .footer(
+                    h_flex()
+                        .w_full()
+                        .justify_end()
+                        .gap_2()
+                        .child(
+                            Button::new("cancel-sync-upload-reset")
+                                .secondary()
+                                .label(t!("cancel").to_string())
+                                .on_click({
+                                    let view = view.clone();
+                                    move |_, window, cx| {
+                                        view.update(cx, |this, cx| {
+                                            this.active_dialog = None;
+                                            cx.notify();
+                                        });
+                                        window.close_dialog(cx);
+                                    }
+                                }),
+                        )
+                        .child(
+                            Button::new("continue-sync-upload-reset")
+                                .danger()
+                                .label(t!("sync_reset_privacy_password").to_string())
+                                .on_click({
+                                    let view = view.clone();
+                                    let form = form.clone();
+                                    move |_, window, cx| {
+                                        view.update(cx, |this, cx| {
+                                            this.active_dialog = None;
+                                            cx.notify();
+                                        });
+                                        window.close_dialog(cx);
+                                        let view = view.clone();
+                                        let form = form.clone();
+                                        window.defer(cx, move |window, cx| {
+                                            view.update(cx, |this, cx| {
+                                                this.show_reset_privacy_password_dialog(
+                                                    form.clone(),
+                                                    window,
+                                                    cx,
+                                                );
+                                            });
+                                        });
+                                    }
+                                }),
+                        ),
+                )
+        });
+    }
+
     /// 弹出"重置隐私信息加密密码"对话框。
     ///
     /// 危险操作：会用本机当前明文配置 + 新密码重新加密并强制覆盖云端，

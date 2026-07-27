@@ -50,6 +50,13 @@ impl SyncFormSnapshot {
             privacy_password: inputs.sync_privacy_password.read(cx).value().to_string(),
         }
     }
+
+    pub(crate) fn from_credentials(credentials: SyncCredentials) -> Self {
+        Self {
+            credentials,
+            privacy_password: String::new(),
+        }
+    }
 }
 
 pub(crate) fn sync_failure_status(failure: &SyncFailure) -> String {
@@ -71,6 +78,30 @@ pub(crate) fn sync_failure_status(failure: &SyncFailure) -> String {
         _ => failure.detail.clone(),
     };
     format!("{}: {detail}", t!("sync_failed"))
+}
+
+fn upload_preflight_result(
+    credentials: SyncCredentials,
+    privacy_password: String,
+    include_secrets: bool,
+    merged: MergedConfig,
+    etag: Option<String>,
+) -> SyncResult {
+    if merged.unavailable_secret_count > 0 {
+        SyncResult::UploadPreflightBlocked {
+            credentials,
+            unavailable_session_secret_count: merged.unavailable_session_secret_count,
+            unavailable_managed_key_secret_count: merged.unavailable_managed_key_secret_count,
+        }
+    } else {
+        SyncResult::UploadPreflightReady {
+            credentials,
+            privacy_password,
+            include_secrets,
+            merged: Some(merged),
+            etag,
+        }
+    }
 }
 
 impl TinyShell {
@@ -173,17 +204,86 @@ impl TinyShell {
             credentials,
             privacy_password,
         } = form;
-        let Some(credentials) = self.begin_sync(credentials, t!("sync_uploading").into(), cx)
+        let Some(credentials) =
+            self.begin_sync(credentials, t!("sync_preparing_upload").into(), cx)
         else {
             return;
         };
 
         let include_secrets = self.config.sync_include_secrets();
-
-        // 勾选了同步密码但隐私密码不达标：中止上传，避免把脱敏数据当加密数据传错
         if include_secrets && privacy_password.chars().count() < PRIVACY_PASSWORD_MIN_LEN {
             self.sync_in_progress = false;
             self.sync_status = t!("sync_privacy_password_required").into();
+            cx.notify();
+            return;
+        }
+
+        let local_sessions = self.config.sessions().to_vec();
+        let local_connection_groups = self.config.connection_groups().to_vec();
+        let local_keys = self.config.managed_keys().to_vec();
+        let local_commands = self
+            .config
+            .quick_command_categories()
+            .unwrap_or_default()
+            .to_vec();
+        let events = self.events_tx.clone();
+        self.runtime.spawn(async move {
+            let result = match sync::download(credentials.clone(), &privacy_password).await {
+                Ok((payload, etag)) => {
+                    let merged = sync::merge_payload(
+                        &local_sessions,
+                        &local_connection_groups,
+                        &local_keys,
+                        &local_commands,
+                        payload,
+                        &privacy_password,
+                    );
+                    upload_preflight_result(
+                        credentials,
+                        privacy_password,
+                        include_secrets,
+                        merged,
+                        etag,
+                    )
+                }
+                Err(failure) if failure.category == SyncErrorCategory::RemoteMissing => {
+                    SyncResult::UploadPreflightReady {
+                        credentials,
+                        privacy_password,
+                        include_secrets,
+                        merged: None,
+                        etag: None,
+                    }
+                }
+                Err(failure) => SyncResult::Failed(failure),
+            };
+            let _ = events.send(BackendEvent::SyncFinished(result));
+        });
+    }
+
+    pub(crate) fn continue_sync_upload(
+        &mut self,
+        credentials: SyncCredentials,
+        privacy_password: String,
+        include_secrets: bool,
+        merged: Option<MergedConfig>,
+        etag: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        let remote_exists = merged.is_some();
+        if let Some(merged) = merged {
+            self.config.replace_sessions(merged.sessions);
+            self.config
+                .replace_connection_groups(merged.connection_groups);
+            self.config.replace_managed_keys(merged.managed_keys);
+            self.managed_keys = self.config.managed_keys().to_vec();
+            self.config
+                .set_quick_command_categories(merged.quick_command_categories);
+        }
+        self.config.set_sync_etag(etag.clone());
+        if let Err(error) = self.config.save() {
+            self.sync_in_progress = false;
+            self.sync_status = format!("{}: {error:#}", t!("sync_failed")).into();
             cx.notify();
             return;
         }
@@ -201,15 +301,23 @@ impl TinyShell {
             &privacy_password,
         ) {
             Ok(payload) => payload,
-            Err(err) => {
+            Err(error) => {
                 self.sync_in_progress = false;
-                self.sync_status = format!("{}: {err:#}", t!("sync_failed")).into();
+                self.sync_status = format!("{}: {error:#}", t!("sync_failed")).into();
                 cx.notify();
                 return;
             }
         };
-        let mode = UploadMode::conditional(self.config.sync_etag().map(str::to_string));
+        let mode = if remote_exists && etag.is_none() {
+            UploadMode::Force
+        } else {
+            UploadMode::conditional(etag)
+        };
         let uploaded_privacy_password = include_secrets.then_some(privacy_password);
+        self.sync_in_progress = true;
+        self.sync_status = t!("sync_uploading").into();
+        cx.notify();
+
         let events = self.events_tx.clone();
         self.runtime.spawn(async move {
             let result = match sync::upload(credentials, payload, mode).await {
@@ -252,6 +360,7 @@ impl TinyShell {
                         quick_command_categories,
                         decrypted_count,
                         unavailable_secret_count,
+                        ..
                     } = sync::merge_payload(
                         &local_sessions,
                         &local_connection_groups,
@@ -285,12 +394,11 @@ impl TinyShell {
         form: SyncFormSnapshot,
         cx: &mut Context<Self>,
     ) {
-        let credentials = form.credentials;
-        if self.sync_in_progress {
-            self.sync_status = t!("sync_failed").into();
-            cx.notify();
+        let Some(credentials) =
+            self.begin_sync(form.credentials, t!("sync_reset_uploading").into(), cx)
+        else {
             return;
-        }
+        };
 
         // 校验本地有可同步的隐私信息
         let has_secrets = self.config.sessions().iter().any(|s| {
@@ -304,6 +412,7 @@ impl TinyShell {
             .iter()
             .any(|k| !k.inline_content.is_empty() || !k.passphrase.is_empty());
         if !has_secrets {
+            self.sync_in_progress = false;
             self.sync_status = t!("sync_reset_no_local_secrets").into();
             cx.notify();
             return;
@@ -323,20 +432,17 @@ impl TinyShell {
         ) {
             Ok(payload) => payload,
             Err(err) => {
+                self.sync_in_progress = false;
                 self.sync_status = format!("{}: {err:#}", t!("sync_failed")).into();
                 cx.notify();
                 return;
             }
         };
 
-        self.sync_in_progress = true;
-        self.sync_status = t!("sync_reset_uploading").into();
-        cx.notify();
-
         let events = self.events_tx.clone();
         self.runtime.spawn(async move {
             let result = match sync::upload(credentials, payload, UploadMode::Force).await {
-                Ok(_) => SyncResult::PrivacyPasswordReset { new_password },
+                Ok(etag) => SyncResult::PrivacyPasswordReset { new_password, etag },
                 Err(failure) => SyncResult::Failed(failure),
             };
             let _ = events.send(BackendEvent::SyncFinished(result));
@@ -375,5 +481,76 @@ mod tests {
 
         assert!(status.contains("S3 upload failed: HTTP 401 Unauthorized"));
         assert!(!status.contains(t!("sync_webdav_auth_failed").as_ref()));
+    }
+
+    #[test]
+    fn upload_preflight_blocks_when_any_remote_secret_is_unavailable() {
+        let result = upload_preflight_result(
+            webdav_credentials(),
+            "wrong-password".into(),
+            true,
+            MergedConfig {
+                sessions: Vec::new(),
+                connection_groups: Vec::new(),
+                managed_keys: Vec::new(),
+                quick_command_categories: Vec::new(),
+                decrypted_count: 0,
+                unavailable_secret_count: 3,
+                unavailable_session_secret_count: 1,
+                unavailable_managed_key_secret_count: 2,
+            },
+            Some("etag-1".into()),
+        );
+
+        assert!(matches!(
+            result,
+            SyncResult::UploadPreflightBlocked {
+                unavailable_session_secret_count: 1,
+                unavailable_managed_key_secret_count: 2,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn upload_preflight_continues_with_merged_config_and_remote_etag() {
+        let result = upload_preflight_result(
+            webdav_credentials(),
+            "privacy-password".into(),
+            true,
+            MergedConfig {
+                sessions: Vec::new(),
+                connection_groups: vec!["remote".into()],
+                managed_keys: Vec::new(),
+                quick_command_categories: Vec::new(),
+                decrypted_count: 2,
+                unavailable_secret_count: 0,
+                unavailable_session_secret_count: 0,
+                unavailable_managed_key_secret_count: 0,
+            },
+            Some("etag-2".into()),
+        );
+
+        assert!(matches!(
+            result,
+            SyncResult::UploadPreflightReady {
+                merged: Some(MergedConfig {
+                    connection_groups,
+                    ..
+                }),
+                etag: Some(etag),
+                ..
+            } if connection_groups == ["remote"] && etag == "etag-2"
+        ));
+    }
+
+    fn webdav_credentials() -> SyncCredentials {
+        SyncCredentials {
+            backend: SyncBackendCredentials::WebDav {
+                endpoint: "https://dav.example.test/config/".into(),
+                username: "alice".into(),
+                password: "webdav-password".into(),
+            },
+        }
     }
 }

@@ -5,6 +5,7 @@ mod secrets;
 use std::fmt;
 
 use anyhow::{Context, Result, anyhow};
+use futures::StreamExt as _;
 use hmac::{Hmac, Mac};
 use reqwest::{Client, StatusCode, header};
 use sha2::{Digest, Sha256};
@@ -17,6 +18,7 @@ pub use merge::{MergedConfig, merge_payload};
 pub use model::SyncPayload;
 
 const SYNC_FILE_NAME: &str = "tiny-shell-sync.json";
+const MAX_SYNC_PAYLOAD_BYTES: usize = 16 * 1024 * 1024;
 
 #[derive(Clone)]
 pub struct SyncCredentials {
@@ -111,6 +113,18 @@ pub enum SyncResult {
         etag: Option<String>,
         privacy_password: Option<String>,
     },
+    UploadPreflightReady {
+        credentials: SyncCredentials,
+        privacy_password: String,
+        include_secrets: bool,
+        merged: Option<MergedConfig>,
+        etag: Option<String>,
+    },
+    UploadPreflightBlocked {
+        credentials: SyncCredentials,
+        unavailable_session_secret_count: u32,
+        unavailable_managed_key_secret_count: u32,
+    },
     Downloaded {
         sessions: Vec<Session>,
         connection_groups: Vec<String>,
@@ -125,6 +139,7 @@ pub enum SyncResult {
     /// 本地强行重置隐私密码成功，需把新密码硬件绑定落盘。
     PrivacyPasswordReset {
         new_password: String,
+        etag: Option<String>,
     },
     ConnectionVerified,
     Failed(SyncFailure),
@@ -142,6 +157,32 @@ impl fmt::Debug for SyncResult {
                 .field(
                     "privacy_password",
                     &privacy_password.as_ref().map(|_| "<redacted>"),
+                )
+                .finish(),
+            Self::UploadPreflightReady {
+                include_secrets,
+                merged,
+                etag,
+                ..
+            } => formatter
+                .debug_struct("UploadPreflightReady")
+                .field("include_secrets", include_secrets)
+                .field("has_remote_config", &merged.is_some())
+                .field("etag", etag)
+                .finish(),
+            Self::UploadPreflightBlocked {
+                unavailable_session_secret_count,
+                unavailable_managed_key_secret_count,
+                ..
+            } => formatter
+                .debug_struct("UploadPreflightBlocked")
+                .field(
+                    "unavailable_session_secret_count",
+                    unavailable_session_secret_count,
+                )
+                .field(
+                    "unavailable_managed_key_secret_count",
+                    unavailable_managed_key_secret_count,
                 )
                 .finish(),
             Self::Downloaded {
@@ -393,16 +434,7 @@ async fn download_webdav(
         .get(header::ETAG)
         .and_then(|value| value.to_str().ok())
         .map(str::to_string);
-    let body = response
-        .bytes()
-        .await
-        .map_err(|error| {
-            SyncFailure::other(
-                Some(SyncBackendKind::WebDav),
-                format!("read WebDAV response: {error}"),
-            )
-        })?
-        .to_vec();
+    let body = read_response_body_limited(response, SyncBackendKind::WebDav).await?;
     Ok((body, etag))
 }
 
@@ -619,17 +651,52 @@ async fn download_s3(config: &S3Config) -> SyncOperationResult<(Vec<u8>, Option<
         .get(header::ETAG)
         .and_then(|value| value.to_str().ok())
         .map(str::to_string);
-    let body = response
-        .bytes()
-        .await
-        .map_err(|error| {
-            SyncFailure::other(
-                Some(SyncBackendKind::S3),
-                format!("read S3 response: {error}"),
-            )
-        })?
-        .to_vec();
+    let body = read_response_body_limited(response, SyncBackendKind::S3).await?;
     Ok((body, etag))
+}
+
+async fn read_response_body_limited(
+    response: reqwest::Response,
+    backend: SyncBackendKind,
+) -> SyncOperationResult<Vec<u8>> {
+    if response
+        .content_length()
+        .is_some_and(|length| length > MAX_SYNC_PAYLOAD_BYTES as u64)
+    {
+        return Err(SyncFailure::other(
+            Some(backend),
+            format!(
+                "synchronized configuration exceeds the {} MiB limit",
+                MAX_SYNC_PAYLOAD_BYTES / (1024 * 1024)
+            ),
+        ));
+    }
+
+    let mut body = Vec::new();
+    let mut stream = response.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|error| {
+            SyncFailure::other(Some(backend), format!("read sync response: {error}"))
+        })?;
+        if extend_body_with_limit(&mut body, &chunk).is_err() {
+            return Err(SyncFailure::other(
+                Some(backend),
+                format!(
+                    "synchronized configuration exceeds the {} MiB limit",
+                    MAX_SYNC_PAYLOAD_BYTES / (1024 * 1024)
+                ),
+            ));
+        }
+    }
+    Ok(body)
+}
+
+fn extend_body_with_limit(body: &mut Vec<u8>, chunk: &[u8]) -> Result<(), ()> {
+    if body.len().saturating_add(chunk.len()) > MAX_SYNC_PAYLOAD_BYTES {
+        return Err(());
+    }
+    body.extend_from_slice(chunk);
+    Ok(())
 }
 
 fn s3_url(config: &S3Config) -> Result<reqwest::Url> {
@@ -1089,6 +1156,14 @@ mod tests {
                 .as_str(),
             "https://example.test/dav/"
         );
+    }
+
+    #[test]
+    fn sync_response_body_limit_rejects_oversized_payloads() {
+        let mut body = vec![0; MAX_SYNC_PAYLOAD_BYTES - 2];
+        assert!(extend_body_with_limit(&mut body, &[1, 2]).is_ok());
+        assert!(extend_body_with_limit(&mut body, &[3]).is_err());
+        assert_eq!(body.len(), MAX_SYNC_PAYLOAD_BYTES);
     }
 
     #[test]

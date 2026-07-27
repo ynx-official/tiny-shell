@@ -6,6 +6,7 @@ use crate::{
     },
 };
 
+#[derive(Clone)]
 pub struct MergedConfig {
     pub sessions: Vec<Session>,
     pub connection_groups: Vec<String>,
@@ -13,6 +14,8 @@ pub struct MergedConfig {
     pub quick_command_categories: Vec<QuickCommandCategory>,
     pub decrypted_count: u32,
     pub unavailable_secret_count: u32,
+    pub unavailable_session_secret_count: u32,
+    pub unavailable_managed_key_secret_count: u32,
 }
 
 pub fn merge_payload(
@@ -23,18 +26,19 @@ pub fn merge_payload(
     remote: SyncPayload,
     privacy_password: &str,
 ) -> MergedConfig {
-    let mut stats = SecretResolutionStats::default();
+    let mut session_stats = SecretResolutionStats::default();
+    let mut managed_key_stats = SecretResolutionStats::default();
     let sessions = merge_sessions(
         local_sessions,
         remote.sessions,
         privacy_password,
-        &mut stats,
+        &mut session_stats,
     );
     let managed_keys = merge_keys(
         local_keys,
         remote.managed_keys,
         privacy_password,
-        &mut stats,
+        &mut managed_key_stats,
     );
 
     MergedConfig {
@@ -45,8 +49,11 @@ pub fn merge_payload(
             local_commands,
             remote.quick_command_categories,
         ),
-        decrypted_count: stats.decrypted_count,
-        unavailable_secret_count: stats.unavailable_count,
+        decrypted_count: session_stats.decrypted_count + managed_key_stats.decrypted_count,
+        unavailable_secret_count: session_stats.unavailable_count
+            + managed_key_stats.unavailable_count,
+        unavailable_session_secret_count: session_stats.unavailable_count,
+        unavailable_managed_key_secret_count: managed_key_stats.unavailable_count,
     }
 }
 
@@ -359,6 +366,8 @@ mod tests {
             commands[0].commands[0].command
         );
         assert!(merged.unavailable_secret_count > 0);
+        assert!(merged.unavailable_session_secret_count > 0);
+        assert!(merged.unavailable_managed_key_secret_count > 0);
     }
 
     #[test]
