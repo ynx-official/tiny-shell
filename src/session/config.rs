@@ -168,6 +168,46 @@ pub struct Session {
     pub proxy_password: String,
 }
 
+#[derive(Clone, Serialize, Deserialize)]
+pub struct DeletedSession {
+    pub session: Session,
+    #[serde(default)]
+    pub deleted_at: i64,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct DeletedConnectionGroup {
+    pub name: String,
+    #[serde(default)]
+    pub groups: Vec<String>,
+    #[serde(default)]
+    pub sessions: Vec<Session>,
+    #[serde(default)]
+    pub deleted_at: i64,
+}
+
+impl fmt::Debug for DeletedSession {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("DeletedSession")
+            .field("session", &self.session.name)
+            .field("deleted_at", &self.deleted_at)
+            .finish()
+    }
+}
+
+impl fmt::Debug for DeletedConnectionGroup {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("DeletedConnectionGroup")
+            .field("name", &self.name)
+            .field("group_count", &self.groups.len())
+            .field("session_count", &self.sessions.len())
+            .field("deleted_at", &self.deleted_at)
+            .finish()
+    }
+}
+
 impl Session {
     pub fn password(host: String, port: u16, user: String, password: String) -> Self {
         let name = format!("{user}@{host}");
@@ -331,6 +371,10 @@ pub struct ConfigFile {
     pub sessions: Vec<Session>,
     #[serde(default)]
     pub connection_groups: Vec<String>,
+    #[serde(default)]
+    pub deleted_sessions: Vec<DeletedSession>,
+    #[serde(default)]
+    pub deleted_connection_groups: Vec<DeletedConnectionGroup>,
     #[serde(default)]
     pub managed_keys: Vec<ManagedKey>,
     #[serde(default)]
@@ -526,6 +570,8 @@ impl Default for ConfigFile {
             cursor_style: CursorStyle::default(),
             sessions: Vec::new(),
             connection_groups: Vec::new(),
+            deleted_sessions: Vec::new(),
+            deleted_connection_groups: Vec::new(),
             managed_keys: Vec::new(),
             window_bounds: None,
             workspace_panels: None,
@@ -582,6 +628,24 @@ pub struct ConfigStore {
     cache: ConfigFile,
 }
 
+fn connection_catalog_timestamp() -> i64 {
+    chrono::Utc::now().timestamp()
+}
+
+fn unique_connection_group_name(existing: &[String], requested: &str) -> String {
+    if !existing.iter().any(|group| group == requested) {
+        return requested.to_string();
+    }
+    for suffix in 2..u64::MAX {
+        let candidate = format!("{requested} ({suffix})");
+        if !existing.iter().any(|group| group == &candidate) {
+            return candidate;
+        }
+    }
+    format!("{requested} ({})", Uuid::new_v4())
+}
+
+#[allow(dead_code)]
 impl ConfigStore {
     pub fn load() -> Result<Self> {
         let path = Self::config_path()?;
@@ -669,6 +733,167 @@ impl ConfigStore {
 
     pub fn connection_groups(&self) -> &[String] {
         &self.cache.connection_groups
+    }
+
+    pub fn deleted_sessions(&self) -> &[DeletedSession] {
+        &self.cache.deleted_sessions
+    }
+
+    pub fn deleted_connection_groups(&self) -> &[DeletedConnectionGroup] {
+        &self.cache.deleted_connection_groups
+    }
+
+    pub fn soft_delete_session(&mut self, id: &str) -> bool {
+        let Some(index) = self
+            .cache
+            .sessions
+            .iter()
+            .position(|session| session.id == id)
+        else {
+            return false;
+        };
+        let session = self.cache.sessions.remove(index);
+        let tombstone = DeletedSession {
+            session,
+            deleted_at: connection_catalog_timestamp(),
+        };
+        self.cache
+            .deleted_sessions
+            .retain(|item| item.session.id != id);
+        self.cache.deleted_sessions.push(tombstone);
+        true
+    }
+
+    pub fn soft_delete_connection_group(&mut self, name: &str) -> bool {
+        if !self
+            .cache
+            .connection_groups
+            .iter()
+            .any(|group| group == name)
+        {
+            return false;
+        }
+        let prefix = format!("{name}/");
+        let groups = self
+            .cache
+            .connection_groups
+            .iter()
+            .filter(|group| *group == name || group.starts_with(&prefix))
+            .cloned()
+            .collect();
+        let sessions = self
+            .cache
+            .sessions
+            .iter()
+            .filter(|session| {
+                session
+                    .group
+                    .as_deref()
+                    .is_some_and(|group| group == name || group.starts_with(&prefix))
+            })
+            .cloned()
+            .collect();
+        self.cache
+            .connection_groups
+            .retain(|group| group != name && !group.starts_with(&prefix));
+        self.cache.sessions.retain(|session| {
+            !session
+                .group
+                .as_deref()
+                .is_some_and(|group| group == name || group.starts_with(&prefix))
+        });
+        self.cache
+            .deleted_connection_groups
+            .retain(|item| item.name != name);
+        self.cache
+            .deleted_connection_groups
+            .push(DeletedConnectionGroup {
+                name: name.to_string(),
+                groups,
+                sessions,
+                deleted_at: connection_catalog_timestamp(),
+            });
+        true
+    }
+
+    pub fn restore_deleted_session(&mut self, id: &str) -> bool {
+        let Some(index) = self
+            .cache
+            .deleted_sessions
+            .iter()
+            .position(|item| item.session.id == id)
+        else {
+            return false;
+        };
+        let tombstone = self.cache.deleted_sessions.remove(index);
+        if self.cache.sessions.iter().any(|session| session.id == id) {
+            return false;
+        }
+        if let Some(group) = tombstone.session.group.as_deref() {
+            self.ensure_connection_group_path(group);
+        }
+        self.cache.sessions.push(tombstone.session);
+        true
+    }
+
+    pub fn restore_deleted_connection_group(&mut self, name: &str) -> bool {
+        let Some(index) = self
+            .cache
+            .deleted_connection_groups
+            .iter()
+            .position(|item| item.name == name)
+        else {
+            return false;
+        };
+        let tombstone = self.cache.deleted_connection_groups.remove(index);
+        let restored_name =
+            unique_connection_group_name(&self.cache.connection_groups, &tombstone.name);
+        let old_prefix = format!("{}/", tombstone.name);
+        let new_prefix = format!("{}/", restored_name);
+        for group in tombstone.groups {
+            let restored_group = if group == tombstone.name {
+                restored_name.clone()
+            } else if let Some(suffix) = group.strip_prefix(&old_prefix) {
+                format!("{new_prefix}{suffix}")
+            } else {
+                group
+            };
+            self.add_connection_group(restored_group);
+        }
+        for mut session in tombstone.sessions {
+            if let Some(group) = session.group.as_deref() {
+                session.group = Some(if group == tombstone.name {
+                    restored_name.clone()
+                } else if let Some(suffix) = group.strip_prefix(&old_prefix) {
+                    format!("{new_prefix}{suffix}")
+                } else {
+                    group.to_string()
+                });
+            }
+            if !self.cache.sessions.iter().any(|item| item.id == session.id) {
+                self.cache.sessions.push(session);
+            }
+        }
+        true
+    }
+
+    pub fn purge_deleted_session(&mut self, id: &str) -> bool {
+        let before = self.cache.deleted_sessions.len();
+        self.cache
+            .deleted_sessions
+            .retain(|item| item.session.id != id);
+        before != self.cache.deleted_sessions.len()
+    }
+
+    fn ensure_connection_group_path(&mut self, group: &str) {
+        let mut path = String::new();
+        for segment in group.split('/') {
+            if !path.is_empty() {
+                path.push('/');
+            }
+            path.push_str(segment);
+            self.add_connection_group(path.clone());
+        }
     }
 
     pub fn add_connection_group(&mut self, name: String) {
@@ -804,8 +1029,16 @@ impl ConfigStore {
         self.cache.sessions = sessions;
     }
 
+    pub fn replace_deleted_sessions(&mut self, sessions: Vec<DeletedSession>) {
+        self.cache.deleted_sessions = sessions;
+    }
+
     pub fn replace_connection_groups(&mut self, groups: Vec<String>) {
         self.cache.connection_groups = groups;
+    }
+
+    pub fn replace_deleted_connection_groups(&mut self, groups: Vec<DeletedConnectionGroup>) {
+        self.cache.deleted_connection_groups = groups;
     }
 
     pub fn replace_managed_keys(&mut self, keys: Vec<ManagedKey>) {

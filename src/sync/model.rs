@@ -9,7 +9,10 @@ use uuid::Uuid;
 
 use crate::{
     crypto,
-    session::config::{AuthMethod, ManagedKey, QuickCommandCategory, Session},
+    session::config::{
+        AuthMethod, DeletedConnectionGroup, DeletedSession, ManagedKey, QuickCommandCategory,
+        Session,
+    },
 };
 
 pub const FORMAT_VERSION: u32 = 2;
@@ -120,6 +123,50 @@ impl SyncSession {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SyncDeletedSession {
+    pub session: SyncSession,
+    pub deleted_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SyncDeletedConnectionGroup {
+    pub name: String,
+    #[serde(default)]
+    pub groups: Vec<String>,
+    #[serde(default)]
+    pub sessions: Vec<SyncSession>,
+    pub deleted_at: i64,
+}
+
+impl SyncDeletedSession {
+    fn export(value: DeletedSession, include_secrets: bool, password: &str) -> Result<Self> {
+        Ok(Self {
+            session: SyncSession::export(value.session, include_secrets, password)?,
+            deleted_at: value.deleted_at,
+        })
+    }
+}
+
+impl SyncDeletedConnectionGroup {
+    fn export(
+        value: DeletedConnectionGroup,
+        include_secrets: bool,
+        password: &str,
+    ) -> Result<Self> {
+        Ok(Self {
+            name: value.name,
+            groups: value.groups,
+            sessions: value
+                .sessions
+                .into_iter()
+                .map(|session| SyncSession::export(session, include_secrets, password))
+                .collect::<Result<Vec<_>>>()?,
+            deleted_at: value.deleted_at,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SyncManagedKey {
     pub id: String,
     pub name: String,
@@ -177,16 +224,46 @@ pub struct SyncPayload {
     #[serde(default)]
     pub sessions: Vec<SyncSession>,
     #[serde(default)]
+    pub deleted_sessions: Vec<SyncDeletedSession>,
+    #[serde(default)]
+    pub deleted_connection_groups: Vec<SyncDeletedConnectionGroup>,
+    #[serde(default)]
     pub managed_keys: Vec<SyncManagedKey>,
     #[serde(default)]
     pub quick_command_categories: Vec<QuickCommandCategory>,
 }
 
 impl SyncPayload {
+    #[allow(dead_code)]
     pub fn new(
         device_id: String,
         sessions: Vec<Session>,
         connection_groups: Vec<String>,
+        managed_keys: Vec<ManagedKey>,
+        quick_command_categories: Vec<QuickCommandCategory>,
+        include_secrets: bool,
+        privacy_password: &str,
+    ) -> Result<Self> {
+        Self::new_with_deleted(
+            device_id,
+            sessions,
+            Vec::new(),
+            connection_groups,
+            Vec::new(),
+            managed_keys,
+            quick_command_categories,
+            include_secrets,
+            privacy_password,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_deleted(
+        device_id: String,
+        sessions: Vec<Session>,
+        deleted_sessions: Vec<DeletedSession>,
+        connection_groups: Vec<String>,
+        deleted_connection_groups: Vec<DeletedConnectionGroup>,
         managed_keys: Vec<ManagedKey>,
         quick_command_categories: Vec<QuickCommandCategory>,
         include_secrets: bool,
@@ -204,6 +281,16 @@ impl SyncPayload {
             .into_iter()
             .map(|session| SyncSession::export(session, include_secrets, privacy_password))
             .collect::<Result<Vec<_>>>()?;
+        let deleted_sessions = deleted_sessions
+            .into_iter()
+            .map(|session| SyncDeletedSession::export(session, include_secrets, privacy_password))
+            .collect::<Result<Vec<_>>>()?;
+        let deleted_connection_groups = deleted_connection_groups
+            .into_iter()
+            .map(|group| {
+                SyncDeletedConnectionGroup::export(group, include_secrets, privacy_password)
+            })
+            .collect::<Result<Vec<_>>>()?;
         let managed_keys = managed_keys
             .into_iter()
             .map(|key| SyncManagedKey::export(key, include_secrets, privacy_password))
@@ -216,6 +303,8 @@ impl SyncPayload {
             privacy_password_verifier,
             connection_groups,
             sessions,
+            deleted_sessions,
+            deleted_connection_groups,
             managed_keys,
             quick_command_categories,
         })
@@ -297,6 +386,8 @@ fn parse_versioned_payload(raw: &[u8], version: u32) -> Result<SyncPayload> {
                     .into_iter()
                     .map(SyncSession::from_legacy)
                     .collect(),
+                deleted_sessions: Vec::new(),
+                deleted_connection_groups: Vec::new(),
                 managed_keys: legacy
                     .managed_keys
                     .into_iter()

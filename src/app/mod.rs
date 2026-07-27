@@ -1,4 +1,5 @@
 pub mod config_sync;
+pub mod connection_manager;
 pub mod constants;
 pub mod dialogs;
 pub mod input_focus;
@@ -28,7 +29,11 @@ use std::{
     time::{Duration, Instant},
 };
 
-use crate::app::{resizable::ResizableState, ssh_key_import::KeyImportState};
+use crate::app::{
+    connection_manager::{actions::ConnectionManagerActions, state::ConnectionManagerState},
+    resizable::ResizableState,
+    ssh_key_import::KeyImportState,
+};
 use gpui::{
     AnyWindowHandle, App, AppContext as _, Bounds, Context, Entity, FocusHandle, Pixels, Point,
     SharedString, Size, UniformListScrollHandle, Window, point, px, size,
@@ -777,6 +782,8 @@ pub(crate) struct TinyShell {
 
     pub(crate) search_input: Entity<InputState>,
     pub(crate) quick_connection_search_input: Entity<InputState>,
+    pub(crate) connection_manager_state: Entity<ConnectionManagerState>,
+    pub(crate) connection_manager_actions: ConnectionManagerActions,
     pub(crate) search_active: bool,
     /// Increments each time the search bar is opened, used as an animation
     /// epoch so the search bar fade-in restarts on every open.
@@ -915,6 +922,7 @@ impl TinyShell {
             cx.new(|cx| InputState::new(window, cx).placeholder(t!("search").to_string()));
         let quick_connection_search_input =
             cx.new(|cx| InputState::new(window, cx).placeholder(t!("search").to_string()));
+        let connection_manager_state = cx.new(|_| ConnectionManagerState::default());
         let quick_command_parameter_inputs = (1..=5)
             .map(|index| {
                 cx.new(|cx| {
@@ -1303,6 +1311,8 @@ impl TinyShell {
 
             search_input,
             quick_connection_search_input,
+            connection_manager_state,
+            connection_manager_actions: ConnectionManagerActions::default(),
             search_active: false,
             search_epoch: 0,
             search_query: String::new(),

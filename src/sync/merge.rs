@@ -1,7 +1,13 @@
 use crate::{
-    session::config::{ManagedKey, QuickCommand, QuickCommandCategory, Session},
+    session::config::{
+        DeletedConnectionGroup, DeletedSession, ManagedKey, QuickCommand, QuickCommandCategory,
+        Session,
+    },
     sync::{
-        model::{SyncManagedKey, SyncPayload, SyncSession},
+        model::{
+            SyncDeletedConnectionGroup, SyncDeletedSession, SyncManagedKey, SyncPayload,
+            SyncSession,
+        },
         secrets::{SecretResolutionStats, resolve_secret},
     },
 };
@@ -9,6 +15,8 @@ use crate::{
 #[derive(Clone)]
 pub struct MergedConfig {
     pub sessions: Vec<Session>,
+    pub deleted_sessions: Vec<DeletedSession>,
+    pub deleted_connection_groups: Vec<DeletedConnectionGroup>,
     pub connection_groups: Vec<String>,
     pub managed_keys: Vec<ManagedKey>,
     pub quick_command_categories: Vec<QuickCommandCategory>,
@@ -16,6 +24,15 @@ pub struct MergedConfig {
     pub unavailable_secret_count: u32,
     pub unavailable_session_secret_count: u32,
     pub unavailable_managed_key_secret_count: u32,
+}
+
+pub struct MergeLocal<'a> {
+    pub sessions: &'a [Session],
+    pub deleted_sessions: &'a [DeletedSession],
+    pub connection_groups: &'a [String],
+    pub deleted_connection_groups: &'a [DeletedConnectionGroup],
+    pub keys: &'a [ManagedKey],
+    pub commands: &'a [QuickCommandCategory],
 }
 
 pub fn merge_payload(
@@ -27,10 +44,14 @@ pub fn merge_payload(
     privacy_password: &str,
 ) -> MergedConfig {
     merge_payload_with_secret_access(
-        local_sessions,
-        local_connection_groups,
-        local_keys,
-        local_commands,
+        MergeLocal {
+            sessions: local_sessions,
+            deleted_sessions: &[],
+            connection_groups: local_connection_groups,
+            deleted_connection_groups: &[],
+            keys: local_keys,
+            commands: local_commands,
+        },
         remote,
         Some(privacy_password),
     )
@@ -44,44 +65,88 @@ pub fn merge_public_payload(
     remote: SyncPayload,
 ) -> MergedConfig {
     merge_payload_with_secret_access(
-        local_sessions,
-        local_connection_groups,
-        local_keys,
-        local_commands,
+        MergeLocal {
+            sessions: local_sessions,
+            deleted_sessions: &[],
+            connection_groups: local_connection_groups,
+            deleted_connection_groups: &[],
+            keys: local_keys,
+            commands: local_commands,
+        },
         remote,
         None,
     )
 }
 
+pub fn merge_payload_with_deleted(
+    local: MergeLocal<'_>,
+    remote: SyncPayload,
+    privacy_password: &str,
+) -> MergedConfig {
+    merge_payload_with_secret_access(local, remote, Some(privacy_password))
+}
+
 fn merge_payload_with_secret_access(
-    local_sessions: &[Session],
-    local_connection_groups: &[String],
-    local_keys: &[ManagedKey],
-    local_commands: &[QuickCommandCategory],
+    local: MergeLocal<'_>,
+    remote: SyncPayload,
+    privacy_password: Option<&str>,
+) -> MergedConfig {
+    merge_payload_with_secret_access_and_deleted(local, remote, privacy_password)
+}
+
+fn merge_payload_with_secret_access_and_deleted(
+    local: MergeLocal<'_>,
     remote: SyncPayload,
     privacy_password: Option<&str>,
 ) -> MergedConfig {
     let mut session_stats = SecretResolutionStats::default();
     let mut managed_key_stats = SecretResolutionStats::default();
+    let remote_deleted_sessions = remote.deleted_sessions;
+    let remote_deleted_groups = remote.deleted_connection_groups;
     let sessions = merge_sessions(
-        local_sessions,
+        local.sessions,
         remote.sessions,
         privacy_password,
         &mut session_stats,
     );
     let managed_keys = merge_keys(
-        local_keys,
+        local.keys,
         remote.managed_keys,
         privacy_password,
         &mut managed_key_stats,
     );
+    let deleted_sessions = merge_deleted_sessions(
+        local.deleted_sessions,
+        remote_deleted_sessions,
+        local.sessions,
+        privacy_password,
+        &mut session_stats,
+    );
+    let deleted_connection_groups = merge_deleted_groups(
+        local.deleted_connection_groups,
+        remote_deleted_groups,
+        local.deleted_sessions,
+        privacy_password,
+        &mut session_stats,
+    );
+    let mut sessions = sessions;
+    let mut connection_groups =
+        merge_unique_strings(local.connection_groups, remote.connection_groups);
+    apply_deleted_projection(
+        &mut sessions,
+        &mut connection_groups,
+        &deleted_sessions,
+        &deleted_connection_groups,
+    );
 
     MergedConfig {
         sessions,
-        connection_groups: merge_unique_strings(local_connection_groups, remote.connection_groups),
+        deleted_sessions,
+        deleted_connection_groups,
+        connection_groups,
         managed_keys,
         quick_command_categories: merge_command_categories(
-            local_commands,
+            local.commands,
             remote.quick_command_categories,
         ),
         decrypted_count: session_stats.decrypted_count + managed_key_stats.decrypted_count,
@@ -92,6 +157,106 @@ fn merge_payload_with_secret_access(
     }
 }
 
+fn merge_deleted_sessions(
+    local_deleted: &[DeletedSession],
+    remote_deleted: Vec<SyncDeletedSession>,
+    local_sessions: &[Session],
+    password: Option<&str>,
+    stats: &mut SecretResolutionStats,
+) -> Vec<DeletedSession> {
+    let mut merged = local_deleted.to_vec();
+    for remote in remote_deleted {
+        let local = merged
+            .iter()
+            .find(|item| item.session.id == remote.session.id)
+            .map(|item| &item.session);
+        let local_active = local_sessions
+            .iter()
+            .find(|item| item.id == remote.session.id)
+            .or(local);
+        let session = session_from_remote(remote.session, local_active, password, stats);
+        if let Some(existing) = merged.iter_mut().find(|item| item.session.id == session.id) {
+            if remote.deleted_at >= existing.deleted_at {
+                *existing = DeletedSession {
+                    session,
+                    deleted_at: remote.deleted_at,
+                };
+            }
+        } else {
+            merged.push(DeletedSession {
+                session,
+                deleted_at: remote.deleted_at,
+            });
+        }
+    }
+    merged
+}
+
+fn merge_deleted_groups(
+    local_deleted: &[DeletedConnectionGroup],
+    remote_deleted: Vec<SyncDeletedConnectionGroup>,
+    local_deleted_sessions: &[DeletedSession],
+    password: Option<&str>,
+    stats: &mut SecretResolutionStats,
+) -> Vec<DeletedConnectionGroup> {
+    let mut merged = local_deleted.to_vec();
+    for remote in remote_deleted {
+        let sessions = remote
+            .sessions
+            .into_iter()
+            .map(|session| {
+                let local = local_deleted_sessions
+                    .iter()
+                    .find(|item| item.session.id == session.id)
+                    .map(|item| &item.session);
+                session_from_remote(session, local, password, stats)
+            })
+            .collect();
+        let group = DeletedConnectionGroup {
+            name: remote.name,
+            groups: remote.groups,
+            sessions,
+            deleted_at: remote.deleted_at,
+        };
+        if let Some(existing) = merged.iter_mut().find(|item| item.name == group.name) {
+            if group.deleted_at >= existing.deleted_at {
+                *existing = group;
+            }
+        } else {
+            merged.push(group);
+        }
+    }
+    merged
+}
+
+fn apply_deleted_projection(
+    sessions: &mut Vec<Session>,
+    groups: &mut Vec<String>,
+    deleted_sessions: &[DeletedSession],
+    deleted_groups: &[DeletedConnectionGroup],
+) {
+    let deleted_ids: std::collections::HashSet<&str> = deleted_sessions
+        .iter()
+        .map(|item| item.session.id.as_str())
+        .collect();
+    let deleted_group_names: Vec<&str> = deleted_groups
+        .iter()
+        .flat_map(|item| item.groups.iter().map(String::as_str))
+        .collect();
+    sessions.retain(|session| {
+        !deleted_ids.contains(session.id.as_str())
+            && !session.group.as_deref().is_some_and(|group| {
+                deleted_group_names
+                    .iter()
+                    .any(|deleted| group == *deleted || group.starts_with(&format!("{deleted}/")))
+            })
+    });
+    groups.retain(|group| {
+        !deleted_group_names
+            .iter()
+            .any(|deleted| group == *deleted || group.starts_with(&format!("{deleted}/")))
+    });
+}
 fn merge_sessions(
     local_sessions: &[Session],
     remote_sessions: Vec<SyncSession>,
@@ -536,5 +701,86 @@ mod tests {
         assert_eq!(merged.sessions.len(), 1);
         assert_eq!(merged.sessions[0].name, "Remote");
         assert_eq!(merged.sessions[0].password, "local-password");
+    }
+
+    #[test]
+    fn newer_remote_tombstones_remove_active_objects_and_survive_merge() {
+        let local_session = session("session-1", "Local", "local-password");
+        let mut deleted_group_session = session("session-2", "Grouped", "group-password");
+        deleted_group_session.group = Some("prod/eu".into());
+        let payload = SyncPayload::new_with_deleted(
+            "device-1".into(),
+            vec![],
+            vec![DeletedSession {
+                session: local_session.clone(),
+                deleted_at: 20,
+            }],
+            vec!["prod".into(), "prod/eu".into()],
+            vec![DeletedConnectionGroup {
+                name: "prod".into(),
+                groups: vec!["prod".into(), "prod/eu".into()],
+                sessions: vec![deleted_group_session],
+                deleted_at: 30,
+            }],
+            vec![],
+            vec![],
+            false,
+            "",
+        )
+        .unwrap();
+
+        let merged = merge_payload_with_deleted(
+            MergeLocal {
+                sessions: &[local_session],
+                deleted_sessions: &[],
+                connection_groups: &["prod".into(), "prod/eu".into()],
+                deleted_connection_groups: &[],
+                keys: &[],
+                commands: &[],
+            },
+            payload,
+            "",
+        );
+
+        assert!(merged.sessions.is_empty());
+        assert!(merged.connection_groups.is_empty());
+        assert_eq!(merged.deleted_sessions.len(), 1);
+        assert_eq!(merged.deleted_connection_groups.len(), 1);
+        assert_eq!(merged.deleted_connection_groups[0].deleted_at, 30);
+    }
+
+    #[test]
+    fn local_tombstones_prevent_remote_active_objects_from_returning() {
+        let local = session("session-1", "Local", "local-password");
+        let payload = SyncPayload::new(
+            "device-1".into(),
+            vec![local.clone()],
+            vec!["prod".into()],
+            Vec::new(),
+            Vec::new(),
+            false,
+            "",
+        )
+        .unwrap();
+        let deleted = DeletedSession {
+            session: local,
+            deleted_at: 100,
+        };
+
+        let merged = merge_payload_with_deleted(
+            MergeLocal {
+                sessions: &[],
+                deleted_sessions: &[deleted],
+                connection_groups: &["prod".into()],
+                deleted_connection_groups: &[],
+                keys: &[],
+                commands: &[],
+            },
+            payload,
+            "",
+        );
+
+        assert!(merged.sessions.is_empty());
+        assert_eq!(merged.deleted_sessions.len(), 1);
     }
 }

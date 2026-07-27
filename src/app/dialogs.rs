@@ -1,8 +1,8 @@
 use gpui::{
     Anchor, Animation, AnimationExt as _, AnyWindowHandle, AppContext as _, Context, ElementId,
-    Entity, FontWeight, InteractiveElement as _, IntoElement, MouseButton, ParentElement as _,
-    PathPromptOptions, Render, SharedString, StatefulInteractiveElement as _, Styled as _, Window,
-    div, prelude::FluentBuilder as _, px, rems,
+    Entity, FontWeight, InteractiveElement as _, IntoElement, MouseButton, MouseDownEvent,
+    ParentElement as _, PathPromptOptions, Render, SharedString, StatefulInteractiveElement as _,
+    Styled as _, Window, div, prelude::FluentBuilder as _, px, rems,
 };
 use gpui_component::{
     ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, Size, WindowExt as _,
@@ -11,14 +11,14 @@ use gpui_component::{
     dialog::Dialog,
     h_flex,
     input::{Input, InputEvent, InputState},
-    menu::{DropdownMenu as _, PopupMenuItem},
+    menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenuItem},
     progress::Progress,
     radio::{Radio, RadioGroup},
     scroll::{Scrollbar, ScrollbarShow},
     switch::Switch,
     v_flex,
 };
-use std::time::Duration;
+use std::{fs, path::PathBuf, time::Duration};
 
 fn update_progress_percent(done: u64, total: u64) -> u64 {
     if total == 0 {
@@ -2306,13 +2306,98 @@ impl TinyShell {
             .hover(|this| this.bg(cx.theme().secondary.opacity(0.65)))
             .on_mouse_down(
                 MouseButton::Left,
-                window.listener_for(view, move |this, _, window, cx| {
-                    this.active_dialog = None;
-                    this.connect_saved_session(connect_id.clone(), cx);
-                    window.close_dialog(cx);
+                window.listener_for(view, move |this, event: &MouseDownEvent, window, cx| {
+                    if event.click_count >= 2 {
+                        this.active_dialog = None;
+                        this.connect_saved_session(connect_id.clone(), cx);
+                        window.close_dialog(cx);
+                    }
                     cx.notify();
                 }),
             )
+            .context_menu({
+                let view = view.clone();
+                let session_id = session.id.clone();
+                move |mut menu, window, _| {
+                    menu = menu
+                        .item(PopupMenuItem::new(t!("connect").to_string()).on_click(
+                            window.listener_for(&view, {
+                                let session_id = session_id.clone();
+                                move |this, _, window, cx| {
+                                    this.active_dialog = None;
+                                    this.connect_saved_session(session_id.clone(), cx);
+                                    window.close_dialog(cx);
+                                }
+                            }),
+                        ))
+                        .item(PopupMenuItem::new(t!("connection_manager_copy").to_string()).on_click(
+                            window.listener_for(&view, {
+                                let session_id = session_id.clone();
+                                move |this, _, _, cx| {
+                                    this.connection_manager_actions.clipboard = Some(
+                                        crate::app::connection_manager::actions::ClipboardPayload::Session {
+                                            id: session_id.clone(),
+                                            cut: false,
+                                        },
+                                    );
+                                    cx.notify();
+                                }
+                            }),
+                        ))
+                        .item(PopupMenuItem::new(t!("connection_manager_paste").to_string()).on_click(
+                            window.listener_for(&view, move |this, _, _, cx| {
+                                let action = crate::app::connection_manager::actions::ConnectionManagerAction::Paste {
+                                    group: None,
+                                };
+                                if let Err(err) = this.connection_manager_actions.execute(&mut this.config, action) {
+                                    tracing::warn!("failed to paste connection: {err:#}");
+                                } else if let Err(err) = this.config.save() {
+                                    tracing::warn!("failed to save pasted connection: {err:#}");
+                                }
+                                cx.notify();
+                            }),
+                        ))
+                        .item(PopupMenuItem::new(t!("connection_manager_cut").to_string()).on_click(
+                            window.listener_for(&view, {
+                                let session_id = session_id.clone();
+                                move |this, _, _, cx| {
+                                    this.connection_manager_actions.clipboard = Some(
+                                        crate::app::connection_manager::actions::ClipboardPayload::Session {
+                                            id: session_id.clone(),
+                                            cut: true,
+                                        },
+                                    );
+                                    cx.notify();
+                                }
+                            }),
+                        ))
+                        .item(PopupMenuItem::new(t!("connection_copy_address").to_string()).on_click(
+                            window.listener_for(&view, {
+                                let session_id = session_id.clone();
+                                move |this, _, _, cx| {
+                                    if let Some(session) = this.config.get(&session_id) {
+                                        cx.write_to_clipboard(gpui::ClipboardItem::new_string(
+                                            crate::session::connection_catalog::session_address(session),
+                                        ));
+                                    }
+                                }
+                            }),
+                        ))
+                        .item(PopupMenuItem::new(t!("delete").to_string()).on_click(
+                            window.listener_for(&view, {
+                                let session_id = session_id.clone();
+                                move |this, _, _, cx| {
+                                    this.config.soft_delete_session(&session_id);
+                                    if let Err(err) = this.config.save() {
+                                        tracing::warn!("failed to delete connection: {err:#}");
+                                    }
+                                    cx.notify();
+                                }
+                            }),
+                        ));
+                    menu
+                }
+            })
             .child(Icon::new(IconName::SquareTerminal).with_size(Size::Small))
             .child(
                 div()
@@ -2356,6 +2441,207 @@ impl TinyShell {
             .into_any_element()
     }
 
+    fn choose_connection_archive_path(
+        &mut self,
+        importing: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let prompt = cx.prompt_for_paths(PathPromptOptions {
+            files: importing,
+            directories: !importing,
+            multiple: false,
+            prompt: Some(
+                t!(if importing {
+                    "connection_archive_import"
+                } else {
+                    "connection_archive_export"
+                })
+                .to_string()
+                .into(),
+            ),
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            match prompt.await {
+                Ok(Ok(Some(mut paths))) => {
+                    if let Some(path) = paths.pop() {
+                        this.update(cx, |this, cx| {
+                            let path = if importing {
+                                path
+                            } else {
+                                path.join("tiny-shell-connections.json")
+                            };
+                            if importing {
+                                match fs::read_to_string(&path)
+                                    .map_err(anyhow::Error::from)
+                                    .and_then(|json| {
+                                        crate::session::connection_archive::import_json(&json, "")
+                                    })
+                                {
+                                    Ok(_) => {}
+                                    Err(_) => {
+                                        this.status = t!("connection_archive_password_required")
+                                            .to_string()
+                                            .into();
+                                    }
+                                }
+                            } else {
+                                this.show_connection_archive_password_dialog(path, false, window, cx);
+                            }
+                            cx.notify();
+                        })?;
+                    }
+                }
+                Ok(Err(error)) => {
+                    this.update(cx, |this, cx| {
+                        this.status = t!(
+                            "connection_archive_picker_failed",
+                            error = error.to_string()
+                        )
+                        .to_string()
+                        .into();
+                        cx.notify();
+                    })?;
+                }
+                _ => {}
+            }
+            Ok::<(), anyhow::Error>(())
+        })
+        .detach();
+    }
+
+    fn show_connection_archive_password_dialog(
+        &mut self,
+        path: PathBuf,
+        importing: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.active_dialog.is_some() {
+            return;
+        }
+        self.active_dialog = Some(crate::app::DialogKind::QuickConnectionManager);
+        let view = cx.entity();
+        let password = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(t!("connection_archive_password").to_string())
+                .masked(true)
+        });
+        let focus = password.clone();
+        window.open_dialog(cx, move |dialog: Dialog, _window, _| {
+            dialog
+                .title(t!(if importing {
+                    "connection_archive_import"
+                } else {
+                    "connection_archive_export"
+                }))
+                .w(px(460.))
+                .on_close({
+                    let view = view.clone();
+                    move |_, _, cx| {
+                        view.update(cx, |this, cx| {
+                            this.active_dialog = None;
+                            cx.notify();
+                        });
+                    }
+                })
+                .content({
+                    let view = view.clone();
+                    let password = password.clone();
+                    move |content, window, cx| {
+                        content
+                            .child(Input::new(&password).mask_toggle())
+                            .child(
+                                h_flex()
+                                    .justify_end()
+                                    .gap_2()
+                                    .pt_3()
+                                    .child(
+                                        Button::new("connection-archive-cancel")
+                                            .secondary()
+                                            .label(t!("cancel").to_string())
+                                            .on_click(window.listener_for(&view, |this, _, window, cx| {
+                                                this.active_dialog = None;
+                                                window.close_dialog(cx);
+                                                cx.notify();
+                                            })),
+                                    )
+                                    .child(
+                                        Button::new("connection-archive-confirm")
+                                            .primary()
+                                            .label(t!("confirm").to_string())
+                                            .on_click(window.listener_for(&view, {
+                                                let path = path.clone();
+                                                let password = password.clone();
+                                                move |this, _, window, cx| {
+                                                    let secret = password.read(cx).value().to_string();
+                                                    let result = if importing {
+                                                        this.import_connection_archive(&path, &secret)
+                                                    } else {
+                                                        this.export_connection_archive(&path, &secret)
+                                                    };
+                                                    if let Err(error) = result {
+                                                        this.status = t!(
+                                                            "connection_archive_failed",
+                                                            error = error.to_string()
+                                                        )
+                                                        .to_string()
+                                                        .into();
+                                                    }
+                                                    this.active_dialog = None;
+                                                    window.close_dialog(cx);
+                                                    cx.notify();
+                                                }
+                                            })),
+                                    ),
+                            )
+                    }
+                })
+        });
+        crate::app::input_focus::defer_focus_input_at_end(focus, window, cx);
+    }
+
+    fn export_connection_archive(&mut self, path: &PathBuf, password: &str) -> anyhow::Result<()> {
+        let archive = crate::session::connection_archive::ConnectionArchive::new(
+            self.config.connection_groups(),
+            self.config.sessions(),
+            true,
+        );
+        let json = archive.export_json(password)?;
+        fs::write(path, json)?;
+        self.status = t!("connection_archive_exported").to_string().into();
+        Ok(())
+    }
+
+    fn import_connection_archive(&mut self, path: &PathBuf, password: &str) -> anyhow::Result<()> {
+        let json = fs::read_to_string(path)?;
+        let archive = crate::session::connection_archive::import_json(&json, password)?;
+        let mut imported = 0usize;
+        for group in archive.connection_groups {
+            if !self.config.connection_groups().iter().any(|item| item == &group) {
+                self.config.add_connection_group(group);
+            }
+        }
+        for mut session in archive.sessions {
+            session.id = uuid::Uuid::new_v4().to_string();
+            let original_name = session.name.clone();
+            let mut suffix = 2u32;
+            while self.config.sessions().iter().any(|item| {
+                item.group == session.group && item.name == session.name
+            }) {
+                session.name = format!("{original_name} ({suffix})");
+                suffix += 1;
+            }
+            self.config.upsert(session);
+            imported += 1;
+        }
+        self.config.save()?;
+        self.status = t!("connection_archive_imported", count = imported)
+            .to_string()
+            .into();
+        Ok(())
+    }
+
     pub(crate) fn show_quick_connection_manager_dialog(
         &mut self,
         window: &mut Window,
@@ -2367,6 +2653,12 @@ impl TinyShell {
         self.active_dialog = Some(crate::app::DialogKind::QuickConnectionManager);
         self.quick_connection_search_input
             .update(cx, |input, cx| input.set_value("", window, cx));
+        let connection_groups = self.config.connection_groups().to_vec();
+        self.connection_manager_state.update(cx, move |state, _| {
+            state.query.clear();
+            state.expanded = connection_groups.into_iter().collect();
+            state.show_deleted = false;
+        });
 
         let view = cx.entity();
         let search_input = self.quick_connection_search_input.clone();
@@ -2394,6 +2686,8 @@ impl TinyShell {
                     let scroll_handle = scroll_handle.clone();
                     move |content, window, cx| {
                         let query = search_input.read(cx).value().trim().to_lowercase();
+                        let manager_state = view.read(cx).connection_manager_state.clone();
+                        manager_state.update(cx, |state, _| state.set_query(query.clone()));
                         let (mut sessions, mut groups) = {
                             let state = view.read(cx);
                             (
@@ -2438,8 +2732,22 @@ impl TinyShell {
                         let mut rows = Vec::new();
                         let mut row_index = 0usize;
                         for group in &groups {
+                            if query.is_empty()
+                                && group
+                                    .rsplit_once('/')
+                                    .is_some_and(|(parent, _)| {
+                                        !manager_state.read(cx).expanded.contains(parent)
+                                    })
+                            {
+                                continue;
+                            }
                             let depth = group.matches('/').count();
                             let group_name = group.rsplit('/').next().unwrap_or(group).to_string();
+                            let group_id = group.clone();
+                            let toggle_group_id = group_id.clone();
+                            let is_expanded = query.is_empty()
+                                && manager_state.read(cx).expanded.contains(group);
+                            let group_state = manager_state.clone();
                             rows.push(
                                 h_flex()
                                     .min_h(px(32.))
@@ -2447,9 +2755,94 @@ impl TinyShell {
                                     .pr_3()
                                     .items_center()
                                     .gap_2()
+                                    .cursor_pointer()
                                     .bg(cx.theme().muted.opacity(0.38))
                                     .border_t_1()
                                     .border_color(cx.theme().border.opacity(0.45))
+                                    .on_mouse_down(
+                                        MouseButton::Left,
+                                        window.listener_for(&view, move |_, _, _, cx| {
+                                            group_state.update(cx, |state, _| {
+                                                state.toggle_group(&toggle_group_id);
+                                            });
+                                        }),
+                                    )
+                                    .context_menu({
+                                        let view = view.clone();
+                                        let group_name = group_id.clone();
+                                        move |mut menu, window, _| {
+                                            menu = menu
+                                                .item(PopupMenuItem::new(t!("connection_group_new").to_string()).on_click(
+                                                    window.listener_for(&view, {
+                                                        let group_name = group_name.clone();
+                                                        move |this, _, window, cx| {
+                                                            this.show_connection_group_dialog(
+                                                                None,
+                                                                Some(group_name.clone()),
+                                                                window,
+                                                                cx,
+                                                            );
+                                                        }
+                                                    }),
+                                                ))
+                                                .item(PopupMenuItem::new(t!("connection_group_rename").to_string()).on_click(
+                                                    window.listener_for(&view, {
+                                                        let group_name = group_name.clone();
+                                                        move |this, _, window, cx| {
+                                                            this.show_connection_group_dialog(
+                                                                Some(group_name.clone()),
+                                                                None,
+                                                                window,
+                                                                cx,
+                                                            );
+                                                        }
+                                                    }),
+                                                ))
+                                                .item(PopupMenuItem::new(t!("connection_manager_paste").to_string()).on_click(
+                                                    window.listener_for(&view, {
+                                                        let group_name = group_name.clone();
+                                                        move |this, _, _, cx| {
+                                                            let action = crate::app::connection_manager::actions::ConnectionManagerAction::Paste {
+                                                                group: Some(group_name.clone()),
+                                                            };
+                                                            if let Err(err) = this.connection_manager_actions.execute(&mut this.config, action) {
+                                                                tracing::warn!("failed to paste connection: {err:#}");
+                                                            } else if let Err(err) = this.config.save() {
+                                                                tracing::warn!("failed to save pasted connection: {err:#}");
+                                                            }
+                                                            cx.notify();
+                                                        }
+                                                    }),
+                                                ))
+                                                .item(PopupMenuItem::new(t!("connection_manager_copy").to_string()).on_click(
+                                                    window.listener_for(&view, {
+                                                        let group_name = group_name.clone();
+                                                        move |this, _, _, cx| {
+                                                            this.connection_manager_actions.clipboard = Some(
+                                                                crate::app::connection_manager::actions::ClipboardPayload::Group {
+                                                                    name: group_name.clone(),
+                                                                    cut: false,
+                                                                },
+                                                            );
+                                                            cx.notify();
+                                                        }
+                                                    }),
+                                                ))
+                                                .item(PopupMenuItem::new(t!("delete").to_string()).on_click(
+                                                    window.listener_for(&view, {
+                                                        let group_name = group_name.clone();
+                                                        move |this, _, _, cx| {
+                                                            this.config.soft_delete_connection_group(&group_name);
+                                                            if let Err(err) = this.config.save() {
+                                                                tracing::warn!("failed to delete connection group: {err:#}");
+                                                            }
+                                                            cx.notify();
+                                                        }
+                                                    }),
+                                                ));
+                                            menu
+                                        }
+                                    })
                                     .child(Icon::new(IconName::Folder).with_size(Size::Small))
                                     .child(
                                         div()
@@ -2457,8 +2850,18 @@ impl TinyShell {
                                             .font_weight(FontWeight::SEMIBOLD)
                                             .child(group_name),
                                     )
+                                    .child(
+                                        div()
+                                            .ml_auto()
+                                            .text_size(rems(0.68))
+                                            .text_color(cx.theme().muted_foreground)
+                                            .child(if is_expanded { "−" } else { "+" }),
+                                    )
                                     .into_any_element(),
                             );
+                            if !is_expanded {
+                                continue;
+                            }
                             for session in sessions
                                 .iter()
                                 .filter(|session| session.group.as_deref() == Some(group.as_str()))
@@ -2512,6 +2915,93 @@ impl TinyShell {
                             }
                         }
 
+                        if manager_state.read(cx).show_deleted {
+                            let deleted_groups = view
+                                .read(cx)
+                                .config
+                                .deleted_connection_groups()
+                                .to_vec();
+                            let deleted_sessions = view.read(cx).config.deleted_sessions().to_vec();
+                            for group in deleted_groups {
+                                rows.push(
+                                    h_flex()
+                                        .min_h(px(32.))
+                                        .pl(px(10.))
+                                        .pr_3()
+                                        .items_center()
+                                        .gap_2()
+                                        .bg(cx.theme().danger.opacity(0.08))
+                                        .border_t_1()
+                                        .border_color(cx.theme().border.opacity(0.45))
+                                        .context_menu({
+                                            let view = view.clone();
+                                            let group_name = group.name.clone();
+                                            move |mut menu, window, _| {
+                                                menu = menu.item(PopupMenuItem::new(t!("connection_restore").to_string()).on_click(
+                                                    window.listener_for(&view, {
+                                                        let group_name = group_name.clone();
+                                                        move |this, _, _, cx| {
+                                                            this.config.restore_deleted_connection_group(&group_name);
+                                                            if let Err(err) = this.config.save() {
+                                                                tracing::warn!("failed to restore connection group: {err:#}");
+                                                            }
+                                                            cx.notify();
+                                                        }
+                                                    }),
+                                                ));
+                                                menu
+                                            }
+                                        })
+                                        .child(Icon::new(IconName::Delete).with_size(Size::Small))
+                                        .child(
+                                            div()
+                                                .text_size(rems(0.72))
+                                                .font_weight(FontWeight::SEMIBOLD)
+                                                .child(format!(
+                                                    "{} ({})",
+                                                    group.name,
+                                                    t!("quick_connection_deleted")
+                                                )),
+                                        )
+                                        .into_any_element(),
+                                );
+                                for session in group.sessions {
+                                    rows.push(
+                                        h_flex()
+                                            .min_h(px(30.))
+                                            .pl(px(28.))
+                                            .pr_3()
+                                            .items_center()
+                                            .gap_2()
+                                            .text_color(cx.theme().muted_foreground)
+                                            .child(Icon::new(IconName::SquareTerminal).with_size(Size::Small))
+                                            .child(div().flex_1().child(session.name))
+                                            .child(div().w(px(190.)).child(session.host))
+                                            .child(div().w(px(64.)).text_center().child(session.port.to_string()))
+                                            .child(div().w(px(100.)).child(session.user))
+                                            .into_any_element(),
+                                    );
+                                }
+                            }
+                            for deleted in deleted_sessions {
+                                rows.push(
+                                    h_flex()
+                                        .min_h(px(30.))
+                                        .pl(px(10.))
+                                        .pr_3()
+                                        .items_center()
+                                        .gap_2()
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child(Icon::new(IconName::Delete).with_size(Size::Small))
+                                        .child(div().flex_1().child(deleted.session.name))
+                                        .child(div().w(px(190.)).child(deleted.session.host))
+                                        .child(div().w(px(64.)).text_center().child(deleted.session.port.to_string()))
+                                        .child(div().w(px(100.)).child(deleted.session.user))
+                                        .into_any_element(),
+                                );
+                            }
+                        }
+
                         let has_rows = !rows.is_empty();
                         content.child(
                             v_flex()
@@ -2526,6 +3016,23 @@ impl TinyShell {
                                                 .flex_1()
                                                 .min_w(px(0.))
                                                 .child(Input::new(&search_input).small()),
+                                        )
+                                        .child(
+                                            Button::new("quick-connection-trash")
+                                                .small()
+                                                .label(if manager_state.read(cx).show_deleted {
+                                                    t!("quick_connection_hide_deleted").to_string()
+                                                } else {
+                                                    t!("quick_connection_show_deleted").to_string()
+                                                })
+                                                .on_click(window.listener_for(
+                                                    &view,
+                                                    |this, _, _, cx| {
+                                                        this.connection_manager_state
+                                                            .update(cx, |state, _| state.toggle_deleted());
+                                                        cx.notify();
+                                                    },
+                                                )),
                                         )
                                         .child(
                                             Button::new("quick-connection-new")

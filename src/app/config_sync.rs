@@ -538,7 +538,9 @@ impl TinyShell {
         }
 
         let local_sessions = self.config.sessions().to_vec();
+        let local_deleted_sessions = self.config.deleted_sessions().to_vec();
         let local_connection_groups = self.config.connection_groups().to_vec();
+        let local_deleted_connection_groups = self.config.deleted_connection_groups().to_vec();
         let local_keys = self.config.managed_keys().to_vec();
         let local_commands = self
             .config
@@ -558,11 +560,15 @@ impl TinyShell {
                         reason: UploadBlockReason::PasswordMismatch,
                     },
                     Ok(PrivacyPasswordStatus::Verified | PrivacyPasswordStatus::NotConfigured) => {
-                        let merged = sync::merge_payload(
-                            &local_sessions,
-                            &local_connection_groups,
-                            &local_keys,
-                            &local_commands,
+                        let merged = sync::merge_payload_with_deleted(
+                            sync::MergeLocal {
+                                sessions: &local_sessions,
+                                deleted_sessions: &local_deleted_sessions,
+                                connection_groups: &local_connection_groups,
+                                deleted_connection_groups: &local_deleted_connection_groups,
+                                keys: &local_keys,
+                                commands: &local_commands,
+                            },
                             payload,
                             &privacy_password,
                         );
@@ -607,7 +613,11 @@ impl TinyShell {
         if let Some(merged) = merged {
             self.config.replace_sessions(merged.sessions);
             self.config
+                .replace_deleted_sessions(merged.deleted_sessions);
+            self.config
                 .replace_connection_groups(merged.connection_groups);
+            self.config
+                .replace_deleted_connection_groups(merged.deleted_connection_groups);
             self.config.replace_managed_keys(merged.managed_keys);
             self.managed_keys = self.config.managed_keys().to_vec();
             self.config
@@ -621,10 +631,12 @@ impl TinyShell {
             return;
         }
 
-        let payload = match SyncPayload::new(
+        let payload = match SyncPayload::new_with_deleted(
             self.config.sync_device_id().to_string(),
             self.config.sessions().to_vec(),
+            self.config.deleted_sessions().to_vec(),
             self.config.connection_groups().to_vec(),
+            self.config.deleted_connection_groups().to_vec(),
             self.config.managed_keys().to_vec(),
             self.config
                 .quick_command_categories()
@@ -771,10 +783,12 @@ impl TinyShell {
             return;
         }
 
-        let payload = match SyncPayload::new(
+        let payload = match SyncPayload::new_with_deleted(
             self.config.sync_device_id().to_string(),
             self.config.sessions().to_vec(),
+            self.config.deleted_sessions().to_vec(),
             self.config.connection_groups().to_vec(),
+            self.config.deleted_connection_groups().to_vec(),
             self.config.managed_keys().to_vec(),
             self.config
                 .quick_command_categories()
@@ -861,6 +875,8 @@ mod tests {
             true,
             MergedConfig {
                 sessions: Vec::new(),
+                deleted_sessions: Vec::new(),
+                deleted_connection_groups: Vec::new(),
                 connection_groups: Vec::new(),
                 managed_keys: Vec::new(),
                 quick_command_categories: Vec::new(),
@@ -892,6 +908,8 @@ mod tests {
             true,
             MergedConfig {
                 sessions: Vec::new(),
+                deleted_sessions: Vec::new(),
+                deleted_connection_groups: Vec::new(),
                 connection_groups: vec!["remote".into()],
                 managed_keys: Vec::new(),
                 quick_command_categories: Vec::new(),

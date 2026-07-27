@@ -14,7 +14,9 @@ use sha2::{Digest, Sha256};
 use crate::crypto;
 use crate::session::config::{ManagedKey, QuickCommandCategory, Session};
 
-pub use merge::{MergedConfig, merge_payload, merge_public_payload};
+pub use merge::{
+    MergeLocal, MergedConfig, merge_payload, merge_payload_with_deleted, merge_public_payload,
+};
 pub use model::{PrivacyPasswordStatus, SyncPayload};
 
 const SYNC_FILE_NAME: &str = "tiny-shell-sync.json";
