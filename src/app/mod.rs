@@ -34,7 +34,7 @@ use gpui::{
     SharedString, Size, UniformListScrollHandle, Window, point, px, size,
 };
 use gpui_component::{
-    Theme, ThemeMode, ThemeRegistry,
+    Theme, ThemeMode, ThemeRegistry, WindowExt,
     input::{InputEvent, InputState},
     scroll::ScrollbarHandle,
 };
@@ -488,6 +488,23 @@ impl ScrollbarHandle for TerminalScrollbarHandle {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SyncSecretsPasswordDialogStatus {
+    AwaitingInput,
+    Verifying,
+    PasswordMismatch,
+    PasswordRequired,
+    RemotePasswordNotConfigured,
+    Failed,
+}
+
+pub(crate) struct SyncSecretsPasswordDialogState {
+    pub(crate) status: SyncSecretsPasswordDialogStatus,
+    pub(crate) message: Option<SharedString>,
+    pub(crate) window: AnyWindowHandle,
+    pub(crate) settings_password_input: Entity<InputState>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DialogKind {
     Updater,
     SessionSelector,
@@ -500,6 +517,8 @@ pub(crate) enum DialogKind {
     ConnectionGroupMove,
     QuickCommandCategory,
     QuickCommand,
+    /// 校验隐私密码后才允许启用敏感信息同步。
+    VerifySyncSecretsPassword,
     /// 上传预检发现远端敏感字段无法解密。
     SyncUploadSecretsBlocked,
     /// 本地强行重置隐私信息加密密码。
@@ -618,6 +637,7 @@ pub(crate) struct TinyShell {
     pub(crate) sync_privacy_password_input: Entity<InputState>,
     pub(crate) sync_in_progress: bool,
     pub(crate) sync_status: SharedString,
+    pub(crate) sync_secrets_password_dialog: Option<SyncSecretsPasswordDialogState>,
     pub(crate) sftp_path_input: Entity<InputState>,
     pub(crate) ssh_auth_method: AuthMethod,
     pub(crate) ssh_config_entries: Vec<SshConfigEntry>,
@@ -1133,6 +1153,7 @@ impl TinyShell {
             sync_privacy_password_input,
             sync_in_progress: false,
             sync_status: t!("sync_not_run").into(),
+            sync_secrets_password_dialog: None,
             sftp_path_input,
             ssh_auth_method: AuthMethod::Password,
             ssh_config_entries: crate::session::ssh_config::parse_ssh_config().unwrap_or_default(),
@@ -1828,15 +1849,25 @@ impl TinyShell {
                         }
                         crate::sync::SyncResult::UploadPreflightBlocked {
                             credentials,
-                            unavailable_session_secret_count,
-                            unavailable_managed_key_secret_count,
+                            reason,
                         } => {
-                            self.sync_status = t!(
-                                "sync_upload_secrets_blocked",
-                                sessions = unavailable_session_secret_count,
-                                keys = unavailable_managed_key_secret_count
-                            )
-                            .into();
+                            self.sync_status = match &reason {
+                                crate::sync::UploadBlockReason::PasswordRequired => {
+                                    t!("sync_upload_password_required").into()
+                                }
+                                crate::sync::UploadBlockReason::PasswordMismatch => {
+                                    t!("sync_privacy_password_incorrect").into()
+                                }
+                                crate::sync::UploadBlockReason::UnavailableSecrets {
+                                    session_secret_count,
+                                    managed_key_secret_count,
+                                } => t!(
+                                    "sync_upload_secrets_blocked",
+                                    sessions = *session_secret_count,
+                                    keys = *managed_key_secret_count
+                                )
+                                .into(),
+                            };
                             if let Some(handle) = self.settings_window {
                                 let owner = cx.entity();
                                 let form =
@@ -1847,8 +1878,7 @@ impl TinyShell {
                                     owner.update(cx, |this, cx| {
                                         this.show_sync_upload_secrets_blocked_dialog(
                                             form.clone(),
-                                            unavailable_session_secret_count,
-                                            unavailable_managed_key_secret_count,
+                                            reason.clone(),
                                             window,
                                             cx,
                                         );
@@ -1857,6 +1887,8 @@ impl TinyShell {
                             }
                         }
                         crate::sync::SyncResult::Downloaded {
+                            credentials,
+                            password_status,
                             sessions,
                             connection_groups,
                             managed_keys,
@@ -1889,24 +1921,51 @@ impl TinyShell {
                                         commands = command_count
                                     )
                                     .to_string();
-                                    self.sync_status = if unavailable_secret_count > 0 {
-                                        format!(
+                                    self.sync_status = match password_status {
+                                        crate::sync::PrivacyPasswordStatus::Mismatch => format!(
+                                            "{summary}; {}",
+                                            t!("sync_privacy_password_incorrect")
+                                        )
+                                        .into(),
+                                        crate::sync::PrivacyPasswordStatus::Missing => format!(
+                                            "{summary}; {}",
+                                            t!("sync_privacy_password_missing")
+                                        )
+                                        .into(),
+                                        _ if unavailable_secret_count > 0 => format!(
                                             "{summary}; {}",
                                             t!(
                                                 "sync_secrets_unavailable",
                                                 count = unavailable_secret_count
                                             )
                                         )
-                                        .into()
-                                    } else if decrypted_count > 0 {
-                                        format!(
+                                        .into(),
+                                        _ if decrypted_count > 0 => format!(
                                             "{summary}; {}",
                                             t!("sync_secrets_decrypted", count = decrypted_count)
                                         )
-                                        .into()
-                                    } else {
-                                        summary.into()
+                                        .into(),
+                                        _ => summary.into(),
                                     };
+                                    if password_status
+                                        == crate::sync::PrivacyPasswordStatus::Mismatch
+                                        && let Some(handle) = self.settings_window
+                                    {
+                                        let owner = cx.entity();
+                                        let form = crate::app::config_sync::SyncFormSnapshot::from_credentials(
+                                            credentials,
+                                        );
+                                        let _ = handle.update(cx, move |_, window, cx| {
+                                            owner.update(cx, |this, cx| {
+                                                this.show_sync_upload_secrets_blocked_dialog(
+                                                    form.clone(),
+                                                    crate::sync::UploadBlockReason::PasswordMismatch,
+                                                    window,
+                                                    cx,
+                                                );
+                                            });
+                                        });
+                                    }
                                 }
                                 Err(err) => {
                                     self.sync_status =
@@ -1940,12 +1999,87 @@ impl TinyShell {
                                 }
                             }
                         }
+                        crate::sync::SyncResult::PrivacyPasswordChecked { password, status } => {
+                            match status {
+                                crate::sync::PrivacyPasswordStatus::Verified => {
+                                    if self.set_sync_include_secrets(true, cx) {
+                                        if let Some(dialog) =
+                                            self.sync_secrets_password_dialog.take()
+                                        {
+                                            self.active_dialog = None;
+                                            let input = dialog.settings_password_input;
+                                            let _ =
+                                                dialog.window.update(cx, move |_, window, cx| {
+                                                    input.update(cx, |input, cx| {
+                                                        input.set_value(
+                                                            password.clone(),
+                                                            window,
+                                                            cx,
+                                                        );
+                                                    });
+                                                    window.close_dialog(cx);
+                                                });
+                                        }
+                                    } else {
+                                        let message = self.sync_status.clone();
+                                        if let Some(dialog) =
+                                            self.sync_secrets_password_dialog.as_mut()
+                                        {
+                                            dialog.status =
+                                                crate::app::SyncSecretsPasswordDialogStatus::Failed;
+                                            dialog.message = Some(message);
+                                        }
+                                    }
+                                }
+                                crate::sync::PrivacyPasswordStatus::Mismatch => {
+                                    if let Some(dialog) = self.sync_secrets_password_dialog.as_mut()
+                                    {
+                                        dialog.status = crate::app::SyncSecretsPasswordDialogStatus::PasswordMismatch;
+                                        dialog.message = Some(
+                                            t!("sync_secret_toggle_password_incorrect").into(),
+                                        );
+                                    }
+                                }
+                                crate::sync::PrivacyPasswordStatus::Missing => {
+                                    if let Some(dialog) = self.sync_secrets_password_dialog.as_mut()
+                                    {
+                                        dialog.status = crate::app::SyncSecretsPasswordDialogStatus::PasswordRequired;
+                                        dialog.message =
+                                            Some(t!("sync_secret_toggle_password_required").into());
+                                    }
+                                }
+                                crate::sync::PrivacyPasswordStatus::NotConfigured => {
+                                    if let Some(dialog) = self.sync_secrets_password_dialog.as_mut()
+                                    {
+                                        dialog.status = crate::app::SyncSecretsPasswordDialogStatus::RemotePasswordNotConfigured;
+                                        dialog.message = Some(
+                                            t!("sync_secret_toggle_remote_password_missing").into(),
+                                        );
+                                    }
+                                }
+                            }
+                        }
                         crate::sync::SyncResult::ConnectionVerified => {
                             self.sync_status = t!("sync_connection_verified").into();
                         }
                         crate::sync::SyncResult::Failed(error) => {
                             self.sync_status =
                                 crate::app::config_sync::sync_failure_status(&error).into();
+                            if self
+                                .sync_secrets_password_dialog
+                                .as_ref()
+                                .is_some_and(|dialog| {
+                                    dialog.status
+                                        == crate::app::SyncSecretsPasswordDialogStatus::Verifying
+                                })
+                            {
+                                let message = self.sync_status.clone();
+                                if let Some(dialog) = self.sync_secrets_password_dialog.as_mut() {
+                                    dialog.status =
+                                        crate::app::SyncSecretsPasswordDialogStatus::Failed;
+                                    dialog.message = Some(message);
+                                }
+                            }
                         }
                     }
                 }

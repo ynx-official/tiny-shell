@@ -14,8 +14,8 @@ use sha2::{Digest, Sha256};
 use crate::crypto;
 use crate::session::config::{ManagedKey, QuickCommandCategory, Session};
 
-pub use merge::{MergedConfig, merge_payload};
-pub use model::SyncPayload;
+pub use merge::{MergedConfig, merge_payload, merge_public_payload};
+pub use model::{PrivacyPasswordStatus, SyncPayload};
 
 const SYNC_FILE_NAME: &str = "tiny-shell-sync.json";
 const MAX_SYNC_PAYLOAD_BYTES: usize = 16 * 1024 * 1024;
@@ -107,6 +107,16 @@ impl fmt::Debug for SyncFailure {
 
 pub type SyncOperationResult<T> = std::result::Result<T, SyncFailure>;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UploadBlockReason {
+    PasswordRequired,
+    PasswordMismatch,
+    UnavailableSecrets {
+        session_secret_count: u32,
+        managed_key_secret_count: u32,
+    },
+}
+
 #[derive(Clone)]
 pub enum SyncResult {
     Uploaded {
@@ -122,10 +132,11 @@ pub enum SyncResult {
     },
     UploadPreflightBlocked {
         credentials: SyncCredentials,
-        unavailable_session_secret_count: u32,
-        unavailable_managed_key_secret_count: u32,
+        reason: UploadBlockReason,
     },
     Downloaded {
+        credentials: SyncCredentials,
+        password_status: PrivacyPasswordStatus,
         sessions: Vec<Session>,
         connection_groups: Vec<String>,
         managed_keys: Vec<ManagedKey>,
@@ -140,6 +151,10 @@ pub enum SyncResult {
     PrivacyPasswordReset {
         new_password: String,
         etag: Option<String>,
+    },
+    PrivacyPasswordChecked {
+        password: String,
+        status: PrivacyPasswordStatus,
     },
     ConnectionVerified,
     Failed(SyncFailure),
@@ -170,22 +185,12 @@ impl fmt::Debug for SyncResult {
                 .field("has_remote_config", &merged.is_some())
                 .field("etag", etag)
                 .finish(),
-            Self::UploadPreflightBlocked {
-                unavailable_session_secret_count,
-                unavailable_managed_key_secret_count,
-                ..
-            } => formatter
+            Self::UploadPreflightBlocked { reason, .. } => formatter
                 .debug_struct("UploadPreflightBlocked")
-                .field(
-                    "unavailable_session_secret_count",
-                    unavailable_session_secret_count,
-                )
-                .field(
-                    "unavailable_managed_key_secret_count",
-                    unavailable_managed_key_secret_count,
-                )
+                .field("reason", reason)
                 .finish(),
             Self::Downloaded {
+                password_status,
                 sessions,
                 connection_groups,
                 managed_keys,
@@ -193,8 +198,10 @@ impl fmt::Debug for SyncResult {
                 etag,
                 decrypted_count,
                 unavailable_secret_count,
+                ..
             } => formatter
                 .debug_struct("Downloaded")
+                .field("password_status", password_status)
                 .field("session_count", &sessions.len())
                 .field("connection_group_count", &connection_groups.len())
                 .field("managed_key_count", &managed_keys.len())
@@ -209,6 +216,11 @@ impl fmt::Debug for SyncResult {
             Self::PrivacyPasswordReset { .. } => formatter
                 .debug_struct("PrivacyPasswordReset")
                 .field("new_password", &"<redacted>")
+                .finish(),
+            Self::PrivacyPasswordChecked { status, .. } => formatter
+                .debug_struct("PrivacyPasswordChecked")
+                .field("password", &"<redacted>")
+                .field("status", status)
                 .finish(),
             Self::ConnectionVerified => formatter.write_str("ConnectionVerified"),
             Self::Failed(_) => formatter.write_str("Failed(<redacted>)"),

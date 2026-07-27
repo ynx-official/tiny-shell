@@ -156,12 +156,22 @@ impl SyncManagedKey {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PrivacyPasswordStatus {
+    NotConfigured,
+    Missing,
+    Verified,
+    Mismatch,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SyncPayload {
     pub schema_version: u32,
     pub revision: String,
     pub updated_at: String,
     pub device_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub privacy_password_verifier: Option<String>,
     #[serde(default)]
     pub connection_groups: Vec<String>,
     #[serde(default)]
@@ -187,6 +197,9 @@ impl SyncPayload {
                 "privacy encryption password must be at least 8 characters"
             ));
         }
+        let privacy_password_verifier = include_secrets
+            .then(|| crypto::hash_privacy_password(privacy_password))
+            .transpose()?;
         let sessions = sessions
             .into_iter()
             .map(|session| SyncSession::export(session, include_secrets, privacy_password))
@@ -200,11 +213,26 @@ impl SyncPayload {
             revision: Uuid::new_v4().to_string(),
             updated_at: chrono::Utc::now().to_rfc3339(),
             device_id,
+            privacy_password_verifier,
             connection_groups,
             sessions,
             managed_keys,
             quick_command_categories,
         })
+    }
+
+    pub fn privacy_password_status(&self, password: &str) -> Result<PrivacyPasswordStatus> {
+        let Some(verifier) = self.privacy_password_verifier.as_deref() else {
+            return Ok(PrivacyPasswordStatus::NotConfigured);
+        };
+        if password.is_empty() {
+            return Ok(PrivacyPasswordStatus::Missing);
+        }
+        if crypto::verify_privacy_password(password, verifier)? {
+            Ok(PrivacyPasswordStatus::Verified)
+        } else {
+            Ok(PrivacyPasswordStatus::Mismatch)
+        }
     }
 }
 
@@ -262,6 +290,7 @@ fn parse_versioned_payload(raw: &[u8], version: u32) -> Result<SyncPayload> {
                 revision: legacy.revision,
                 updated_at: legacy.updated_at,
                 device_id: legacy.device_id,
+                privacy_password_verifier: None,
                 connection_groups: Vec::new(),
                 sessions: legacy
                     .sessions
@@ -403,6 +432,19 @@ mod tests {
         let text = String::from_utf8(serialized.clone()).unwrap();
 
         assert_eq!(json["schema_version"], FORMAT_VERSION);
+        assert!(json["privacy_password_verifier"].is_string());
+        assert_eq!(
+            payload.privacy_password_status("privacy-password").unwrap(),
+            PrivacyPasswordStatus::Verified
+        );
+        assert_eq!(
+            payload.privacy_password_status("").unwrap(),
+            PrivacyPasswordStatus::Missing
+        );
+        assert_eq!(
+            payload.privacy_password_status("wrong-password").unwrap(),
+            PrivacyPasswordStatus::Mismatch
+        );
         assert_eq!(json["sessions"][0]["host"], "example.test");
         assert_eq!(
             json["quick_command_categories"][0]["commands"][0]["command"],
@@ -433,6 +475,11 @@ mod tests {
         .unwrap();
 
         assert_eq!(payload.sessions[0].password, SyncSecret::Omitted);
+        assert!(payload.privacy_password_verifier.is_none());
+        assert_eq!(
+            payload.privacy_password_status("").unwrap(),
+            PrivacyPasswordStatus::NotConfigured
+        );
         assert_eq!(payload.managed_keys.len(), 1);
         assert_eq!(payload.managed_keys[0].inline_content, SyncSecret::Omitted);
         assert_eq!(payload.managed_keys[0].passphrase, SyncSecret::Omitted);

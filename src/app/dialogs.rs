@@ -5283,6 +5283,7 @@ impl TinyShell {
                                                         let can_upload = !in_progress && (!include_secrets || privacy_password_valid);
                                                         let verify_inputs = sync_form_inputs.clone();
                                                         let reset_inputs = sync_form_inputs.clone();
+                                                        let toggle_inputs = sync_form_inputs.clone();
                                                         let download_inputs = sync_form_inputs.clone();
                                                         let upload_inputs = sync_form_inputs.clone();
                                                         v_flex()
@@ -5344,9 +5345,24 @@ impl TinyShell {
                                                                     .label(t!("sync_include_secrets").to_string())
                                                                     .on_click({
                                                                         let view = view.clone();
-                                                                        move |checked, _window, cx| {
+                                                                        let privacy_password = privacy_password.clone();
+                                                                        move |checked, window, cx| {
                                                                             view.update(cx, |this, cx| {
-                                                                                this.set_sync_include_secrets(*checked, cx);
+                                                                                if !*checked {
+                                                                                    let _ = this.set_sync_include_secrets(false, cx);
+                                                                                    return;
+                                                                                }
+                                                                                let form = crate::app::config_sync::SyncFormSnapshot::capture(
+                                                                                    this.config.sync_backend(),
+                                                                                    &toggle_inputs,
+                                                                                    cx,
+                                                                                );
+                                                                                this.show_sync_secrets_password_dialog(
+                                                                                    form,
+                                                                                    privacy_password.clone(),
+                                                                                    window,
+                                                                                    cx,
+                                                                                );
                                                                             });
                                                                         }
                                                                     })
@@ -5924,12 +5940,141 @@ impl TinyShell {
         });
     }
 
+    pub(crate) fn show_sync_secrets_password_dialog(
+        &mut self,
+        form: crate::app::config_sync::SyncFormSnapshot,
+        settings_password_input: gpui::Entity<InputState>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.active_dialog.is_some() || self.sync_in_progress {
+            return;
+        }
+        self.active_dialog = Some(crate::app::DialogKind::VerifySyncSecretsPassword);
+
+        let password_input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(t!("sync_privacy_password").to_string())
+                .masked(true)
+        });
+        self.sync_secrets_password_dialog = Some(crate::app::SyncSecretsPasswordDialogState {
+            status: crate::app::SyncSecretsPasswordDialogStatus::AwaitingInput,
+            message: None,
+            window: window.window_handle(),
+            settings_password_input,
+        });
+
+        let view = cx.entity();
+        let focus_input = password_input.clone();
+        let danger_color = cx.theme().danger;
+        window.open_dialog(cx, move |dialog: Dialog, _window, _cx| {
+            dialog
+                .title(t!("sync_secret_toggle_dialog_title").to_string())
+                .w(px(440.))
+                .close_button(false)
+                .overlay_closable(false)
+                .on_close({
+                    let view = view.clone();
+                    move |_, _, cx| {
+                        view.update(cx, |this, cx| {
+                            this.active_dialog = None;
+                            this.sync_secrets_password_dialog = None;
+                            cx.notify();
+                        });
+                    }
+                })
+                .content({
+                    let view = view.clone();
+                    let password_input = password_input.clone();
+                    move |content, _window, cx| {
+                        let (status, message) = view
+                            .read(cx)
+                            .sync_secrets_password_dialog
+                            .as_ref()
+                            .map(|state| (state.status, state.message.clone()))
+                            .unwrap_or((
+                                crate::app::SyncSecretsPasswordDialogStatus::AwaitingInput,
+                                None,
+                            ));
+                        content.child(
+                            v_flex()
+                                .w_full()
+                                .gap_3()
+                                .child(
+                                    div()
+                                        .text_sm()
+                                        .child(t!("sync_secret_toggle_dialog_message").to_string()),
+                                )
+                                .child(Input::new(&password_input).w_full())
+                                .when_some(message, |this, message| {
+                                    this.child(
+                                        div()
+                                            .text_sm()
+                                            .text_color(if status
+                                                == crate::app::SyncSecretsPasswordDialogStatus::Verifying
+                                            {
+                                                cx.theme().muted_foreground
+                                            } else {
+                                                danger_color
+                                            })
+                                            .child(message),
+                                    )
+                                }),
+                        )
+                    }
+                })
+                .footer(
+                    h_flex()
+                        .w_full()
+                        .justify_end()
+                        .gap_2()
+                        .child(
+                            Button::new("cancel-sync-secrets-password")
+                                .secondary()
+                                .label(t!("cancel").to_string())
+                                .on_click({
+                                    let view = view.clone();
+                                    move |_, window, cx| {
+                                        view.update(cx, |this, cx| {
+                                            this.active_dialog = None;
+                                            this.sync_secrets_password_dialog = None;
+                                            cx.notify();
+                                            window.close_dialog(cx);
+                                        });
+                                    }
+                                }),
+                        )
+                        .child(
+                            Button::new("verify-sync-secrets-password")
+                                .primary()
+                                .label(t!("sync_secret_toggle_verify").to_string())
+                                .on_click({
+                                    let view = view.clone();
+                                    let password_input = password_input.clone();
+                                    let form = form.clone();
+                                    move |_, _, cx| {
+                                        let password =
+                                            password_input.read(cx).value().to_string();
+                                        view.update(cx, |this, cx| {
+                                            this.verify_sync_secrets_password(
+                                                form.clone(),
+                                                password,
+                                                cx,
+                                            );
+                                        });
+                                    }
+                                }),
+                        ),
+                )
+        });
+        crate::app::input_focus::defer_focus_input_at_end(focus_input, window, cx);
+    }
+
     /// 上传预检发现远端敏感字段无法解密时，阻止覆盖并引导用户重置。
     pub(crate) fn show_sync_upload_secrets_blocked_dialog(
         &mut self,
         form: crate::app::config_sync::SyncFormSnapshot,
-        unavailable_session_secret_count: u32,
-        unavailable_managed_key_secret_count: u32,
+        reason: crate::sync::UploadBlockReason,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -5938,6 +6083,23 @@ impl TinyShell {
         }
         self.active_dialog = Some(crate::app::DialogKind::SyncUploadSecretsBlocked);
 
+        let message = match reason {
+            crate::sync::UploadBlockReason::PasswordRequired => {
+                t!("sync_upload_password_required_dialog_message").to_string()
+            }
+            crate::sync::UploadBlockReason::PasswordMismatch => {
+                t!("sync_privacy_password_incorrect_dialog_message").to_string()
+            }
+            crate::sync::UploadBlockReason::UnavailableSecrets {
+                session_secret_count,
+                managed_key_secret_count,
+            } => t!(
+                "sync_upload_blocked_dialog_message",
+                sessions = session_secret_count,
+                keys = managed_key_secret_count
+            )
+            .to_string(),
+        };
         let view = cx.entity();
         let danger_color = cx.theme().danger;
         window.open_dialog(cx, move |dialog: Dialog, _window, _cx| {
@@ -5946,27 +6108,26 @@ impl TinyShell {
                 .w(px(460.))
                 .close_button(false)
                 .overlay_closable(false)
-                .content(move |content, _window, _cx| {
-                    content.child(
-                        v_flex()
-                            .w_full()
-                            .gap_3()
-                            .child(
-                                div().text_sm().text_color(danger_color).child(
-                                    t!(
-                                        "sync_upload_blocked_dialog_message",
-                                        sessions = unavailable_session_secret_count,
-                                        keys = unavailable_managed_key_secret_count
-                                    )
-                                    .to_string(),
+                .content({
+                    let message = message.clone();
+                    move |content, _window, _cx| {
+                        content.child(
+                            v_flex()
+                                .w_full()
+                                .gap_3()
+                                .child(
+                                    div()
+                                        .text_sm()
+                                        .text_color(danger_color)
+                                        .child(message.clone()),
+                                )
+                                .child(
+                                    div()
+                                        .text_sm()
+                                        .child(t!("sync_upload_blocked_dialog_hint").to_string()),
                                 ),
-                            )
-                            .child(
-                                div()
-                                    .text_sm()
-                                    .child(t!("sync_upload_blocked_dialog_hint").to_string()),
-                            ),
-                    )
+                        )
+                    }
                 })
                 .footer(
                     h_flex()

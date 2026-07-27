@@ -26,6 +26,41 @@ pub fn merge_payload(
     remote: SyncPayload,
     privacy_password: &str,
 ) -> MergedConfig {
+    merge_payload_with_secret_access(
+        local_sessions,
+        local_connection_groups,
+        local_keys,
+        local_commands,
+        remote,
+        Some(privacy_password),
+    )
+}
+
+pub fn merge_public_payload(
+    local_sessions: &[Session],
+    local_connection_groups: &[String],
+    local_keys: &[ManagedKey],
+    local_commands: &[QuickCommandCategory],
+    remote: SyncPayload,
+) -> MergedConfig {
+    merge_payload_with_secret_access(
+        local_sessions,
+        local_connection_groups,
+        local_keys,
+        local_commands,
+        remote,
+        None,
+    )
+}
+
+fn merge_payload_with_secret_access(
+    local_sessions: &[Session],
+    local_connection_groups: &[String],
+    local_keys: &[ManagedKey],
+    local_commands: &[QuickCommandCategory],
+    remote: SyncPayload,
+    privacy_password: Option<&str>,
+) -> MergedConfig {
     let mut session_stats = SecretResolutionStats::default();
     let mut managed_key_stats = SecretResolutionStats::default();
     let sessions = merge_sessions(
@@ -60,7 +95,7 @@ pub fn merge_payload(
 fn merge_sessions(
     local_sessions: &[Session],
     remote_sessions: Vec<SyncSession>,
-    password: &str,
+    password: Option<&str>,
     stats: &mut SecretResolutionStats,
 ) -> Vec<Session> {
     let mut sessions: Vec<_> = remote_sessions
@@ -100,7 +135,7 @@ fn sessions_match(a: &Session, b: &Session) -> bool {
 fn session_from_remote(
     remote: SyncSession,
     local: Option<&Session>,
-    password: &str,
+    password: Option<&str>,
     stats: &mut SecretResolutionStats,
 ) -> Session {
     let id = if remote.id.is_empty() {
@@ -153,7 +188,7 @@ fn session_from_remote(
 fn merge_keys(
     local_keys: &[ManagedKey],
     remote_keys: Vec<SyncManagedKey>,
-    password: &str,
+    password: Option<&str>,
     stats: &mut SecretResolutionStats,
 ) -> Vec<ManagedKey> {
     let mut keys: Vec<_> = remote_keys
@@ -197,7 +232,7 @@ fn identifier_missing(a: &str, b: &str) -> bool {
 fn key_from_remote(
     remote: SyncManagedKey,
     local: Option<&ManagedKey>,
-    password: &str,
+    password: Option<&str>,
     stats: &mut SecretResolutionStats,
 ) -> ManagedKey {
     let id = if remote.id.is_empty() {
@@ -368,6 +403,33 @@ mod tests {
         assert!(merged.unavailable_secret_count > 0);
         assert!(merged.unavailable_session_secret_count > 0);
         assert!(merged.unavailable_managed_key_secret_count > 0);
+    }
+
+    #[test]
+    fn public_merge_never_attempts_to_decrypt_remote_secrets() {
+        let local_session = session("session-1", "Local name", "local-password");
+        let payload = SyncPayload::new(
+            "device-1".into(),
+            vec![
+                session("session-1", "Remote name", "remote-password"),
+                session("remote-only", "Remote only", "remote-only-password"),
+            ],
+            vec!["Remote".into()],
+            Vec::new(),
+            Vec::new(),
+            true,
+            "privacy-password",
+        )
+        .unwrap();
+
+        let merged = merge_public_payload(&[local_session], &[], &[], &[], payload);
+
+        assert_eq!(merged.sessions[0].name, "Remote name");
+        assert_eq!(merged.sessions[0].password, "local-password");
+        assert_eq!(merged.sessions[1].name, "Remote only");
+        assert!(merged.sessions[1].password.is_empty());
+        assert_eq!(merged.decrypted_count, 0);
+        assert_eq!(merged.unavailable_secret_count, 0);
     }
 
     #[test]

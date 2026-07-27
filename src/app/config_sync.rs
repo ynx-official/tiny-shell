@@ -7,8 +7,9 @@ use crate::{
     crypto,
     session::config::hardware_uuid,
     sync::{
-        self, MergedConfig, SyncBackendCredentials, SyncBackendKind, SyncCredentials,
-        SyncErrorCategory, SyncFailure, SyncPayload, SyncResult, UploadMode,
+        self, MergedConfig, PrivacyPasswordStatus, SyncBackendCredentials, SyncBackendKind,
+        SyncCredentials, SyncErrorCategory, SyncFailure, SyncPayload, SyncResult,
+        UploadBlockReason, UploadMode,
     },
     terminal::BackendEvent,
 };
@@ -90,8 +91,10 @@ fn upload_preflight_result(
     if merged.unavailable_secret_count > 0 {
         SyncResult::UploadPreflightBlocked {
             credentials,
-            unavailable_session_secret_count: merged.unavailable_session_secret_count,
-            unavailable_managed_key_secret_count: merged.unavailable_managed_key_secret_count,
+            reason: UploadBlockReason::UnavailableSecrets {
+                session_secret_count: merged.unavailable_session_secret_count,
+                managed_key_secret_count: merged.unavailable_managed_key_secret_count,
+            },
         }
     } else {
         SyncResult::UploadPreflightReady {
@@ -191,12 +194,79 @@ impl TinyShell {
         cx.notify();
     }
 
-    /// 切换"同步密码和密钥"开关。
-    pub(crate) fn set_sync_include_secrets(&mut self, include: bool, cx: &mut Context<Self>) {
+    /// 切换"同步密码和密钥"开关。启用操作必须先通过远端密码校验。
+    pub(crate) fn set_sync_include_secrets(
+        &mut self,
+        include: bool,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let previous = self.config.sync_include_secrets();
         self.config.set_sync_include_secrets(include);
-        let _ = self.config.save();
-        self.sync_status = t!("sync_not_run").into();
-        cx.notify();
+        match self.config.save() {
+            Ok(()) => {
+                self.sync_status = t!("sync_not_run").into();
+                cx.notify();
+                true
+            }
+            Err(error) => {
+                self.config.set_sync_include_secrets(previous);
+                self.sync_status = format!("{}: {error:#}", t!("sync_failed")).into();
+                cx.notify();
+                false
+            }
+        }
+    }
+
+    pub(crate) fn verify_sync_secrets_password(
+        &mut self,
+        form: SyncFormSnapshot,
+        password: String,
+        cx: &mut Context<Self>,
+    ) {
+        if self.sync_in_progress {
+            return;
+        }
+        if password.is_empty() {
+            if let Some(dialog) = self.sync_secrets_password_dialog.as_mut() {
+                dialog.status = crate::app::SyncSecretsPasswordDialogStatus::PasswordRequired;
+                dialog.message = Some(t!("sync_secret_toggle_password_required").into());
+            }
+            cx.notify();
+            return;
+        }
+
+        if let Some(dialog) = self.sync_secrets_password_dialog.as_mut() {
+            dialog.status = crate::app::SyncSecretsPasswordDialogStatus::Verifying;
+            dialog.message = Some(t!("sync_secret_toggle_verifying").into());
+        }
+        let Some(credentials) = self.begin_sync(
+            form.credentials,
+            t!("sync_secret_toggle_verifying").into(),
+            cx,
+        ) else {
+            let message = self.sync_status.clone();
+            if let Some(dialog) = self.sync_secrets_password_dialog.as_mut() {
+                dialog.status = crate::app::SyncSecretsPasswordDialogStatus::Failed;
+                dialog.message = Some(message);
+            }
+            cx.notify();
+            return;
+        };
+
+        let events = self.events_tx.clone();
+        self.runtime.spawn(async move {
+            let result = match sync::download(credentials.clone(), &password).await {
+                Ok((payload, _)) => match payload.privacy_password_status(&password) {
+                    Ok(status) => SyncResult::PrivacyPasswordChecked { password, status },
+                    Err(error) => SyncResult::Failed(SyncFailure::other(
+                        Some(credentials.backend.kind()),
+                        error,
+                    )),
+                },
+                Err(failure) => SyncResult::Failed(failure),
+            };
+            let _ = events.send(BackendEvent::SyncFinished(result));
+        });
     }
 
     pub(crate) fn upload_sync_config(&mut self, form: SyncFormSnapshot, cx: &mut Context<Self>) {
@@ -229,23 +299,37 @@ impl TinyShell {
         let events = self.events_tx.clone();
         self.runtime.spawn(async move {
             let result = match sync::download(credentials.clone(), &privacy_password).await {
-                Ok((payload, etag)) => {
-                    let merged = sync::merge_payload(
-                        &local_sessions,
-                        &local_connection_groups,
-                        &local_keys,
-                        &local_commands,
-                        payload,
-                        &privacy_password,
-                    );
-                    upload_preflight_result(
+                Ok((payload, etag)) => match payload.privacy_password_status(&privacy_password) {
+                    Ok(PrivacyPasswordStatus::Missing) => SyncResult::UploadPreflightBlocked {
                         credentials,
-                        privacy_password,
-                        include_secrets,
-                        merged,
-                        etag,
-                    )
-                }
+                        reason: UploadBlockReason::PasswordRequired,
+                    },
+                    Ok(PrivacyPasswordStatus::Mismatch) => SyncResult::UploadPreflightBlocked {
+                        credentials,
+                        reason: UploadBlockReason::PasswordMismatch,
+                    },
+                    Ok(PrivacyPasswordStatus::Verified | PrivacyPasswordStatus::NotConfigured) => {
+                        let merged = sync::merge_payload(
+                            &local_sessions,
+                            &local_connection_groups,
+                            &local_keys,
+                            &local_commands,
+                            payload,
+                            &privacy_password,
+                        );
+                        upload_preflight_result(
+                            credentials,
+                            privacy_password,
+                            include_secrets,
+                            merged,
+                            etag,
+                        )
+                    }
+                    Err(error) => SyncResult::Failed(SyncFailure::other(
+                        Some(credentials.backend.kind()),
+                        error,
+                    )),
+                },
                 Err(failure) if failure.category == SyncErrorCategory::RemoteMissing => {
                     SyncResult::UploadPreflightReady {
                         credentials,
@@ -351,34 +435,54 @@ impl TinyShell {
             .to_vec();
         let events = self.events_tx.clone();
         self.runtime.spawn(async move {
-            let result = match sync::download(credentials, &privacy_password).await {
-                Ok((payload, etag)) => {
-                    let MergedConfig {
-                        sessions,
-                        connection_groups,
-                        managed_keys,
-                        quick_command_categories,
-                        decrypted_count,
-                        unavailable_secret_count,
-                        ..
-                    } = sync::merge_payload(
-                        &local_sessions,
-                        &local_connection_groups,
-                        &local_keys,
-                        &local_commands,
-                        payload,
-                        &privacy_password,
-                    );
-                    SyncResult::Downloaded {
-                        sessions,
-                        connection_groups,
-                        managed_keys,
-                        quick_command_categories,
-                        etag,
-                        decrypted_count,
-                        unavailable_secret_count,
+            let result = match sync::download(credentials.clone(), &privacy_password).await {
+                Ok((payload, etag)) => match payload.privacy_password_status(&privacy_password) {
+                    Ok(password_status) => {
+                        let MergedConfig {
+                            sessions,
+                            connection_groups,
+                            managed_keys,
+                            quick_command_categories,
+                            decrypted_count,
+                            unavailable_secret_count,
+                            ..
+                        } = match password_status {
+                            PrivacyPasswordStatus::Verified
+                            | PrivacyPasswordStatus::NotConfigured => sync::merge_payload(
+                                &local_sessions,
+                                &local_connection_groups,
+                                &local_keys,
+                                &local_commands,
+                                payload,
+                                &privacy_password,
+                            ),
+                            PrivacyPasswordStatus::Missing | PrivacyPasswordStatus::Mismatch => {
+                                sync::merge_public_payload(
+                                    &local_sessions,
+                                    &local_connection_groups,
+                                    &local_keys,
+                                    &local_commands,
+                                    payload,
+                                )
+                            }
+                        };
+                        SyncResult::Downloaded {
+                            credentials,
+                            password_status,
+                            sessions,
+                            connection_groups,
+                            managed_keys,
+                            quick_command_categories,
+                            etag,
+                            decrypted_count,
+                            unavailable_secret_count,
+                        }
                     }
-                }
+                    Err(error) => SyncResult::Failed(SyncFailure::other(
+                        Some(credentials.backend.kind()),
+                        error,
+                    )),
+                },
                 Err(failure) => SyncResult::Failed(failure),
             };
             let _ = events.send(BackendEvent::SyncFinished(result));
@@ -505,8 +609,10 @@ mod tests {
         assert!(matches!(
             result,
             SyncResult::UploadPreflightBlocked {
-                unavailable_session_secret_count: 1,
-                unavailable_managed_key_secret_count: 2,
+                reason: UploadBlockReason::UnavailableSecrets {
+                    session_secret_count: 1,
+                    managed_key_secret_count: 2,
+                },
                 ..
             }
         ));

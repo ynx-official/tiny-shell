@@ -6,7 +6,9 @@
 //! 加密（`seal_with_hardware_key` / `open_with_hardware_key`）。
 
 use anyhow::{Context, Result, anyhow};
-use argon2::Argon2;
+use argon2::{
+    Argon2, PasswordHash, PasswordHasher as _, PasswordVerifier as _, password_hash::SaltString,
+};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use chacha20poly1305::{
     XChaCha20Poly1305, XNonce,
@@ -28,6 +30,29 @@ pub fn derive_key(password: &str, salt: &[u8]) -> Result<[u8; KEY_LEN]> {
         .hash_password_into(password.as_bytes(), salt, &mut key)
         .map_err(|err| anyhow!("derive encryption key: {err}"))?;
     Ok(key)
+}
+
+/// 生成可同步的隐私密码校验值。
+///
+/// 返回标准 PHC 字符串，只能用于验证输入是否一致，不能恢复原密码。
+pub fn hash_privacy_password(password: &str) -> Result<String> {
+    let mut salt = [0u8; SALT_LEN];
+    OsRng.fill_bytes(&mut salt);
+    let salt = SaltString::encode_b64(&salt)
+        .map_err(|err| anyhow!("encode privacy password verifier salt: {err}"))?;
+    Argon2::default()
+        .hash_password(password.as_bytes(), &salt)
+        .map(|hash| hash.to_string())
+        .map_err(|err| anyhow!("hash privacy password verifier: {err}"))
+}
+
+/// 验证输入密码是否与同步文件中的不可逆校验值一致。
+pub fn verify_privacy_password(password: &str, verifier: &str) -> Result<bool> {
+    let parsed = PasswordHash::new(verifier)
+        .map_err(|err| anyhow!("parse privacy password verifier: {err}"))?;
+    Ok(Argon2::default()
+        .verify_password(password.as_bytes(), &parsed)
+        .is_ok())
 }
 
 /// 加密单个字符串字段，返回自包含的密文。
@@ -131,6 +156,15 @@ pub fn open_with_hardware_key(ciphertext: &str, hardware_uuid: &str) -> Result<S
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn privacy_password_verifier_accepts_only_the_original_password() {
+        let verifier = hash_privacy_password("privacy-password").unwrap();
+
+        assert!(verify_privacy_password("privacy-password", &verifier).unwrap());
+        assert!(!verify_privacy_password("wrong-password", &verifier).unwrap());
+        assert!(!verifier.contains("privacy-password"));
+    }
 
     #[test]
     fn encrypt_field_round_trip() {
