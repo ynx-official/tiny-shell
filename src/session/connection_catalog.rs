@@ -77,9 +77,10 @@ pub fn move_session(
     Ok(())
 }
 
-pub fn copy_connection_group(
+pub fn move_connection_group(
     config: &mut crate::session::config::ConfigStore,
     source_group: &str,
+    destination_parent: Option<&str>,
 ) -> Result<String> {
     if !config
         .connection_groups()
@@ -88,7 +89,55 @@ pub fn copy_connection_group(
     {
         bail!("connection group not found");
     }
-    let destination = unique_group_name(config.connection_groups(), source_group);
+    if destination_parent.is_some_and(|parent| is_group_or_descendant(parent, source_group)) {
+        bail!("connection group cannot be moved into itself");
+    }
+    if destination_parent.is_some_and(|parent| {
+        !config
+            .connection_groups()
+            .iter()
+            .any(|group| group == parent)
+    }) {
+        bail!("destination connection group not found");
+    }
+
+    let leaf = source_group.rsplit('/').next().unwrap_or(source_group);
+    let requested = destination_parent
+        .map(|parent| format!("{parent}/{leaf}"))
+        .unwrap_or_else(|| leaf.to_string());
+    if requested == source_group {
+        return Ok(source_group.to_string());
+    }
+    let destination = unique_group_name(config.connection_groups(), &requested);
+    config.rename_connection_group(source_group, destination.clone());
+    Ok(destination)
+}
+
+pub fn copy_connection_group(
+    config: &mut crate::session::config::ConfigStore,
+    source_group: &str,
+    destination_parent: Option<&str>,
+) -> Result<String> {
+    if !config
+        .connection_groups()
+        .iter()
+        .any(|group| group == source_group)
+    {
+        bail!("connection group not found");
+    }
+    if destination_parent.is_some_and(|parent| {
+        !config
+            .connection_groups()
+            .iter()
+            .any(|group| group == parent)
+    }) {
+        bail!("destination connection group not found");
+    }
+    let leaf = source_group.rsplit('/').next().unwrap_or(source_group);
+    let requested = destination_parent
+        .map(|parent| format!("{parent}/{leaf}"))
+        .unwrap_or_else(|| leaf.to_string());
+    let destination = unique_group_name(config.connection_groups(), &requested);
     let old_prefix = format!("{source_group}/");
     let new_prefix = format!("{destination}/");
     let groups = config
@@ -231,7 +280,7 @@ mod tests {
         let source_id = source.id.clone();
         config.upsert(source);
 
-        let copied_root = copy_connection_group(&mut config, "prod").unwrap();
+        let copied_root = copy_connection_group(&mut config, "prod", None).unwrap();
         assert_eq!(copied_root, "prod (2)");
         assert!(
             config
@@ -243,6 +292,61 @@ mod tests {
             config.sessions().iter().any(|item| {
                 item.id != source_id && item.group.as_deref() == Some("prod (2)/eu")
             })
+        );
+    }
+
+    #[test]
+    fn copied_and_moved_groups_respect_destination_parent() {
+        let mut config = crate::session::config::ConfigStore::in_memory();
+        for group in ["prod", "prod/eu", "archive"] {
+            config.add_connection_group(group.to_string());
+        }
+        config.upsert(session("database", "10.0.0.2", "root", Some("prod/eu")));
+
+        let copied = copy_connection_group(&mut config, "prod", Some("archive")).unwrap();
+        assert_eq!(copied, "archive/prod");
+        assert!(
+            config
+                .connection_groups()
+                .iter()
+                .any(|group| group == "archive/prod/eu")
+        );
+        assert!(
+            config
+                .sessions()
+                .iter()
+                .any(|item| { item.group.as_deref() == Some("archive/prod/eu") })
+        );
+
+        let moved = move_connection_group(&mut config, "prod", Some("archive")).unwrap();
+        assert_eq!(moved, "archive/prod (2)");
+        assert!(
+            !config
+                .connection_groups()
+                .iter()
+                .any(|group| group == "prod")
+        );
+        assert!(
+            config
+                .sessions()
+                .iter()
+                .any(|item| { item.group.as_deref() == Some("archive/prod (2)/eu") })
+        );
+    }
+
+    #[test]
+    fn moving_group_rejects_descendants_and_missing_destinations() {
+        let mut config = crate::session::config::ConfigStore::in_memory();
+        config.add_connection_group("prod".to_string());
+        config.add_connection_group("prod/eu".to_string());
+
+        assert!(move_connection_group(&mut config, "prod", Some("prod/eu")).is_err());
+        assert!(move_connection_group(&mut config, "prod", Some("missing")).is_err());
+        assert!(
+            config
+                .connection_groups()
+                .iter()
+                .any(|group| group == "prod")
         );
     }
 

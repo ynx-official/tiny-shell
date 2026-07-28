@@ -443,11 +443,29 @@ impl TinyShell {
                                                         .on_click(window.listener_for(&view, {
                                                             let group = group.clone();
                                                             move |this, _, window, cx| {
-                                                                this.config.move_connection_group(&group, None);
-                                                                let _ = this.config.save();
-                                                                this.active_dialog = None;
-                                                                this.moving_connection_group = None;
-                                                                window.close_dialog(cx);
+                                                                let mut staged = this.config.clone();
+                                                                match crate::session::connection_catalog::move_connection_group(
+                                                                    &mut staged,
+                                                                    &group,
+                                                                    None,
+                                                                )
+                                                                .and_then(|_| staged.save())
+                                                                {
+                                                                    Ok(()) => {
+                                                                        this.config = staged;
+                                                                        this.active_dialog = None;
+                                                                        this.moving_connection_group = None;
+                                                                        window.close_dialog(cx);
+                                                                    }
+                                                                    Err(error) => {
+                                                                        this.status = t!(
+                                                                            "connection_manager_action_failed",
+                                                                            error = error.to_string()
+                                                                        )
+                                                                        .to_string()
+                                                                        .into();
+                                                                    }
+                                                                }
                                                                 cx.notify();
                                                             }
                                                         }))
@@ -472,11 +490,29 @@ impl TinyShell {
                                                         .rounded_md()
                                                         .hover(|this| this.bg(cx.theme().secondary))
                                                         .on_click(window.listener_for(&view, move |this, _, window, cx| {
-                                                            this.config.move_connection_group(&source, Some(&target));
-                                                            let _ = this.config.save();
-                                                            this.active_dialog = None;
-                                                            this.moving_connection_group = None;
-                                                            window.close_dialog(cx);
+                                                            let mut staged = this.config.clone();
+                                                            match crate::session::connection_catalog::move_connection_group(
+                                                                &mut staged,
+                                                                &source,
+                                                                Some(&target),
+                                                            )
+                                                            .and_then(|_| staged.save())
+                                                            {
+                                                                Ok(()) => {
+                                                                    this.config = staged;
+                                                                    this.active_dialog = None;
+                                                                    this.moving_connection_group = None;
+                                                                    window.close_dialog(cx);
+                                                                }
+                                                                Err(error) => {
+                                                                    this.status = t!(
+                                                                        "connection_manager_action_failed",
+                                                                        error = error.to_string()
+                                                                    )
+                                                                    .to_string()
+                                                                    .into();
+                                                                }
+                                                            }
                                                             cx.notify();
                                                         }))
                                                         .child(
@@ -502,6 +538,182 @@ impl TinyShell {
                                                         .scrollbar_show(ScrollbarShow::Scrolling),
                                                 ),
                                         ),
+                                ),
+                        )
+                    }
+                })
+        });
+    }
+
+    pub(crate) fn show_move_saved_session_dialog(
+        &mut self,
+        session_id: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.active_dialog.is_some() {
+            return;
+        }
+        let Some(session) = self.config.get(&session_id).cloned() else {
+            return;
+        };
+        self.active_dialog = Some(crate::app::DialogKind::SessionGroupMove);
+        let groups = self.config.connection_groups().to_vec();
+        let view = cx.entity();
+        let scroll_handle = self.group_picker_scroll_handle.clone();
+        window.open_dialog(cx, move |dialog: Dialog, _window, _| {
+            dialog
+                .title(t!("connection_group_move_to").to_string())
+                .w(px(440.))
+                .h(px(500.))
+                .overlay_closable(true)
+                .on_close({
+                    let view = view.clone();
+                    move |_, _, cx| {
+                        view.update(cx, |this, cx| {
+                            this.active_dialog = None;
+                            cx.notify();
+                        });
+                    }
+                })
+                .content({
+                    let view = view.clone();
+                    let scroll_handle = scroll_handle.clone();
+                    let groups = groups.clone();
+                    let session_id = session_id.clone();
+                    let session_name = session.name.clone();
+                    move |content, window, cx| {
+                        let groups = groups.clone();
+                        let session_id = session_id.clone();
+                        content.child(
+                            v_flex()
+                                .size_full()
+                                .gap_3()
+                                .child(
+                                    div()
+                                        .text_size(rems(0.917))
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child(format!(
+                                            "{}: {}",
+                                            t!("connection_group_move_source"),
+                                            session_name
+                                        )),
+                                )
+                                .child(
+                                    v_flex()
+                                        .id("session-group-picker-scroll")
+                                        .flex_1()
+                                        .min_h(px(0.))
+                                        .track_scroll(&scroll_handle)
+                                        .overflow_y_scroll()
+                                        .rounded_md()
+                                        .border_1()
+                                        .border_color(cx.theme().border)
+                                        .p_2()
+                                        .gap_1()
+                                        .child(
+                                            div()
+                                                .id("session-group-picker-root")
+                                                .w_full()
+                                                .cursor_pointer()
+                                                .rounded_md()
+                                                .hover(|this| this.bg(cx.theme().secondary))
+                                                .on_click(window.listener_for(&view, {
+                                                    let session_id = session_id.clone();
+                                                    move |this, _, window, cx| {
+                                                        let mut staged = this.config.clone();
+                                                        match crate::session::connection_catalog::move_session(
+                                                            &mut staged,
+                                                            &session_id,
+                                                            None,
+                                                        )
+                                                        .and_then(|_| staged.save())
+                                                        {
+                                                            Ok(()) => {
+                                                                this.config = staged;
+                                                                this.active_dialog = None;
+                                                                window.close_dialog(cx);
+                                                            }
+                                                            Err(error) => {
+                                                                this.status = t!(
+                                                                    "connection_manager_action_failed",
+                                                                    error = error.to_string()
+                                                                )
+                                                                .to_string()
+                                                                .into();
+                                                            }
+                                                        }
+                                                        cx.notify();
+                                                    }
+                                                }))
+                                                .child(
+                                                    h_flex()
+                                                        .items_center()
+                                                        .gap_2()
+                                                        .p_2()
+                                                        .child(
+                                                            Icon::new(IconName::Folder)
+                                                                .with_size(gpui_component::Size::Small),
+                                                        )
+                                                        .child(t!("connection_group_ungrouped")),
+                                                ),
+                                        )
+                                        .children(groups.iter().enumerate().map(|(ix, group)| {
+                                            let target = group.clone();
+                                            let session_id = session_id.clone();
+                                            let depth = group.matches('/').count();
+                                            let label = group
+                                                .rsplit('/')
+                                                .next()
+                                                .unwrap_or(group)
+                                                .to_string();
+                                            div()
+                                                .id(("session-group-picker", ix))
+                                                .w_full()
+                                                .cursor_pointer()
+                                                .rounded_md()
+                                                .hover(|this| this.bg(cx.theme().secondary))
+                                                .on_click(window.listener_for(
+                                                    &view,
+                                                    move |this, _, window, cx| {
+                                                        let mut staged = this.config.clone();
+                                                        match crate::session::connection_catalog::move_session(
+                                                            &mut staged,
+                                                            &session_id,
+                                                            Some(&target),
+                                                        )
+                                                        .and_then(|_| staged.save())
+                                                        {
+                                                            Ok(()) => {
+                                                                this.config = staged;
+                                                                this.active_dialog = None;
+                                                                window.close_dialog(cx);
+                                                            }
+                                                            Err(error) => {
+                                                                this.status = t!(
+                                                                    "connection_manager_action_failed",
+                                                                    error = error.to_string()
+                                                                )
+                                                                .to_string()
+                                                                .into();
+                                                            }
+                                                        }
+                                                        cx.notify();
+                                                    },
+                                                ))
+                                                .child(
+                                                    h_flex()
+                                                        .items_center()
+                                                        .gap_2()
+                                                        .p_2()
+                                                        .pl(px(8. + depth as f32 * 16.))
+                                                        .child(
+                                                            Icon::new(IconName::Folder)
+                                                                .with_size(gpui_component::Size::Small),
+                                                        )
+                                                        .child(label),
+                                                )
+                                        })),
                                 ),
                         )
                     }
@@ -2710,37 +2922,16 @@ impl TinyShell {
     fn import_connection_archive(&mut self, path: &PathBuf, password: &str) -> anyhow::Result<()> {
         let json = fs::read_to_string(path)?;
         let archive = crate::session::connection_archive::import_json(&json, password)?;
-        let mut imported = 0usize;
-        for group in archive.connection_groups {
-            if !self
-                .config
-                .connection_groups()
-                .iter()
-                .any(|item| item == &group)
-            {
-                self.config.add_connection_group(group);
-            }
-        }
-        for mut session in archive.sessions {
-            session.id = uuid::Uuid::new_v4().to_string();
-            let original_name = session.name.clone();
-            let mut suffix = 2u32;
-            while self
-                .config
-                .sessions()
-                .iter()
-                .any(|item| item.group == session.group && item.name == session.name)
-            {
-                session.name = format!("{original_name} ({suffix})");
-                suffix += 1;
-            }
-            self.config.upsert(session);
-            imported += 1;
-        }
-        self.config.save()?;
-        self.status = t!("connection_archive_imported", count = imported)
-            .to_string()
-            .into();
+        let mut staged = self.config.clone();
+        let summary = crate::session::connection_archive::apply_import(&mut staged, archive);
+        staged.save()?;
+        self.config = staged;
+        self.status = t!(
+            "connection_archive_imported",
+            count = summary.imported_sessions
+        )
+        .to_string()
+        .into();
         Ok(())
     }
 

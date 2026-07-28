@@ -34,7 +34,7 @@ impl From<ConnectionSort> for ConnectionSortKey {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub enum ConnectionTreeNode {
     Group {
         id: ConnectionNodeId,
@@ -54,7 +54,7 @@ pub enum ConnectionTreeNode {
     },
     DeletedSession {
         id: ConnectionNodeId,
-        session_id: String,
+        session: Box<Session>,
         depth: usize,
     },
 }
@@ -208,7 +208,7 @@ fn append_deleted_nodes(
         for session in &group.sessions {
             nodes.push(ConnectionTreeNode::DeletedSession {
                 id: ConnectionNodeId::DeletedSession(session.id.clone()),
-                session_id: session.id.clone(),
+                session: Box::new(session.clone()),
                 depth: 1,
             });
         }
@@ -216,7 +216,7 @@ fn append_deleted_nodes(
     for session in sessions {
         nodes.push(ConnectionTreeNode::DeletedSession {
             id: ConnectionNodeId::DeletedSession(session.session.id.clone()),
-            session_id: session.session.id.clone(),
+            session: Box::new(session.session.clone()),
             depth: 0,
         });
     }
@@ -273,5 +273,25 @@ mod tests {
         state.expanded.clear();
         state.set_query(String::new());
         assert!(state.expanded.contains("prod"));
+    }
+
+    #[test]
+    fn deleted_group_projection_keeps_its_session_snapshot() {
+        let mut config = ConfigStore::in_memory();
+        config.add_connection_group("prod".to_string());
+        config.upsert(session("database", Some("prod")));
+        assert!(config.soft_delete_connection_group("prod"));
+
+        let state = ConnectionManagerState {
+            show_deleted: true,
+            ..ConnectionManagerState::default()
+        };
+        let nodes = state.visible_nodes(&config);
+
+        assert!(nodes.iter().any(|node| matches!(
+            node,
+            ConnectionTreeNode::DeletedSession { session, depth: 1, .. }
+                if session.id == "database" && session.name == "database"
+        )));
     }
 }

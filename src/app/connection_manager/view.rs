@@ -46,9 +46,7 @@ pub enum ConnectionMenuItem {
     MoveToGroup,
     NewConnection,
     NewGroup,
-    Sort,
     Import,
-    Export,
 }
 
 pub fn context_for(node: Option<&ConnectionTreeNode>) -> ConnectionContext {
@@ -64,18 +62,18 @@ pub fn context_for(node: Option<&ConnectionTreeNode>) -> ConnectionContext {
 }
 
 pub fn menu_items(context: ConnectionContext, deleted: bool) -> Vec<ConnectionMenuItem> {
-    let mut items = match context {
+    if deleted {
+        return vec![ConnectionMenuItem::Restore];
+    }
+    match context {
         ConnectionContext::Session => vec![
             ConnectionMenuItem::Connect,
             ConnectionMenuItem::Edit,
-            ConnectionMenuItem::Rename,
+            ConnectionMenuItem::CopyAddress,
             ConnectionMenuItem::Copy,
             ConnectionMenuItem::Cut,
-            ConnectionMenuItem::Paste,
-            ConnectionMenuItem::Delete,
-            ConnectionMenuItem::CopyAddress,
-            ConnectionMenuItem::PasteAddress,
             ConnectionMenuItem::MoveToGroup,
+            ConnectionMenuItem::Delete,
         ],
         ConnectionContext::Group => vec![
             ConnectionMenuItem::NewConnection,
@@ -84,23 +82,17 @@ pub fn menu_items(context: ConnectionContext, deleted: bool) -> Vec<ConnectionMe
             ConnectionMenuItem::Copy,
             ConnectionMenuItem::Cut,
             ConnectionMenuItem::Paste,
+            ConnectionMenuItem::MoveToGroup,
             ConnectionMenuItem::Delete,
         ],
         ConnectionContext::Empty => vec![
             ConnectionMenuItem::NewConnection,
             ConnectionMenuItem::NewGroup,
             ConnectionMenuItem::Paste,
+            ConnectionMenuItem::PasteAddress,
+            ConnectionMenuItem::Import,
         ],
-    };
-    if deleted {
-        items.push(ConnectionMenuItem::Restore);
     }
-    items.extend([
-        ConnectionMenuItem::Sort,
-        ConnectionMenuItem::Import,
-        ConnectionMenuItem::Export,
-    ]);
-    items
 }
 
 pub fn action_for(
@@ -172,16 +164,31 @@ pub(crate) fn render(
         .size_full()
         .track_scroll(&view.read(cx).quick_connection_scroll_handle)
         .overflow_y_scroll()
-        .context_menu({
-            let view = view.clone();
-            move |menu, window, _| render_empty_menu(menu, &view, window)
-        })
         .children(rows)
-        .when(recycle_count == 0 && visible_connections == 0, |this| {
-            this.items_center()
+        .child(if recycle_count == 0 && visible_connections == 0 {
+            div()
+                .id("connection-manager-empty-context")
+                .flex_1()
+                .min_h(px(120.))
+                .items_center()
                 .justify_center()
                 .text_color(cx.theme().muted_foreground)
+                .context_menu({
+                    let view = view.clone();
+                    move |menu, window, _| render_empty_menu(menu, &view, window)
+                })
                 .child(t!("quick_connection_empty").to_string())
+                .into_any_element()
+        } else {
+            div()
+                .id("connection-manager-empty-context")
+                .flex_1()
+                .min_h(px(1.))
+                .context_menu({
+                    let view = view.clone();
+                    move |menu, window, _| render_empty_menu(menu, &view, window)
+                })
+                .into_any_element()
         });
 
     v_flex()
@@ -257,6 +264,7 @@ fn render_toolbar(
                 .small()
                 .label(t!("connection_archive_import").to_string())
                 .on_click(window.listener_for(view, |this, _, window, cx| {
+                    dismiss_manager_dialog(this, window, cx);
                     this.show_connection_archive_password_dialog(PathBuf::new(), true, window, cx);
                 })),
         )
@@ -265,6 +273,7 @@ fn render_toolbar(
                 .small()
                 .label(t!("connection_archive_export").to_string())
                 .on_click(window.listener_for(view, |this, _, window, cx| {
+                    dismiss_manager_dialog(this, window, cx);
                     this.show_connection_archive_password_dialog(PathBuf::new(), false, window, cx);
                 })),
         )
@@ -367,11 +376,9 @@ fn render_rows(
             ConnectionTreeNode::DeletedGroup { id, name, depth } => {
                 render_deleted_group(view, id, name, depth, index, cx)
             }
-            ConnectionTreeNode::DeletedSession {
-                id,
-                session_id,
-                depth,
-            } => render_deleted_session(view, id, session_id, depth, index, cx),
+            ConnectionTreeNode::DeletedSession { id, session, depth } => {
+                render_deleted_session(view, id, *session, depth, index, cx)
+            }
         })
         .collect()
 }
@@ -428,8 +435,7 @@ fn render_group(
                                 let group_name = group_name.clone();
                                 move |this, _, window, cx| {
                                     this.connection_group_parent = Some(group_name.clone());
-                                    this.active_dialog = None;
-                                    window.close_dialog(cx);
+                                    dismiss_manager_dialog(this, window, cx);
                                     this.open_new_ssh_dialog(window, cx);
                                 }
                             }),
@@ -440,6 +446,7 @@ fn render_group(
                             window.listener_for(&view, {
                                 let group_name = group_name.clone();
                                 move |this, _, window, cx| {
+                                    dismiss_manager_dialog(this, window, cx);
                                     this.show_connection_group_dialog(
                                         None,
                                         Some(group_name.clone()),
@@ -450,10 +457,12 @@ fn render_group(
                             }),
                         ),
                     )
+                    .separator()
                     .item(PopupMenuItem::new(t!("rename").to_string()).on_click(
                         window.listener_for(&view, {
                             let group_name = group_name.clone();
                             move |this, _, window, cx| {
+                                dismiss_manager_dialog(this, window, cx);
                                 this.show_connection_group_dialog(
                                     Some(group_name.clone()),
                                     None,
@@ -463,6 +472,7 @@ fn render_group(
                             }
                         }),
                     ))
+                    .separator()
                     .item(
                         PopupMenuItem::new(t!("connection_manager_copy").to_string()).on_click(
                             window.listener_for(&view, {
@@ -512,6 +522,7 @@ fn render_group(
                             window.listener_for(&view, {
                                 let group_name = group_name.clone();
                                 move |this, _, window, cx| {
+                                    dismiss_manager_dialog(this, window, cx);
                                     this.show_move_connection_group_dialog(
                                         group_name.clone(),
                                         window,
@@ -521,6 +532,7 @@ fn render_group(
                             }),
                         ),
                     )
+                    .separator()
                     .item(PopupMenuItem::new(t!("delete").to_string()).on_click(
                         window.listener_for(&view, move |this, _, _, cx| {
                             run_manager_action(
@@ -670,11 +682,9 @@ fn session_menu(
 ) -> impl Fn(PopupMenu, &mut Window, &mut gpui::Context<PopupMenu>) -> PopupMenu + 'static {
     let session_id = session.id.clone();
     let session_for_edit = session.clone();
-    let session_group = session.group.clone();
     let delete_id = session_id.clone();
     let view = view.clone();
     move |mut menu, window, _| {
-        let paste_group = session_group.clone();
         let delete_id = delete_id.clone();
         menu = menu
             .item(
@@ -693,9 +703,13 @@ fn session_menu(
             .item(
                 PopupMenuItem::new(t!("edit").to_string()).on_click(window.listener_for(&view, {
                     let id = session_for_edit.id.clone();
-                    move |this, _, window, cx| this.edit_saved_session(id.clone(), window, cx)
+                    move |this, _, window, cx| {
+                        dismiss_manager_dialog(this, window, cx);
+                        this.edit_saved_session(id.clone(), window, cx);
+                    }
                 })),
             )
+            .separator()
             .item(
                 PopupMenuItem::new(t!("connection_manager_copy").to_string()).on_click(
                     window.listener_for(&view, {
@@ -722,21 +736,6 @@ fn session_menu(
                 ),
             )
             .item(
-                PopupMenuItem::new(t!("connection_manager_paste").to_string()).on_click(
-                    window.listener_for(&view, {
-                        move |this, _, _, cx| {
-                            run_manager_action(
-                                this,
-                                ConnectionManagerAction::Paste {
-                                    group: paste_group.clone(),
-                                },
-                                cx,
-                            )
-                        }
-                    }),
-                ),
-            )
-            .item(
                 PopupMenuItem::new(t!("connection_copy_address").to_string()).on_click(
                     window.listener_for(&view, {
                         let id = session_id.clone();
@@ -750,6 +749,18 @@ fn session_menu(
                     }),
                 ),
             )
+            .item(
+                PopupMenuItem::new(t!("connection_group_move_to").to_string()).on_click(
+                    window.listener_for(&view, {
+                        let id = session_id.clone();
+                        move |this, _, window, cx| {
+                            dismiss_manager_dialog(this, window, cx);
+                            this.show_move_saved_session_dialog(id.clone(), window, cx);
+                        }
+                    }),
+                ),
+            )
+            .separator()
             .item(
                 PopupMenuItem::new(t!("delete").to_string()).on_click(window.listener_for(
                     &view,
@@ -820,21 +831,11 @@ fn render_deleted_group(
 fn render_deleted_session(
     view: &Entity<TinyShell>,
     id: ConnectionNodeId,
-    session_id: String,
+    session: Session,
     depth: usize,
     index: usize,
     cx: &mut App,
 ) -> AnyElement {
-    let Some(session) = view
-        .read(cx)
-        .config
-        .deleted_sessions()
-        .iter()
-        .find(|item| item.session.id == session_id)
-        .map(|item| item.session.clone())
-    else {
-        return div().into_any_element();
-    };
     let ConnectionNodeId::DeletedSession(id) = id else {
         return div().into_any_element();
     };
@@ -888,8 +889,7 @@ fn render_empty_menu(
         .item(
             PopupMenuItem::new(t!("overview_new_connection").to_string()).on_click(
                 window.listener_for(view, |this, _, window, cx| {
-                    this.active_dialog = None;
-                    window.close_dialog(cx);
+                    dismiss_manager_dialog(this, window, cx);
                     this.open_new_ssh_dialog(window, cx);
                 }),
             ),
@@ -897,10 +897,12 @@ fn render_empty_menu(
         .item(
             PopupMenuItem::new(t!("connection_group_new").to_string()).on_click(
                 window.listener_for(view, |this, _, window, cx| {
+                    dismiss_manager_dialog(this, window, cx);
                     this.show_connection_group_dialog(None, None, window, cx);
                 }),
             ),
         )
+        .separator()
         .item(
             PopupMenuItem::new(t!("connection_manager_paste").to_string()).on_click(
                 window.listener_for(view, |this, _, _, cx| {
@@ -909,20 +911,41 @@ fn render_empty_menu(
             ),
         )
         .item(
-            PopupMenuItem::new(t!("connection_archive_import").to_string()).on_click(
+            PopupMenuItem::new(t!("connection_paste_address").to_string()).on_click(
                 window.listener_for(view, |this, _, window, cx| {
-                    this.show_connection_archive_password_dialog(PathBuf::new(), true, window, cx);
+                    let Some(address) = cx.read_from_clipboard().and_then(|item| item.text())
+                    else {
+                        return;
+                    };
+                    dismiss_manager_dialog(this, window, cx);
+                    this.connection_group_parent = None;
+                    if let Err(error) = this.open_ssh_address_dialog(&address, window, cx) {
+                        this.status = t!(
+                            "connection_manager_action_failed",
+                            error = error.to_string()
+                        )
+                        .to_string()
+                        .into();
+                        cx.notify();
+                    }
                 }),
             ),
         )
+        .separator()
         .item(
-            PopupMenuItem::new(t!("connection_archive_export").to_string()).on_click(
+            PopupMenuItem::new(t!("connection_archive_import").to_string()).on_click(
                 window.listener_for(view, |this, _, window, cx| {
-                    this.show_connection_archive_password_dialog(PathBuf::new(), false, window, cx);
+                    dismiss_manager_dialog(this, window, cx);
+                    this.show_connection_archive_password_dialog(PathBuf::new(), true, window, cx);
                 }),
             ),
         );
     menu
+}
+
+fn dismiss_manager_dialog(this: &mut TinyShell, window: &mut Window, cx: &mut Context<TinyShell>) {
+    this.active_dialog = None;
+    window.close_dialog(cx);
 }
 
 fn run_manager_action(
@@ -930,25 +953,25 @@ fn run_manager_action(
     action: ConnectionManagerAction,
     cx: &mut Context<TinyShell>,
 ) {
-    if let Err(error) = this
-        .connection_manager_actions
-        .execute(&mut this.config, action)
-    {
-        tracing::warn!("connection manager action failed: {error:#}");
-        this.status = t!(
-            "connection_manager_action_failed",
-            error = error.to_string()
-        )
-        .to_string()
-        .into();
-    } else if let Err(error) = this.config.save() {
-        tracing::warn!("failed to save connection manager action: {error:#}");
-        this.status = t!(
-            "connection_manager_action_failed",
-            error = error.to_string()
-        )
-        .to_string()
-        .into();
+    let mut staged_config = this.config.clone();
+    let mut staged_actions = this.connection_manager_actions.clone();
+    let result = staged_actions
+        .execute(&mut staged_config, action)
+        .and_then(|_| staged_config.save());
+    match result {
+        Ok(()) => {
+            this.config = staged_config;
+            this.connection_manager_actions = staged_actions;
+        }
+        Err(error) => {
+            tracing::warn!("connection manager action failed: {error:#}");
+            this.status = t!(
+                "connection_manager_action_failed",
+                error = error.to_string()
+            )
+            .to_string()
+            .into();
+        }
     }
     cx.notify();
 }
@@ -958,14 +981,45 @@ mod tests {
     use super::*;
 
     #[test]
-    fn context_menus_cover_session_group_and_empty_regions() {
-        assert!(
-            menu_items(ConnectionContext::Session, false)
-                .contains(&ConnectionMenuItem::CopyAddress)
+    fn context_menus_only_expose_operations_for_the_clicked_scope() {
+        assert_eq!(
+            menu_items(ConnectionContext::Session, false),
+            vec![
+                ConnectionMenuItem::Connect,
+                ConnectionMenuItem::Edit,
+                ConnectionMenuItem::CopyAddress,
+                ConnectionMenuItem::Copy,
+                ConnectionMenuItem::Cut,
+                ConnectionMenuItem::MoveToGroup,
+                ConnectionMenuItem::Delete,
+            ]
         );
-        assert!(
-            menu_items(ConnectionContext::Group, false).contains(&ConnectionMenuItem::NewGroup)
+        assert_eq!(
+            menu_items(ConnectionContext::Group, false),
+            vec![
+                ConnectionMenuItem::NewConnection,
+                ConnectionMenuItem::NewGroup,
+                ConnectionMenuItem::Rename,
+                ConnectionMenuItem::Copy,
+                ConnectionMenuItem::Cut,
+                ConnectionMenuItem::Paste,
+                ConnectionMenuItem::MoveToGroup,
+                ConnectionMenuItem::Delete,
+            ]
         );
-        assert!(menu_items(ConnectionContext::Empty, false).contains(&ConnectionMenuItem::Import));
+        assert_eq!(
+            menu_items(ConnectionContext::Empty, false),
+            vec![
+                ConnectionMenuItem::NewConnection,
+                ConnectionMenuItem::NewGroup,
+                ConnectionMenuItem::Paste,
+                ConnectionMenuItem::PasteAddress,
+                ConnectionMenuItem::Import,
+            ]
+        );
+        assert_eq!(
+            menu_items(ConnectionContext::Session, true),
+            vec![ConnectionMenuItem::Restore]
+        );
     }
 }

@@ -147,13 +147,12 @@ impl ConnectionManagerActions {
                 Ok(Some(connection_catalog::copy_session(config, &id, group)?))
             }
             ClipboardPayload::Group { name, cut } if cut => {
-                let destination = group.map(|parent| format!("{parent}/{name}"));
-                config.move_connection_group(&name, destination.as_deref());
+                let moved = connection_catalog::move_connection_group(config, &name, group)?;
                 self.clipboard = None;
-                Ok(Some(name))
+                Ok(Some(moved))
             }
             ClipboardPayload::Group { name, .. } => Ok(Some(
-                connection_catalog::copy_connection_group(config, &name)?,
+                connection_catalog::copy_connection_group(config, &name, group)?,
             )),
         }
     }

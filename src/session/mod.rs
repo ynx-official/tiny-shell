@@ -767,8 +767,27 @@ impl TinyShell {
     }
 
     pub(crate) fn open_new_ssh_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let group = self.connection_group_parent.take();
         self.reset_ssh_form(window, cx);
+        self.session_group_selection = group;
         self.show_ssh_dialog(window, cx);
+    }
+
+    pub(crate) fn open_ssh_address_dialog(
+        &mut self,
+        address: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> anyhow::Result<()> {
+        let session = crate::session::connection_catalog::parse_session_address(address)?;
+        let group = self.connection_group_parent.take();
+        self.reset_ssh_form(window, cx);
+        self.session_group_selection = group;
+        Self::set_input_value(&self.host_input, session.host, window, cx);
+        Self::set_input_value(&self.port_input, session.port.to_string(), window, cx);
+        Self::set_input_value(&self.user_input, session.user, window, cx);
+        self.show_ssh_dialog(window, cx);
+        Ok(())
     }
 
     pub(crate) fn edit_saved_session(

@@ -1,5 +1,7 @@
 #![allow(dead_code)]
 
+use std::collections::HashMap;
+
 use anyhow::{Result, anyhow, bail};
 use argon2::Argon2;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
@@ -10,7 +12,7 @@ use chacha20poly1305::{
 use rand::{RngCore, rngs::OsRng};
 use serde::{Deserialize, Serialize};
 
-use super::config::Session;
+use super::config::{ConfigStore, Session};
 
 const ARCHIVE_VERSION: u32 = 1;
 const ARCHIVE_KIND: &str = "tiny-shell.connection-archive";
@@ -35,6 +37,12 @@ struct EncryptedArchive {
     salt: String,
     nonce: String,
     ciphertext: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ConnectionArchiveImportSummary {
+    pub imported_groups: usize,
+    pub imported_sessions: usize,
 }
 
 impl ConnectionArchive {
@@ -119,6 +127,67 @@ pub fn import_json(json: &str, password: &str) -> Result<ConnectionArchive> {
         bail!("unsupported decrypted connection archive version");
     }
     Ok(archive)
+}
+
+pub fn apply_import(
+    config: &mut ConfigStore,
+    archive: ConnectionArchive,
+) -> ConnectionArchiveImportSummary {
+    let mut groups = archive.connection_groups;
+    groups.sort_by_key(|group| (group.split('/').count(), group.to_lowercase()));
+    groups.dedup();
+
+    let mut group_mapping = HashMap::new();
+    for group in groups {
+        let requested = group
+            .rsplit_once('/')
+            .and_then(|(parent, leaf)| {
+                group_mapping
+                    .get(parent)
+                    .map(|mapped_parent: &String| format!("{mapped_parent}/{leaf}"))
+            })
+            .unwrap_or_else(|| group.clone());
+        let imported = unique_name(
+            config.connection_groups().iter().map(String::as_str),
+            &requested,
+        );
+        config.add_connection_group(imported.clone());
+        group_mapping.insert(group, imported);
+    }
+
+    let imported_groups = group_mapping.len();
+    let imported_sessions = archive.sessions.len();
+    for mut session in archive.sessions {
+        session.id = uuid::Uuid::new_v4().to_string();
+        session.group = session
+            .group
+            .and_then(|group| group_mapping.get(&group).cloned().or(Some(group)));
+        session.name = unique_name(
+            config
+                .sessions()
+                .iter()
+                .filter(|existing| existing.group == session.group)
+                .map(|existing| existing.name.as_str()),
+            &session.name,
+        );
+        config.upsert(session);
+    }
+
+    ConnectionArchiveImportSummary {
+        imported_groups,
+        imported_sessions,
+    }
+}
+
+fn unique_name<'a>(existing: impl Iterator<Item = &'a str>, requested: &str) -> String {
+    let existing = existing.collect::<std::collections::HashSet<_>>();
+    if !existing.contains(requested) {
+        return requested.to_string();
+    }
+    (2_u32..)
+        .map(|suffix| format!("{requested} ({suffix})"))
+        .find(|candidate| !existing.contains(candidate.as_str()))
+        .unwrap_or_else(|| format!("{requested} ({})", uuid::Uuid::new_v4()))
 }
 
 fn derive_key(password: &str, salt: &[u8; 16]) -> Result<[u8; 32]> {
@@ -219,5 +288,48 @@ mod tests {
         let mut envelope: serde_json::Value = serde_json::from_str(&json).unwrap();
         envelope["version"] = serde_json::Value::from(999);
         assert!(import_json(&serde_json::to_string(&envelope).unwrap(), "password").is_err());
+    }
+
+    #[test]
+    fn import_renames_conflicting_group_tree_and_sessions() {
+        let mut config = ConfigStore::in_memory();
+        config.add_connection_group("prod".to_string());
+        let mut existing = session();
+        existing.id = "existing".to_string();
+        existing.group = Some("prod".to_string());
+        config.upsert(existing);
+
+        let mut imported_root = session();
+        imported_root.id = "archive-root".to_string();
+        imported_root.group = Some("prod".to_string());
+        let mut imported_child = session();
+        imported_child.id = "archive-child".to_string();
+        imported_child.group = Some("prod/eu".to_string());
+        let archive = ConnectionArchive::new(
+            &["prod".to_string(), "prod/eu".to_string()],
+            &[imported_root, imported_child],
+            true,
+        );
+
+        let summary = apply_import(&mut config, archive);
+
+        assert_eq!(summary.imported_groups, 2);
+        assert_eq!(summary.imported_sessions, 2);
+        assert!(
+            config
+                .connection_groups()
+                .iter()
+                .any(|group| group == "prod (2)/eu")
+        );
+        assert!(config.sessions().iter().any(|item| {
+            item.id != "archive-root"
+                && item.group.as_deref() == Some("prod (2)")
+                && item.name == "production"
+        }));
+        assert!(config.sessions().iter().any(|item| {
+            item.id != "archive-child"
+                && item.group.as_deref() == Some("prod (2)/eu")
+                && item.name == "production"
+        }));
     }
 }

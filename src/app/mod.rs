@@ -520,6 +520,7 @@ pub(crate) enum DialogKind {
     ManagedKeyImport,
     ConnectionGroup,
     ConnectionGroupMove,
+    SessionGroupMove,
     QuickCommandCategory,
     QuickCommand,
     /// 校验隐私密码后才允许启用敏感信息同步。
