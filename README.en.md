@@ -125,6 +125,12 @@ cargo deb
 
 ## Version History
 
+### v1.1.7
+- Moved quick connect, group operations, connection moves, and archive import/export into independent system windows while keeping the main window interactive
+- Added multiple isolated SSH create/edit windows with independent drafts, atomic saves, and optimistic concurrency conflict detection
+- Reduced the SSH editor size with a compact scrollable layout and added `Esc` window closing
+- Automatically close the quick connect window after connecting by double-click or menu action
+
 ### v1.1.6
 - Upgraded quick connect into an independent tree-based connection manager
 - Added connection and group search, sorting, expand/collapse, context actions, and moving

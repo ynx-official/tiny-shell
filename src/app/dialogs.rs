@@ -316,6 +316,7 @@ use crate::{
 };
 
 impl TinyShell {
+    #[allow(dead_code)]
     pub(crate) fn confirm_connection_group_dialog(
         &mut self,
         window: &mut Window,
@@ -360,6 +361,7 @@ impl TinyShell {
         cx.notify();
     }
 
+    #[allow(dead_code)]
     pub(crate) fn show_move_connection_group_dialog(
         &mut self,
         group: String,
@@ -545,6 +547,7 @@ impl TinyShell {
         });
     }
 
+    #[allow(dead_code)]
     pub(crate) fn show_move_saved_session_dialog(
         &mut self,
         session_id: String,
@@ -721,6 +724,7 @@ impl TinyShell {
         });
     }
 
+    #[allow(dead_code)]
     pub(crate) fn show_connection_group_dialog(
         &mut self,
         group: Option<String>,
@@ -2907,7 +2911,11 @@ impl TinyShell {
         .detach();
     }
 
-    fn export_connection_archive(&mut self, path: &PathBuf, password: &str) -> anyhow::Result<()> {
+    pub(crate) fn export_connection_archive(
+        &mut self,
+        path: &PathBuf,
+        password: &str,
+    ) -> anyhow::Result<()> {
         let archive = crate::session::connection_archive::ConnectionArchive::new(
             self.config.connection_groups(),
             self.config.sessions(),
@@ -2919,7 +2927,11 @@ impl TinyShell {
         Ok(())
     }
 
-    fn import_connection_archive(&mut self, path: &PathBuf, password: &str) -> anyhow::Result<()> {
+    pub(crate) fn import_connection_archive(
+        &mut self,
+        path: &PathBuf,
+        password: &str,
+    ) -> anyhow::Result<()> {
         let json = fs::read_to_string(path)?;
         let archive = crate::session::connection_archive::import_json(&json, password)?;
         let mut staged = self.config.clone();
@@ -3466,12 +3478,19 @@ impl TinyShell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.active_dialog.is_some() {
+        if let Some(handle) = self.connection_manager_window {
+            if handle
+                .update(cx, |_, window, _| window.activate_window())
+                .is_ok()
+            {
+                return;
+            }
+            self.connection_manager_window = None;
+        }
+        if self.connection_manager_window_opening {
             return;
         }
-        self.active_dialog = Some(crate::app::DialogKind::QuickConnectionManager);
-        self.quick_connection_search_input
-            .update(cx, |input, cx| input.set_value("", window, cx));
+
         let groups = self.config.connection_groups().to_vec();
         self.connection_manager_state.update(cx, move |state, _| {
             state.query.clear();
@@ -3480,38 +3499,16 @@ impl TinyShell {
             state.selected = None;
         });
 
-        let view = cx.entity();
-        let search_input = self.quick_connection_search_input.clone();
-        let deferred_search_input = search_input.clone();
-        window.open_dialog(cx, move |dialog: Dialog, _window, _cx| {
-            dialog
-                .title(t!("quick_connection_title").to_string())
-                .w(px(860.))
-                .h(px(600.))
-                .overlay_closable(true)
-                .on_close({
-                    let view = view.clone();
-                    move |_, _, cx| {
-                        view.update(cx, |this, cx| {
-                            this.active_dialog = None;
-                            cx.notify();
-                        });
-                    }
-                })
-                .content({
-                    let view = view.clone();
-                    let search_input = search_input.clone();
-                    move |content, window, cx| {
-                        content.child(crate::app::connection_manager::view::render(
-                            &view,
-                            &search_input,
-                            window,
-                            cx,
-                        ))
-                    }
-                })
+        let owner = cx.entity();
+        self.connection_manager_window_opening = true;
+        window.defer(cx, move |_, cx| {
+            let manager_window = crate::app::connection_manager::window::open(owner.clone(), cx);
+            owner.update(cx, |this, cx| {
+                this.connection_manager_window = manager_window;
+                this.connection_manager_window_opening = false;
+                cx.notify();
+            });
         });
-        crate::app::input_focus::defer_focus_input_at_end(deferred_search_input, window, cx);
     }
 
     pub(crate) fn show_transfers_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {

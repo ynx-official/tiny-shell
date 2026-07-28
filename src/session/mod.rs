@@ -246,6 +246,7 @@ impl TinyShell {
         input.update(cx, |state, cx| state.set_value(value, window, cx));
     }
 
+    #[allow(dead_code)]
     pub(crate) fn reset_ssh_form(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.editing_session_id = None;
         self.ssh_auth_method = AuthMethod::Password;
@@ -272,6 +273,7 @@ impl TinyShell {
         Self::set_input_value(&self.proxy_password_input, "", window, cx);
     }
 
+    #[allow(dead_code)]
     pub(crate) fn load_session_into_form(
         &mut self,
         session: &Session,
@@ -768,9 +770,17 @@ impl TinyShell {
 
     pub(crate) fn open_new_ssh_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let group = self.connection_group_parent.take();
-        self.reset_ssh_form(window, cx);
-        self.session_group_selection = group;
-        self.show_ssh_dialog(window, cx);
+        let owner = cx.entity();
+        window.defer(cx, move |_, cx| {
+            crate::app::connection_manager::ssh_editor_window::open(
+                owner,
+                crate::app::connection_manager::ssh_editor_window::SshEditorRequest::New {
+                    group,
+                    prefill: None,
+                },
+                cx,
+            );
+        });
     }
 
     pub(crate) fn open_ssh_address_dialog(
@@ -781,12 +791,17 @@ impl TinyShell {
     ) -> anyhow::Result<()> {
         let session = crate::session::connection_catalog::parse_session_address(address)?;
         let group = self.connection_group_parent.take();
-        self.reset_ssh_form(window, cx);
-        self.session_group_selection = group;
-        Self::set_input_value(&self.host_input, session.host, window, cx);
-        Self::set_input_value(&self.port_input, session.port.to_string(), window, cx);
-        Self::set_input_value(&self.user_input, session.user, window, cx);
-        self.show_ssh_dialog(window, cx);
+        let owner = cx.entity();
+        window.defer(cx, move |_, cx| {
+            crate::app::connection_manager::ssh_editor_window::open(
+                owner,
+                crate::app::connection_manager::ssh_editor_window::SshEditorRequest::New {
+                    group,
+                    prefill: Some(session),
+                },
+                cx,
+            );
+        });
         Ok(())
     }
 
@@ -801,8 +816,16 @@ impl TinyShell {
             cx.notify();
             return;
         };
-        self.load_session_into_form(&session, window, cx);
-        self.show_ssh_dialog(window, cx);
+        let owner = cx.entity();
+        window.defer(cx, move |_, cx| {
+            crate::app::connection_manager::ssh_editor_window::open(
+                owner,
+                crate::app::connection_manager::ssh_editor_window::SshEditorRequest::Edit {
+                    session,
+                },
+                cx,
+            );
+        });
     }
 
     pub(crate) fn clone_saved_session(
@@ -816,15 +839,16 @@ impl TinyShell {
             cx.notify();
             return;
         };
-        self.load_session_into_form(&session, window, cx);
-        self.editing_session_id = None;
-        Self::set_input_value(
-            &self.session_name_input,
-            format!("{}-copy", session.name),
-            window,
-            cx,
-        );
-        self.show_ssh_dialog(window, cx);
+        let owner = cx.entity();
+        window.defer(cx, move |_, cx| {
+            crate::app::connection_manager::ssh_editor_window::open(
+                owner,
+                crate::app::connection_manager::ssh_editor_window::SshEditorRequest::Clone {
+                    session,
+                },
+                cx,
+            );
+        });
     }
 
     pub(crate) fn terminal_cell_width(&self) -> f32 {

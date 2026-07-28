@@ -1841,7 +1841,14 @@ impl TinyShell {
                             .icon(IconName::FolderOpen)
                             .label(t!("connection_group_new").to_string())
                             .on_click(cx.listener(|this, _, window, cx| {
-                                this.show_connection_group_dialog(None, None, window, cx);
+                                this.open_connection_operation_window(
+                                    crate::app::connection_manager::operation_window::ConnectionOperation::EditGroup {
+                                        original: None,
+                                        parent: None,
+                                    },
+                                    window,
+                                    cx,
+                                );
                             })),
                     )
                     .child(
@@ -1977,9 +1984,14 @@ impl TinyShell {
                                                 .on_click(window.listener_for(&view, {
                                                     let group_name = group_name.clone();
                                                     move |this, _, window, cx| {
-                                                        this.show_connection_group_dialog(
-                                                            Some(group_name.clone()),
-                                                            None,
+                                                        let parent = group_name
+                                                            .rsplit_once('/')
+                                                            .map(|(parent, _)| parent.to_string());
+                                                        this.open_connection_operation_window(
+                                                            crate::app::connection_manager::operation_window::ConnectionOperation::EditGroup {
+                                                                original: Some(group_name.clone()),
+                                                                parent,
+                                                            },
                                                             window,
                                                             cx,
                                                         );
@@ -1991,7 +2003,14 @@ impl TinyShell {
                                                     .on_click(window.listener_for(&view, {
                                                         let group_name = group_name.clone();
                                                         move |this, _, window, cx| {
-                                                            this.show_connection_group_dialog(None, Some(group_name.clone()), window, cx);
+                                                            this.open_connection_operation_window(
+                                                                crate::app::connection_manager::operation_window::ConnectionOperation::EditGroup {
+                                                                    original: None,
+                                                                    parent: Some(group_name.clone()),
+                                                                },
+                                                                window,
+                                                                cx,
+                                                            );
                                                         }
                                                     })),
                                             )
@@ -2016,7 +2035,13 @@ impl TinyShell {
                                                     .on_click(window.listener_for(&view, {
                                                         let group_name = group_name.clone();
                                                         move |this, _, window, cx| {
-                                                            this.show_move_connection_group_dialog(group_name.clone(), window, cx);
+                                                            this.open_connection_operation_window(
+                                                                crate::app::connection_manager::operation_window::ConnectionOperation::MoveGroup {
+                                                                    group: group_name.clone(),
+                                                                },
+                                                                window,
+                                                                cx,
+                                                            );
                                                         }
                                                     })),
                                             )

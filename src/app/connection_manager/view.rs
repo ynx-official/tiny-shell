@@ -264,8 +264,14 @@ fn render_toolbar(
                 .small()
                 .label(t!("connection_archive_import").to_string())
                 .on_click(window.listener_for(view, |this, _, window, cx| {
-                    dismiss_manager_dialog(this, window, cx);
-                    this.show_connection_archive_password_dialog(PathBuf::new(), true, window, cx);
+                    this.open_connection_operation_window(
+                        crate::app::connection_manager::operation_window::ConnectionOperation::Archive {
+                            path: PathBuf::new(),
+                            importing: true,
+                        },
+                        window,
+                        cx,
+                    );
                 })),
         )
         .child(
@@ -273,8 +279,14 @@ fn render_toolbar(
                 .small()
                 .label(t!("connection_archive_export").to_string())
                 .on_click(window.listener_for(view, |this, _, window, cx| {
-                    dismiss_manager_dialog(this, window, cx);
-                    this.show_connection_archive_password_dialog(PathBuf::new(), false, window, cx);
+                    this.open_connection_operation_window(
+                        crate::app::connection_manager::operation_window::ConnectionOperation::Archive {
+                            path: PathBuf::new(),
+                            importing: false,
+                        },
+                        window,
+                        cx,
+                    );
                 })),
         )
         .child(
@@ -445,11 +457,12 @@ fn render_group(
                         PopupMenuItem::new(t!("connection_group_new_child").to_string()).on_click(
                             window.listener_for(&view, {
                                 let group_name = group_name.clone();
-                                move |this, _, window, cx| {
-                                    dismiss_manager_dialog(this, window, cx);
-                                    this.show_connection_group_dialog(
-                                        None,
-                                        Some(group_name.clone()),
+                                move |_this, _, window, cx| {
+                                    open_connection_operation(
+                                        crate::app::connection_manager::operation_window::ConnectionOperation::EditGroup {
+                                            original: None,
+                                            parent: Some(group_name.clone()),
+                                        },
                                         window,
                                         cx,
                                     );
@@ -461,11 +474,15 @@ fn render_group(
                     .item(PopupMenuItem::new(t!("rename").to_string()).on_click(
                         window.listener_for(&view, {
                             let group_name = group_name.clone();
-                            move |this, _, window, cx| {
-                                dismiss_manager_dialog(this, window, cx);
-                                this.show_connection_group_dialog(
-                                    Some(group_name.clone()),
-                                    None,
+                            move |_this, _, window, cx| {
+                                let parent = group_name
+                                    .rsplit_once('/')
+                                    .map(|(parent, _)| parent.to_string());
+                                open_connection_operation(
+                                    crate::app::connection_manager::operation_window::ConnectionOperation::EditGroup {
+                                        original: Some(group_name.clone()),
+                                        parent,
+                                    },
                                     window,
                                     cx,
                                 );
@@ -521,10 +538,11 @@ fn render_group(
                         PopupMenuItem::new(t!("connection_group_move_to").to_string()).on_click(
                             window.listener_for(&view, {
                                 let group_name = group_name.clone();
-                                move |this, _, window, cx| {
-                                    dismiss_manager_dialog(this, window, cx);
-                                    this.show_move_connection_group_dialog(
-                                        group_name.clone(),
+                                move |_this, _, window, cx| {
+                                    open_connection_operation(
+                                        crate::app::connection_manager::operation_window::ConnectionOperation::MoveGroup {
+                                            group: group_name.clone(),
+                                        },
                                         window,
                                         cx,
                                     );
@@ -627,7 +645,7 @@ fn render_session_row(
                 if event.click_count >= 2 {
                     this.active_dialog = None;
                     this.connect_saved_session(session_id.clone(), cx);
-                    window.close_dialog(cx);
+                    window.remove_window();
                 } else {
                     this.connection_manager_state
                         .update(cx, |state, _| state.select(node_id.clone()));
@@ -695,7 +713,7 @@ fn session_menu(
                         move |this, _, window, cx| {
                             this.active_dialog = None;
                             this.connect_saved_session(id.clone(), cx);
-                            window.close_dialog(cx);
+                            window.remove_window();
                         }
                     },
                 )),
@@ -753,9 +771,16 @@ fn session_menu(
                 PopupMenuItem::new(t!("connection_group_move_to").to_string()).on_click(
                     window.listener_for(&view, {
                         let id = session_id.clone();
-                        move |this, _, window, cx| {
-                            dismiss_manager_dialog(this, window, cx);
-                            this.show_move_saved_session_dialog(id.clone(), window, cx);
+                        let session_name = session_for_edit.name.clone();
+                        move |_this, _, window, cx| {
+                            open_connection_operation(
+                                crate::app::connection_manager::operation_window::ConnectionOperation::MoveSession {
+                                    session_id: id.clone(),
+                                    session_name: session_name.clone(),
+                                },
+                                window,
+                                cx,
+                            );
                         }
                     }),
                 ),
@@ -896,9 +921,15 @@ fn render_empty_menu(
         )
         .item(
             PopupMenuItem::new(t!("connection_group_new").to_string()).on_click(
-                window.listener_for(view, |this, _, window, cx| {
-                    dismiss_manager_dialog(this, window, cx);
-                    this.show_connection_group_dialog(None, None, window, cx);
+                window.listener_for(view, |_this, _, window, cx| {
+                    open_connection_operation(
+                        crate::app::connection_manager::operation_window::ConnectionOperation::EditGroup {
+                            original: None,
+                            parent: None,
+                        },
+                        window,
+                        cx,
+                    );
                 }),
             ),
         )
@@ -935,12 +966,29 @@ fn render_empty_menu(
         .item(
             PopupMenuItem::new(t!("connection_archive_import").to_string()).on_click(
                 window.listener_for(view, |this, _, window, cx| {
-                    dismiss_manager_dialog(this, window, cx);
-                    this.show_connection_archive_password_dialog(PathBuf::new(), true, window, cx);
+                    this.open_connection_operation_window(
+                        crate::app::connection_manager::operation_window::ConnectionOperation::Archive {
+                            path: PathBuf::new(),
+                            importing: true,
+                        },
+                        window,
+                        cx,
+                    );
                 }),
             ),
         );
     menu
+}
+
+fn open_connection_operation(
+    operation: crate::app::connection_manager::operation_window::ConnectionOperation,
+    window: &mut Window,
+    cx: &mut Context<TinyShell>,
+) {
+    let owner = cx.entity();
+    window.defer(cx, move |_, cx| {
+        crate::app::connection_manager::operation_window::open(owner, operation, cx);
+    });
 }
 
 fn dismiss_manager_dialog(this: &mut TinyShell, window: &mut Window, cx: &mut Context<TinyShell>) {
