@@ -15,6 +15,7 @@ pub mod tab_drag;
 pub mod theme;
 pub mod ui;
 pub mod updater;
+pub mod workspace_presentation;
 
 use std::{
     cell::{Cell, RefCell},
@@ -33,6 +34,7 @@ use crate::app::{
     connection_manager::{actions::ConnectionManagerActions, state::ConnectionManagerState},
     resizable::ResizableState,
     ssh_key_import::KeyImportState,
+    workspace_presentation::WorkspaceMode,
 };
 use gpui::{
     AnyWindowHandle, App, AppContext as _, Bounds, Context, Entity, FocusHandle, Pixels, Point,
@@ -749,6 +751,7 @@ pub(crate) struct TinyShell {
     pub(crate) quick_command_category: usize,
     pub(crate) sftp_panel_minimized: bool,
     pub(crate) sftp_minimize_epoch: u64,
+    pub(crate) workspace_mode: WorkspaceMode,
     pub(crate) sidebar_collapsed: bool,
     pub(crate) collapsed_saved_scroll_handle: gpui::ScrollHandle,
     pub(crate) prev_monitoring_size: Option<Pixels>,
@@ -1286,6 +1289,7 @@ impl TinyShell {
             quick_command_category: 0,
             sftp_panel_minimized: config.sftp_panel_minimized(),
             sftp_minimize_epoch: 0,
+            workspace_mode: WorkspaceMode::default(),
             sidebar_collapsed: config.sidebar_collapsed(),
             collapsed_saved_scroll_handle: gpui::ScrollHandle::new(),
             prev_monitoring_size: None,

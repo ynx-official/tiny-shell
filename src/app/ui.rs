@@ -54,7 +54,6 @@ enum SftpFooterItem {
     SyncStatus,
     Latency,
     Transfers,
-    PanelToggle,
 }
 
 struct TabDragPreview {
@@ -2818,9 +2817,15 @@ impl TinyShell {
             .child(div().flex_1())
     }
 
+    pub(crate) fn toggle_clean_mode(&mut self, cx: &mut Context<Self>) {
+        self.workspace_mode.toggle_clean();
+        cx.notify();
+    }
+
     pub(crate) fn toggle_sftp_minimized(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let state = self.body_panels.clone();
-        let minimized = self.sftp_panel_minimized;
+        let presentation = self.workspace_mode.presentation(self.sftp_panel_minimized);
+        let minimized = presentation.sftp_minimized;
         self.sftp_minimize_epoch = self.sftp_minimize_epoch.wrapping_add(1);
 
         if !minimized {
@@ -2828,9 +2833,7 @@ impl TinyShell {
             if sizes.len() > 1 {
                 self.prev_monitoring_size = Some(sizes[1]);
             }
-            self.sftp_panel_minimized = true;
         } else {
-            self.sftp_panel_minimized = false;
             let prev_size = self.prev_monitoring_size.unwrap_or(px(328.));
 
             cx.on_next_frame(
@@ -2859,9 +2862,15 @@ impl TinyShell {
                 },
             );
         }
-        self.config
-            .set_sftp_panel_minimized(self.sftp_panel_minimized);
-        self.mark_config_preferences_dirty();
+
+        if presentation.clean {
+            self.workspace_mode.toggle_clean_sftp();
+        } else {
+            self.sftp_panel_minimized = !minimized;
+            self.config
+                .set_sftp_panel_minimized(self.sftp_panel_minimized);
+            self.mark_config_preferences_dirty();
+        }
         cx.notify();
     }
 
@@ -3080,7 +3089,6 @@ impl TinyShell {
             SftpFooterItem::SyncStatus => visibility.webdav = !visibility.webdav,
             SftpFooterItem::Latency => visibility.latency = !visibility.latency,
             SftpFooterItem::Transfers => visibility.transfers = !visibility.transfers,
-            SftpFooterItem::PanelToggle => visibility.panel_toggle = !visibility.panel_toggle,
         }
         self.config.set_sftp_footer_visibility(visibility);
         self.mark_config_preferences_dirty();
@@ -3168,11 +3176,6 @@ impl TinyShell {
                 SftpFooterItem::Transfers,
                 t!("transfers").to_string(),
                 visibility.transfers,
-            ),
-            (
-                SftpFooterItem::PanelToggle,
-                t!("sftp_footer_panel_toggle").to_string(),
-                visibility.panel_toggle,
             ),
         ];
         for (item, label, checked) in items {
@@ -3609,29 +3612,6 @@ impl TinyShell {
                         })),
                 )
             })
-            .when(
-                visibility.panel_toggle || self.sftp_panel_minimized,
-                |this| {
-                    this.child(
-                        Button::new("sftp-minimize-toggle")
-                            .ghost()
-                            .small()
-                            .icon(if self.sftp_panel_minimized {
-                                IconName::ChevronUp
-                            } else {
-                                IconName::ChevronDown
-                            })
-                            .label(if self.sftp_panel_minimized {
-                                t!("panel_expand").to_string()
-                            } else {
-                                t!("panel_minimize").to_string()
-                            })
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.toggle_sftp_minimized(window, cx);
-                            })),
-                    )
-                },
-            )
             .context_menu({
                 let view = view.clone();
                 move |menu, window, cx| {
@@ -6826,6 +6806,26 @@ impl TinyShell {
                     .gap_1()
                     .pr(px(6.))
                     .child(
+                        Button::new("tab-bar-clean-mode")
+                            .secondary()
+                            .when(self.workspace_mode.presentation(self.sftp_panel_minimized).clean, |button| {
+                                button.primary()
+                            })
+                            .small()
+                            .rounded(px(999.))
+                            .icon(IconName::SquareTerminal)
+                            .tooltip(if self.workspace_mode.presentation(self.sftp_panel_minimized).clean {
+                                t!("workspace_exit_clean_mode").to_string()
+                            } else {
+                                t!("workspace_enter_clean_mode").to_string()
+                            })
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                window.prevent_default();
+                                cx.stop_propagation();
+                                this.toggle_clean_mode(cx);
+                            })),
+                    )
+                    .child(
                         Button::new("tab-bar-settings")
                             .secondary()
                             .small()
@@ -6841,6 +6841,145 @@ impl TinyShell {
             )
     }
 
+    fn render_terminal_floating_toolbar(
+        &self,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let view = cx.entity();
+        let presentation = self.workspace_mode.presentation(self.sftp_panel_minimized);
+        let has_selection = self.active_terminal_selection_text().is_some();
+        let has_clipboard_text = cx
+            .read_from_clipboard()
+            .and_then(|item| item.text())
+            .is_some_and(|text| !text.is_empty());
+        let can_use_sftp = self.active_kind() == Some(TabKind::Ssh);
+
+        h_flex()
+            .absolute()
+            .right(px(12.))
+            .bottom(px(12.))
+            .items_center()
+            .gap_1()
+            .px_1()
+            .py_1()
+            .rounded(px(999.))
+            .border_1()
+            .border_color(cx.theme().border)
+            .bg(cx.theme().background.opacity(0.96))
+            .shadow_lg()
+            .opacity(0.56)
+            .hover(|this| this.opacity(1.0))
+            .child(
+                Button::new("terminal-toolbar-sftp")
+                    .ghost()
+                    .xsmall()
+                    .icon(if presentation.sftp_minimized {
+                        IconName::ChevronUp
+                    } else {
+                        IconName::ChevronDown
+                    })
+                    .tooltip(if presentation.sftp_minimized {
+                        t!("panel_expand").to_string()
+                    } else {
+                        t!("panel_minimize").to_string()
+                    })
+                    .disabled(!can_use_sftp)
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.toggle_sftp_minimized(window, cx);
+                    })),
+            )
+            .child(
+                Button::new("terminal-toolbar-search")
+                    .ghost()
+                    .xsmall()
+                    .icon(IconName::Search)
+                    .tooltip(t!("terminal_find").to_string())
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.toggle_search(window, cx);
+                    })),
+            )
+            .child(
+                Button::new("terminal-toolbar-split")
+                    .ghost()
+                    .xsmall()
+                    .icon(IconName::PanelBottom)
+                    .tooltip(t!("workspace_split").to_string())
+                    .dropdown_menu_with_anchor(Anchor::TopRight, {
+                        let view = view.clone();
+                        move |menu, window, _cx| {
+                            menu.min_w(160.)
+                                .item(
+                                    PopupMenuItem::new(t!("workspace_split_right").to_string())
+                                        .on_click(window.listener_for(&view, |this, _, _, cx| {
+                                            this.split_current_pane("right", cx);
+                                        })),
+                                )
+                                .item(
+                                    PopupMenuItem::new(t!("workspace_split_down").to_string())
+                                        .on_click(window.listener_for(&view, |this, _, _, cx| {
+                                            this.split_current_pane("down", cx);
+                                        })),
+                                )
+                        }
+                    }),
+            )
+            .child(
+                Button::new("terminal-toolbar-copy")
+                    .ghost()
+                    .xsmall()
+                    .icon(IconName::Copy)
+                    .tooltip(t!("terminal_copy").to_string())
+                    .disabled(!has_selection)
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        if let Some(text) = this.active_terminal_selection_text() {
+                            cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
+                            if let Some(active_id) = &this.active_tab
+                                && let Some(tab) =
+                                    this.tabs.iter_mut().find(|tab| &tab.id == active_id)
+                            {
+                                tab.clear_selection();
+                            }
+                            this.focus_handle.focus(window, cx);
+                            cx.notify();
+                        }
+                    })),
+            )
+            .child(
+                Button::new("terminal-toolbar-paste")
+                    .ghost()
+                    .xsmall()
+                    .icon(IconName::Inbox)
+                    .tooltip(t!("terminal_paste").to_string())
+                    .disabled(!has_clipboard_text)
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
+                            this.paste_into_terminal(&text, window, cx);
+                        }
+                    })),
+            )
+            .child(
+                Button::new("terminal-toolbar-more")
+                    .ghost()
+                    .xsmall()
+                    .icon(IconName::Ellipsis)
+                    .tooltip(t!("more").to_string())
+                    .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, window, _cx| {
+                        menu.min_w(140.).item(
+                            PopupMenuItem::new(t!("terminal_clear").to_string()).on_click(
+                                window.listener_for(&view, |this, _, _, cx| {
+                                    this.clear_active_terminal(cx);
+                                }),
+                            ),
+                        )
+                    }),
+            )
+            .on_mouse_down(MouseButton::Left, |_, window, cx| {
+                window.prevent_default();
+                cx.stop_propagation();
+            })
+    }
+
     fn render_terminal_panel(
         &mut self,
         window: &mut Window,
@@ -6852,11 +6991,13 @@ impl TinyShell {
         let bounds_view = view.clone();
         let menu_view = view.clone();
 
+        let presentation = self.workspace_mode.presentation(self.sftp_panel_minimized);
+
         v_flex()
             .size_full()
             .relative()
-            .p_2()
-            .gap_2()
+            .when(presentation.clean, |this| this.p_1().gap_1())
+            .when(!presentation.clean, |this| this.p_2().gap_2())
             .bg(cx.theme().muted.opacity(0.18))
             .child(
                 div()
@@ -6892,47 +7033,8 @@ impl TinyShell {
                         Self::build_terminal_context_menu(menu, menu_view.clone(), window, cx)
                     }),
             )
-            // Keep terminal input in the terminal itself, while making the
-            // high-frequency workspace actions consistently available at its
-            // lower edge without changing terminal or split-pane behavior.
             .when(has_active, |this| {
-                this.child(
-                    h_flex()
-                        .flex_none()
-                        .h(px(34.))
-                        .px_3()
-                        .items_center()
-                        .gap_1()
-                        .rounded_lg()
-                        .bg(cx.theme().background)
-                        .child(
-                            div()
-                                .flex_1()
-                                .text_size(rems(0.75))
-                                .text_color(cx.theme().muted_foreground)
-                                .child(t!("terminal_quick_actions")),
-                        )
-                        .child(
-                            Button::new("workspace-quick-search")
-                                .ghost()
-                                .small()
-                                .icon(IconName::Search)
-                                .label(t!("search").to_string())
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    this.toggle_search(window, cx);
-                                })),
-                        )
-                        .child(
-                            Button::new("workspace-quick-split")
-                                .ghost()
-                                .small()
-                                .icon(IconName::PanelBottom)
-                                .label(t!("workspace_split").to_string())
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.split_current_pane("down", cx);
-                                })),
-                        ),
-                )
+                this.child(self.render_terminal_floating_toolbar(window, cx))
             })
             // Search bar overlay — only when search is active.
             .when(self.search_active, |el| {
@@ -8044,6 +8146,7 @@ impl Render for TinyShell {
         // out of the home workspace avoids showing an empty "remote files" area on
         // Overview and Key Manager pages.
         let main_view_key = self.main_view_key();
+        let presentation = self.workspace_mode.presentation(self.sftp_panel_minimized);
         let main_content_raw = if self.active_system_info_tab.is_some() {
             self.render_system_info_page(cx).into_any_element()
         } else if self.active_tab.is_some() && !self.home_page_open {
@@ -8063,11 +8166,17 @@ impl Render for TinyShell {
                 );
 
             let is_monitor_bottom = self.config.monitoring_position() == "Bottom";
-            let minimized_height = if is_monitor_bottom { 81. } else { 1. };
+            let minimized_height = if presentation.clean {
+                1.
+            } else if is_monitor_bottom {
+                81.
+            } else {
+                1.
+            };
             let min_panel_height = if is_monitor_bottom { 260. } else { 180. };
             let default_panel_height = if is_monitor_bottom { 328. } else { 248. };
 
-            let sftp_size = if self.sftp_panel_minimized {
+            let sftp_size = if presentation.sftp_minimized {
                 px(minimized_height)
             } else {
                 px(self
@@ -8084,7 +8193,7 @@ impl Render for TinyShell {
                 .child(
                     resizable_panel()
                         .size(sftp_size)
-                        .size_range(if self.sftp_panel_minimized {
+                        .size_range(if presentation.sftp_minimized {
                             px(minimized_height)..px(minimized_height)
                         } else {
                             px(min_panel_height)..px(1200.)
@@ -8097,7 +8206,9 @@ impl Render for TinyShell {
                 .min_h(px(0.))
                 .overflow_hidden()
                 .child(div().flex_1().min_h(px(0.)).overflow_hidden().child(body))
-                .child(self.render_sftp_footer(cx))
+                .when(presentation.show_sftp_footer, |this| {
+                    this.child(self.render_sftp_footer(cx))
+                })
                 .into_any_element()
         } else {
             match self.home_page {
@@ -8119,7 +8230,29 @@ impl Render for TinyShell {
                 |this, delta| this.opacity(delta * delta),
             );
 
-        let workspace = if self.sidebar_collapsed {
+        let workspace = if !presentation.show_sidebar {
+            v_flex()
+                .size_full()
+                .relative()
+                .overflow_hidden()
+                .when(
+                    self.active_title_bar_style == crate::session::config::TitleBarStyle::Native,
+                    |this| {
+                        this.child(
+                            div()
+                                .flex_none()
+                                .h(px(32.))
+                                .w_full()
+                                .bg(cx.theme().tab_bar)
+                                .border_b_1()
+                                .border_color(cx.theme().border)
+                                .child(self.render_tab_bar(window.window_handle(), cx)),
+                        )
+                    },
+                )
+                .child(main_content)
+                .into_any_element()
+        } else if self.sidebar_collapsed {
             h_flex()
                 .size_full()
                 .child(
