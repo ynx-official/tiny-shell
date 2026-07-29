@@ -15,7 +15,7 @@ use gpui_component::{Theme, WindowExt as _, input::InputState};
 use rust_i18n::t;
 use uuid::Uuid;
 
-use self::config::{AuthMethod, ManagedKey, Session};
+use self::config::{AuthMethod, ManagedKey, Session, TerminalDisplayStyle};
 
 use crate::{
     PaneLayout, SelectorEntry, TabGroup, TinyShell,
@@ -39,6 +39,21 @@ pub(crate) struct GroupTransfer {
     route_ids: Vec<String>,
     active_tab: Option<String>,
     was_active_group: bool,
+}
+
+fn terminal_cell_width_for(font_size: f32, style: TerminalDisplayStyle) -> f32 {
+    let width_ratio = match style {
+        TerminalDisplayStyle::Standard => 0.646,
+        TerminalDisplayStyle::Compact => 0.58,
+    };
+    (font_size * width_ratio).max(6.0)
+}
+
+fn terminal_line_height_for(font_size: f32, style: TerminalDisplayStyle) -> f32 {
+    match style {
+        TerminalDisplayStyle::Standard => (font_size * 1.385).max(font_size + 2.0),
+        TerminalDisplayStyle::Compact => (font_size * 1.2).max(font_size + 1.0),
+    }
 }
 
 impl TinyShell {
@@ -852,11 +867,22 @@ impl TinyShell {
     }
 
     pub(crate) fn terminal_cell_width(&self) -> f32 {
-        (self.terminal_font_size * 0.646).max(6.0)
+        terminal_cell_width_for(self.terminal_font_size, self.terminal_display_style)
     }
 
     pub(crate) fn terminal_line_height(&self) -> f32 {
-        (self.terminal_font_size * 1.385).max(self.terminal_font_size + 2.0)
+        terminal_line_height_for(self.terminal_font_size, self.terminal_display_style)
+    }
+
+    pub(crate) fn change_terminal_display_style(
+        &mut self,
+        style: TerminalDisplayStyle,
+        cx: &mut Context<Self>,
+    ) {
+        self.terminal_display_style = style;
+        self.config.set_terminal_display_style(style);
+        self.mark_config_preferences_dirty();
+        cx.notify();
     }
 
     pub(crate) fn change_terminal_font_size(&mut self, delta: f32, cx: &mut Context<Self>) {
@@ -2873,5 +2899,33 @@ impl TinyShell {
         self.status = "tab group moved from another window".into();
         cx.notify();
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn standard_terminal_metrics_preserve_existing_dimensions() {
+        assert_eq!(
+            terminal_cell_width_for(14.0, TerminalDisplayStyle::Standard),
+            14.0 * 0.646
+        );
+        assert_eq!(
+            terminal_line_height_for(14.0, TerminalDisplayStyle::Standard),
+            14.0 * 1.385
+        );
+    }
+
+    #[test]
+    fn compact_terminal_metrics_increase_visible_grid_density() {
+        let standard_width = terminal_cell_width_for(14.0, TerminalDisplayStyle::Standard);
+        let compact_width = terminal_cell_width_for(14.0, TerminalDisplayStyle::Compact);
+        let standard_height = terminal_line_height_for(14.0, TerminalDisplayStyle::Standard);
+        let compact_height = terminal_line_height_for(14.0, TerminalDisplayStyle::Compact);
+
+        assert!(compact_width < standard_width);
+        assert!(compact_height < standard_height);
     }
 }

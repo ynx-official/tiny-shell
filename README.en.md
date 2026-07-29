@@ -1,50 +1,50 @@
-[中文](README.md) | [English](README.en.md)
+<p align="center">
+  <a href="README.md">中文</a> · <a href="README.en.md">English</a>
+</p>
 
-<div align="center">
+<p align="center">
+  <img src="assets/icons/tiny-shell.png" alt="TinyShell" width="120" />
+</p>
 
-<img src="assets/icons/tiny-shell.png" alt="TinyShell" width="128" />
+<h1 align="center">TinyShell</h1>
 
-# TinyShell
+<p align="center">
+  <strong>A modern cross-platform desktop terminal client built with Rust and GPUI</strong>
+</p>
 
-**A modern cross-platform desktop terminal client built with Rust and GPUI**
+<p align="center">
+  Local terminals, SSH, SFTP, system monitoring, and configuration sync in one fast, focused workspace.
+</p>
 
-Bring local terminals, SSH connection management, SFTP file operations, remote system monitoring, and configuration sync into one fast, focused workspace.
+<p align="center">
+  <a href="https://github.com/ynx-official/tiny-shell/releases/latest"><img src="https://img.shields.io/github/v/release/ynx-official/tiny-shell?style=flat-square" alt="Release" /></a>
+  <a href="https://github.com/ynx-official/tiny-shell/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/ynx-official/tiny-shell/ci.yml?branch=main&style=flat-square&label=CI" alt="CI" /></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0--or--later-blue.svg?style=flat-square" alt="License" /></a>
+  <a href="https://github.com/ynx-official/tiny-shell/releases/latest"><img src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey?style=flat-square" alt="Platform" /></a>
+</p>
 
-[![Release](https://img.shields.io/github/v/release/ynx-official/tiny-shell?style=flat-square)](https://github.com/ynx-official/tiny-shell/releases/latest)
-[![CI](https://img.shields.io/github/actions/workflow/status/ynx-official/tiny-shell/ci.yml?branch=main&style=flat-square&label=CI)](https://github.com/ynx-official/tiny-shell/actions/workflows/ci.yml)
-[![License](https://img.shields.io/badge/license-GPL--3.0--or--later-blue.svg?style=flat-square)](LICENSE)
-[![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey?style=flat-square)](https://github.com/ynx-official/tiny-shell/releases/latest)
+<p align="center">
+  <a href="https://github.com/ynx-official/tiny-shell/releases/latest">Download</a>
+  · <a href="docs/upgrade/README.md">Release history</a>
+  · <a href="https://github.com/ynx-official/tiny-shell/issues">Report an issue</a>
+</p>
 
-[Download the latest release](https://github.com/ynx-official/tiny-shell/releases/latest) · [View release history](docs/upgrade/README.md) · [Report an issue](https://github.com/ynx-official/tiny-shell/issues)
+<p align="center">
+  <img src="preview.png" alt="TinyShell application preview" width="960" />
+</p>
 
-</div>
-
-![TinyShell application preview](preview.png)
+---
 
 ## About TinyShell
 
 TinyShell is designed for developers, system administrators, and advanced users who work with both local shells and remote servers. It is built with [GPUI](https://github.com/zed-industries/zed) and [GPUI Component](https://github.com/longbridge/gpui-component), while its terminal core is powered by `alacritty_terminal`. The result combines low-latency terminal rendering with a native desktop experience and a unified connection workflow.
 
-With TinyShell, you can:
+| Terminal workspace | Remote access | Files and monitoring |
+| --- | --- | --- |
+| Local shells, tabs, and split panes | SSH sessions, groups, search, and proxies | SFTP, system metrics, and process inspection |
+| Themes, fonts, keybindings, and layouts | Password, key, and encrypted-key authentication | WebDAV / S3 configuration sync |
 
-- Open local terminals and organize tasks with tabs and split panes.
-- Save, group, search, and quickly connect to SSH hosts.
-- Browse and maintain remote files through the graphical SFTP panel.
-- Inspect CPU, memory, network, disk, and process information on local or remote systems.
-- Synchronize connection settings across devices through WebDAV or S3.
-- Customize the workspace with themes, fonts, keybindings, and layout preferences.
-
-## Contents
-
-- [Core Capabilities](#core-capabilities)
-- [Quick Start](#quick-start)
-- [Installation](#installation)
-- [Data and Security](#data-and-security)
-- [Building from Source](#building-from-source)
-- [Project Structure](#project-structure)
-- [Version History](#version-history)
-- [Technology Stack](#technology-stack)
-- [License](#license)
+---
 
 ## Core Capabilities
 
@@ -124,6 +124,8 @@ TinyShell can check for and install releases from GitHub Releases. Downloaded up
 
 > Keep archive and privacy passwords in a safe place. TinyShell cannot decrypt an archive or synchronized sensitive fields when the password is incorrect.
 
+---
+
 ## Installation
 
 The current release workflow publishes the following artifacts:
@@ -136,21 +138,7 @@ The current release workflow publishes the following artifacts:
 
 ### macOS
 
-#### Homebrew (Recommended)
-
-```bash
-brew install ynx-official/taps/tiny-shell --cask
-```
-
-To update:
-
-```bash
-brew update && brew upgrade tiny-shell --cask
-```
-
-#### Install from Releases
-
-Download the `macos-aarch64` or `macos-x86_64` artifact for your Mac:
+Download the `macos-aarch64` or `macos-x86_64` artifact matching your Mac from the [Releases page](https://github.com/ynx-official/tiny-shell/releases/latest):
 
 - **Installer**: Download `tiny-shell-*-macos-*-setup.pkg` and follow the installer.
 - **Portable**: Download `tiny-shell-*-macos-*-portable.zip`, extract it, and move `TinyShell.app` to Applications.
@@ -182,6 +170,8 @@ If your system is missing GPUI runtime dependencies, install the corresponding X
 
 > Debian package metadata is available in the repository, so developers can build a `.deb` with `cargo-deb`. The current GitHub Release workflow publishes a generic `.tar.gz` for Linux by default.
 
+---
+
 ## Data and Security
 
 TinyShell handles sensitive values such as SSH passwords, private keys, and proxy credentials. Keep the following boundaries in mind:
@@ -192,6 +182,8 @@ TinyShell handles sensitive values such as SSH passwords, private keys, and prox
 - Privacy-password verifiers cannot be used to recover the original password. Some device-bound encrypted state may require the password to be entered again on another device.
 - Online updates verify downloaded files with SHA-256, but installation packages should still be obtained only from the official project Releases page.
 - When synchronizing to WebDAV or S3, remote access control, availability, and data-retention policies remain the responsibility of the provider or deployment owner.
+
+---
 
 ## Building from Source
 
@@ -286,6 +278,8 @@ docs/          Release history and focused technical documents
 ```
 
 The application layer coordinates windows, terminals, sessions, SFTP, synchronization, and system monitoring. Domain modules keep focused responsibilities and expose their capabilities through explicit interfaces.
+
+---
 
 ## Version History
 

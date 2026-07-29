@@ -311,7 +311,7 @@ use rust_i18n::t;
 use crate::{
     TinyShell,
     app::ssh_key_import::KeyImportValidation,
-    session::config::{AuthMethod, QuickCommand, QuickCommandCategory},
+    session::config::{AuthMethod, QuickCommand, QuickCommandCategory, TerminalDisplayStyle},
     system::format_bytes,
 };
 
@@ -5750,6 +5750,45 @@ impl TinyShell {
                                                                     .child(Button::new("terminal-font-size-down").small().label("-").on_click(window.listener_for(&view, |this, _, _, cx| this.change_terminal_font_size(-1.0, cx))))
                                                                     .child(div().min_w(px(64.)).text_center().child(format!("{:.0}px", view.read(cx).terminal_font_size)))
                                                                     .child(Button::new("terminal-font-size-up").small().label("+").on_click(window.listener_for(&view, |this, _, _, cx| this.change_terminal_font_size(1.0, cx))))
+                                                                    .into_any_element()
+                                                            }
+                                                        })
+                                                    )
+                                                )
+                                                .item(
+                                                    SettingItem::new(
+                                                        t!("terminal_display_style").to_string(),
+                                                        SettingField::render({
+                                                            let view = view_clone_for_general.clone();
+                                                            move |_, _window, cx| {
+                                                                let current = view.read(cx).terminal_display_style;
+                                                                Button::new("terminal-display-style-dropdown")
+                                                                    .small()
+                                                                    .icon(IconName::ChevronsUpDown)
+                                                                    .label(match current {
+                                                                        TerminalDisplayStyle::Standard => t!("terminal_display_style_standard").to_string(),
+                                                                        TerminalDisplayStyle::Compact => t!("terminal_display_style_compact").to_string(),
+                                                                    })
+                                                                    .dropdown_menu_with_anchor(Anchor::BottomRight, {
+                                                                        let view = view.clone();
+                                                                        move |menu, window, _cx| {
+                                                                            menu.min_w(160.)
+                                                                                .item(
+                                                                                    PopupMenuItem::new(t!("terminal_display_style_standard").to_string())
+                                                                                        .checked(current == TerminalDisplayStyle::Standard)
+                                                                                        .on_click(window.listener_for(&view, |this, _, _, cx| {
+                                                                                            this.change_terminal_display_style(TerminalDisplayStyle::Standard, cx);
+                                                                                        }))
+                                                                                )
+                                                                                .item(
+                                                                                    PopupMenuItem::new(t!("terminal_display_style_compact").to_string())
+                                                                                        .checked(current == TerminalDisplayStyle::Compact)
+                                                                                        .on_click(window.listener_for(&view, |this, _, _, cx| {
+                                                                                            this.change_terminal_display_style(TerminalDisplayStyle::Compact, cx);
+                                                                                        }))
+                                                                                )
+                                                                        }
+                                                                    })
                                                                     .into_any_element()
                                                             }
                                                         })

@@ -48,7 +48,10 @@ use tokio::runtime::Runtime;
 
 use crate::{
     crypto,
-    session::config::{AuthMethod, ConfigStore, ManagedKey, QuickCommandCategory, hardware_uuid},
+    session::config::{
+        AuthMethod, ConfigStore, ManagedKey, QuickCommandCategory, TerminalDisplayStyle,
+        hardware_uuid,
+    },
     session::ssh_config::SshConfigEntry,
     system::{SharedSystemSampler, SystemSampler, SystemSnapshot},
     terminal::{self, BackendCommand, BackendEvent, TabKind, TerminalTab},
@@ -670,6 +673,7 @@ pub(crate) struct TinyShell {
     pub(crate) dark_theme_name: SharedString,
     pub(crate) ui_font_size: f32,
     pub(crate) terminal_font_size: f32,
+    pub(crate) terminal_display_style: TerminalDisplayStyle,
     pub(crate) terminal_zoom_accumulator: f32,
     pub(crate) ui_font_family: SharedString,
     pub(crate) terminal_font_family: SharedString,
@@ -1201,6 +1205,7 @@ impl TinyShell {
             dark_theme_name,
             ui_font_size: config.ui_font_size(),
             terminal_font_size: config.terminal_font_size(),
+            terminal_display_style: config.terminal_display_style(),
             terminal_zoom_accumulator: 0.0,
             cursor_style: config.cursor_style(),
             ui_font_family,

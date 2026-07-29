@@ -334,6 +334,14 @@ pub enum CursorStyle {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "kebab-case")]
+pub enum TerminalDisplayStyle {
+    #[default]
+    Standard,
+    Compact,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "kebab-case")]
 pub enum UpdateCheckMode {
     #[default]
     Startup,
@@ -355,6 +363,8 @@ pub struct ConfigFile {
     pub locale: String,
     #[serde(default = "default_terminal_font_size")]
     pub terminal_font_size: f32,
+    #[serde(default)]
+    pub terminal_display_style: TerminalDisplayStyle,
     #[serde(default = "default_ui_font_size")]
     pub ui_font_size: f32,
     #[serde(default)]
@@ -562,6 +572,7 @@ impl Default for ConfigFile {
             dark_theme_name: String::new(),
             locale: default_locale(),
             terminal_font_size: default_terminal_font_size(),
+            terminal_display_style: TerminalDisplayStyle::default(),
             ui_font_size: default_ui_font_size(),
             keyword_highlight: false,
             ui_font_family: default_ui_font_family(),
@@ -1261,6 +1272,14 @@ impl ConfigStore {
         }
     }
 
+    pub fn terminal_display_style(&self) -> TerminalDisplayStyle {
+        self.cache.terminal_display_style
+    }
+
+    pub fn set_terminal_display_style(&mut self, style: TerminalDisplayStyle) {
+        self.cache.terminal_display_style = style;
+    }
+
     pub fn set_theme_preferences(
         &mut self,
         follow_system_theme: bool,
@@ -1623,6 +1642,7 @@ impl ConfigStore {
         self.cache.dark_theme_name = source.cache.dark_theme_name.clone();
         self.cache.locale = source.cache.locale.clone();
         self.cache.terminal_font_size = source.cache.terminal_font_size;
+        self.cache.terminal_display_style = source.cache.terminal_display_style;
         self.cache.ui_font_size = source.cache.ui_font_size;
         self.cache.keyword_highlight = source.cache.keyword_highlight;
         self.cache.ui_font_family = source.cache.ui_font_family.clone();
@@ -2164,6 +2184,10 @@ mod tests {
     fn default_font_sizes_are_14_px() {
         let config = ConfigFile::default();
         assert_eq!(config.terminal_font_size, 14.0);
+        assert_eq!(
+            config.terminal_display_style,
+            TerminalDisplayStyle::Standard
+        );
         assert_eq!(config.ui_font_size, 14.0);
         assert_eq!(config.update_check_mode, UpdateCheckMode::Startup);
         assert_eq!(config.update_interval_hours, 24);
@@ -2176,12 +2200,23 @@ mod tests {
     }
 
     #[test]
+    fn terminal_display_style_defaults_to_standard_when_missing() {
+        let config: ConfigFile = serde_json::from_str("{}").unwrap();
+
+        assert_eq!(
+            config.terminal_display_style,
+            TerminalDisplayStyle::Standard
+        );
+    }
+
+    #[test]
     fn merging_preferences_preserves_connection_data() {
         let mut latest = ConfigStore::in_memory();
         latest.cache.connection_groups = vec!["production".to_string()];
         let mut source = ConfigStore::in_memory();
         source.cache.connection_groups = vec!["stale".to_string()];
         source.set_ui_font_size(18.0);
+        source.set_terminal_display_style(TerminalDisplayStyle::Compact);
         source.set_update_check_mode(UpdateCheckMode::Interval);
         source.set_update_interval_hours(12);
         source.set_update_notify(false);
@@ -2190,6 +2225,10 @@ mod tests {
 
         assert_eq!(latest.cache.connection_groups, ["production"]);
         assert_eq!(latest.ui_font_size(), 18.0);
+        assert_eq!(
+            latest.terminal_display_style(),
+            TerminalDisplayStyle::Compact
+        );
         assert_eq!(latest.update_check_mode(), UpdateCheckMode::Interval);
         assert_eq!(latest.update_interval_hours(), 12);
         assert!(!latest.update_notify());

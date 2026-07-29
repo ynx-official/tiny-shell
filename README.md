@@ -1,50 +1,50 @@
-[中文](README.md) | [English](README.en.md)
+<p align="center">
+  <a href="README.md">中文</a> · <a href="README.en.md">English</a>
+</p>
 
-<div align="center">
+<p align="center">
+  <img src="assets/icons/tiny-shell.png" alt="TinyShell" width="120" />
+</p>
 
-<img src="assets/icons/tiny-shell.png" alt="TinyShell" width="128" />
+<h1 align="center">TinyShell</h1>
 
-# TinyShell
+<p align="center">
+  <strong>一款使用 Rust 与 GPUI 构建的现代化跨平台桌面终端客户端</strong>
+</p>
 
-**一款使用 Rust 与 GPUI 构建的现代化跨平台桌面终端客户端**
+<p align="center">
+  将本地终端、SSH、SFTP、系统监控和配置同步整合到一个快速、清晰的工作区中。
+</p>
 
-将本地终端、SSH 连接管理、SFTP 文件操作、远程系统监控和配置同步整合到一个快速、清晰的工作区中。
+<p align="center">
+  <a href="https://github.com/ynx-official/tiny-shell/releases/latest"><img src="https://img.shields.io/github/v/release/ynx-official/tiny-shell?style=flat-square" alt="Release" /></a>
+  <a href="https://github.com/ynx-official/tiny-shell/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/ynx-official/tiny-shell/ci.yml?branch=main&style=flat-square&label=CI" alt="CI" /></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0--or--later-blue.svg?style=flat-square" alt="License" /></a>
+  <a href="https://github.com/ynx-official/tiny-shell/releases/latest"><img src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey?style=flat-square" alt="Platform" /></a>
+</p>
 
-[![Release](https://img.shields.io/github/v/release/ynx-official/tiny-shell?style=flat-square)](https://github.com/ynx-official/tiny-shell/releases/latest)
-[![CI](https://img.shields.io/github/actions/workflow/status/ynx-official/tiny-shell/ci.yml?branch=main&style=flat-square&label=CI)](https://github.com/ynx-official/tiny-shell/actions/workflows/ci.yml)
-[![License](https://img.shields.io/badge/license-GPL--3.0--or--later-blue.svg?style=flat-square)](LICENSE)
-[![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey?style=flat-square)](https://github.com/ynx-official/tiny-shell/releases/latest)
+<p align="center">
+  <a href="https://github.com/ynx-official/tiny-shell/releases/latest">下载最新版本</a>
+  · <a href="docs/upgrade/README.md">版本记录</a>
+  · <a href="https://github.com/ynx-official/tiny-shell/issues">问题反馈</a>
+</p>
 
-[下载最新版本](https://github.com/ynx-official/tiny-shell/releases/latest) · [查看版本记录](docs/upgrade/README.md) · [报告问题](https://github.com/ynx-official/tiny-shell/issues)
+<p align="center">
+  <img src="preview.png" alt="TinyShell 应用预览" width="960" />
+</p>
 
-</div>
-
-![TinyShell 应用预览](preview.png)
+---
 
 ## 关于 TinyShell
 
 TinyShell 面向需要同时使用本地 Shell 和远程服务器的开发者、运维人员与高级用户。应用基于 [GPUI](https://github.com/zed-industries/zed) 和 [GPUI Component](https://github.com/longbridge/gpui-component) 构建，终端核心使用 `alacritty_terminal`，在保持原生桌面体验的同时提供低延迟终端渲染和统一的连接工作流。
 
-你可以在同一个应用中完成以下工作：
+| 终端工作区 | 远程连接 | 文件与监控 |
+| --- | --- | --- |
+| 本地 Shell、多标签页、Pane 分屏 | SSH 会话、分组、搜索与代理 | SFTP、系统指标与进程查看 |
+| 主题、字体、快捷键与布局 | 密码、私钥和加密私钥认证 | WebDAV / S3 配置同步 |
 
-- 打开本地终端，通过标签页和 Pane 组织多个任务。
-- 保存、分组、搜索并快速连接 SSH 主机。
-- 通过图形化 SFTP 面板浏览和维护远程文件。
-- 查看本机或远程服务器的 CPU、内存、网络、磁盘和进程信息。
-- 通过 WebDAV 或 S3 在多台设备间同步连接配置。
-- 使用主题、字体、快捷键和布局设置定制工作区。
-
-## 目录
-
-- [核心能力](#核心能力)
-- [快速开始](#快速开始)
-- [安装](#安装)
-- [数据与安全](#数据与安全)
-- [从源码构建](#从源码构建)
-- [项目结构](#项目结构)
-- [版本历史](#版本历史)
-- [技术栈](#技术栈)
-- [许可证](#许可证)
+---
 
 ## 核心能力
 
@@ -124,6 +124,8 @@ TinyShell 可以从 GitHub Releases 检查并安装新版本，且会校验下�
 
 > 在导入连接归档或启用配置同步前，请妥善保存加密密码。密码错误时，TinyShell 无法解密归档或同步的敏感字段。
 
+---
+
 ## 安装
 
 当前发布流水线提供以下平台产物：
@@ -136,21 +138,7 @@ TinyShell 可以从 GitHub Releases 检查并安装新版本，且会校验下�
 
 ### macOS
 
-#### Homebrew（推荐）
-
-```bash
-brew install ynx-official/taps/tiny-shell --cask
-```
-
-更新：
-
-```bash
-brew update && brew upgrade tiny-shell --cask
-```
-
-#### 从 Releases 安装
-
-根据 Mac 的处理器下载对应的 `macos-aarch64` 或 `macos-x86_64` 产物：
+从 [Releases 页面](https://github.com/ynx-official/tiny-shell/releases/latest) 下载与处理器对应的 `macos-aarch64` 或 `macos-x86_64` 产物：
 
 - **安装版**：下载 `tiny-shell-*-macos-*-setup.pkg`，按照安装器提示完成安装。
 - **便携版**：下载 `tiny-shell-*-macos-*-portable.zip`，解压后将 `TinyShell.app` 移动到“应用程序”目录。
@@ -182,6 +170,8 @@ cd tiny-shell-*-linux-x86_64
 
 > 仓库保留了 Debian 包元数据，开发者可以使用 `cargo-deb` 从源码生成 `.deb`；当前 GitHub Release 流水线默认发布的是通用 `.tar.gz`。
 
+---
+
 ## 数据与安全
 
 TinyShell 会处理 SSH 密码、私钥和代理凭据等敏感信息。使用时请注意以下边界：
@@ -192,6 +182,8 @@ TinyShell 会处理 SSH 密码、私钥和代理凭据等敏感信息。使用�
 - 隐私密码校验值不可用于恢复原密码。更换设备后，部分与本机绑定的加密状态可能需要重新输入密码。
 - 在线更新下载使用 SHA-256 校验文件完整性，但用户仍应只从项目官方 Releases 页面获取安装包。
 - 将配置同步到 WebDAV 或 S3 时，远端服务的访问控制、可用性和数据保留策略仍由服务提供方或部署者负责。
+
+---
 
 ## 从源码构建
 
@@ -286,6 +278,8 @@ docs/          版本升级记录和专项文档
 ```
 
 应用层负责协调窗口、终端、会话、SFTP、同步和系统监控；各领域模块保持独立职责，通过明确接口向上层提供能力。
+
+---
 
 ## 版本历史
 
