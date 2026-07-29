@@ -14,7 +14,7 @@ pub(crate) struct TerminalCompletionCandidate {
 pub(crate) struct TerminalCompletionState {
     input: String,
     candidates: Vec<TerminalCompletionCandidate>,
-    selected: usize,
+    selected: Option<usize>,
 }
 
 impl TerminalCompletionState {
@@ -22,7 +22,7 @@ impl TerminalCompletionState {
         &self.candidates
     }
 
-    pub(crate) fn selected_index(&self) -> usize {
+    pub(crate) fn selected_index(&self) -> Option<usize> {
         self.selected
     }
 
@@ -43,30 +43,41 @@ impl TerminalCompletionState {
     pub(crate) fn move_selection(&mut self, offset: isize) {
         let count = self.candidates.len();
         if count == 0 {
-            self.selected = 0;
+            self.selected = None;
             return;
         }
-        self.selected = (self.selected as isize + offset).rem_euclid(count as isize) as usize;
+        self.selected = Some(match self.selected {
+            Some(selected) => (selected as isize + offset).rem_euclid(count as isize) as usize,
+            None if offset < 0 => count - 1,
+            None => 0,
+        });
     }
 
     pub(crate) fn select(&mut self, index: usize) {
         if index < self.candidates.len() {
-            self.selected = index;
+            self.selected = Some(index);
         }
     }
 
+    pub(crate) fn accept_selected_or_first(&mut self) -> Option<String> {
+        if self.selected.is_none() && !self.candidates.is_empty() {
+            self.selected = Some(0);
+        }
+        self.accept_selected()
+    }
+
     pub(crate) fn accept_selected(&mut self) -> Option<String> {
-        let candidate = self.candidates.get(self.selected)?;
+        let candidate = self.candidates.get(self.selected?)?;
         let suffix = candidate.command[candidate.matched_prefix_bytes..].to_string();
         self.input = candidate.command.clone();
         self.candidates.clear();
-        self.selected = 0;
+        self.selected = None;
         Some(suffix)
     }
 
     pub(crate) fn dismiss(&mut self) {
         self.candidates.clear();
-        self.selected = 0;
+        self.selected = None;
     }
 
     pub(crate) fn clear(&mut self) {
@@ -76,7 +87,7 @@ impl TerminalCompletionState {
 
     fn refresh(&mut self, categories: &[QuickCommandCategory]) {
         self.candidates = matching_candidates(&self.input, categories);
-        self.selected = self.selected.min(self.candidates.len().saturating_sub(1));
+        self.selected = None;
     }
 }
 
@@ -96,11 +107,7 @@ fn matching_candidates(
             let matched_prefix_bytes = matched_prefix_bytes(&command.command, query)?;
             Some(TerminalCompletionCandidate {
                 command: command.command.clone(),
-                label: if command.remark.trim().is_empty() {
-                    command.name.clone()
-                } else {
-                    command.remark.clone()
-                },
+                label: command.name.clone(),
                 matched_prefix_bytes,
             })
         })
@@ -162,7 +169,7 @@ mod tests {
     }
 
     #[test]
-    fn matches_ascii_prefix_case_insensitively_and_uses_remark() {
+    fn matches_ascii_prefix_case_insensitively_and_uses_command_name() {
         let categories = categories(&[("Git 状态", "查看状态", "git status")]);
         let mut state = TerminalCompletionState::default();
 
@@ -172,14 +179,14 @@ mod tests {
             state.candidates(),
             &[TerminalCompletionCandidate {
                 command: "git status".into(),
-                label: "查看状态".into(),
+                label: "Git 状态".into(),
                 matched_prefix_bytes: 2,
             }]
         );
     }
 
     #[test]
-    fn falls_back_to_name_and_filters_parameter_templates() {
+    fn uses_command_name_and_filters_parameter_templates() {
         let categories = categories(&[
             ("查看日志", "", "journalctl"),
             ("查看服务", "服务详情", "journalctl -u [p1]"),
@@ -193,7 +200,7 @@ mod tests {
     }
 
     #[test]
-    fn limits_candidates_and_wraps_selection() {
+    fn candidates_start_unselected_and_wrap_after_explicit_navigation() {
         let commands = (0..8)
             .map(|index| (format!("命令 {index}"), String::new(), format!("ls{index}")))
             .collect::<Vec<_>>();
@@ -206,22 +213,62 @@ mod tests {
 
         state.push_text("ls", &categories);
         assert_eq!(state.candidates().len(), MAX_CANDIDATES);
+        assert_eq!(state.selected_index(), None);
 
         state.move_selection(-1);
-        assert_eq!(state.selected_index(), MAX_CANDIDATES - 1);
+        assert_eq!(state.selected_index(), Some(MAX_CANDIDATES - 1));
         state.move_selection(1);
-        assert_eq!(state.selected_index(), 0);
+        assert_eq!(state.selected_index(), Some(0));
+        state.move_selection(1);
+        assert_eq!(state.selected_index(), Some(1));
     }
 
     #[test]
-    fn accepting_candidate_returns_only_missing_suffix() {
+    fn down_selects_first_candidate_from_unselected_state() {
+        let categories = categories(&[("列表", "", "ls"), ("查看块设备", "", "lsblk")]);
+        let mut state = TerminalCompletionState::default();
+        state.push_text("ls", &categories);
+
+        state.move_selection(1);
+
+        assert_eq!(state.selected_index(), Some(0));
+    }
+
+    #[test]
+    fn accepting_requires_selection_and_returns_only_missing_suffix() {
         let categories = categories(&[("Git 状态", "", "git status")]);
         let mut state = TerminalCompletionState::default();
         state.push_text("git", &categories);
 
+        assert_eq!(state.accept_selected(), None);
+        assert!(state.is_visible());
+
+        state.move_selection(1);
         assert_eq!(state.accept_selected().as_deref(), Some(" status"));
         assert_eq!(state.input, "git status");
         assert!(!state.is_visible());
+    }
+
+    #[test]
+    fn tab_acceptance_falls_back_to_first_candidate() {
+        let categories = categories(&[("Docker", "", "docker ps")]);
+        let mut state = TerminalCompletionState::default();
+        state.push_text("docker", &categories);
+
+        assert_eq!(state.accept_selected_or_first().as_deref(), Some(" ps"));
+    }
+
+    #[test]
+    fn appended_text_continues_matching_after_initial_chunk() {
+        let categories = categories(&[("Docker", "", "docker ps")]);
+        let mut state = TerminalCompletionState::default();
+
+        state.push_text("do", &categories);
+        state.push_text("cker", &categories);
+
+        assert_eq!(state.candidates()[0].command, "docker ps");
+        assert_eq!(state.candidates()[0].matched_prefix_bytes, "docker".len());
+        assert_eq!(state.selected_index(), None);
     }
 
     #[test]

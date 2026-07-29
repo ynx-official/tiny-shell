@@ -22,6 +22,10 @@ fn printable_terminal_input(bytes: &[u8]) -> Option<&str> {
         .filter(|text| !text.is_empty() && text.chars().all(|character| !character.is_control()))
 }
 
+fn trackable_terminal_paste(text: &str) -> Option<&str> {
+    (!text.is_empty() && text.chars().all(|character| !character.is_control())).then_some(text)
+}
+
 impl TinyShell {
     pub(crate) fn on_terminal_key_down(
         &mut self,
@@ -295,8 +299,10 @@ impl TinyShell {
         if !is_visible {
             return false;
         }
-        if event.keystroke.key == "tab" {
-            return self.accept_active_terminal_completion(window, cx);
+        match event.keystroke.key.as_str() {
+            "tab" => return self.accept_active_terminal_completion(true, window, cx),
+            "enter" => return self.accept_active_terminal_completion(false, window, cx),
+            _ => {}
         }
         let Some(state) = self.terminal_completions.get_mut(&tab_id) else {
             return false;
@@ -316,6 +322,7 @@ impl TinyShell {
 
     pub(crate) fn accept_active_terminal_completion(
         &mut self,
+        select_first_if_needed: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
@@ -325,7 +332,13 @@ impl TinyShell {
         let Some(suffix) = self
             .terminal_completions
             .get_mut(&tab_id)
-            .and_then(|state| state.accept_selected())
+            .and_then(|state| {
+                if select_first_if_needed {
+                    state.accept_selected_or_first()
+                } else {
+                    state.accept_selected()
+                }
+            })
         else {
             return false;
         };
@@ -354,7 +367,7 @@ impl TinyShell {
             return false;
         };
         state.select(index);
-        self.accept_active_terminal_completion(window, cx)
+        self.accept_active_terminal_completion(false, window, cx)
     }
 
     pub(crate) fn on_terminal_tab_action(
@@ -363,7 +376,7 @@ impl TinyShell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if !self.accept_active_terminal_completion(window, cx) {
+        if !self.accept_active_terminal_completion(true, window, cx) {
             self.send_terminal_input(vec![b'\t'], window, cx);
         }
     }
@@ -415,7 +428,7 @@ impl TinyShell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.clear_active_terminal_completion();
+        let completion_text = trackable_terminal_paste(text).map(str::to_owned);
         let Some(active_id) = self.active_tab.clone() else {
             return;
         };
@@ -428,6 +441,11 @@ impl TinyShell {
         }
         tab.clear_selection();
         tab.paste_text(text);
+        if let Some(text) = completion_text {
+            self.track_terminal_completion_text(&text);
+        } else {
+            self.clear_active_terminal_completion();
+        }
         window.prevent_default();
         cx.stop_propagation();
         cx.notify();
@@ -800,7 +818,7 @@ impl TinyShell {
 
 #[cfg(test)]
 mod tests {
-    use super::printable_terminal_input;
+    use super::{printable_terminal_input, trackable_terminal_paste};
 
     #[test]
     fn printable_input_tracks_windows_keydown_text() {
@@ -813,5 +831,14 @@ mod tests {
         assert_eq!(printable_terminal_input(b"\r"), None);
         assert_eq!(printable_terminal_input(b"\x7f"), None);
         assert_eq!(printable_terminal_input(b"\x1b[A"), None);
+    }
+
+    #[test]
+    fn single_line_paste_is_trackable_but_multiline_paste_is_not() {
+        assert_eq!(trackable_terminal_paste("do"), Some("do"));
+        assert_eq!(trackable_terminal_paste("docker ps"), Some("docker ps"));
+        assert_eq!(trackable_terminal_paste("docker\nps"), None);
+        assert_eq!(trackable_terminal_paste("docker\r"), None);
+        assert_eq!(trackable_terminal_paste(""), None);
     }
 }

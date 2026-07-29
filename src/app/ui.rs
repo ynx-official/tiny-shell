@@ -7304,7 +7304,7 @@ impl TinyShell {
                 let suffix = candidate.command[candidate.matched_prefix_bytes..].to_string();
                 let tab_id = tab_id.to_string();
                 let focus_handle = this.focus_handle.clone();
-                let is_selected = index == selected;
+                let is_selected = selected == Some(index);
 
                 list.child(
                     h_flex()
