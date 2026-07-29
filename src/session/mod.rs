@@ -1236,6 +1236,7 @@ impl TinyShell {
         if self.tabs[ix].connected || self.tabs[ix].disconnected_reason.is_none() {
             return;
         }
+        self.terminal_completions.remove(tab_id);
 
         let is_ssh = self.tabs[ix].session.is_some();
         let session = self.tabs[ix].session.clone();
@@ -1437,6 +1438,7 @@ impl TinyShell {
     }
 
     pub(crate) fn handle_tab_close(&mut self, id: String) {
+        self.terminal_completions.remove(&id);
         let removed_active_info = self.system_info_tabs.iter().any(|tab| {
             tab.source_tab_id == id
                 && self.active_system_info_tab.as_deref() == Some(tab.id.as_str())

@@ -16,6 +16,12 @@ thread_local! {
     static LAST_DRAG_SCROLL: std::cell::Cell<Option<std::time::Instant>> = const { std::cell::Cell::new(None) };
 }
 
+fn printable_terminal_input(bytes: &[u8]) -> Option<&str> {
+    std::str::from_utf8(bytes)
+        .ok()
+        .filter(|text| !text.is_empty() && text.chars().all(|character| !character.is_control()))
+}
+
 impl TinyShell {
     pub(crate) fn on_terminal_key_down(
         &mut self,
@@ -32,6 +38,14 @@ impl TinyShell {
             .focus_handle(cx)
             .is_focused(window)
         {
+            return;
+        }
+
+        if self.clear_completion_in_alternate_screen() {
+            cx.notify();
+        }
+
+        if self.handle_terminal_completion_key(event, window, cx) {
             return;
         }
 
@@ -144,6 +158,12 @@ impl TinyShell {
                     && !event.keystroke.modifiers.platform
                 {
                     self.send_terminal_input(text.as_bytes().to_vec(), window, cx);
+                    if !event.keystroke.modifiers.alt {
+                        self.track_terminal_completion_text(text);
+                        cx.notify();
+                    } else {
+                        self.clear_active_terminal_completion();
+                    }
                 }
             }
             return;
@@ -162,11 +182,179 @@ impl TinyShell {
         tab.clear_selection();
 
         if let Some(bytes) = encode_key(&event.keystroke, tab.app_cursor_mode(), false) {
+            let completion_text = printable_terminal_input(&bytes).map(str::to_owned);
             tab.send_backend(BackendCommand::Input(bytes));
+            if let Some(text) = completion_text {
+                self.track_terminal_completion_text(&text);
+            } else {
+                self.update_terminal_completion_for_key(event);
+            }
             window.prevent_default();
             cx.stop_propagation();
             cx.notify();
         }
+    }
+
+    fn active_ssh_completion_tab_id(&self) -> Option<String> {
+        let active_id = self.active_tab.as_ref()?;
+        self.tabs
+            .iter()
+            .find(|tab| {
+                &tab.id == active_id
+                    && tab.kind == crate::terminal::TabKind::Ssh
+                    && !tab.is_alternate_screen()
+            })
+            .map(|tab| tab.id.clone())
+    }
+
+    fn clear_completion_in_alternate_screen(&mut self) -> bool {
+        let Some(active_id) = self.active_tab.as_ref() else {
+            return false;
+        };
+        let is_alternate_ssh = self.tabs.iter().any(|tab| {
+            &tab.id == active_id
+                && tab.kind == crate::terminal::TabKind::Ssh
+                && tab.is_alternate_screen()
+        });
+        is_alternate_ssh && self.terminal_completions.remove(active_id).is_some()
+    }
+
+    fn quick_command_categories_for_completion(
+        &self,
+    ) -> Vec<crate::session::config::QuickCommandCategory> {
+        self.config
+            .quick_command_categories()
+            .unwrap_or_default()
+            .to_vec()
+    }
+
+    fn track_terminal_completion_text(&mut self, text: &str) {
+        let Some(tab_id) = self.active_ssh_completion_tab_id() else {
+            return;
+        };
+        let categories = self.quick_command_categories_for_completion();
+        let state = self.terminal_completions.entry(tab_id).or_default();
+        if text.chars().any(char::is_control) {
+            state.clear();
+        } else {
+            state.push_text(text, &categories);
+        }
+    }
+
+    fn clear_active_terminal_completion(&mut self) {
+        let Some(tab_id) = self.active_ssh_completion_tab_id() else {
+            return;
+        };
+        if let Some(state) = self.terminal_completions.get_mut(&tab_id) {
+            state.clear();
+        }
+    }
+
+    fn update_terminal_completion_for_key(&mut self, event: &KeyDownEvent) {
+        let Some(tab_id) = self.active_ssh_completion_tab_id() else {
+            return;
+        };
+        let categories = self.quick_command_categories_for_completion();
+        let state = self.terminal_completions.entry(tab_id).or_default();
+        let modifiers = event.keystroke.modifiers;
+        let has_modifiers = modifiers.shift
+            || modifiers.control
+            || modifiers.alt
+            || modifiers.platform
+            || modifiers.function;
+
+        if !has_modifiers && event.keystroke.key == "backspace" {
+            state.backspace(&categories);
+        } else {
+            state.clear();
+        }
+    }
+
+    fn handle_terminal_completion_key(
+        &mut self,
+        event: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let modifiers = event.keystroke.modifiers;
+        if modifiers.shift
+            || modifiers.control
+            || modifiers.alt
+            || modifiers.platform
+            || modifiers.function
+        {
+            return false;
+        }
+        let Some(tab_id) = self.active_ssh_completion_tab_id() else {
+            return false;
+        };
+        let is_visible = self
+            .terminal_completions
+            .get(&tab_id)
+            .is_some_and(|state| state.is_visible());
+        if !is_visible {
+            return false;
+        }
+        if event.keystroke.key == "tab" {
+            return self.accept_active_terminal_completion(window, cx);
+        }
+        let Some(state) = self.terminal_completions.get_mut(&tab_id) else {
+            return false;
+        };
+
+        match event.keystroke.key.as_str() {
+            "up" => state.move_selection(-1),
+            "down" => state.move_selection(1),
+            "escape" => state.dismiss(),
+            _ => return false,
+        }
+        window.prevent_default();
+        cx.stop_propagation();
+        cx.notify();
+        true
+    }
+
+    pub(crate) fn accept_active_terminal_completion(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(tab_id) = self.active_ssh_completion_tab_id() else {
+            return false;
+        };
+        let Some(suffix) = self
+            .terminal_completions
+            .get_mut(&tab_id)
+            .and_then(|state| state.accept_selected())
+        else {
+            return false;
+        };
+
+        if suffix.is_empty() {
+            window.prevent_default();
+            cx.stop_propagation();
+            cx.notify();
+        } else {
+            self.send_terminal_input(suffix.into_bytes(), window, cx);
+        }
+        true
+    }
+
+    pub(crate) fn accept_terminal_completion_at(
+        &mut self,
+        tab_id: &str,
+        index: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if self.active_ssh_completion_tab_id().as_deref() != Some(tab_id) {
+            return false;
+        }
+        let Some(state) = self.terminal_completions.get_mut(tab_id) else {
+            return false;
+        };
+        state.select(index);
+        self.accept_active_terminal_completion(window, cx)
     }
 
     pub(crate) fn on_terminal_tab_action(
@@ -175,7 +363,9 @@ impl TinyShell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.send_terminal_input(vec![b'\t'], window, cx);
+        if !self.accept_active_terminal_completion(window, cx) {
+            self.send_terminal_input(vec![b'\t'], window, cx);
+        }
     }
 
     pub(crate) fn on_terminal_backtab_action(
@@ -225,6 +415,7 @@ impl TinyShell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.clear_active_terminal_completion();
         let Some(active_id) = self.active_tab.clone() else {
             return;
         };
@@ -293,6 +484,7 @@ impl TinyShell {
         tab.clear_selection();
         self.terminal_marked_text = None;
         tab.send_backend(BackendCommand::Input(text.as_bytes().to_vec()));
+        self.track_terminal_completion_text(text);
         window.invalidate_character_coordinates();
         cx.notify();
     }
@@ -312,6 +504,7 @@ impl TinyShell {
         event: &MouseDownEvent,
         cx: &mut Context<Self>,
     ) {
+        self.clear_active_terminal_completion();
         let click_count = event.click_count.max(1);
         let selection_type = match click_count {
             1 => SelectionType::Simple,
@@ -602,5 +795,23 @@ impl TinyShell {
             cx.stop_propagation();
             cx.notify();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::printable_terminal_input;
+
+    #[test]
+    fn printable_input_tracks_windows_keydown_text() {
+        assert_eq!(printable_terminal_input(b"g"), Some("g"));
+        assert_eq!(printable_terminal_input("状态".as_bytes()), Some("状态"));
+    }
+
+    #[test]
+    fn control_sequences_do_not_enter_completion_state() {
+        assert_eq!(printable_terminal_input(b"\r"), None);
+        assert_eq!(printable_terminal_input(b"\x7f"), None);
+        assert_eq!(printable_terminal_input(b"\x1b[A"), None);
     }
 }

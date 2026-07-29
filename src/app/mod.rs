@@ -12,6 +12,7 @@ pub mod sftp_editor_window;
 pub mod ssh_key_import;
 pub mod startup;
 pub mod tab_drag;
+pub mod terminal_completion;
 pub mod theme;
 pub mod ui;
 pub mod updater;
@@ -698,6 +699,7 @@ pub(crate) struct TinyShell {
     pub(crate) command_category_filter: Option<String>,
     pub(crate) selected_quick_command: Option<(String, String)>,
     pub(crate) quick_command_parameter_inputs: Vec<Entity<InputState>>,
+    pub(crate) terminal_completions: HashMap<String, terminal_completion::TerminalCompletionState>,
     /// Bounds of the visible group rows, used to calculate a drop position.
     pub(crate) connection_group_bounds: HashMap<String, Bounds<Pixels>>,
     pub(crate) pending_connection_group_drag: Option<(String, Point<Pixels>)>,
@@ -1230,6 +1232,7 @@ impl TinyShell {
             command_category_filter: None,
             selected_quick_command: None,
             quick_command_parameter_inputs,
+            terminal_completions: HashMap::new(),
             connection_group_bounds: HashMap::new(),
             pending_connection_group_drag: None,
             dragging_connection_group: None,
@@ -1761,6 +1764,7 @@ impl TinyShell {
                     if is_stale {
                         continue;
                     }
+                    self.terminal_completions.remove(&tab_id);
                     let was_manually_disconnected = self
                         .tabs
                         .iter()

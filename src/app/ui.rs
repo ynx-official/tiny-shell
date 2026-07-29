@@ -7265,6 +7265,147 @@ impl TinyShell {
             })
     }
 
+    fn render_terminal_completion_popup(
+        this: &TinyShell,
+        tab_id: &str,
+        cursor: Option<terminal::CursorState>,
+        cx: &mut Context<TinyShell>,
+    ) -> Option<AnyElement> {
+        let cursor = cursor?;
+        let tab = this.tabs.iter().find(|tab| tab.id == tab_id)?;
+        if tab.kind != terminal::TabKind::Ssh || tab.is_alternate_screen() {
+            return None;
+        }
+        let state = this.terminal_completions.get(tab_id)?;
+        if !state.is_visible() || this.search_active || this.tab_drag.is_dragging() {
+            return None;
+        }
+        let pane_bounds = this.terminal_bounds.get(tab_id)?;
+        let candidates = state.candidates().to_vec();
+        let selected = state.selected_index();
+        let cell_width = this.terminal_cell_width();
+        let line_height = this.terminal_line_height();
+        let pane_width = pane_bounds.size.width.as_f32();
+        let popup_width = (pane_width - 8.0).clamp(1.0, 380.0);
+        let popup_height = candidates.len() as f32 * 32.0 + 30.0;
+        let max_left = (pane_width - popup_width - 4.0).max(4.0);
+        let left = (cursor.col as f32 * cell_width).clamp(4.0, max_left);
+        let below = (cursor.row as f32 + 1.0) * line_height + 4.0;
+        let top = if below + popup_height <= pane_bounds.size.height.as_f32() {
+            below
+        } else {
+            (cursor.row as f32 * line_height - popup_height - 4.0).max(4.0)
+        };
+
+        let list = candidates.into_iter().enumerate().fold(
+            v_flex().w_full(),
+            |list, (index, candidate)| {
+                let prefix = candidate.command[..candidate.matched_prefix_bytes].to_string();
+                let suffix = candidate.command[candidate.matched_prefix_bytes..].to_string();
+                let tab_id = tab_id.to_string();
+                let focus_handle = this.focus_handle.clone();
+                let is_selected = index == selected;
+
+                list.child(
+                    h_flex()
+                        .id(("terminal-completion", index))
+                        .h(px(32.))
+                        .w_full()
+                        .items_center()
+                        .gap_2()
+                        .px_2()
+                        .when(is_selected, |row| row.bg(cx.theme().primary.opacity(0.16)))
+                        .hover(|row| row.bg(cx.theme().muted.opacity(0.45)))
+                        .cursor_pointer()
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |this, _, window, cx| {
+                                this.focus_pane_with_id(tab_id.clone());
+                                this.accept_terminal_completion_at(&tab_id, index, window, cx);
+                                focus_handle.focus(window, cx);
+                            }),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .flex_none()
+                                .size(px(18.))
+                                .rounded(px(4.))
+                                .items_center()
+                                .justify_center()
+                                .bg(cx.theme().muted.opacity(0.55))
+                                .child(Icon::new(IconName::SquareTerminal).with_size(Size::XSmall)),
+                        )
+                        .child(
+                            h_flex()
+                                .flex_1()
+                                .min_w_0()
+                                .overflow_hidden()
+                                .whitespace_nowrap()
+                                .font_family(this.terminal_font_family.clone())
+                                .text_size(rems(0.82))
+                                .child(
+                                    div()
+                                        .flex_none()
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .text_color(cx.theme().primary)
+                                        .child(prefix),
+                                )
+                                .child(
+                                    div()
+                                        .min_w_0()
+                                        .overflow_hidden()
+                                        .text_ellipsis()
+                                        .child(suffix),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .max_w(px(popup_width * 0.42))
+                                .overflow_hidden()
+                                .whitespace_nowrap()
+                                .text_ellipsis()
+                                .text_size(rems(0.75))
+                                .text_color(cx.theme().muted_foreground)
+                                .child(candidate.label),
+                        ),
+                )
+            },
+        );
+
+        Some(
+            v_flex()
+                .absolute()
+                .left(px(left))
+                .top(px(top))
+                .w(px(popup_width))
+                .overflow_hidden()
+                .rounded(px(7.))
+                .border_1()
+                .border_color(cx.theme().border)
+                .bg(cx.theme().popover)
+                .shadow_lg()
+                .child(list)
+                .child(
+                    h_flex()
+                        .h(px(30.))
+                        .w_full()
+                        .items_center()
+                        .gap_3()
+                        .px_2()
+                        .border_t_1()
+                        .border_color(cx.theme().border.opacity(0.7))
+                        .bg(cx.theme().muted.opacity(0.28))
+                        .text_size(rems(0.68))
+                        .text_color(cx.theme().muted_foreground)
+                        .child(format!("↑↓ {}", t!("terminal_completion_select")))
+                        .child(format!("Tab {}", t!("terminal_completion_complete")))
+                        .child(format!("Esc {}", t!("terminal_completion_close"))),
+                )
+                .into_any_element(),
+        )
+    }
+
     fn render_pane_tree(
         this: &mut TinyShell,
         layout: &PaneLayout,
@@ -7286,6 +7427,7 @@ impl TinyShell {
                 let Some(snapshot) = snapshot else {
                     return div().into_any_element();
                 };
+                let completion_cursor = snapshot.cursor;
                 let tab_id_clone2 = tab_id.clone();
                 let focus_handle = this.focus_handle.clone();
                 let marked_text = if is_focused {
@@ -7330,6 +7472,12 @@ impl TinyShell {
                     ));
                 let scrollbar = this.terminal_scrollbars.entry(tab_id.clone()).or_default();
                 el = el.vertical_scrollbar(scrollbar);
+                if is_focused
+                    && let Some(popup) =
+                        Self::render_terminal_completion_popup(this, tab_id, completion_cursor, cx)
+                {
+                    el = div().size_full().relative().child(el).child(popup);
+                }
 
                 // When disconnected, overlay a reconnect bar at the bottom of the terminal.
                 // Uses absolute positioning so the terminal element itself is unchanged,

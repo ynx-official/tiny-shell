@@ -373,6 +373,10 @@ impl TerminalTab {
         self.term.mode().contains(TermMode::APP_CURSOR)
     }
 
+    pub fn is_alternate_screen(&self) -> bool {
+        self.term.mode().contains(TermMode::ALT_SCREEN)
+    }
+
     pub fn render_snapshot(&self, keyword_highlight: bool) -> RenderSnapshot {
         let rows = self.rows;
         let cols = self.cols;
