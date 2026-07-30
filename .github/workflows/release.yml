@@ -31,8 +31,8 @@ jobs:
         with:
           python-version: "3.13"
 
-      - name: Test release notes generator
-        run: python -m unittest scripts/test_release_notes.py
+      - name: Test release tooling
+        run: python -m unittest scripts/test_release_notes.py scripts/test_update_manifest.py
 
       - name: Validate release documents
         shell: bash
@@ -247,6 +247,16 @@ jobs:
         uses: actions/download-artifact@v7
         with:
           path: dist
+
+      - name: Generate update manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          python scripts/update_manifest.py \
+            --dist dist \
+            --tag "${GITHUB_REF_NAME}" \
+            --repository "${GITHUB_REPOSITORY}" \
+            --output dist/update-manifest.json
 
       - name: Attach to GitHub Release
         uses: softprops/action-gh-release@v2

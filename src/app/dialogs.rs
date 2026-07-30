@@ -4745,7 +4745,6 @@ impl TinyShell {
                                         Some(crate::app::updater::UpdateStatus::Error(format!(
                                             "{err:#}"
                                         )));
-                                    this.record_update_check_completed();
                                     cx.notify();
                                 });
                             }

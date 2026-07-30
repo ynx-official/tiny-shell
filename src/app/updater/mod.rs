@@ -8,12 +8,12 @@ use std::time::Duration;
 use anyhow::Context;
 use futures::StreamExt;
 use semver::Version;
-use serde::Deserialize;
+
+mod release_source;
 
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
 
-const REPO_OWNER: &str = "ynx-official";
 const REPO_NAME: &str = "tiny-shell";
 const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 const HTTP_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
@@ -247,30 +247,13 @@ fn prepare_update_dir(temp_root: &Path, version: &str) -> anyhow::Result<PathBuf
     Ok(update_dir)
 }
 
-#[derive(Debug, Deserialize)]
-struct GitHubRelease {
-    tag_name: String,
-    #[allow(dead_code)]
-    name: String,
-    body: String,
-    assets: Vec<GitHubAsset>,
-}
-
-#[derive(Debug, Deserialize)]
-struct GitHubAsset {
-    name: String,
-    browser_download_url: String,
-    size: u64,
-    digest: Option<String>,
-}
-
 fn select_release_asset<'a>(
-    assets: &'a [GitHubAsset],
+    assets: &'a [release_source::ReleaseAssetMetadata],
     platform: &str,
     archive_extension: &str,
     installation_kind: InstallationKind,
-) -> Option<&'a GitHubAsset> {
-    let is_archive = |asset: &&GitHubAsset| {
+) -> Option<&'a release_source::ReleaseAssetMetadata> {
+    let is_archive = |asset: &&release_source::ReleaseAssetMetadata| {
         asset.name.contains(platform) && asset.name.ends_with(archive_extension)
     };
 
@@ -371,7 +354,7 @@ impl DownloadCancellation {
     }
 }
 
-/// Check GitHub Releases and return both availability and release notes.
+/// Check the latest release and return both availability and release notes.
 pub async fn check_for_update() -> anyhow::Result<UpdateCheckResult> {
     let client = reqwest::Client::builder()
         .user_agent(format!("{}/{}", REPO_NAME, CURRENT_VERSION))
@@ -379,40 +362,16 @@ pub async fn check_for_update() -> anyhow::Result<UpdateCheckResult> {
         .read_timeout(HTTP_READ_TIMEOUT)
         .build()
         .context("failed to build HTTP client")?;
-
-    let url = format!(
-        "https://api.github.com/repos/{}/{}/releases/latest",
-        REPO_OWNER, REPO_NAME
-    );
-
-    let response = client
-        .get(&url)
-        .header("Accept", "application/vnd.github.v3+json")
-        .send()
-        .await
-        .context("failed to fetch latest release")?;
-    let status = response.status();
-    if status == reqwest::StatusCode::NOT_FOUND {
-        anyhow::bail!("no release has been published yet");
-    }
-    if !status.is_success() {
-        anyhow::bail!("github releases/latest returned {}", status);
-    }
-    let release: GitHubRelease = response
-        .json()
-        .await
-        .context("failed to parse release JSON")?;
-
-    let latest_version = release.tag_name.trim();
+    let release = release_source::fetch_latest_release(&client).await?;
+    let latest_version = release.version.trim();
 
     if !is_newer_version(CURRENT_VERSION, latest_version)? {
         return Ok(UpdateCheckResult::UpToDate(ReleaseInfo {
             version: parse_version(latest_version)?.to_string(),
-            notes: release.body,
+            notes: release.notes,
         }));
     }
 
-    // Find the asset matching our platform.
     let platform = platform_name();
     let ext = archive_extension();
     let installation_kind = installation_kind();
@@ -426,19 +385,12 @@ pub async fn check_for_update() -> anyhow::Result<UpdateCheckResult> {
         );
     };
 
-    let digest = asset.digest.clone().with_context(|| {
-        format!(
-            "release asset '{}' does not provide a SHA-256 digest",
-            asset.name
-        )
-    })?;
-
     Ok(UpdateCheckResult::UpdateAvailable(UpdateInfo {
         version: parse_version(latest_version)?.to_string(),
-        notes: release.body,
-        download_url: asset.browser_download_url.clone(),
+        notes: release.notes,
+        download_url: asset.download_url.clone(),
         size: asset.size,
-        digest,
+        digest: asset.digest.clone(),
         installation_kind,
     }))
 }
@@ -1255,8 +1207,9 @@ fn powershell_string_literal(value: &str) -> String {
 mod tests {
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+    use super::release_source::ReleaseAssetMetadata;
     use super::{
-        DownloadCancellation, GitHubAsset, InstallationKind, is_newer_version, prepare_update_dir,
+        DownloadCancellation, InstallationKind, is_newer_version, prepare_update_dir,
         select_release_asset, verify_download_digest,
     };
     #[cfg(target_os = "windows")]
@@ -1266,15 +1219,13 @@ mod tests {
         stage_windows_portable_binary_at,
     };
 
-    fn asset(name: &str) -> GitHubAsset {
-        GitHubAsset {
+    fn asset(name: &str) -> ReleaseAssetMetadata {
+        ReleaseAssetMetadata {
             name: name.to_string(),
-            browser_download_url: format!("https://example.invalid/{name}"),
+            download_url: format!("https://example.invalid/{name}"),
             size: 1,
-            digest: Some(
-                "sha256:0000000000000000000000000000000000000000000000000000000000000000"
-                    .to_string(),
-            ),
+            digest: "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+                .to_string(),
         }
     }
 
