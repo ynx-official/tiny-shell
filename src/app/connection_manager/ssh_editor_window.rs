@@ -4,7 +4,7 @@ use gpui::{
     Window, WindowOptions, point, prelude::FluentBuilder as _, px, rems, size,
 };
 use gpui_component::{
-    ActiveTheme as _, Disableable as _, Root, Sizable as _,
+    ActiveTheme as _, Root,
     button::{Button, ButtonVariants as _},
     h_flex,
     input::{Input, InputEvent, InputState},
@@ -15,10 +15,7 @@ use rust_i18n::t;
 
 use crate::{
     TinyShell,
-    session::{
-        config::{AuthMethod, Session},
-        ssh_config::SshConfigEntry,
-    },
+    session::config::{AuthMethod, Session},
 };
 
 #[derive(Clone)]
@@ -47,9 +44,6 @@ struct SshEditorInputs {
     port: Entity<InputState>,
     user: Entity<InputState>,
     password: Entity<InputState>,
-    key_path: Entity<InputState>,
-    key_inline: Entity<InputState>,
-    passphrase: Entity<InputState>,
     proxy_host: Entity<InputState>,
     proxy_port: Entity<InputState>,
     proxy_user: Entity<InputState>,
@@ -65,8 +59,6 @@ pub(crate) struct SshEditorWindow {
     group: Option<String>,
     proxy_type: String,
     managed_key_id: Option<String>,
-    using_custom_key: bool,
-    ssh_config_entries: Vec<SshConfigEntry>,
     inputs: SshEditorInputs,
     error: Option<SharedString>,
     focus_handle: FocusHandle,
@@ -109,9 +101,13 @@ impl SshEditorWindow {
                 (None, None, Some(session.clone()), session.group.clone())
             }
         };
-        let auth = session
-            .as_ref()
-            .map_or(AuthMethod::Password, |item| item.auth);
+        let auth = session.as_ref().map_or(AuthMethod::Password, |item| {
+            if item.auth == AuthMethod::Password {
+                AuthMethod::Password
+            } else {
+                AuthMethod::Key
+            }
+        });
         let proxy_type = session
             .as_ref()
             .map(|item| item.proxy_type.clone())
@@ -120,11 +116,6 @@ impl SshEditorWindow {
         let managed_key_id = session
             .as_ref()
             .and_then(|item| item.managed_key_id.clone());
-        let using_custom_key = session.as_ref().is_some_and(|item| {
-            item.auth == AuthMethod::Key
-                && item.managed_key_id.is_none()
-                && (!item.private_key_path.is_empty() || !item.private_key_inline.is_empty())
-        });
 
         let inputs = SshEditorInputs {
             name: new_input(
@@ -171,38 +162,6 @@ impl SshEditorWindow {
                 session
                     .as_ref()
                     .map(|item| item.password.clone())
-                    .unwrap_or_default(),
-                true,
-                cx,
-            ),
-            key_path: new_input(
-                window,
-                t!("private_key_path").to_string(),
-                session
-                    .as_ref()
-                    .map(|item| item.private_key_path.clone())
-                    .unwrap_or_default(),
-                false,
-                cx,
-            ),
-            key_inline: cx.new(|cx| {
-                InputState::new(window, cx)
-                    .multi_line(true)
-                    .rows(5)
-                    .placeholder(t!("private_key_data").to_string())
-                    .default_value(
-                        session
-                            .as_ref()
-                            .map(|item| item.private_key_inline.clone())
-                            .unwrap_or_default(),
-                    )
-            }),
-            passphrase: new_input(
-                window,
-                t!("key_passphrase").to_string(),
-                session
-                    .as_ref()
-                    .map(|item| item.passphrase.clone())
                     .unwrap_or_default(),
                 true,
                 cx,
@@ -255,9 +214,6 @@ impl SshEditorWindow {
             &inputs.port,
             &inputs.user,
             &inputs.password,
-            &inputs.key_path,
-            &inputs.key_inline,
-            &inputs.passphrase,
             &inputs.proxy_host,
             &inputs.proxy_port,
             &inputs.proxy_user,
@@ -277,8 +233,6 @@ impl SshEditorWindow {
             group,
             proxy_type,
             managed_key_id,
-            using_custom_key,
-            ssh_config_entries: crate::session::ssh_config::parse_ssh_config().unwrap_or_default(),
             inputs,
             error: None,
             focus_handle: cx.focus_handle(),
@@ -289,60 +243,6 @@ impl SshEditorWindow {
 
     fn input_value(input: &Entity<InputState>, cx: &Context<Self>) -> String {
         input.read(cx).value().to_string()
-    }
-
-    fn set_input(
-        input: &Entity<InputState>,
-        value: impl Into<SharedString>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        input.update(cx, |input, cx| input.set_value(value, window, cx));
-    }
-
-    fn select_config(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(entry) = self.ssh_config_entries.get(index).cloned() else {
-            return;
-        };
-        let user = if entry.user.is_empty() {
-            std::env::var("USER")
-                .or_else(|_| std::env::var("USERNAME"))
-                .unwrap_or_else(|_| "root".to_string())
-        } else {
-            entry.user
-        };
-        Self::set_input(&self.inputs.name, entry.host_alias, window, cx);
-        Self::set_input(&self.inputs.host, entry.hostname, window, cx);
-        Self::set_input(&self.inputs.port, entry.port.to_string(), window, cx);
-        Self::set_input(&self.inputs.user, user, window, cx);
-        Self::set_input(
-            &self.inputs.key_path,
-            entry.identity_files.first().cloned().unwrap_or_default(),
-            window,
-            cx,
-        );
-        cx.notify();
-    }
-
-    fn pick_key_path(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let start_dir = directories::BaseDirs::new()
-            .map(|dirs| dirs.home_dir().join(".ssh"))
-            .unwrap_or_else(|| std::path::PathBuf::from("/"));
-        let picker = rfd::AsyncFileDialog::new()
-            .set_directory(start_dir)
-            .pick_file();
-        cx.spawn_in(window, async move |this, cx| {
-            if let Some(file) = picker.await {
-                let path = file.path().to_string_lossy().to_string();
-                cx.update(|window, cx| {
-                    this.update(cx, |this, cx| {
-                        Self::set_input(&this.inputs.key_path, path, window, cx);
-                    })
-                })??;
-            }
-            Ok::<(), anyhow::Error>(())
-        })
-        .detach();
     }
 
     fn build_session(&self, cx: &Context<Self>) -> anyhow::Result<Session> {
@@ -370,19 +270,22 @@ impl SshEditorWindow {
             }
             Some(proxy_port)
         };
-        if self.auth == AuthMethod::Key && !self.using_custom_key && self.managed_key_id.is_none() {
+        let managed_key_available = self.managed_key_id.as_ref().is_some_and(|selected| {
+            self.owner
+                .read(cx)
+                .config
+                .managed_keys()
+                .iter()
+                .any(|key| &key.id == selected)
+        });
+        if self.auth == AuthMethod::Key && !managed_key_available {
             anyhow::bail!(t!("select_managed_key_hint").to_string());
         }
 
         let password = Self::input_value(&self.inputs.password, cx);
-        let key_path = Self::input_value(&self.inputs.key_path, cx)
-            .trim()
-            .to_string();
-        let key_inline = Self::input_value(&self.inputs.key_inline, cx);
-        let passphrase = Self::input_value(&self.inputs.passphrase, cx);
         let mut session = match self.auth {
             AuthMethod::Password => Session::password(host.clone(), port, user.clone(), password),
-            AuthMethod::Key if !self.using_custom_key => {
+            AuthMethod::Key | AuthMethod::Config => {
                 let mut session = Session::key(
                     host.clone(),
                     port,
@@ -392,26 +295,6 @@ impl SshEditorWindow {
                     String::new(),
                 );
                 session.managed_key_id = self.managed_key_id.clone();
-                session
-            }
-            AuthMethod::Key => Session::key(
-                host.clone(),
-                port,
-                user.clone(),
-                key_path,
-                key_inline,
-                passphrase,
-            ),
-            AuthMethod::Config => {
-                let mut session = Session::key(
-                    host.clone(),
-                    port,
-                    user.clone(),
-                    key_path,
-                    String::new(),
-                    String::new(),
-                );
-                session.auth = AuthMethod::Config;
                 session
             }
         };
@@ -476,8 +359,17 @@ impl SshEditorWindow {
         }
     }
 
+    pub(crate) fn apply_managed_key_selection(
+        &mut self,
+        key_id: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        self.managed_key_id = key_id;
+        self.error = None;
+        cx.notify();
+    }
+
     fn render_key_fields(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
-        let editor = cx.entity();
         let managed_keys = self.owner.read(cx).config.managed_keys().to_vec();
         let selected_label = self
             .managed_key_id
@@ -485,79 +377,19 @@ impl SshEditorWindow {
             .and_then(|id| managed_keys.iter().find(|key| &key.id == id))
             .map(|key| format!("{} ({})", key.name, key.key_type))
             .unwrap_or_else(|| t!("select_managed_key").to_string());
-        v_flex()
-            .gap_2()
-            .child(
-                h_flex()
-                    .gap_2()
-                    .child(
-                        Button::new("ssh-editor-managed-mode")
-                            .small()
-                            .flex_1()
-                            .when(!self.using_custom_key, |button| button.primary())
-                            .label(t!("select_managed_key").to_string())
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.using_custom_key = false;
-                                cx.notify();
-                            })),
-                    )
-                    .child(
-                        Button::new("ssh-editor-custom-mode")
-                            .small()
-                            .flex_1()
-                            .when(self.using_custom_key, |button| button.primary())
-                            .label(t!("use_custom_path").to_string())
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.using_custom_key = true;
-                                this.managed_key_id = None;
-                                cx.notify();
-                            })),
-                    ),
-            )
-            .when(!self.using_custom_key, |this| {
-                this.child(
-                    Button::new("ssh-editor-managed-key")
-                        .w_full()
-                        .label(selected_label)
-                        .dropdown_menu({
-                            let managed_keys = managed_keys.clone();
-                            move |mut menu, window, _| {
-                                for key in &managed_keys {
-                                    let key_id = key.id.clone();
-                                    menu = menu.item(
-                                        PopupMenuItem::new(format!(
-                                            "{} ({})",
-                                            key.name, key.key_type
-                                        ))
-                                        .on_click(
-                                            window.listener_for(&editor, move |this, _, _, cx| {
-                                                this.managed_key_id = Some(key_id.clone());
-                                                cx.notify();
-                                            }),
-                                        ),
-                                    );
-                                }
-                                menu
-                            }
-                        }),
-                )
-            })
-            .when(self.using_custom_key, |this| {
-                this.child(
-                    h_flex()
-                        .gap_2()
-                        .child(Input::new(&self.inputs.key_path).flex_1())
-                        .child(
-                            Button::new("ssh-editor-browse-key")
-                                .label(t!("browse").to_string())
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    this.pick_key_path(window, cx)
-                                })),
-                        ),
-                )
-                .child(Input::new(&self.inputs.key_inline).h(px(88.)))
-                .child(Input::new(&self.inputs.passphrase).mask_toggle())
-            })
+
+        Button::new("ssh-editor-managed-key")
+            .w_full()
+            .label(selected_label)
+            .dropdown_caret(true)
+            .on_click(cx.listener(|this, _, window, cx| {
+                let owner = this.owner.clone();
+                let editor = cx.entity();
+                let selected = this.managed_key_id.clone();
+                owner.update(cx, |owner, cx| {
+                    owner.open_managed_key_selector_for_editor(editor, selected, window, cx);
+                });
+            }))
             .into_any_element()
     }
 }
@@ -571,10 +403,10 @@ impl Render for SshEditorWindow {
             .group
             .clone()
             .unwrap_or_else(|| t!("ssh_editor_group_unselected").to_string());
-        let auth_label = match self.auth {
-            AuthMethod::Password => t!("ssh_editor_password_label").to_string(),
-            AuthMethod::Key => t!("ssh_editor_key_label").to_string(),
-            AuthMethod::Config => t!("ssh_editor_config_label").to_string(),
+        let auth_label = if self.auth == AuthMethod::Password {
+            t!("ssh_editor_password_label").to_string()
+        } else {
+            t!("ssh_editor_key_label").to_string()
         };
         let proxy_label = match self.proxy_type.as_str() {
             "socks5" => "SOCKS5".to_string(),
@@ -627,6 +459,7 @@ impl Render for SshEditorWindow {
                                 Button::new("ssh-editor-type")
                                     .flex_1()
                                     .label("SSH / SFTP")
+                                    .dropdown_caret(true)
                                     .dropdown_menu(|menu, _, _| {
                                         menu.item(PopupMenuItem::new("SSH / SFTP").checked(true))
                                     }),
@@ -641,6 +474,7 @@ impl Render for SshEditorWindow {
                                 Button::new("ssh-editor-group")
                                     .flex_1()
                                     .label(group_label)
+                                    .dropdown_caret(true)
                                     .dropdown_menu({
                                         let groups = groups.clone();
                                         let editor = editor.clone();
@@ -721,6 +555,7 @@ impl Render for SshEditorWindow {
         let auth_method = Button::new("ssh-editor-auth-method")
             .w(px(190.))
             .label(auth_label)
+            .dropdown_caret(true)
             .dropdown_menu({
                 let editor = editor.clone();
                 move |menu, window, _| {
@@ -736,14 +571,6 @@ impl Render for SshEditorWindow {
                         PopupMenuItem::new(t!("ssh_editor_key_label").to_string()).on_click(
                             window.listener_for(&editor, |this, _, _, cx| {
                                 this.auth = AuthMethod::Key;
-                                cx.notify();
-                            }),
-                        ),
-                    )
-                    .item(
-                        PopupMenuItem::new(t!("ssh_editor_config_label").to_string()).on_click(
-                            window.listener_for(&editor, |this, _, _, cx| {
-                                this.auth = AuthMethod::Config;
                                 cx.notify();
                             }),
                         ),
@@ -834,49 +661,6 @@ impl Render for SshEditorWindow {
                         )
                         .child(gpui::div().flex_1().child(self.render_key_fields(cx))),
                 )
-            })
-            .when(self.auth == AuthMethod::Config, |this| {
-                let list = v_flex()
-                    .gap_2()
-                    .when(self.ssh_config_entries.is_empty(), |list| {
-                        list.child(
-                            gpui::div()
-                                .text_color(cx.theme().muted_foreground)
-                                .child(t!("ssh_config_empty").to_string()),
-                        )
-                    })
-                    .children(self.ssh_config_entries.clone().into_iter().enumerate().map(
-                        |(index, entry)| {
-                            gpui::div()
-                                .id(("ssh-editor-config-entry", index))
-                                .cursor_pointer()
-                                .rounded_md()
-                                .border_1()
-                                .border_color(cx.theme().border)
-                                .p_2()
-                                .hover(|row| row.bg(cx.theme().secondary))
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    this.select_config(index, window, cx)
-                                }))
-                                .child(format!(
-                                    "{} — {}@{}:{}",
-                                    entry.host_alias, entry.user, entry.hostname, entry.port
-                                ))
-                        },
-                    ));
-                this.child(
-                    h_flex()
-                        .items_start()
-                        .gap_3()
-                        .child(
-                            gpui::div()
-                                .w(px(64.))
-                                .pt_2()
-                                .whitespace_nowrap()
-                                .child(t!("ssh_editor_config_label").to_string()),
-                        )
-                        .child(gpui::div().flex_1().child(list)),
-                )
             });
 
         let connection_page = v_flex()
@@ -919,6 +703,7 @@ impl Render for SshEditorWindow {
                                 Button::new("ssh-editor-proxy-type")
                                     .w(px(220.))
                                     .label(proxy_label)
+                                    .dropdown_caret(true)
                                     .dropdown_menu({
                                         let editor = editor.clone();
                                         move |menu, window, _| {
@@ -1081,10 +866,6 @@ impl Render for SshEditorWindow {
                     .child(
                         Button::new("ssh-editor-submit")
                             .primary()
-                            .disabled(
-                                self.auth == AuthMethod::Config
-                                    && Self::input_value(&self.inputs.host, cx).trim().is_empty(),
-                            )
                             .label(if is_editing {
                                 t!("save").to_string()
                             } else {

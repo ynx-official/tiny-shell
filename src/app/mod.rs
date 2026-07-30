@@ -626,6 +626,8 @@ pub(crate) struct TinyShell {
     pub(crate) key_import_passphrase_input: Entity<InputState>,
     pub(crate) key_import: KeyImportState,
     pub(crate) managed_key_dialog_selection: Option<String>,
+    pub(crate) managed_key_editor_target:
+        Option<Entity<connection_manager::ssh_editor_window::SshEditorWindow>>,
     pub(crate) ssh_proxy_type: String,
     pub(crate) proxy_host_input: Entity<InputState>,
     pub(crate) proxy_port_input: Entity<InputState>,
@@ -1164,6 +1166,7 @@ impl TinyShell {
             key_import_passphrase_input,
             key_import: KeyImportState::default(),
             managed_key_dialog_selection: None,
+            managed_key_editor_target: None,
             ssh_proxy_type: "none".to_string(),
             proxy_host_input,
             proxy_port_input,

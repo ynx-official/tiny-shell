@@ -389,11 +389,30 @@ impl TinyShell {
 
     // ── Managed SSH keys ────────────────────────────────────────────
 
+    pub(crate) fn open_managed_key_selector_for_editor(
+        &mut self,
+        editor: Entity<crate::app::connection_manager::ssh_editor_window::SshEditorWindow>,
+        selected: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.managed_key_editor_target = Some(editor);
+        self.managed_key_dialog_selection = selected;
+        self.active_dialog = None;
+        let view = cx.entity();
+        window.defer(cx, move |window, cx| {
+            view.update(cx, |this, cx| {
+                this.show_managed_key_selector_dialog(window, cx);
+            });
+        });
+    }
+
     pub(crate) fn open_managed_key_selector(
         &mut self,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.managed_key_editor_target = None;
         self.managed_key_dialog_selection = self.managed_key_selected.clone();
         self.active_dialog = None;
         window.close_dialog(cx);
@@ -453,12 +472,33 @@ impl TinyShell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if let Some(editor) = self.managed_key_editor_target.take() {
+            let selected = self.managed_key_dialog_selection.take();
+            self.editing_managed_key_id = None;
+            self.active_dialog = None;
+            window.close_dialog(cx);
+            editor.update(cx, |editor, cx| {
+                editor.apply_managed_key_selection(selected, cx);
+            });
+            cx.notify();
+            return;
+        }
+
         self.managed_key_selected = self.managed_key_dialog_selection.clone();
         self.using_custom_key_path = false;
         self.return_to_ssh_dialog(window, cx);
     }
 
     pub(crate) fn return_to_ssh_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.managed_key_editor_target.take().is_some() {
+            self.editing_managed_key_id = None;
+            self.managed_key_dialog_selection = None;
+            self.active_dialog = None;
+            window.close_dialog(cx);
+            cx.notify();
+            return;
+        }
+
         self.editing_managed_key_id = None;
         self.managed_key_dialog_selection = None;
         self.active_dialog = None;
