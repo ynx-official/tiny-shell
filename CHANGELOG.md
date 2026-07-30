@@ -8,6 +8,12 @@
 
 尚无未发布的用户可见变更。
 
+## [1.1.9] - 2026-07-30
+
+### 变更
+
+- 建立以版本详情文档为唯一正文来源的发布日志流程，新增 `CHANGELOG.md` 精简索引，并由 GitHub Actions 自动校验和填写 Release Notes。
+
 ## [1.1.8] - 2026-07-30
 
 ### 新增
@@ -176,6 +182,7 @@
 
 - 首个正式版本，整合本地终端、SSH、SFTP、分屏、监控、主题和跨平台发布能力。
 
+[1.1.9]: docs/upgrade/v1.1.9/README.md
 [1.1.8]: docs/upgrade/v1.1.8/README.md
 [1.1.7]: docs/upgrade/v1.1.7/README.md
 [1.1.6]: docs/upgrade/v1.1.6/README.md
