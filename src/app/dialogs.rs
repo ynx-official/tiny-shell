@@ -1830,10 +1830,11 @@ impl TinyShell {
 
         let view = cx.entity();
         let rename_input = self.key_import_remark_input.clone();
-        window.open_dialog(cx, move |dialog: Dialog, _window, _cx| {
+        window.open_dialog(cx, move |dialog: Dialog, window, _cx| {
+            let dialog_width = px(760.).min(window.viewport_size().width - px(32.));
             dialog
                 .title(t!("select_private_key").to_string())
-                .w(px(760.))
+                .w(dialog_width)
                 .close_button(false)
                 .overlay_closable(false)
                 .on_ok({
