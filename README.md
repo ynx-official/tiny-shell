@@ -35,6 +35,10 @@
 
 ---
 
+## 当前版本
+
+当前版本为 [`v1.1.8`](docs/upgrade/v1.1.8/README.md)，新增终端紧凑显示、纯净工作区、快捷分屏和 SSH 常用命令补全。完整历史请查看[版本记录](docs/upgrade/README.md)。
+
 ## 关于 TinyShell
 
 TinyShell 面向需要同时使用本地 Shell 和远程服务器的开发者、运维人员与高级用户。应用基于 [GPUI](https://github.com/zed-industries/zed) 和 [GPUI Component](https://github.com/longbridge/gpui-component) 构建，终端核心使用 `alacritty_terminal`，在保持原生桌面体验的同时提供低延迟终端渲染和统一的连接工作流。

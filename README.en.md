@@ -35,6 +35,10 @@
 
 ---
 
+## Current Version
+
+The current version is [`v1.1.8`](docs/upgrade/v1.1.8/README.md), adding compact terminal display, a clean workspace mode, quick pane splitting, and SSH quick-command completion. See the [release history](docs/upgrade/README.md) for details.
+
 ## About TinyShell
 
 TinyShell is designed for developers, system administrators, and advanced users who work with both local shells and remote servers. It is built with [GPUI](https://github.com/zed-industries/zed) and [GPUI Component](https://github.com/longbridge/gpui-component), while its terminal core is powered by `alacritty_terminal`. The result combines low-latency terminal rendering with a native desktop experience and a unified connection workflow.
