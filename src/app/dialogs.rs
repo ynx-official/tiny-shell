@@ -31,6 +31,10 @@ fn update_progress_percent(done: u64, total: u64) -> u64 {
     }
 }
 
+fn update_progress_value(done: u64, total: u64) -> f32 {
+    update_progress_percent(done, total) as f32
+}
+
 #[derive(Clone)]
 struct QuickCommandDialogInputs {
     name: Entity<InputState>,
@@ -5289,7 +5293,7 @@ impl TinyShell {
                                                 .child(
                                                     Progress::new("update-download-progress")
                                                         .with_size(px(6.))
-                                                        .value(if total > 0 { done as f32 / total as f32 } else { 0.0 })
+                                                        .value(update_progress_value(done, total))
                                                         .color(cx.theme().primary)
                                                         .w_full(),
                                                 ),
@@ -6805,7 +6809,7 @@ impl TinyShell {
                                                                 this.child(
                                                                     Progress::new("settings-update-progress")
                                                                         .with_size(px(6.))
-                                                                        .value(if total > 0 { done as f32 / total as f32 } else { 0.0 })
+                                                                        .value(update_progress_value(done, total))
                                                                         .color(cx.theme().primary)
                                                                         .w_full(),
                                                                 )
@@ -7325,5 +7329,17 @@ impl TinyShell {
         self.active_dialog = None;
         window.close_dialog(cx);
         self.reset_sync_privacy_password(new_password, form, cx);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::update_progress_value;
+
+    #[test]
+    fn update_progress_value_uses_percentage_scale() {
+        assert_eq!(update_progress_value(25, 100), 25.0);
+        assert_eq!(update_progress_value(150, 100), 100.0);
+        assert_eq!(update_progress_value(1, 0), 0.0);
     }
 }
