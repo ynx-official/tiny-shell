@@ -91,7 +91,7 @@ cargo build --locked --release
 1. `Cargo.toml` 的 `[package].version` 是应用版本的唯一代码来源。
 2. 修改 `Cargo.toml` 后必须同步生成并提交 `Cargo.lock`，确保其中的 `tiny-shell` 包版本一致。
 3. 应用界面和更新器通过 `env!("CARGO_PKG_VERSION")` 读取版本，不得新增硬编码版本常量。
-4. `README.md` 与 `README.en.md` 只保留当前版本及最近版本的简要摘要，且中英文内容必须一致；完整更新内容统一维护在 `docs/upgrade/`。
+4. 根目录 `CHANGELOG.md` 维护精简的用户可见版本索引，不在 `README.md` 与 `README.en.md` 中重复维护版本摘要。
 5. `docs/upgrade/README.md` 是版本历史总览，必须维护当前版本、发布日期、详情链接和一句话摘要。
 6. 每个发布版本必须建立独立详情文档 `docs/upgrade/vMAJOR.MINOR.PATCH/README.md`；目录名必须与 Git 标签完全一致，例如 `docs/upgrade/v1.0.6/README.md` 对应 `v1.0.6`。
 7. 发布标签必须为 `vMAJOR.MINOR.PATCH`，并与 `Cargo.toml` 完全一致，例如 `v1.0.6`。
@@ -154,9 +154,9 @@ cargo build --locked --release
 4. 执行 `cargo check` 更新 `Cargo.lock`，确认其中的 `tiny-shell` 包版本一致，再执行 `cargo check --locked`。
 5. 创建或更新 `docs/upgrade/<version>/README.md`，按 5.3 节要求填写完整详情和实际验证结果。
 6. 更新 `docs/upgrade/README.md`，将新版本加入索引顶部，并同步当前版本、发布日期和一句话摘要。
-7. 更新 `README.md` 与 `README.en.md` 的当前版本链接和最近版本摘要，确保中英文含义一致并链接到详情文档。
+7. 更新根目录 `CHANGELOG.md`，加入新版本的精简用户可见摘要和详情链接。
 8. 完成格式、Clippy、测试和适用平台的 release 构建；将最终结果回填到版本详情文档。
-9. 复核版本号、锁文件、文档目录、比较链接、构建产物命名和发布标签完全一致。
+9. 运行 `python scripts/release_notes.py --check-current`，复核版本号、锁文件、详情文档、更新索引和 `CHANGELOG.md` 一致。
 10. 单独提交版本升级和发布文档，不要混入未验证的新功能。
 11. 在目标提交上创建与版本一致的标签并推送：
 

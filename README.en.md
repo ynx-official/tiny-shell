@@ -25,7 +25,7 @@
 
 <p align="center">
   <a href="https://github.com/ynx-official/tiny-shell/releases/latest">Download</a>
-  · <a href="docs/upgrade/README.md">Release history</a>
+  · <a href="CHANGELOG.md">Changelog</a>
   · <a href="https://github.com/ynx-official/tiny-shell/issues">Report an issue</a>
 </p>
 
@@ -282,33 +282,6 @@ docs/          Release history and focused technical documents
 ```
 
 The application layer coordinates windows, terminals, sessions, SFTP, synchronization, and system monitoring. Domain modules keep focused responsibilities and expose their capabilities through explicit interfaces.
-
----
-
-## Version History
-
-Current version: [`v1.1.7`](docs/upgrade/v1.1.7/README.md)
-
-### v1.1.7
-
-- Moved quick connect, group operations, connection moves, and archive import/export into independent system windows while keeping the main window interactive.
-- Added multiple isolated SSH create/edit windows with separate drafts, atomic saves, and optimistic concurrency conflict detection.
-- Improved the compact SSH editor layout and added `Esc` window closing.
-- Automatically close the quick-connect window after connecting through double-click or menu actions.
-
-### v1.1.6
-
-- Upgraded quick connect into an independent tree-based connection manager.
-- Added search, sorting, expand/collapse controls, context actions, and connection moving.
-- Added soft deletion, recycle-bin restoration, and synchronized deletion state.
-- Added password-encrypted TinyShell JSON connection archives.
-
-### v1.1.5
-
-- Added privacy-password verification to detect missing or mismatched synchronization passwords early.
-- Improved sync settings, operation guidance, and latest-sync status visibility.
-
-For complete release notes, upgrade guidance, and comparison links, see the [TinyShell release history](docs/upgrade/README.md).
 
 ## Technology Stack
 
