@@ -381,7 +381,6 @@ impl SshEditorWindow {
         Button::new("ssh-editor-managed-key")
             .w_full()
             .label(selected_label)
-            .dropdown_caret(true)
             .on_click(cx.listener(|this, _, window, cx| {
                 let owner = this.owner.clone();
                 let editor = cx.entity();
@@ -395,7 +394,7 @@ impl SshEditorWindow {
 }
 
 impl Render for SshEditorWindow {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let editor = cx.entity();
         let is_editing = self.editing_id.is_some();
         let groups = self.owner.read(cx).config.connection_groups().to_vec();
@@ -874,6 +873,7 @@ impl Render for SshEditorWindow {
                             .on_click(cx.listener(|this, _, window, cx| this.submit(window, cx))),
                     ),
             )
+            .children(Root::render_dialog_layer(window, cx))
     }
 }
 
