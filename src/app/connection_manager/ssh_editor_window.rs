@@ -35,6 +35,12 @@ pub(crate) enum SshEditorRequest {
     },
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SshEditorPage {
+    Connection,
+    Proxy,
+}
+
 struct SshEditorInputs {
     name: Entity<InputState>,
     host: Entity<InputState>,
@@ -54,6 +60,7 @@ pub(crate) struct SshEditorWindow {
     owner: Entity<TinyShell>,
     editing_id: Option<String>,
     baseline: Option<Session>,
+    page: SshEditorPage,
     auth: AuthMethod,
     group: Option<String>,
     proxy_type: String,
@@ -265,6 +272,7 @@ impl SshEditorWindow {
             owner,
             editing_id,
             baseline,
+            page: SshEditorPage::Connection,
             auth,
             group,
             proxy_type,
@@ -562,54 +570,267 @@ impl Render for SshEditorWindow {
         let group_label = self
             .group
             .clone()
-            .unwrap_or_else(|| t!("connection_group_ungrouped").to_string());
-        let proxy_type = self.proxy_type.clone();
-        let content = v_flex()
-            .id("ssh-editor-scroll")
-            .flex_1()
-            .min_h(px(0.))
-            .overflow_y_scroll()
+            .unwrap_or_else(|| t!("ssh_editor_group_unselected").to_string());
+        let auth_label = match self.auth {
+            AuthMethod::Password => t!("ssh_editor_password_label").to_string(),
+            AuthMethod::Key => t!("ssh_editor_key_label").to_string(),
+            AuthMethod::Config => t!("ssh_editor_config_label").to_string(),
+        };
+        let proxy_label = match self.proxy_type.as_str() {
+            "socks5" => "SOCKS5".to_string(),
+            "http" => "HTTP".to_string(),
+            _ => t!("proxy_none").to_string(),
+        };
+
+        let general_section = v_flex()
+            .relative()
+            .mt_2()
             .gap_2()
-            .pr_1()
+            .px_3()
+            .pb_3()
+            .pt_4()
+            .border_1()
+            .border_color(cx.theme().border)
+            .rounded_md()
+            .child(
+                gpui::div()
+                    .absolute()
+                    .top(px(-10.))
+                    .left(px(12.))
+                    .px_2()
+                    .bg(cx.theme().background)
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .child(t!("ssh_editor_general").to_string()),
+            )
             .child(
                 h_flex()
-                    .gap_2()
-                    .child(auth_button(
-                        "ssh-editor-password",
-                        t!("password").to_string(),
-                        AuthMethod::Password,
-                        self.auth,
-                        cx,
-                    ))
-                    .child(auth_button(
-                        "ssh-editor-key",
-                        t!("key").to_string(),
-                        AuthMethod::Key,
-                        self.auth,
-                        cx,
-                    ))
-                    .child(auth_button(
-                        "ssh-editor-config",
-                        t!("ssh_config").to_string(),
-                        AuthMethod::Config,
-                        self.auth,
-                        cx,
-                    )),
-            )
-            .when(self.auth == AuthMethod::Config, |this| {
-                if self.ssh_config_entries.is_empty() {
-                    this.child(
-                        gpui::div()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(t!("ssh_config_empty").to_string()),
+                    .gap_4()
+                    .child(
+                        h_flex()
+                            .flex_1()
+                            .gap_3()
+                            .child(
+                                gpui::div()
+                                    .w(px(64.))
+                                    .whitespace_nowrap()
+                                    .child(t!("ssh_editor_connection_type").to_string()),
+                            )
+                            .child(
+                                Button::new("ssh-editor-type")
+                                    .flex_1()
+                                    .label("SSH / SFTP")
+                                    .dropdown_menu(|menu, _, _| {
+                                        menu.item(PopupMenuItem::new("SSH / SFTP").checked(true))
+                                    }),
+                            ),
                     )
-                } else {
-                    this.children(self.ssh_config_entries.clone().into_iter().enumerate().map(
+                    .child(
+                        h_flex()
+                            .w(px(230.))
+                            .gap_3()
+                            .child(gpui::div().child(t!("connection_group").to_string()))
+                            .child(
+                                Button::new("ssh-editor-group")
+                                    .flex_1()
+                                    .label(group_label)
+                                    .dropdown_menu({
+                                        let groups = groups.clone();
+                                        let editor = editor.clone();
+                                        move |mut menu, window, _| {
+                                            menu = menu.item(
+                                                PopupMenuItem::new(
+                                                    t!("ssh_editor_group_unselected").to_string(),
+                                                )
+                                                .on_click(window.listener_for(
+                                                    &editor,
+                                                    |this, _, _, cx| {
+                                                        this.group = None;
+                                                        cx.notify();
+                                                    },
+                                                )),
+                                            );
+                                            for group in &groups {
+                                                let selected = group.clone();
+                                                menu = menu.item(
+                                                    PopupMenuItem::new(group.clone()).on_click(
+                                                        window.listener_for(
+                                                            &editor,
+                                                            move |this, _, _, cx| {
+                                                                this.group = Some(selected.clone());
+                                                                cx.notify();
+                                                            },
+                                                        ),
+                                                    ),
+                                                );
+                                            }
+                                            menu
+                                        }
+                                    }),
+                            ),
+                    ),
+            )
+            .child(
+                h_flex()
+                    .gap_3()
+                    .child(
+                        gpui::div()
+                            .w(px(64.))
+                            .whitespace_nowrap()
+                            .child(t!("name").to_string()),
+                    )
+                    .child(Input::new(&self.inputs.name).flex_1()),
+            )
+            .child(
+                h_flex()
+                    .gap_3()
+                    .child(
+                        gpui::div()
+                            .w(px(64.))
+                            .whitespace_nowrap()
+                            .child(t!("ssh_editor_host_label").to_string()),
+                    )
+                    .child(Input::new(&self.inputs.host).flex_1()),
+            )
+            .child(
+                gpui::div()
+                    .ml(px(76.))
+                    .text_size(rems(0.76))
+                    .text_color(cx.theme().muted_foreground)
+                    .child(t!("ssh_editor_host_hint").to_string()),
+            )
+            .child(
+                h_flex()
+                    .gap_3()
+                    .child(
+                        gpui::div()
+                            .w(px(64.))
+                            .whitespace_nowrap()
+                            .child(t!("ssh_editor_port_label").to_string()),
+                    )
+                    .child(Input::new(&self.inputs.port).w(px(160.))),
+            );
+
+        let auth_method = Button::new("ssh-editor-auth-method")
+            .w(px(190.))
+            .label(auth_label)
+            .dropdown_menu({
+                let editor = editor.clone();
+                move |menu, window, _| {
+                    menu.item(
+                        PopupMenuItem::new(t!("ssh_editor_password_label").to_string()).on_click(
+                            window.listener_for(&editor, |this, _, _, cx| {
+                                this.auth = AuthMethod::Password;
+                                cx.notify();
+                            }),
+                        ),
+                    )
+                    .item(
+                        PopupMenuItem::new(t!("ssh_editor_key_label").to_string()).on_click(
+                            window.listener_for(&editor, |this, _, _, cx| {
+                                this.auth = AuthMethod::Key;
+                                cx.notify();
+                            }),
+                        ),
+                    )
+                    .item(
+                        PopupMenuItem::new(t!("ssh_editor_config_label").to_string()).on_click(
+                            window.listener_for(&editor, |this, _, _, cx| {
+                                this.auth = AuthMethod::Config;
+                                cx.notify();
+                            }),
+                        ),
+                    )
+                }
+            });
+
+        let authentication_section = v_flex()
+            .relative()
+            .mt_2()
+            .gap_2()
+            .px_3()
+            .pb_3()
+            .pt_4()
+            .border_1()
+            .border_color(cx.theme().border)
+            .rounded_md()
+            .child(
+                gpui::div()
+                    .absolute()
+                    .top(px(-10.))
+                    .left(px(12.))
+                    .px_2()
+                    .bg(cx.theme().background)
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .child(t!("ssh_editor_authentication").to_string()),
+            )
+            .child(
+                h_flex()
+                    .gap_4()
+                    .child(
+                        h_flex()
+                            .flex_1()
+                            .gap_3()
+                            .child(
+                                gpui::div()
+                                    .w(px(64.))
+                                    .whitespace_nowrap()
+                                    .child(t!("ssh_editor_auth_method").to_string()),
+                            )
+                            .child(auth_method),
+                    )
+                    .child(
+                        h_flex()
+                            .flex_1()
+                            .gap_3()
+                            .child(
+                                gpui::div()
+                                    .w(px(56.))
+                                    .whitespace_nowrap()
+                                    .child(t!("ssh_editor_user_label").to_string()),
+                            )
+                            .child(Input::new(&self.inputs.user).flex_1()),
+                    ),
+            )
+            .when(self.auth == AuthMethod::Password, |this| {
+                this.child(
+                    h_flex()
+                        .gap_3()
+                        .child(
+                            gpui::div()
+                                .w(px(64.))
+                                .whitespace_nowrap()
+                                .child(t!("ssh_editor_password_label").to_string()),
+                        )
+                        .child(Input::new(&self.inputs.password).flex_1().mask_toggle()),
+                )
+            })
+            .when(self.auth == AuthMethod::Key, |this| {
+                this.child(
+                    h_flex()
+                        .items_start()
+                        .gap_3()
+                        .child(
+                            gpui::div()
+                                .w(px(64.))
+                                .pt_2()
+                                .whitespace_nowrap()
+                                .child(t!("ssh_editor_key_label").to_string()),
+                        )
+                        .child(gpui::div().flex_1().child(self.render_key_fields(cx))),
+                )
+            })
+            .when(self.auth == AuthMethod::Config, |this| {
+                let list = v_flex()
+                    .gap_2()
+                    .when(self.ssh_config_entries.is_empty(), |list| {
+                        list.child(
+                            gpui::div()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(t!("ssh_config_empty").to_string()),
+                        )
+                    })
+                    .children(self.ssh_config_entries.clone().into_iter().enumerate().map(
                         |(index, entry)| {
-                            let label = format!(
-                                "{} — {}@{}:{}",
-                                entry.host_alias, entry.user, entry.hostname, entry.port
-                            );
                             gpui::div()
                                 .id(("ssh-editor-config-entry", index))
                                 .cursor_pointer()
@@ -621,101 +842,174 @@ impl Render for SshEditorWindow {
                                 .on_click(cx.listener(move |this, _, window, cx| {
                                     this.select_config(index, window, cx)
                                 }))
-                                .child(label)
+                                .child(format!(
+                                    "{} — {}@{}:{}",
+                                    entry.host_alias, entry.user, entry.hostname, entry.port
+                                ))
                         },
-                    ))
-                }
-            })
-            .child(Input::new(&self.inputs.name))
-            .child(Input::new(&self.inputs.host))
-            .child(
-                h_flex()
-                    .gap_2()
-                    .child(Input::new(&self.inputs.port).w(px(110.)))
-                    .child(Input::new(&self.inputs.user).flex_1()),
-            )
-            .child(
-                Button::new("ssh-editor-group")
-                    .w_full()
-                    .label(format!("{}: {group_label}", t!("connection_group")))
-                    .dropdown_menu({
-                        let groups = groups.clone();
-                        move |mut menu, window, _| {
-                            menu = menu.item(
-                                PopupMenuItem::new(t!("connection_group_ungrouped").to_string())
-                                    .on_click(window.listener_for(&editor, |this, _, _, cx| {
-                                        this.group = None;
-                                        cx.notify();
-                                    })),
-                            );
-                            for group in &groups {
-                                let selected = group.clone();
-                                menu = menu.item(PopupMenuItem::new(group.clone()).on_click(
-                                    window.listener_for(&editor, move |this, _, _, cx| {
-                                        this.group = Some(selected.clone());
-                                        cx.notify();
-                                    }),
-                                ));
-                            }
-                            menu
-                        }
-                    }),
-            )
-            .when(self.auth == AuthMethod::Password, |this| {
-                this.child(Input::new(&self.inputs.password).mask_toggle())
-            })
-            .when(self.auth == AuthMethod::Key, |this| {
-                this.child(self.render_key_fields(cx))
-            })
-            .child(
-                gpui::div()
-                    .pt_2()
-                    .font_weight(gpui::FontWeight::BOLD)
-                    .child(t!("proxy").to_string()),
-            )
-            .child(
-                h_flex()
-                    .gap_2()
-                    .child(proxy_button(
-                        "ssh-editor-proxy-none",
-                        t!("proxy_none").to_string(),
-                        "none",
-                        &proxy_type,
-                        cx,
-                    ))
-                    .child(proxy_button(
-                        "ssh-editor-proxy-socks",
-                        "SOCKS5".to_string(),
-                        "socks5",
-                        &proxy_type,
-                        cx,
-                    ))
-                    .child(proxy_button(
-                        "ssh-editor-proxy-http",
-                        "HTTP".to_string(),
-                        "http",
-                        &proxy_type,
-                        cx,
-                    )),
-            )
-            .when(self.proxy_type != "none", |this| {
+                    ));
                 this.child(
                     h_flex()
-                        .gap_2()
-                        .child(Input::new(&self.inputs.proxy_host).flex_1())
-                        .child(Input::new(&self.inputs.proxy_port).w(px(110.))),
-                )
-                .child(
-                    h_flex()
-                        .gap_2()
-                        .child(Input::new(&self.inputs.proxy_user).flex_1())
+                        .items_start()
+                        .gap_3()
                         .child(
-                            Input::new(&self.inputs.proxy_password)
-                                .flex_1()
-                                .mask_toggle(),
-                        ),
+                            gpui::div()
+                                .w(px(64.))
+                                .pt_2()
+                                .whitespace_nowrap()
+                                .child(t!("ssh_editor_config_label").to_string()),
+                        )
+                        .child(gpui::div().flex_1().child(list)),
                 )
             });
+
+        let connection_page = v_flex()
+            .id("ssh-editor-connection-scroll")
+            .flex_1()
+            .min_h(px(0.))
+            .overflow_y_scroll()
+            .gap_3()
+            .p_4()
+            .child(general_section)
+            .child(authentication_section);
+
+        let proxy_page = v_flex()
+            .id("ssh-editor-proxy-scroll")
+            .flex_1()
+            .min_h(px(0.))
+            .overflow_y_scroll()
+            .p_4()
+            .child(
+                v_flex()
+                    .gap_2()
+                    .p_3()
+                    .border_1()
+                    .border_color(cx.theme().border)
+                    .rounded_md()
+                    .child(
+                        gpui::div()
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .child(t!("ssh_editor_proxy_server").to_string()),
+                    )
+                    .child(
+                        h_flex()
+                            .gap_3()
+                            .child(
+                                gpui::div()
+                                    .w(px(88.))
+                                    .child(t!("ssh_editor_proxy_type").to_string()),
+                            )
+                            .child(
+                                Button::new("ssh-editor-proxy-type")
+                                    .w(px(220.))
+                                    .label(proxy_label)
+                                    .dropdown_menu({
+                                        let editor = editor.clone();
+                                        move |menu, window, _| {
+                                            menu.item(
+                                                PopupMenuItem::new(t!("proxy_none").to_string())
+                                                    .on_click(window.listener_for(
+                                                        &editor,
+                                                        |this, _, _, cx| {
+                                                            this.proxy_type = "none".to_string();
+                                                            cx.notify();
+                                                        },
+                                                    )),
+                                            )
+                                            .item(PopupMenuItem::new("SOCKS5").on_click(
+                                                window.listener_for(&editor, |this, _, _, cx| {
+                                                    this.proxy_type = "socks5".to_string();
+                                                    cx.notify();
+                                                }),
+                                            ))
+                                            .item(
+                                                PopupMenuItem::new("HTTP").on_click(
+                                                    window.listener_for(
+                                                        &editor,
+                                                        |this, _, _, cx| {
+                                                            this.proxy_type = "http".to_string();
+                                                            cx.notify();
+                                                        },
+                                                    ),
+                                                ),
+                                            )
+                                        }
+                                    }),
+                            ),
+                    )
+                    .when(self.proxy_type != "none", |this| {
+                        this.child(
+                            h_flex()
+                                .gap_3()
+                                .child(gpui::div().w(px(88.)).child(t!("proxy_host").to_string()))
+                                .child(Input::new(&self.inputs.proxy_host).flex_1())
+                                .child(Input::new(&self.inputs.proxy_port).w(px(130.))),
+                        )
+                        .child(
+                            h_flex()
+                                .gap_3()
+                                .child(gpui::div().w(px(88.)).child(t!("proxy_user").to_string()))
+                                .child(Input::new(&self.inputs.proxy_user).flex_1())
+                                .child(
+                                    Input::new(&self.inputs.proxy_password)
+                                        .flex_1()
+                                        .mask_toggle(),
+                                ),
+                        )
+                    }),
+            );
+
+        let sidebar = v_flex()
+            .w(px(164.))
+            .h_full()
+            .flex_none()
+            .gap_1()
+            .p_2()
+            .border_r_1()
+            .border_color(cx.theme().border)
+            .bg(cx.theme().muted.opacity(0.25))
+            .child(
+                gpui::div()
+                    .id("ssh-editor-nav-connection")
+                    .cursor_pointer()
+                    .whitespace_nowrap()
+                    .rounded_md()
+                    .px_3()
+                    .py_2()
+                    .when(self.page == SshEditorPage::Connection, |item| {
+                        item.bg(cx.theme().primary.opacity(0.10))
+                            .text_color(cx.theme().primary)
+                    })
+                    .when(self.page != SshEditorPage::Connection, |item| {
+                        item.hover(|item| item.bg(cx.theme().muted.opacity(0.45)))
+                    })
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.page = SshEditorPage::Connection;
+                        cx.notify();
+                    }))
+                    .child(t!("ssh_editor_connection").to_string()),
+            )
+            .child(
+                gpui::div()
+                    .id("ssh-editor-nav-proxy")
+                    .cursor_pointer()
+                    .whitespace_nowrap()
+                    .rounded_md()
+                    .px_3()
+                    .py_2()
+                    .when(self.page == SshEditorPage::Proxy, |item| {
+                        item.bg(cx.theme().primary.opacity(0.10))
+                            .text_color(cx.theme().primary)
+                    })
+                    .when(self.page != SshEditorPage::Proxy, |item| {
+                        item.hover(|item| item.bg(cx.theme().muted.opacity(0.45)))
+                    })
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.page = SshEditorPage::Proxy;
+                        cx.notify();
+                    }))
+                    .child(t!("ssh_editor_proxy_server").to_string()),
+            );
 
         v_flex()
             .size_full()
@@ -728,12 +1022,26 @@ impl Render for SshEditorWindow {
                 }
             })
             .bg(cx.theme().background)
-            .p_3()
-            .gap_2()
-            .child(content)
+            .child(
+                h_flex()
+                    .flex_1()
+                    .min_h(px(0.))
+                    .items_stretch()
+                    .child(sidebar)
+                    .child(if self.page == SshEditorPage::Connection {
+                        connection_page.into_any_element()
+                    } else {
+                        proxy_page.into_any_element()
+                    }),
+            )
             .when_some(self.error.clone(), |this, error| {
                 this.child(
                     gpui::div()
+                        .flex_none()
+                        .px_4()
+                        .py_2()
+                        .border_t_1()
+                        .border_color(cx.theme().border)
                         .text_size(rems(0.82))
                         .text_color(cx.theme().danger)
                         .child(error),
@@ -744,6 +1052,10 @@ impl Render for SshEditorWindow {
                     .flex_none()
                     .justify_end()
                     .gap_2()
+                    .px_4()
+                    .py_2()
+                    .border_t_1()
+                    .border_color(cx.theme().border)
                     .child(
                         Button::new("ssh-editor-cancel")
                             .secondary()
@@ -766,38 +1078,6 @@ impl Render for SshEditorWindow {
                     ),
             )
     }
-}
-
-fn auth_button(
-    id: &'static str,
-    label: String,
-    auth: AuthMethod,
-    selected: AuthMethod,
-    cx: &mut Context<SshEditorWindow>,
-) -> Button {
-    Button::new(id)
-        .label(label)
-        .when(auth == selected, |button| button.primary())
-        .on_click(cx.listener(move |this, _, _, cx| {
-            this.auth = auth;
-            cx.notify();
-        }))
-}
-
-fn proxy_button(
-    id: &'static str,
-    label: String,
-    proxy_type: &'static str,
-    selected: &str,
-    cx: &mut Context<SshEditorWindow>,
-) -> Button {
-    Button::new(id)
-        .label(label)
-        .when(proxy_type == selected, |button| button.primary())
-        .on_click(cx.listener(move |this, _, _, cx| {
-            this.proxy_type = proxy_type.to_string();
-            cx.notify();
-        }))
 }
 
 fn same_session_revision(left: &Session, right: &Session) -> bool {
@@ -825,14 +1105,14 @@ fn window_options(cx: &App) -> WindowOptions {
         is_movable: true,
         is_resizable: true,
         is_minimizable: true,
-        window_min_size: Some(size(px(460.), px(440.))),
+        window_min_size: Some(size(px(680.), px(420.))),
         ..Default::default()
     };
     if let Some(display) = cx.displays().first().cloned() {
         let display_bounds = display.bounds();
         let window_size = size(
-            px(520.).min(display_bounds.size.width * 0.9),
-            px(580.).min(display_bounds.size.height * 0.9),
+            px(820.).min(display_bounds.size.width * 0.9),
+            px(470.).min(display_bounds.size.height * 0.9),
         );
         let origin = point(
             display_bounds.origin.x + (display_bounds.size.width - window_size.width) / 2.,
