@@ -35,7 +35,6 @@
 ## 破坏性变更与已知问题
 
 - 本版本没有应用功能、配置或数据层面的破坏性变更。
-- 当前本地 Windows 环境未安装 `python` 或 `py` 命令，发布资料脚本的单元测试和实际提取由 GitHub Actions 的 Python 3.13 环境执行。
 
 ## 验证结果
 
@@ -47,9 +46,12 @@
 - `cargo clippy --locked --all-targets -- -D warnings`：通过，无 warning。
 - `cargo test --locked --all-targets`：通过，152 项测试全部成功。
 - `cargo build --locked --release`：通过，生成 Windows 优化构建。
+- `python -m unittest scripts/test_release_notes.py`：通过，3 项测试全部成功。
+- `python scripts/release_notes.py --check-current`：通过，当前版本资料一致。
+- `python scripts/release_notes.py --tag v1.1.9 --output <path>`：通过，成功生成 Release Notes。
 - `git diff --check`：通过。
 
-Python 发布资料测试未在本地执行，因为当前环境没有可用的 Python 解释器；`.github/workflows/ci.yml` 与 `.github/workflows/release.yml` 均固定使用 Python 3.13 执行测试和资料校验。macOS 与 Linux 构建由标签触发的 GitHub Actions 发布流水线验证。
+Python 验证使用官方 `python:3.13-slim` Docker 镜像执行，与 GitHub Actions 固定的 Python 3.13 版本一致。macOS 与 Linux 构建由标签触发的 GitHub Actions 发布流水线验证。
 
 ## 变更依据
 
