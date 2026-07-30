@@ -589,18 +589,26 @@ impl Render for SshEditorWindow {
             .px_3()
             .pb_3()
             .pt_4()
-            .border_1()
+            .border_l_1()
+            .border_r_1()
+            .border_b_1()
             .border_color(cx.theme().border)
             .rounded_md()
             .child(
-                gpui::div()
+                h_flex()
                     .absolute()
                     .top(px(-10.))
-                    .left(px(12.))
-                    .px_2()
-                    .bg(cx.theme().background)
-                    .font_weight(gpui::FontWeight::SEMIBOLD)
-                    .child(t!("ssh_editor_general").to_string()),
+                    .left_0()
+                    .right_0()
+                    .items_center()
+                    .child(gpui::div().w(px(12.)).h(px(1.)).bg(cx.theme().border))
+                    .child(
+                        gpui::div()
+                            .px_2()
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .child(t!("ssh_editor_general").to_string()),
+                    )
+                    .child(gpui::div().flex_1().h(px(1.)).bg(cx.theme().border)),
             )
             .child(
                 h_flex()
@@ -750,18 +758,26 @@ impl Render for SshEditorWindow {
             .px_3()
             .pb_3()
             .pt_4()
-            .border_1()
+            .border_l_1()
+            .border_r_1()
+            .border_b_1()
             .border_color(cx.theme().border)
             .rounded_md()
             .child(
-                gpui::div()
+                h_flex()
                     .absolute()
                     .top(px(-10.))
-                    .left(px(12.))
-                    .px_2()
-                    .bg(cx.theme().background)
-                    .font_weight(gpui::FontWeight::SEMIBOLD)
-                    .child(t!("ssh_editor_authentication").to_string()),
+                    .left_0()
+                    .right_0()
+                    .items_center()
+                    .child(gpui::div().w(px(12.)).h(px(1.)).bg(cx.theme().border))
+                    .child(
+                        gpui::div()
+                            .px_2()
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .child(t!("ssh_editor_authentication").to_string()),
+                    )
+                    .child(gpui::div().flex_1().h(px(1.)).bg(cx.theme().border)),
             )
             .child(
                 h_flex()
@@ -1111,8 +1127,8 @@ fn window_options(cx: &App) -> WindowOptions {
     if let Some(display) = cx.displays().first().cloned() {
         let display_bounds = display.bounds();
         let window_size = size(
-            px(820.).min(display_bounds.size.width * 0.9),
-            px(470.).min(display_bounds.size.height * 0.9),
+            px(620.).min(display_bounds.size.width * 0.9),
+            px(400.).min(display_bounds.size.height * 0.9),
         );
         let origin = point(
             display_bounds.origin.x + (display_bounds.size.width - window_size.width) / 2.,
