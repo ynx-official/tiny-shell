@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use crate::{TinyShell, app::settings_window::SettingsInputs};
+use crate::{TinyShell, app::settings::form::SettingsInputs};
 use gpui::{
     Animation, AnimationExt as _, ElementId, InteractiveElement as _, IntoElement,
     ParentElement as _, Styled as _, div, px,

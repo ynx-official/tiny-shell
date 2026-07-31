@@ -13,7 +13,7 @@ use gpui_component::{
 };
 use rust_i18n::t;
 
-use crate::{TinyShell, app::settings_window::SyncSettingsInputs};
+use crate::{TinyShell, app::settings::form::SyncSettingsInputs};
 
 use super::controls::{labeled_input, labeled_input_with_hint, split_inputs};
 
@@ -37,8 +37,8 @@ pub(crate) fn page(view: &Entity<TinyShell>, inputs: SyncSettingsInputs) -> Sett
                         ) = {
                             let state = view.read(cx);
                             (
-                                state.sync_in_progress,
-                                state.sync_status.clone(),
+                                state.sync_runtime.in_progress,
+                                state.sync_runtime.status.clone(),
                                 state.config.sync_backend() == "s3",
                                 state.config.sync_enabled(),
                                 crate::app::config_sync::format_sync_timestamp(

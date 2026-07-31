@@ -111,8 +111,8 @@ pub(crate) fn open(owner: Entity<TinyShell>, cx: &mut App) -> Option<AnyWindowHa
         let owner_for_close = owner_for_window.clone();
         window.on_window_should_close(cx, move |_, cx| {
             owner_for_close.update(cx, |this, cx| {
-                this.connection_manager_window = None;
-                this.connection_manager_window_opening = false;
+                this.auxiliary_windows.connection_manager.handle = None;
+                this.auxiliary_windows.connection_manager.opening = false;
                 cx.notify();
             });
             true

@@ -204,7 +204,7 @@ pub(crate) fn page(
                 .item(SettingItem::render({
                     let view = view.clone();
                     move |_, window, cx| {
-                        let status = present_status(view.read(cx).updater_status.as_ref());
+                        let status = present_status(view.read(cx).update_runtime.status.as_ref());
                         let is_downloading = status.progress.is_some();
 
                         v_flex()

@@ -1506,3 +1506,4 @@ mod tests {
         assert_powershell_script_parses(&script, "setup-update-script-test");
     }
 }
+pub(crate) mod ui;

@@ -9,7 +9,7 @@ use gpui_component::{
 };
 use rust_i18n::t;
 
-use crate::{TinyShell, app::settings_window::ProxySettingsInputs};
+use crate::{TinyShell, app::settings::form::ProxySettingsInputs};
 
 use super::{
     actions::{ProxyFormValues, ProxyKind},

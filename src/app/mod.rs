@@ -1,17 +1,21 @@
 pub mod config_sync;
+pub mod connection_archive_dialogs;
 pub mod connection_manager;
 pub mod constants;
 pub mod dialogs;
 pub mod input_focus;
 pub mod keybinding_recorder;
 pub mod resizable;
+pub mod runtime_state;
 pub mod search;
 pub mod settings;
 pub mod settings_window;
+pub mod sftp_dialogs;
 pub mod sftp_editor;
 pub mod sftp_editor_window;
 pub mod ssh_key_import;
 pub mod startup;
+pub mod sync_dialogs;
 pub mod tab_drag;
 pub mod terminal_completion;
 pub mod theme;
@@ -35,6 +39,10 @@ use std::{
 use crate::app::{
     connection_manager::{actions::ConnectionManagerActions, state::ConnectionManagerState},
     resizable::ResizableState,
+    runtime_state::{
+        AuxiliaryWindowsState, ConfigPersistenceState, SyncRuntimeState, UpdateRuntimeState,
+    },
+    settings::form::SettingsInputs,
     ssh_key_import::KeyImportState,
     workspace_presentation::WorkspaceMode,
 };
@@ -51,12 +59,8 @@ use rust_i18n::t;
 use tokio::runtime::Runtime;
 
 use crate::{
-    crypto,
     session::{
-        config::{
-            AuthMethod, ConfigStore, ManagedKey, QuickCommandCategory, TerminalDisplayStyle,
-            hardware_uuid,
-        },
+        config::{AuthMethod, ConfigStore, ManagedKey, QuickCommandCategory, TerminalDisplayStyle},
         quick_commands::{BUILTIN_QUICK_COMMANDS_VERSION, merge_builtin_quick_commands},
         ssh_config::SshConfigEntry,
     },
@@ -119,6 +123,45 @@ static TAB_DRAG_HOVER_SEQ: AtomicU64 = AtomicU64::new(1);
 static SESSION_OWNER_SEQ: AtomicU64 = AtomicU64::new(1);
 static CONFIG_PREFERENCES_SAVE_SEQ: AtomicU64 = AtomicU64::new(0);
 static CONFIG_PREFERENCES_SAVE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+static CONFIG_PREFERENCES_SAVE_TX: OnceLock<mpsc::Sender<(u64, ConfigStore)>> = OnceLock::new();
+
+fn config_preferences_save_sender() -> mpsc::Sender<(u64, ConfigStore)> {
+    CONFIG_PREFERENCES_SAVE_TX
+        .get_or_init(|| {
+            let (sender, receiver) = mpsc::channel::<(u64, ConfigStore)>();
+            let worker = std::thread::Builder::new()
+                .name("tiny-shell-config-save".to_string())
+                .spawn(move || {
+                    while let Ok((mut sequence, mut source)) = receiver.recv() {
+                        while let Ok((next_sequence, next_source)) =
+                            receiver.recv_timeout(Duration::from_millis(100))
+                        {
+                            sequence = next_sequence;
+                            source = next_source;
+                        }
+
+                        let lock = CONFIG_PREFERENCES_SAVE_LOCK.get_or_init(|| Mutex::new(()));
+                        let Ok(_guard) = lock.lock() else {
+                            continue;
+                        };
+                        if sequence != CONFIG_PREFERENCES_SAVE_SEQ.load(Ordering::SeqCst) {
+                            continue;
+                        }
+                        let mut config =
+                            ConfigStore::load().unwrap_or_else(|_| ConfigStore::in_memory());
+                        config.merge_interactive_preferences_from(&source);
+                        if let Err(err) = config.save() {
+                            tracing::warn!("failed to save preferences in background: {err:#}");
+                        }
+                    }
+                });
+            if let Err(err) = worker {
+                tracing::warn!("failed to start config save worker: {err}");
+            }
+            sender
+        })
+        .clone()
+}
 
 pub(crate) fn window_registry() -> Arc<Mutex<Vec<WindowEntry>>> {
     WINDOW_REGISTRY
@@ -523,7 +566,6 @@ pub(crate) struct SyncSecretsPasswordDialogState {
 pub(crate) enum DialogKind {
     Updater,
     SessionSelector,
-    QuickConnectionManager,
     Transfers,
     NewSsh,
     ManagedKeySelector,
@@ -638,26 +680,8 @@ pub(crate) struct TinyShell {
     pub(crate) proxy_user_input: Entity<InputState>,
     pub(crate) proxy_password_input: Entity<InputState>,
     pub(crate) global_proxy_type: String,
-    pub(crate) global_proxy_host_input: Entity<InputState>,
-    pub(crate) global_proxy_port_input: Entity<InputState>,
-    pub(crate) global_proxy_user_input: Entity<InputState>,
-    pub(crate) global_proxy_password_input: Entity<InputState>,
-    pub(crate) update_interval_hours_input: Entity<InputState>,
-    pub(crate) sync_interval_hours_input: Entity<InputState>,
-    pub(crate) sync_endpoint_input: Entity<InputState>,
-    pub(crate) sync_username_input: Entity<InputState>,
-    pub(crate) sync_webdav_password_input: Entity<InputState>,
-    pub(crate) sync_s3_endpoint_input: Entity<InputState>,
-    pub(crate) sync_s3_region_input: Entity<InputState>,
-    pub(crate) sync_s3_bucket_input: Entity<InputState>,
-    pub(crate) sync_s3_object_key_input: Entity<InputState>,
-    pub(crate) sync_s3_access_key_input: Entity<InputState>,
-    pub(crate) sync_s3_secret_key_input: Entity<InputState>,
-    pub(crate) sync_s3_session_token_input: Entity<InputState>,
-    pub(crate) sync_privacy_password_input: Entity<InputState>,
-    pub(crate) sync_in_progress: bool,
-    pub(crate) sync_status: SharedString,
-    pub(crate) sync_secrets_password_dialog: Option<SyncSecretsPasswordDialogState>,
+    pub(crate) settings_inputs: SettingsInputs,
+    pub(crate) sync_runtime: SyncRuntimeState,
     pub(crate) sftp_path_input: Entity<InputState>,
     pub(crate) ssh_auth_method: AuthMethod,
     pub(crate) ssh_config_entries: Vec<SshConfigEntry>,
@@ -766,21 +790,14 @@ pub(crate) struct TinyShell {
     pub(crate) prev_monitoring_size: Option<Pixels>,
     pub(crate) status: SharedString,
     pub(crate) config: ConfigStore,
-    pub(crate) config_preferences_dirty: bool,
+    pub(crate) config_persistence: ConfigPersistenceState,
     pub(crate) active_title_bar_style: crate::session::config::TitleBarStyle,
     pub(crate) cursor_style: crate::session::config::CursorStyle,
     pub(crate) system_sampler: Arc<std::sync::Mutex<SharedSystemSampler>>,
     pub(crate) recording_action: Option<String>,
     pub(crate) active_dialog: Option<DialogKind>,
-    pub(crate) settings_window: Option<AnyWindowHandle>,
-    pub(crate) settings_window_opening: bool,
-    pub(crate) connection_manager_window: Option<AnyWindowHandle>,
-    pub(crate) connection_manager_window_opening: bool,
-    pub(crate) updater_status: Option<updater::UpdateStatus>,
-    pub(crate) update_download_cancellation: Option<updater::DownloadCancellation>,
-    pub(crate) update_download_generation: u64,
-    pub(crate) update_schedule_generation: u64,
-    pub(crate) sync_schedule_generation: u64,
+    pub(crate) auxiliary_windows: AuxiliaryWindowsState,
+    pub(crate) update_runtime: UpdateRuntimeState,
     /// Error message when a recorded keybinding conflicts with another
     pub(crate) keybind_error: Option<(String, String)>, // (action_id, error_message)
     pub(crate) system: SystemSnapshot,
@@ -801,7 +818,6 @@ pub(crate) struct TinyShell {
     pub(crate) last_sftp_latency_sample: Instant,
 
     pub(crate) search_input: Entity<InputState>,
-    pub(crate) quick_connection_search_input: Entity<InputState>,
     pub(crate) connection_manager_state: Entity<ConnectionManagerState>,
     pub(crate) connection_manager_actions: ConnectionManagerActions,
     pub(crate) search_active: bool,
@@ -940,8 +956,6 @@ impl TinyShell {
             cx.new(|cx| InputState::new(window, cx).placeholder(t!("new_folder").to_string()));
         let search_input =
             cx.new(|cx| InputState::new(window, cx).placeholder(t!("search").to_string()));
-        let quick_connection_search_input =
-            cx.new(|cx| InputState::new(window, cx).placeholder(t!("search").to_string()));
         let connection_manager_state = cx.new(|_| ConnectionManagerState::default());
         let quick_command_parameter_inputs = (1..=5)
             .map(|index| {
@@ -955,114 +969,8 @@ impl TinyShell {
             tracing::warn!("failed to load config: {err:#}");
             ConfigStore::in_memory()
         });
-        let global_proxy_host_input = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder(t!("proxy_host").to_string())
-                .default_value(config.global_proxy_host())
-        });
-        let global_proxy_port_input = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder(t!("proxy_port").to_string())
-                .default_value(
-                    config
-                        .global_proxy_port()
-                        .map(|p| p.to_string())
-                        .unwrap_or_default(),
-                )
-        });
-        let global_proxy_user_input = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder(t!("proxy_user").to_string())
-                .default_value(config.global_proxy_user())
-        });
-        let global_proxy_password_input = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder(t!("proxy_password").to_string())
-                .masked(true)
-                .default_value(config.global_proxy_password())
-        });
-        let update_interval_hours_input = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder("24")
-                .default_value(config.update_interval_hours().to_string())
-        });
-        let sync_interval_hours_input = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder("24")
-                .default_value(config.sync_interval_hours().to_string())
-        });
-        let sync_endpoint_input = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder("https://dav.example.com/tiny-shell/")
-                .default_value(config.sync_endpoint())
-        });
-        let sync_username_input = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder(t!("sync_username").to_string())
-                .default_value(config.sync_username())
-        });
-        let sync_webdav_password_input = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder(t!("sync_webdav_password").to_string())
-                .masked(true)
-                .default_value(
-                    crate::app::config_sync::open_webdav_password(
-                        config.sync_webdav_password_sealed(),
-                    )
-                    .unwrap_or_default(),
-                )
-        });
-        let sync_s3_endpoint_input = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder("https://s3.example.com")
-                .default_value(config.sync_s3_endpoint())
-        });
-        let sync_s3_region_input = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder("us-east-1")
-                .default_value(config.sync_s3_region())
-        });
-        let sync_s3_bucket_input = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder(t!("sync_s3_bucket").to_string())
-                .default_value(config.sync_s3_bucket())
-        });
-        let sync_s3_object_key_input = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder("tiny-shell-sync.json")
-                .default_value(config.sync_s3_object_key())
-        });
-        let sync_s3_access_key_input = cx.new(|cx| {
-            InputState::new(window, cx).placeholder(t!("sync_s3_access_key").to_string())
-        });
-        let sync_s3_secret_key_input = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder(t!("sync_s3_secret_key").to_string())
-                .masked(true)
-        });
-        let sync_s3_session_token_input = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder(t!("sync_s3_session_token").to_string())
-                .masked(true)
-        });
-        // 隐私信息加密密码：若本机已硬件绑定落盘，启动时解密回填到输入框；
-        // 解密失败（如换设备）则留空，由用户重新输入或重置。
-        let sync_privacy_password_input = cx.new(|cx| {
-            let mut state = InputState::new(window, cx)
-                .placeholder(t!("sync_privacy_password").to_string())
-                .masked(true);
-            if !config.sync_secrets_password_sealed().is_empty() {
-                let hw = hardware_uuid();
-                if let Ok(plaintext) =
-                    crypto::open_with_hardware_key(config.sync_secrets_password_sealed(), &hw)
-                {
-                    state = state.default_value(&plaintext);
-                }
-            }
-            state
-        });
-
-        let _subscriptions = vec![
+        let settings_inputs = SettingsInputs::new(&config, window, cx);
+        let mut _subscriptions = vec![
             cx.subscribe_in(&host_input, window, Self::on_input_event),
             cx.subscribe_in(&session_name_input, window, Self::on_input_event),
             cx.subscribe_in(&connection_group_input, window, Self::on_input_event),
@@ -1078,24 +986,15 @@ impl TinyShell {
             cx.subscribe_in(&proxy_port_input, window, Self::on_input_event),
             cx.subscribe_in(&proxy_user_input, window, Self::on_input_event),
             cx.subscribe_in(&proxy_password_input, window, Self::on_input_event),
-            cx.subscribe_in(&update_interval_hours_input, window, Self::on_input_event),
-            cx.subscribe_in(&sync_interval_hours_input, window, Self::on_input_event),
             cx.subscribe_in(&sftp_path_input, window, Self::on_input_event),
             cx.subscribe_in(&sftp_new_folder_input, window, Self::on_input_event),
             cx.subscribe_in(&search_input, window, Self::on_input_event),
-            cx.subscribe_in(&quick_connection_search_input, window, Self::on_input_event),
-            cx.subscribe_in(&sync_endpoint_input, window, Self::on_input_event),
-            cx.subscribe_in(&sync_username_input, window, Self::on_input_event),
-            cx.subscribe_in(&sync_webdav_password_input, window, Self::on_input_event),
-            cx.subscribe_in(&sync_s3_endpoint_input, window, Self::on_input_event),
-            cx.subscribe_in(&sync_s3_region_input, window, Self::on_input_event),
-            cx.subscribe_in(&sync_s3_bucket_input, window, Self::on_input_event),
-            cx.subscribe_in(&sync_s3_object_key_input, window, Self::on_input_event),
-            cx.subscribe_in(&sync_s3_access_key_input, window, Self::on_input_event),
-            cx.subscribe_in(&sync_s3_secret_key_input, window, Self::on_input_event),
-            cx.subscribe_in(&sync_s3_session_token_input, window, Self::on_input_event),
-            cx.subscribe_in(&sync_privacy_password_input, window, Self::on_input_event),
         ];
+        _subscriptions.extend(
+            settings_inputs
+                .all_inputs()
+                .map(|input| cx.subscribe_in(&input, window, Self::on_input_event)),
+        );
 
         let (events_tx, events_rx) = mpsc::channel();
         let workspace_panels = cx.new(|_| ResizableState::default());
@@ -1182,26 +1081,8 @@ impl TinyShell {
             proxy_user_input,
             proxy_password_input,
             global_proxy_type: config.global_proxy_type().to_string(),
-            global_proxy_host_input,
-            global_proxy_port_input,
-            global_proxy_user_input,
-            global_proxy_password_input,
-            update_interval_hours_input,
-            sync_interval_hours_input,
-            sync_endpoint_input,
-            sync_username_input,
-            sync_webdav_password_input,
-            sync_s3_endpoint_input,
-            sync_s3_region_input,
-            sync_s3_bucket_input,
-            sync_s3_object_key_input,
-            sync_s3_access_key_input,
-            sync_s3_secret_key_input,
-            sync_s3_session_token_input,
-            sync_privacy_password_input,
-            sync_in_progress: false,
-            sync_status: t!("sync_not_run").into(),
-            sync_secrets_password_dialog: None,
+            settings_inputs,
+            sync_runtime: SyncRuntimeState::new(t!("sync_not_run").into()),
             sftp_path_input,
             ssh_auth_method: AuthMethod::Password,
             ssh_config_entries: crate::session::ssh_config::parse_ssh_config().unwrap_or_default(),
@@ -1312,19 +1193,12 @@ impl TinyShell {
             status: "ready".into(),
             active_title_bar_style: config.title_bar_style(),
             config,
-            config_preferences_dirty: false,
+            config_persistence: ConfigPersistenceState::default(),
             system_sampler,
             recording_action: None,
             active_dialog: None,
-            settings_window: None,
-            settings_window_opening: false,
-            connection_manager_window: None,
-            connection_manager_window_opening: false,
-            updater_status: None,
-            update_download_cancellation: None,
-            update_download_generation: 0,
-            update_schedule_generation: 0,
-            sync_schedule_generation: 0,
+            auxiliary_windows: AuxiliaryWindowsState::default(),
+            update_runtime: UpdateRuntimeState::default(),
             keybind_error: None,
             animated_cpu_percent: system.cpu_percent,
             animated_mem_percent: system.mem_percent,
@@ -1341,7 +1215,6 @@ impl TinyShell {
             last_sftp_latency_sample: Instant::now(),
 
             search_input,
-            quick_connection_search_input,
             connection_manager_state,
             connection_manager_actions: ConnectionManagerActions::default(),
             search_active: false,
@@ -1387,11 +1260,11 @@ impl TinyShell {
                 .value()
                 .to_string();
             self.key_import.revalidate(&passphrase, &self.managed_keys);
-        } else if input == &self.update_interval_hours_input {
+        } else if input == &self.settings_inputs.update.interval_hours {
             match event {
                 InputEvent::Change => {
-                    if let Ok(hours) = input.read(cx).value().trim().parse::<u32>()
-                        && (1..=8_760).contains(&hours)
+                    if let Some(hours) =
+                        settings::actions::parse_hour_interval(input.read(cx).value().as_ref())
                     {
                         self.config.set_update_interval_hours(hours);
                         self.mark_config_preferences_dirty();
@@ -1400,7 +1273,9 @@ impl TinyShell {
                 }
                 InputEvent::Blur | InputEvent::PressEnter { .. } => {
                     let hours = self.config.update_interval_hours().to_string();
-                    self.update_interval_hours_input
+                    self.settings_inputs
+                        .update
+                        .interval_hours
                         .update(cx, |input, cx| input.set_value(hours, window, cx));
                     if matches!(event, InputEvent::PressEnter { .. }) {
                         window.prevent_default();
@@ -1409,11 +1284,11 @@ impl TinyShell {
                 }
                 _ => {}
             }
-        } else if input == &self.sync_interval_hours_input {
+        } else if input == &self.settings_inputs.sync.interval_hours {
             match event {
                 InputEvent::Change => {
-                    if let Ok(hours) = input.read(cx).value().trim().parse::<u32>()
-                        && (1..=8_760).contains(&hours)
+                    if let Some(hours) =
+                        settings::actions::parse_hour_interval(input.read(cx).value().as_ref())
                     {
                         self.config.set_sync_interval_hours(hours);
                         self.mark_config_preferences_dirty();
@@ -1422,7 +1297,9 @@ impl TinyShell {
                 }
                 InputEvent::Blur | InputEvent::PressEnter { .. } => {
                     let hours = self.config.sync_interval_hours().to_string();
-                    self.sync_interval_hours_input
+                    self.settings_inputs
+                        .sync
+                        .interval_hours
                         .update(cx, |input, cx| input.set_value(hours, window, cx));
                     if matches!(event, InputEvent::PressEnter { .. }) {
                         window.prevent_default();
@@ -1562,6 +1439,13 @@ impl TinyShell {
     }
 
     fn animate_resource_metrics(&mut self) -> bool {
+        if !self.monitoring_metrics_visible() {
+            self.animated_cpu_percent = self.system.cpu_percent;
+            self.animated_mem_percent = self.system.mem_percent;
+            self.animated_swap_percent = self.system.swap_percent;
+            return false;
+        }
+
         fn advance(current: &mut f32, target: f32) -> bool {
             let difference = target - *current;
             if difference.abs() < 0.0005 {
@@ -1579,6 +1463,13 @@ impl TinyShell {
         changed |= advance(&mut self.animated_mem_percent, self.system.mem_percent);
         changed |= advance(&mut self.animated_swap_percent, self.system.swap_percent);
         changed
+    }
+
+    fn monitoring_metrics_visible(&self) -> bool {
+        self.active_system_info_tab.is_some()
+            || (!self.sidebar_collapsed
+                && (self.active_kind() == Some(TabKind::Ssh)
+                    || self.config.monitoring_position() == "Sidebar"))
     }
 
     pub(crate) fn set_home_page(&mut self, page: HomePage, cx: &mut Context<Self>) {
@@ -1888,7 +1779,7 @@ impl TinyShell {
                     }
                 }
                 BackendEvent::SyncFinished(result) => {
-                    self.sync_in_progress = false;
+                    self.sync_runtime.in_progress = false;
                     match result {
                         crate::sync::SyncResult::Uploaded {
                             etag,
@@ -1908,12 +1799,12 @@ impl TinyShell {
                             });
                             match password_result.and_then(|()| self.config.save()) {
                                 Ok(()) => {
-                                    self.sync_status = t!("sync_upload_complete").into();
+                                    self.sync_runtime.status = t!("sync_upload_complete").into();
                                     self.schedule_automatic_sync(false, cx);
                                 }
                                 Err(err) => {
                                     self.config.set_sync_last_synced_at(previous_synced_at);
-                                    self.sync_status =
+                                    self.sync_runtime.status =
                                         format!("{}: {err:#}", t!("sync_failed")).into();
                                 }
                             }
@@ -1938,7 +1829,7 @@ impl TinyShell {
                             credentials,
                             reason,
                         } => {
-                            self.sync_status = match &reason {
+                            self.sync_runtime.status = match &reason {
                                 crate::sync::UploadBlockReason::PasswordRequired => {
                                     t!("sync_upload_password_required").into()
                                 }
@@ -1955,7 +1846,7 @@ impl TinyShell {
                                 )
                                 .into(),
                             };
-                            if let Some(handle) = self.settings_window {
+                            if let Some(handle) = self.auxiliary_windows.settings.handle {
                                 let owner = cx.entity();
                                 let form =
                                     crate::app::config_sync::SyncFormSnapshot::from_credentials(
@@ -2011,7 +1902,7 @@ impl TinyShell {
                                         commands = command_count
                                     )
                                     .to_string();
-                                    self.sync_status = match password_status {
+                                    self.sync_runtime.status = match password_status {
                                         crate::sync::PrivacyPasswordStatus::Mismatch => format!(
                                             "{summary}; {}",
                                             t!("sync_privacy_password_incorrect")
@@ -2039,7 +1930,7 @@ impl TinyShell {
                                     };
                                     if password_status
                                         == crate::sync::PrivacyPasswordStatus::Mismatch
-                                        && let Some(handle) = self.settings_window
+                                        && let Some(handle) = self.auxiliary_windows.settings.handle
                                     {
                                         let owner = cx.entity();
                                         let form = crate::app::config_sync::SyncFormSnapshot::from_credentials(
@@ -2060,7 +1951,7 @@ impl TinyShell {
                                 }
                                 Err(err) => {
                                     self.config.set_sync_last_synced_at(previous_synced_at);
-                                    self.sync_status =
+                                    self.sync_runtime.status =
                                         format!("{}: {err:#}", t!("sync_failed")).into()
                                 }
                             }
@@ -2076,12 +1967,13 @@ impl TinyShell {
                                         .set_sync_last_synced_at(chrono::Utc::now().timestamp());
                                     match self.config.save() {
                                         Ok(()) => {
-                                            self.sync_status = t!("sync_reset_complete").into();
+                                            self.sync_runtime.status =
+                                                t!("sync_reset_complete").into();
                                             self.schedule_automatic_sync(false, cx);
                                         }
                                         Err(err) => {
                                             self.config.set_sync_last_synced_at(previous_synced_at);
-                                            self.sync_status = format!(
+                                            self.sync_runtime.status = format!(
                                                 "{}: {err:#}; {}",
                                                 t!("sync_failed"),
                                                 t!("sync_reset_local_save_failed")
@@ -2091,7 +1983,7 @@ impl TinyShell {
                                     }
                                 }
                                 Err(err) => {
-                                    self.sync_status =
+                                    self.sync_runtime.status =
                                         format!("{}: {err:#}", t!("sync_failed")).into();
                                 }
                             }
@@ -2101,7 +1993,9 @@ impl TinyShell {
                             password,
                         } => {
                             if self.set_sync_include_secrets(true, cx) {
-                                if let Some(dialog) = self.sync_secrets_password_dialog.take() {
+                                if let Some(dialog) =
+                                    self.sync_runtime.secrets_password_dialog.take()
+                                {
                                     self.active_dialog = None;
                                     let input = dialog.settings_password_input;
                                     let input_password = password.clone();
@@ -2118,8 +2012,10 @@ impl TinyShell {
                                 );
                                 self.upload_sync_config(form, cx);
                             } else {
-                                let message = self.sync_status.clone();
-                                if let Some(dialog) = self.sync_secrets_password_dialog.as_mut() {
+                                let message = self.sync_runtime.status.clone();
+                                if let Some(dialog) =
+                                    self.sync_runtime.secrets_password_dialog.as_mut()
+                                {
                                     dialog.status =
                                         crate::app::SyncSecretsPasswordDialogStatus::Failed;
                                     dialog.message = Some(message);
@@ -2131,7 +2027,7 @@ impl TinyShell {
                                 crate::sync::PrivacyPasswordStatus::Verified => {
                                     if self.set_sync_include_secrets(true, cx) {
                                         if let Some(dialog) =
-                                            self.sync_secrets_password_dialog.take()
+                                            self.sync_runtime.secrets_password_dialog.take()
                                         {
                                             self.active_dialog = None;
                                             let input = dialog.settings_password_input;
@@ -2148,9 +2044,9 @@ impl TinyShell {
                                                 });
                                         }
                                     } else {
-                                        let message = self.sync_status.clone();
+                                        let message = self.sync_runtime.status.clone();
                                         if let Some(dialog) =
-                                            self.sync_secrets_password_dialog.as_mut()
+                                            self.sync_runtime.secrets_password_dialog.as_mut()
                                         {
                                             dialog.status =
                                                 crate::app::SyncSecretsPasswordDialogStatus::Failed;
@@ -2159,7 +2055,8 @@ impl TinyShell {
                                     }
                                 }
                                 crate::sync::PrivacyPasswordStatus::Mismatch => {
-                                    if let Some(dialog) = self.sync_secrets_password_dialog.as_mut()
+                                    if let Some(dialog) =
+                                        self.sync_runtime.secrets_password_dialog.as_mut()
                                     {
                                         dialog.status = crate::app::SyncSecretsPasswordDialogStatus::PasswordMismatch;
                                         dialog.message = Some(
@@ -2168,7 +2065,8 @@ impl TinyShell {
                                     }
                                 }
                                 crate::sync::PrivacyPasswordStatus::Missing => {
-                                    if let Some(dialog) = self.sync_secrets_password_dialog.as_mut()
+                                    if let Some(dialog) =
+                                        self.sync_runtime.secrets_password_dialog.as_mut()
                                     {
                                         dialog.status = crate::app::SyncSecretsPasswordDialogStatus::PasswordRequired;
                                         dialog.message =
@@ -2176,7 +2074,8 @@ impl TinyShell {
                                     }
                                 }
                                 crate::sync::PrivacyPasswordStatus::NotConfigured => {
-                                    if let Some(dialog) = self.sync_secrets_password_dialog.as_mut()
+                                    if let Some(dialog) =
+                                        self.sync_runtime.secrets_password_dialog.as_mut()
                                     {
                                         dialog.status = crate::app::SyncSecretsPasswordDialogStatus::RemotePasswordNotConfigured;
                                         dialog.message = Some(
@@ -2187,21 +2086,24 @@ impl TinyShell {
                             }
                         }
                         crate::sync::SyncResult::ConnectionVerified => {
-                            self.sync_status = t!("sync_connection_verified").into();
+                            self.sync_runtime.status = t!("sync_connection_verified").into();
                         }
                         crate::sync::SyncResult::Failed(error) => {
-                            self.sync_status =
+                            self.sync_runtime.status =
                                 crate::app::config_sync::sync_failure_status(&error).into();
                             if self
-                                .sync_secrets_password_dialog
+                                .sync_runtime
+                                .secrets_password_dialog
                                 .as_ref()
                                 .is_some_and(|dialog| {
                                     dialog.status
                                         == crate::app::SyncSecretsPasswordDialogStatus::Verifying
                                 })
                             {
-                                let message = self.sync_status.clone();
-                                if let Some(dialog) = self.sync_secrets_password_dialog.as_mut() {
+                                let message = self.sync_runtime.status.clone();
+                                if let Some(dialog) =
+                                    self.sync_runtime.secrets_password_dialog.as_mut()
+                                {
                                     dialog.status =
                                         crate::app::SyncSecretsPasswordDialogStatus::Failed;
                                     dialog.message = Some(message);
@@ -2219,6 +2121,9 @@ impl TinyShell {
     }
 
     pub(crate) fn sample_system_if_due(&mut self) -> bool {
+        if !self.monitoring_metrics_visible() {
+            return false;
+        }
         if self.last_system_sample.elapsed() >= SystemSampler::interval() {
             self.last_system_sample = Instant::now();
             // An SSH workspace must never fall back to sampling the local
@@ -2497,12 +2402,12 @@ impl TinyShell {
     }
 
     pub(crate) fn mark_config_preferences_dirty(&mut self) {
-        self.config_preferences_dirty = true;
+        self.config_persistence.mark_dirty();
         self.persist_config_preferences_async();
     }
 
     pub(crate) fn persist_config_preferences(&mut self) {
-        if !self.config_preferences_dirty {
+        if !self.config_persistence.is_dirty() {
             return;
         }
         CONFIG_PREFERENCES_SAVE_SEQ.fetch_add(1, Ordering::SeqCst);
@@ -2513,31 +2418,19 @@ impl TinyShell {
         let mut config = ConfigStore::load().unwrap_or_else(|_| ConfigStore::in_memory());
         config.merge_interactive_preferences_from(&self.config);
         match config.save() {
-            Ok(()) => self.config_preferences_dirty = false,
+            Ok(()) => self.config_persistence.clear(),
             Err(err) => tracing::warn!("failed to save preferences: {err:#}"),
         }
     }
 
     pub(crate) fn persist_config_preferences_async(&self) {
-        if !self.config_preferences_dirty {
+        if !self.config_persistence.is_dirty() {
             return;
         }
         let sequence = CONFIG_PREFERENCES_SAVE_SEQ.fetch_add(1, Ordering::SeqCst) + 1;
-        let source = self.config.clone();
-        std::thread::spawn(move || {
-            let lock = CONFIG_PREFERENCES_SAVE_LOCK.get_or_init(|| Mutex::new(()));
-            let Ok(_guard) = lock.lock() else {
-                return;
-            };
-            if sequence != CONFIG_PREFERENCES_SAVE_SEQ.load(Ordering::SeqCst) {
-                return;
-            }
-            let mut config = ConfigStore::load().unwrap_or_else(|_| ConfigStore::in_memory());
-            config.merge_interactive_preferences_from(&source);
-            if let Err(err) = config.save() {
-                tracing::warn!("failed to save preferences in background: {err:#}");
-            }
-        });
+        if let Err(err) = config_preferences_save_sender().send((sequence, self.config.clone())) {
+            tracing::warn!("failed to queue preference save: {err}");
+        }
     }
 
     pub(crate) fn save_layout_state(&self, window: &mut gpui::Window, cx: &gpui::App) {

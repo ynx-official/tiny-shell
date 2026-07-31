@@ -1,7 +1,7 @@
 use gpui::{AnyWindowHandle, App, Context, KeyDownEvent, Window};
 
 use crate::{
-    TinyShell, app::settings_window::ProxySettingsInputs, session::config::UpdateCheckMode,
+    TinyShell, app::settings::form::ProxySettingsInputs, session::config::UpdateCheckMode,
 };
 
 pub(crate) fn parse_hour_interval(value: &str) -> Option<u32> {
