@@ -237,7 +237,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          NOTES_FILE="${RUNNER_TEMP}/release-notes.md"
+          mkdir -p dist
+          NOTES_FILE="dist/release-notes.md"
           python scripts/release_notes.py \
             --tag "${GITHUB_REF_NAME}" \
             --output "${NOTES_FILE}"

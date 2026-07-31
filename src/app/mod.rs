@@ -51,11 +51,14 @@ use tokio::runtime::Runtime;
 
 use crate::{
     crypto,
-    session::config::{
-        AuthMethod, ConfigStore, ManagedKey, QuickCommandCategory, TerminalDisplayStyle,
-        hardware_uuid,
+    session::{
+        config::{
+            AuthMethod, ConfigStore, ManagedKey, QuickCommandCategory, TerminalDisplayStyle,
+            hardware_uuid,
+        },
+        quick_commands::{BUILTIN_QUICK_COMMANDS_VERSION, merge_builtin_quick_commands},
+        ssh_config::SshConfigEntry,
     },
-    session::ssh_config::SshConfigEntry,
     system::{SharedSystemSampler, SystemSampler, SystemSnapshot},
     terminal::{self, BackendCommand, BackendEvent, TabKind, TerminalTab},
 };
@@ -713,6 +716,7 @@ pub(crate) struct TinyShell {
     pub(crate) is_layout_reset: bool,
     pub(crate) terminal_scrollbars: HashMap<String, TerminalScrollbarHandle>,
     pub(crate) remote_files_scroll_handle: UniformListScrollHandle,
+    pub(crate) command_manager_scroll_handle: gpui::ScrollHandle,
     pub(crate) sftp_tree_scroll_handle: gpui::ScrollHandle,
     pub(crate) disk_scroll_handle: gpui::ScrollHandle,
     pub(crate) tabs_scroll_handle: gpui::ScrollHandle,
@@ -1130,13 +1134,17 @@ impl TinyShell {
         }
         rust_i18n::set_locale(&active_locale);
         gpui_component::set_locale(&active_locale);
-        let reset_legacy_seed = config
-            .quick_command_categories()
-            .is_some_and(is_legacy_seeded_quick_commands);
-        if config.quick_command_categories().is_none() || reset_legacy_seed {
-            config.set_quick_command_categories(Vec::new());
+        if config.quick_commands_builtin_version() < BUILTIN_QUICK_COMMANDS_VERSION {
+            let mut categories = config
+                .quick_command_categories()
+                .filter(|categories| !is_legacy_seeded_quick_commands(categories))
+                .unwrap_or_default()
+                .to_vec();
+            merge_builtin_quick_commands(&mut categories, &active_locale);
+            config.set_quick_command_categories(categories);
+            config.set_quick_commands_builtin_version(BUILTIN_QUICK_COMMANDS_VERSION);
             if let Err(err) = config.save() {
-                tracing::warn!("failed to initialize quick commands: {err:#}");
+                tracing::warn!("failed to initialize built-in quick commands: {err:#}");
             }
         }
         let ui_font_family: SharedString = config.ui_font_family().into();
@@ -1249,6 +1257,7 @@ impl TinyShell {
             is_layout_reset: false,
             terminal_scrollbars: HashMap::new(),
             remote_files_scroll_handle: UniformListScrollHandle::new(),
+            command_manager_scroll_handle: gpui::ScrollHandle::new(),
             sftp_tree_scroll_handle: gpui::ScrollHandle::new(),
             disk_scroll_handle: gpui::ScrollHandle::new(),
             tabs_scroll_handle: gpui::ScrollHandle::new(),

@@ -48,6 +48,8 @@ class ReleaseNotesTest(unittest.TestCase):
     def test_generate_release_notes_keeps_user_facing_sections(self) -> None:
         notes = generate_release_notes(self.root, "v1.2.3")
 
+        self.assertTrue(notes.startswith("# TinyShell v1.2.3"))
+        self.assertIn("> 发布日期：2026-07-30", notes)
         self.assertIn("## 版本概述", notes)
         self.assertIn("## 新功能", notes)
         self.assertNotIn("验证结果", notes)

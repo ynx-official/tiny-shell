@@ -1,6 +1,7 @@
 pub mod config;
 pub mod connection_archive;
 pub mod connection_catalog;
+pub mod quick_commands;
 pub mod ssh_config;
 pub mod ssh_keys;
 pub mod store;

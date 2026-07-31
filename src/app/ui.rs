@@ -1275,7 +1275,7 @@ impl TinyShell {
                     .commands
                     .iter()
                     .cloned()
-                    .map(|command| (category.id.clone(), category.name.clone(), command))
+                    .map(|command| (category.id.clone(), command))
             })
             .collect::<Vec<_>>();
         let command_count = categories
@@ -1361,6 +1361,7 @@ impl TinyShell {
                             .child(
                                 div()
                                     .id("quick-command-category-all")
+                                    .relative()
                                     .w_full()
                                     .cursor_pointer()
                                     .rounded_md()
@@ -1380,6 +1381,7 @@ impl TinyShell {
                                             .items_center()
                                             .gap_2()
                                             .p_3()
+                                            .pr(px(48.))
                                             .child(
                                                 Icon::new(IconName::SquareTerminal)
                                                     .with_size(Size::Small),
@@ -1388,11 +1390,26 @@ impl TinyShell {
                                                 div()
                                                     .flex_1()
                                                     .child(t!("quick_command_all")),
-                                            )
+                                            ),
+                                    )
+                                    .child(
+                                        div()
+                                            .absolute()
+                                            .top_0()
+                                            .right(px(12.))
+                                            .bottom_0()
+                                            .w(px(36.))
+                                            .flex()
+                                            .items_center()
                                             .child(
                                                 div()
+                                                    .w_full()
+                                                    .text_right()
+                                                    .font_family("monospace")
                                                     .text_size(rems(0.8))
-                                                    .text_color(cx.theme().muted_foreground)
+                                                    .text_color(
+                                                        cx.theme().muted_foreground,
+                                                    )
                                                     .child(command_count.to_string()),
                                             ),
                                     ),
@@ -1404,6 +1421,7 @@ impl TinyShell {
                                     == Some(category.id.as_str());
                                 div()
                                     .id(("quick-command-category", index))
+                                    .relative()
                                     .w_full()
                                     .cursor_pointer()
                                     .rounded_md()
@@ -1472,17 +1490,43 @@ impl TinyShell {
                                             .items_center()
                                             .gap_2()
                                             .p_3()
+                                            .pr(px(48.))
                                             .child(
                                                 Icon::new(IconName::Folder)
                                                     .with_size(Size::Small),
                                             )
-                                            .child(div().flex_1().child(category.name.clone()))
                                             .child(
                                                 div()
+                                                    .flex_1()
+                                                    .min_w(px(0.))
+                                                    .overflow_hidden()
+                                                    .whitespace_nowrap()
+                                                    .text_ellipsis()
+                                                    .child(category.name.clone()),
+                                            ),
+                                    )
+                                    .child(
+                                        div()
+                                            .absolute()
+                                            .top_0()
+                                            .right(px(12.))
+                                            .bottom_0()
+                                            .w(px(36.))
+                                            .flex()
+                                            .items_center()
+                                            .child(
+                                                div()
+                                                    .w_full()
+                                                    .text_right()
+                                                    .font_family("monospace")
                                                     .text_size(rems(0.8))
-                                                    .text_color(cx.theme().muted_foreground)
-                                                    .child(category.commands.len().to_string()),
-                                            )
+                                                    .text_color(
+                                                        cx.theme().muted_foreground,
+                                                    )
+                                                    .child(
+                                                        category.commands.len().to_string(),
+                                                    ),
+                                            ),
                                     )
                             })),
                     )
@@ -1494,35 +1538,16 @@ impl TinyShell {
                             .bg(cx.theme().background)
                             .overflow_hidden()
                             .child(
-                                h_flex()
-                                    .flex_none()
-                                    .items_center()
-                                    .h(px(38.))
-                                    .px_4()
-                                    .gap_3()
-                                    .bg(cx.theme().muted)
-                                    .border_b_1()
-                                    .border_color(cx.theme().border)
-                                    .child(
-                                        div()
-                                            .w(px(180.))
-                                            .text_size(rems(0.833))
-                                            .child(t!("quick_command_name")),
-                                    )
-                                    .child(
-                                        div()
-                                            .flex_1()
-                                            .text_size(rems(0.833))
-                                            .child(t!("quick_command_content")),
-                                    ),
-                            )
-                            .child(
                                 v_flex()
+                                    .id("command-manager-list")
+                                    .relative()
                                     .flex_1()
                                     .min_h(px(0.))
-                                    .overflow_y_scrollbar()
+                                    .track_scroll(&self.command_manager_scroll_handle)
+                                    .overflow_y_scroll()
+                                    .vertical_scrollbar(&self.command_manager_scroll_handle)
                                     .children(commands.into_iter().enumerate().map(
-                                        |(index, (category_id, category_name, command))| {
+                                        |(index, (category_id, command))| {
                                             let run_command = command.command.clone();
                                             let select_category_id = category_id.clone();
                                             let select_command_id = command.id.clone();
@@ -1669,7 +1694,7 @@ impl TinyShell {
                                                 })
                                                 .child(
                                                     v_flex()
-                                                        .w(px(180.))
+                                                        .flex_1()
                                                         .min_w(px(0.))
                                                         .gap_1()
                                                         .child(
@@ -1679,33 +1704,29 @@ impl TinyShell {
                                                         )
                                                         .child(
                                                             div()
-                                                                .text_size(rems(0.75))
-                                                                .text_color(
-                                                                    cx.theme().muted_foreground,
-                                                                )
-                                                                .child(category_name),
+                                                                .id((
+                                                                    "quick-command-content",
+                                                                    index,
+                                                                ))
+                                                                .w_full()
+                                                                .min_w(px(0.))
+                                                                .overflow_hidden()
+                                                                .whitespace_nowrap()
+                                                                .text_ellipsis()
+                                                                .text_size(rems(0.833))
+                                                                .font_family("monospace")
+                                                                .tooltip({
+                                                                    let command =
+                                                                        run_command.clone();
+                                                                    move |window, cx| {
+                                                                        gpui_component::tooltip::Tooltip::new(
+                                                                            command.clone(),
+                                                                        )
+                                                                        .build(window, cx)
+                                                                    }
+                                                                })
+                                                                .child(command.command),
                                                         ),
-                                                )
-                                                .child(
-                                                    div()
-                                                        .id(("quick-command-content", index))
-                                                        .flex_1()
-                                                        .min_w(px(0.))
-                                                        .overflow_hidden()
-                                                        .whitespace_nowrap()
-                                                        .text_ellipsis()
-                                                        .text_size(rems(0.833))
-                                                        .font_family("monospace")
-                                                        .tooltip({
-                                                            let command = run_command.clone();
-                                                            move |window, cx| {
-                                                                gpui_component::tooltip::Tooltip::new(
-                                                                    command.clone(),
-                                                                )
-                                                                .build(window, cx)
-                                                            }
-                                                        })
-                                                        .child(command.command),
                                                 )
                                         },
                                     ))
@@ -3627,17 +3648,12 @@ impl TinyShell {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let active_sftp = self.active_sftp();
-        let sftp_content_epoch = active_sftp
-            .as_ref()
-            .map(|sftp| {
-                animation_key(&sftp.current_path)
-                    .wrapping_add(sftp.entries.len() as u64)
-                    .wrapping_add(match self.sftp_panel_view {
-                        SftpPanelView::Files => 0,
-                        SftpPanelView::Commands => 1,
-                    })
-            })
-            .unwrap_or(self.sftp_panel_view as u64)
+        // 目录内容更新不应触发整个面板淡入，否则每次进入子目录都会闪烁。
+        // 动画只由面板视图和最小化状态变化触发。
+        let sftp_content_epoch = (match self.sftp_panel_view {
+            SftpPanelView::Files => 0,
+            SftpPanelView::Commands => 1,
+        } as u64)
             .wrapping_add(self.sftp_minimize_epoch);
         let toolbar_visibility = self.config.sftp_toolbar_visibility();
         let view = cx.entity();

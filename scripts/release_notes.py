@@ -116,16 +116,12 @@ def validate_indexes(root: Path, metadata: ReleaseMetadata) -> None:
 
 def extract_release_notes(detail: str) -> str:
     lines = detail.splitlines()
-    start = next(
-        (index for index, line in enumerate(lines) if line == "## 版本概述"),
-        None,
-    )
-    if start is None:
+    if not any(line == "## 版本概述" for line in lines):
         raise ReleaseNotesError("版本详情文档缺少“## 版本概述”")
 
     selected: list[str] = []
     skipping = False
-    for line in lines[start:]:
+    for line in lines:
         if line.startswith("## "):
             heading = line.removeprefix("## ").strip()
             skipping = heading in EXCLUDED_HEADINGS

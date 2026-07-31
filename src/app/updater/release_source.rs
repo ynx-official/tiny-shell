@@ -26,6 +26,28 @@ pub(super) struct ReleaseAssetMetadata {
     pub digest: String,
 }
 
+fn user_facing_release_notes(notes: &str) -> String {
+    let mut skip_section = false;
+    let visible = notes
+        .lines()
+        .filter(|line| {
+            let trimmed = line.trim();
+            if let Some(heading) = trimmed.strip_prefix("## ") {
+                skip_section = matches!(
+                    heading.trim(),
+                    "验证结果" | "变更依据" | "Validation Results" | "Change Basis"
+                );
+            }
+            !skip_section
+                && !trimmed.starts_with("[返回版本总览]")
+                && !trimmed.starts_with("[Back to version overview]")
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    visible.trim().to_string()
+}
+
 #[derive(Debug)]
 enum SourceAttempt<T> {
     Found(T),
@@ -217,7 +239,7 @@ async fn fetch_github_api(client: &Client) -> anyhow::Result<SourceAttempt<Relea
 
     Ok(SourceAttempt::Found(ReleaseMetadata {
         version,
-        notes: release.body,
+        notes: user_facing_release_notes(&release.body),
         assets,
     }))
 }
@@ -271,7 +293,7 @@ async fn fetch_optional_notes(client: &Client, url: &str) -> String {
     .await;
 
     match result {
-        Ok(notes) => notes,
+        Ok(notes) => user_facing_release_notes(&notes),
         Err(error) => {
             tracing::warn!("failed to fetch fallback release notes: {error}");
             String::new()
@@ -432,10 +454,33 @@ mod tests {
 
     use super::{
         ManifestAsset, UpdateManifest, github_status_error, is_availability_status,
-        manifest_into_release, parse_expanded_assets, version_from_release_url,
+        manifest_into_release, parse_expanded_assets, user_facing_release_notes,
+        version_from_release_url,
     };
 
     const DIGEST: &str = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+    #[test]
+    fn keeps_only_user_facing_release_note_sections() {
+        let notes = user_facing_release_notes(
+            "# TinyShell v1.2.3\n\n> 发布日期：2026-07-30\n\n## 版本概述\n\n本次改进连接编辑器。\n\n## 改进与修复\n\n- 修复密钥选择器。\n\n## 验证结果\n\n- 测试通过。\n\n## 变更依据\n\n- 比较链接。\n\n[返回版本总览](../README.md)",
+        );
+
+        assert!(notes.starts_with("# TinyShell v1.2.3"));
+        assert!(notes.contains("发布日期：2026-07-30"));
+        assert!(notes.contains("## 版本概述"));
+        assert!(notes.contains("修复密钥选择器"));
+        assert!(!notes.contains("验证结果"));
+        assert!(!notes.contains("变更依据"));
+        assert!(!notes.contains("返回版本总览"));
+    }
+
+    #[test]
+    fn keeps_release_body_without_a_version_overview() {
+        let notes = user_facing_release_notes("## Improvements\n\n- Improved update logs.");
+
+        assert_eq!(notes, "## Improvements\n\n- Improved update logs.");
+    }
 
     #[test]
     fn parses_valid_update_manifest() {

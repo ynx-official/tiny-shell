@@ -414,6 +414,8 @@ pub struct ConfigFile {
     #[serde(default)]
     pub quick_command_categories: Option<Vec<QuickCommandCategory>>,
     #[serde(default)]
+    pub quick_commands_builtin_version: u32,
+    #[serde(default)]
     pub sftp_external_editor: String,
     #[serde(default)]
     pub key_bindings: std::collections::HashMap<String, String>,
@@ -597,6 +599,7 @@ impl Default for ConfigFile {
             sftp_toolbar_visibility: SftpToolbarVisibility::default(),
             sftp_footer_visibility: SftpFooterVisibility::default(),
             quick_command_categories: None,
+            quick_commands_builtin_version: 0,
             sftp_external_editor: String::new(),
             key_bindings: std::collections::HashMap::new(),
             sync_endpoint: String::new(),
@@ -1534,6 +1537,14 @@ impl ConfigStore {
         self.cache.quick_command_categories = Some(categories);
     }
 
+    pub fn quick_commands_builtin_version(&self) -> u32 {
+        self.cache.quick_commands_builtin_version
+    }
+
+    pub fn set_quick_commands_builtin_version(&mut self, version: u32) {
+        self.cache.quick_commands_builtin_version = version;
+    }
+
     pub fn upsert_quick_command_category(&mut self, category: QuickCommandCategory) {
         let categories = self
             .cache
@@ -1658,6 +1669,7 @@ impl ConfigStore {
         self.cache.sftp_toolbar_visibility = source.cache.sftp_toolbar_visibility;
         self.cache.sftp_footer_visibility = source.cache.sftp_footer_visibility;
         self.cache.quick_command_categories = source.cache.quick_command_categories.clone();
+        self.cache.quick_commands_builtin_version = source.cache.quick_commands_builtin_version;
         self.cache.sftp_external_editor = source.cache.sftp_external_editor.clone();
         self.cache.key_bindings = source.cache.key_bindings.clone();
         self.cache.use_proxy = source.cache.use_proxy;

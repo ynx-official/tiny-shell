@@ -272,6 +272,30 @@ mod tests {
     }
 
     #[test]
+    fn builtin_commands_show_short_names_while_typing() {
+        let categories = crate::session::quick_commands::builtin_quick_command_categories("zh-CN");
+        let mut state = TerminalCompletionState::default();
+
+        state.push_text("ls", &categories);
+
+        assert_eq!(
+            state
+                .candidates()
+                .iter()
+                .map(|candidate| candidate.label.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "列出目录",
+                "文件详情",
+                "显示隐藏",
+                "友好大小",
+                "CPU 信息",
+                "端口占用",
+            ]
+        );
+    }
+
+    #[test]
     fn backspace_refreshes_and_clear_resets_state() {
         let categories = categories(&[("列表", "", "ls")]);
         let mut state = TerminalCompletionState::default();

@@ -14,6 +14,7 @@ from urllib.parse import quote
 TAG_PATTERN = re.compile(r"^v\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$")
 SCHEMA_VERSION = 1
 DEFAULT_REPOSITORY = "ynx-official/tiny-shell"
+RELEASE_NOTES_ASSET = "release-notes.md"
 
 
 class UpdateManifestError(ValueError):
@@ -51,7 +52,7 @@ def collect_assets(dist: Path, tag: str, repository: str) -> list[dict[str, obje
     expected = expected_asset_names(tag)
     files_by_name: dict[str, Path] = {}
     for path in sorted(candidate for candidate in dist.rglob("*") if candidate.is_file()):
-        if path.name == "update-manifest.json":
+        if path.name in {"update-manifest.json", RELEASE_NOTES_ASSET}:
             continue
         if path.name in files_by_name:
             raise UpdateManifestError(f"存在重名发布产物：{path.name}")
@@ -88,8 +89,8 @@ def build_manifest(dist: Path, tag: str, repository: str) -> dict[str, object]:
         "schema_version": SCHEMA_VERSION,
         "version": tag,
         "notes_url": (
-            f"https://raw.githubusercontent.com/{repository}/{quote(tag, safe='')}/"
-            f"docs/upgrade/{quote(tag, safe='')}/README.md"
+            f"https://github.com/{repository}/releases/download/"
+            f"{quote(tag, safe='')}/{RELEASE_NOTES_ASSET}"
         ),
         "assets": assets,
     }
