@@ -220,9 +220,9 @@ impl SettingsWindow {
             window,
             move |_, input, event, window, cx| match event {
                 InputEvent::Change => {
-                    if let Ok(hours) = input.read(cx).value().trim().parse::<u32>()
-                        && (1..=8_760).contains(&hours)
-                    {
+                    if let Some(hours) = crate::app::settings::actions::parse_hour_interval(
+                        input.read(cx).value().as_ref(),
+                    ) {
                         owner_for_sync_interval.update(cx, |this, cx| {
                             this.config.set_sync_interval_hours(hours);
                             this.mark_config_preferences_dirty();
@@ -253,9 +253,9 @@ impl SettingsWindow {
             window,
             move |_, input, event, window, cx| match event {
                 InputEvent::Change => {
-                    if let Ok(hours) = input.read(cx).value().trim().parse::<u32>()
-                        && (1..=8_760).contains(&hours)
-                    {
+                    if let Some(hours) = crate::app::settings::actions::parse_hour_interval(
+                        input.read(cx).value().as_ref(),
+                    ) {
                         owner_for_interval.update(cx, |this, cx| {
                             this.config.set_update_interval_hours(hours);
                             this.mark_config_preferences_dirty();

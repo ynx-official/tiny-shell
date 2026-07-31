@@ -5418,7 +5418,7 @@ impl TinyShell {
         cx.notify();
     }
 
-    fn render_settings_appearance_page(
+    pub(crate) fn render_settings_appearance_page(
         settings_view: &gpui::Entity<Self>,
     ) -> gpui_component::setting::SettingPage {
         use gpui_component::setting::{SettingField, SettingGroup, SettingItem, SettingPage};
@@ -5601,7 +5601,7 @@ impl TinyShell {
             )
     }
 
-    fn render_settings_terminal_page(
+    pub(crate) fn render_settings_terminal_page(
         settings_view: &gpui::Entity<Self>,
     ) -> gpui_component::setting::SettingPage {
         use gpui_component::setting::{SettingField, SettingGroup, SettingItem, SettingPage};
@@ -5995,7 +5995,7 @@ impl TinyShell {
             )
     }
 
-    fn render_settings_workspace_page(
+    pub(crate) fn render_settings_workspace_page(
         settings_view: &gpui::Entity<Self>,
     ) -> gpui_component::setting::SettingPage {
         use gpui_component::setting::{SettingField, SettingGroup, SettingItem, SettingPage};
@@ -6240,7 +6240,7 @@ impl TinyShell {
             )
     }
 
-    fn render_settings_about_page() -> gpui_component::setting::SettingPage {
+    pub(crate) fn render_settings_about_page() -> gpui_component::setting::SettingPage {
         use gpui_component::setting::{SettingField, SettingGroup, SettingItem, SettingPage};
 
         let version = env!("CARGO_PKG_VERSION");
@@ -6372,7 +6372,8 @@ impl TinyShell {
             )
     }
 
-    pub(crate) fn render_settings_content(
+    #[cfg(any())]
+    pub(crate) fn render_settings_content_legacy(
         &self,
         view: &gpui::Entity<Self>,
         settings_id: &'static str,
