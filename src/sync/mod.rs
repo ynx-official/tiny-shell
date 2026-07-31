@@ -1,4 +1,5 @@
 mod backend;
+mod http;
 mod merge;
 mod model;
 mod secrets;
@@ -8,13 +9,14 @@ use std::fmt;
 use anyhow::{Context, Result, anyhow};
 use futures::StreamExt as _;
 use hmac::{Hmac, Mac};
-use reqwest::{Client, StatusCode, header};
+use reqwest::{StatusCode, header};
 use sha2::{Digest, Sha256};
 
 #[cfg(test)]
 use crate::crypto;
 use crate::session::config::{ManagedKey, QuickCommandCategory, Session};
 use backend::for_credentials;
+use http::{http_client, send_with_retry};
 
 pub use merge::{
     MergeLocal, MergedConfig, merge_payload, merge_payload_with_deleted, merge_public_payload,
@@ -298,7 +300,7 @@ pub(super) async fn upload_webdav(
     body: Vec<u8>,
     mode: UploadMode,
 ) -> SyncOperationResult<Option<String>> {
-    let client = Client::new();
+    let client = http_client(Some(SyncBackendKind::WebDav))?;
     let mut request = client
         .put(webdav_sync_url(endpoint)?)
         .basic_auth(username, Some(password))
@@ -313,12 +315,7 @@ pub(super) async fn upload_webdav(
         }
         UploadCondition::None => request,
     };
-    let response = request.send().await.map_err(|error| {
-        SyncFailure::other(
-            Some(SyncBackendKind::WebDav),
-            format!("send WebDAV upload: {error}"),
-        )
-    })?;
+    let response = send_with_retry(request, SyncBackendKind::WebDav, "send WebDAV upload").await?;
     let status = response.status();
     if is_conflict_status(status) {
         return Err(SyncFailure::new(
@@ -373,17 +370,11 @@ pub(super) async fn download_webdav(
     username: &str,
     password: &str,
 ) -> SyncOperationResult<(Vec<u8>, Option<String>)> {
-    let response = Client::new()
+    let response = http_client(Some(SyncBackendKind::WebDav))?
         .get(webdav_sync_url(endpoint)?)
-        .basic_auth(username, Some(password))
-        .send()
-        .await
-        .map_err(|error| {
-            SyncFailure::other(
-                Some(SyncBackendKind::WebDav),
-                format!("send WebDAV download: {error}"),
-            )
-        })?;
+        .basic_auth(username, Some(password));
+    let response =
+        send_with_retry(response, SyncBackendKind::WebDav, "send WebDAV download").await?;
     let status = response.status();
     if status == StatusCode::NOT_FOUND {
         return Err(SyncFailure::new(
@@ -420,22 +411,20 @@ pub async fn verify_webdav_connection(
     password: &str,
 ) -> SyncOperationResult<()> {
     let verify_url = webdav_verification_url(endpoint)?;
-    let response = Client::new()
+    let response = http_client(Some(SyncBackendKind::WebDav))?
         .request(
             reqwest::Method::from_bytes(b"PROPFIND")
                 .map_err(|error| SyncFailure::other(Some(SyncBackendKind::WebDav), error))?,
             verify_url,
         )
         .basic_auth(username, Some(password))
-        .header("Depth", "0")
-        .send()
-        .await
-        .map_err(|error| {
-            SyncFailure::other(
-                Some(SyncBackendKind::WebDav),
-                format!("send WebDAV connection check: {error}"),
-            )
-        })?;
+        .header("Depth", "0");
+    let response = send_with_retry(
+        response,
+        SyncBackendKind::WebDav,
+        "send WebDAV connection check",
+    )
+    .await?;
     let status = response.status();
     if status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN {
         return Err(SyncFailure::new(
@@ -557,18 +546,11 @@ pub(super) async fn upload_s3(
         }
         UploadCondition::None => {}
     }
-    let response = Client::new()
+    let response = http_client(Some(SyncBackendKind::S3))?
         .put(url)
         .headers(headers)
-        .body(body)
-        .send()
-        .await
-        .map_err(|error| {
-            SyncFailure::other(
-                Some(SyncBackendKind::S3),
-                format!("send S3 upload: {error}"),
-            )
-        })?;
+        .body(body);
+    let response = send_with_retry(response, SyncBackendKind::S3, "send S3 upload").await?;
     let status = response.status();
     if is_conflict_status(status) {
         return Err(SyncFailure::new(
@@ -598,17 +580,10 @@ pub(super) async fn download_s3(
         .map_err(|error| SyncFailure::other(Some(SyncBackendKind::S3), format!("{error:#}")))?;
     let headers = signed_s3_headers("GET", &url, &[], config)
         .map_err(|error| SyncFailure::other(Some(SyncBackendKind::S3), format!("{error:#}")))?;
-    let response = Client::new()
+    let response = http_client(Some(SyncBackendKind::S3))?
         .get(url)
-        .headers(headers)
-        .send()
-        .await
-        .map_err(|error| {
-            SyncFailure::other(
-                Some(SyncBackendKind::S3),
-                format!("send S3 download: {error}"),
-            )
-        })?;
+        .headers(headers);
+    let response = send_with_retry(response, SyncBackendKind::S3, "send S3 download").await?;
     let status = response.status();
     if status == StatusCode::NOT_FOUND {
         return Err(SyncFailure::new(

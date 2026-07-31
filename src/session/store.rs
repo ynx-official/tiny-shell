@@ -1,9 +1,11 @@
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::mpsc::Receiver;
 
 use crate::{
     sftp::SftpHandle,
-    terminal::{BackendCommand, BackendEvent, TerminalTab},
+    terminal::{
+        BackendCommand, BackendEvent, BackendEventSender, TerminalTab, backend_event_channel,
+    },
 };
 
 pub(crate) type SessionId = String;
@@ -17,14 +19,14 @@ pub(crate) struct SessionStore {
     event_routes: HashMap<String, WindowOwnerId>,
     pending_events: HashMap<WindowOwnerId, VecDeque<BackendEvent>>,
     unrouted_events: HashMap<String, VecDeque<BackendEvent>>,
-    events_tx: Sender<BackendEvent>,
+    events_tx: BackendEventSender,
     events_rx: Receiver<BackendEvent>,
 }
 
 #[allow(dead_code)]
 impl SessionStore {
     pub(crate) fn new() -> Self {
-        let (events_tx, events_rx) = mpsc::channel();
+        let (events_tx, events_rx) = backend_event_channel();
         Self {
             sessions: HashMap::new(),
             sftp_handles: HashMap::new(),
@@ -37,7 +39,7 @@ impl SessionStore {
         }
     }
 
-    pub(crate) fn events_sender(&self) -> Sender<BackendEvent> {
+    pub(crate) fn events_sender(&self) -> BackendEventSender {
         self.events_tx.clone()
     }
 
@@ -155,7 +157,11 @@ impl SessionStore {
         }
     }
 
-    pub(crate) fn drain_events_for(&mut self, owner_id: WindowOwnerId) -> Vec<BackendEvent> {
+    pub(crate) fn drain_events_for(
+        &mut self,
+        owner_id: WindowOwnerId,
+        limit: usize,
+    ) -> Vec<BackendEvent> {
         while let Ok(event) = self.events_rx.try_recv() {
             let Some(route_id) = event_route_id(&event) else {
                 continue;
@@ -172,11 +178,13 @@ impl SessionStore {
                     .push_back(event);
             }
         }
-        self.pending_events
-            .remove(&owner_id)
-            .map(VecDeque::into_iter)
-            .map(Iterator::collect)
-            .unwrap_or_default()
+        let pending = self.pending_events.entry(owner_id).or_default();
+        let count = limit.min(pending.len());
+        let drained = pending.drain(..count).collect();
+        if pending.is_empty() {
+            self.pending_events.remove(&owner_id);
+        }
+        drained
     }
 
     #[cfg(test)]
@@ -242,8 +250,8 @@ mod tests {
             })
             .unwrap();
 
-        assert!(store.drain_events_for(1).is_empty());
-        assert_eq!(store.drain_events_for(2).len(), 1);
+        assert!(store.drain_events_for(1, usize::MAX).is_empty());
+        assert_eq!(store.drain_events_for(2, usize::MAX).len(), 1);
     }
 
     #[test]
@@ -258,10 +266,10 @@ mod tests {
             })
             .unwrap();
 
-        assert!(store.drain_events_for(99).is_empty());
+        assert!(store.drain_events_for(99, usize::MAX).is_empty());
         assert!(store.move_event_routes(&["session-a".to_string()], 1, 2));
-        assert!(store.drain_events_for(1).is_empty());
-        assert_eq!(store.drain_events_for(2).len(), 1);
+        assert!(store.drain_events_for(1, usize::MAX).is_empty());
+        assert_eq!(store.drain_events_for(2, usize::MAX).len(), 1);
     }
 
     #[test]
@@ -275,9 +283,9 @@ mod tests {
             })
             .unwrap();
 
-        assert!(store.drain_events_for(1).is_empty());
+        assert!(store.drain_events_for(1, usize::MAX).is_empty());
         store.register_event_route("session-a".to_string(), 1);
-        assert_eq!(store.drain_events_for(1).len(), 1);
+        assert_eq!(store.drain_events_for(1, usize::MAX).len(), 1);
     }
 
     #[test]

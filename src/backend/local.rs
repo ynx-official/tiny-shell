@@ -1,19 +1,19 @@
 use std::{
     io::{Read, Write},
-    sync::mpsc::{self, Sender},
+    sync::mpsc,
     thread,
 };
 
 use anyhow::{Context, Result};
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 
-use crate::terminal::{BackendCommand, BackendEvent, BackendTx};
+use crate::terminal::{BackendCommand, BackendEvent, BackendEventSender, BackendTx};
 
 pub fn spawn_local_terminal(
     tab_id: String,
     cols: u16,
     rows: u16,
-    events: Sender<BackendEvent>,
+    events: BackendEventSender,
 ) -> Result<BackendTx> {
     let pty_system = native_pty_system();
     let pair = pty_system

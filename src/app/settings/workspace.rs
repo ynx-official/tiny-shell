@@ -17,6 +17,10 @@ use crate::TinyShell;
 
 impl TinyShell {
     fn choose_download_directory(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let cancellation = self
+            .async_runtime
+            .supervisor
+            .start("choose-download-directory");
         let prompt = cx.prompt_for_paths(PathPromptOptions {
             files: false,
             directories: true,
@@ -26,6 +30,9 @@ impl TinyShell {
         cx.spawn_in(window, async move |this, cx| {
             match prompt.await {
                 Ok(Ok(Some(mut paths))) => {
+                    if cancellation.is_cancelled() {
+                        return Ok::<(), anyhow::Error>(());
+                    }
                     if let Some(path) = paths.pop() {
                         this.update(cx, |this, cx| {
                             this.config.set_download_directory(Some(&path));

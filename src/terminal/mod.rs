@@ -5,7 +5,11 @@ pub mod input;
 
 use std::{
     collections::HashMap,
-    sync::{Arc, mpsc::Sender},
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+        mpsc::{self, Receiver, Sender},
+    },
 };
 
 use alacritty_terminal::{
@@ -13,7 +17,10 @@ use alacritty_terminal::{
     grid::{Dimensions, Scroll},
     index::{Column, Line, Point, Side},
     selection::{Selection, SelectionRange, SelectionType},
-    term::{Config, Term, TermMode, cell::Cell, point_to_viewport, viewport_to_point},
+    term::{
+        Config, LineDamageBounds, Term, TermDamage, TermMode, cell::Cell, point_to_viewport,
+        viewport_to_point,
+    },
     vte::ansi::{CursorShape, Processor},
 };
 use gpui::Keystroke;
@@ -137,6 +144,42 @@ pub enum BackendEvent {
 }
 
 #[derive(Clone)]
+pub struct BackendEventSender {
+    events: Sender<BackendEvent>,
+    wake_generation: Arc<AtomicU64>,
+    wake: tokio::sync::watch::Sender<u64>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct BackendEventSendError;
+
+impl BackendEventSender {
+    pub fn send(&self, event: BackendEvent) -> Result<(), BackendEventSendError> {
+        self.events.send(event).map_err(|_| BackendEventSendError)?;
+        let generation = self.wake_generation.fetch_add(1, Ordering::AcqRel) + 1;
+        self.wake.send_replace(generation);
+        Ok(())
+    }
+
+    pub(crate) fn subscribe(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.wake.subscribe()
+    }
+}
+
+pub(crate) fn backend_event_channel() -> (BackendEventSender, Receiver<BackendEvent>) {
+    let (events, receiver) = mpsc::channel();
+    let (wake, _) = tokio::sync::watch::channel(0);
+    (
+        BackendEventSender {
+            events,
+            wake_generation: Arc::new(AtomicU64::new(0)),
+            wake,
+        },
+        receiver,
+    )
+}
+
+#[derive(Clone)]
 pub enum BackendTx {
     Local(Sender<BackendCommand>),
     Ssh(tokio::sync::mpsc::UnboundedSender<BackendCommand>),
@@ -179,6 +222,40 @@ pub struct TerminalTab {
     pub(crate) highlight_cache: std::cell::RefCell<HighlightCache>,
     render_revision: u64,
     render_cache: std::cell::RefCell<Option<(u64, bool, RenderSnapshot)>>,
+    pending_render_damage: std::cell::RefCell<RenderDamage>,
+}
+
+#[derive(Debug)]
+enum RenderDamage {
+    Full,
+    Partial(Vec<LineDamageBounds>),
+}
+
+impl Default for RenderDamage {
+    fn default() -> Self {
+        Self::Partial(Vec::new())
+    }
+}
+
+impl RenderDamage {
+    fn merge(&mut self, damage: TermDamage<'_>) {
+        match damage {
+            TermDamage::Full => *self = Self::Full,
+            TermDamage::Partial(lines) => {
+                let Self::Partial(pending) = self else {
+                    return;
+                };
+                for line in lines {
+                    if let Some(existing) = pending.iter_mut().find(|item| item.line == line.line) {
+                        existing.left = existing.left.min(line.left);
+                        existing.right = existing.right.max(line.right);
+                    } else {
+                        pending.push(line);
+                    }
+                }
+            }
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -239,7 +316,7 @@ impl TerminalTab {
         id: String,
         title: String,
         backend: BackendTx,
-        events: std::sync::mpsc::Sender<BackendEvent>,
+        events: BackendEventSender,
     ) -> Self {
         Self::new(
             id,
@@ -255,7 +332,7 @@ impl TerminalTab {
         id: String,
         session: &Session,
         backend: BackendTx,
-        events: std::sync::mpsc::Sender<BackendEvent>,
+        events: BackendEventSender,
     ) -> Self {
         let mut tab = Self::new(
             id,
@@ -279,9 +356,11 @@ impl TerminalTab {
         kind: TabKind,
         status: String,
         backend: BackendTx,
-        events: std::sync::mpsc::Sender<BackendEvent>,
+        events: BackendEventSender,
     ) -> Self {
         let shared_backend = std::sync::Arc::new(std::sync::Mutex::new(backend));
+        let mut term = new_term(100, 30, shared_backend.clone(), id.clone(), events.clone());
+        term.reset_damage();
         Self {
             id: id.clone(),
             title: title.clone(),
@@ -294,7 +373,7 @@ impl TerminalTab {
             backend_initialized: true,
             session: None,
             processor: Processor::new(),
-            term: new_term(100, 30, shared_backend.clone(), id, events.clone()),
+            term,
             cols: 100,
             rows: 30,
             backend: shared_backend,
@@ -302,17 +381,27 @@ impl TerminalTab {
             highlight_cache: std::cell::RefCell::new(None),
             render_revision: 0,
             render_cache: std::cell::RefCell::new(None),
+            pending_render_damage: std::cell::RefCell::new(RenderDamage::Full),
         }
     }
 
     fn invalidate_render_cache(&mut self) {
         self.render_revision = self.render_revision.wrapping_add(1);
-        self.render_cache.get_mut().take();
+    }
+
+    fn mark_full_render_damage(&mut self) {
+        *self.pending_render_damage.get_mut() = RenderDamage::Full;
+        self.invalidate_render_cache();
     }
 
     pub fn feed(&mut self, bytes: &[u8]) {
         self.invalidate_render_cache();
         self.processor.advance(&mut self.term, bytes);
+        {
+            let damage = self.term.damage();
+            self.pending_render_damage.get_mut().merge(damage);
+        }
+        self.term.reset_damage();
     }
 
     pub fn feed_status_line(&mut self, text: &str) {
@@ -350,13 +439,14 @@ impl TerminalTab {
         if self.cols != new_cols || self.rows != new_rows {
             self.cols = new_cols;
             self.rows = new_rows;
-            self.invalidate_render_cache();
+            self.mark_full_render_damage();
             tracing::info!(
                 "[ui] terminal resized to {}x{} (cols x rows)",
                 self.cols,
                 self.rows
             );
             self.term.resize(TerminalSize::new(self.cols, self.rows));
+            self.term.reset_damage();
             self.send_backend(BackendCommand::Resize { cols, rows });
         }
     }
@@ -403,28 +493,62 @@ impl TerminalTab {
         let cols = self.cols;
         let content = self.term.renderable_content();
         let display_offset = content.display_offset as i32;
-        let mut cells = Vec::with_capacity((rows as usize) * (cols as usize));
-
-        for indexed in content.display_iter {
-            let line = indexed.point.line.0;
-            let row = line + display_offset;
-            if row < 0 {
-                continue;
+        let previous = self.render_cache.borrow_mut().take();
+        let damage = std::mem::take(&mut *self.pending_render_damage.borrow_mut());
+        let can_reuse = previous.as_ref().is_some_and(|(_, _, snapshot)| {
+            snapshot.rows == rows as usize
+                && snapshot.cols == cols as usize
+                && snapshot.display_offset == content.display_offset
+                && snapshot.cells.len() == rows as usize * cols as usize
+        });
+        let mut cells = if can_reuse {
+            match previous {
+                Some((_, _, snapshot)) => {
+                    Arc::try_unwrap(snapshot.cells).unwrap_or_else(|cells| cells.as_ref().clone())
+                }
+                None => Vec::new(),
             }
-            if row >= rows as i32 {
-                continue;
-            }
+        } else {
+            Vec::with_capacity((rows as usize) * (cols as usize))
+        };
 
-            let col = indexed.point.column.0 as i32;
-            if col >= cols as i32 {
-                continue;
+        let damaged_lines = match damage {
+            RenderDamage::Full => {
+                cells.clear();
+                Some((0..rows as usize).collect::<Vec<_>>())
             }
+            RenderDamage::Partial(lines) if can_reuse => Some(
+                lines
+                    .into_iter()
+                    .filter(|line| line.line < rows as usize)
+                    .map(|line| line.line)
+                    .collect::<Vec<_>>(),
+            ),
+            RenderDamage::Partial(_) => {
+                cells.clear();
+                Some((0..rows as usize).collect::<Vec<_>>())
+            }
+        };
 
-            cells.push(RenderCell {
-                row,
-                col,
-                cell: indexed.cell.clone(),
-            });
+        if let Some(damaged_lines) = damaged_lines {
+            let grid = self.term.grid();
+            if cells.is_empty() {
+                cells.resize_with(rows as usize * cols as usize, || RenderCell {
+                    row: 0,
+                    col: 0,
+                    cell: Cell::default(),
+                });
+            }
+            for row in damaged_lines {
+                let line = Line(row as i32 - display_offset);
+                for col in 0..cols as usize {
+                    cells[row * cols as usize + col] = RenderCell {
+                        row: row as i32,
+                        col: col as i32,
+                        cell: grid[Point::new(line, Column(col))].clone(),
+                    };
+                }
+            }
         }
 
         // Get highlights from cache or recompute, only if keyword_highlight is enabled.
@@ -495,28 +619,32 @@ impl TerminalTab {
 
     pub fn scroll_history(&mut self, delta: i32) {
         if delta != 0 {
-            self.invalidate_render_cache();
+            self.mark_full_render_damage();
             self.term.scroll_display(Scroll::Delta(delta));
+            self.term.reset_damage();
         }
     }
 
     pub fn scroll_up_by(&mut self, lines: usize) {
         if lines != 0 {
-            self.invalidate_render_cache();
+            self.mark_full_render_damage();
             self.term.scroll_display(Scroll::Delta(lines as i32));
+            self.term.reset_damage();
         }
     }
 
     pub fn scroll_down_by(&mut self, lines: usize) {
         if lines != 0 {
-            self.invalidate_render_cache();
+            self.mark_full_render_damage();
             self.term.scroll_display(Scroll::Delta(-(lines as i32)));
+            self.term.reset_damage();
         }
     }
 
     pub fn scroll_to_bottom(&mut self) {
-        self.invalidate_render_cache();
+        self.mark_full_render_damage();
         self.term.scroll_display(Scroll::Bottom);
+        self.term.reset_damage();
     }
 
     /// 轻量获取当前视口的滚动偏移量（是否在回看历史）。
@@ -542,6 +670,8 @@ impl TerminalTab {
     pub fn clear_contents(&mut self) {
         self.processor
             .advance(&mut self.term, b"\x1b[2J\x1b[3J\x1b[H");
+        self.mark_full_render_damage();
+        self.term.reset_damage();
         self.scroll_pixel_y = 0.0;
         self.clear_selection();
         *self.highlight_cache.borrow_mut() = None;
@@ -607,7 +737,7 @@ mod tests {
     #[test]
     fn clear_contents_removes_viewport_and_scrollback() {
         let (backend_tx, backend_rx) = std::sync::mpsc::channel();
-        let (event_tx, _event_rx) = std::sync::mpsc::channel();
+        let (event_tx, _event_rx) = backend_event_channel();
         let mut tab = TerminalTab::new_local(
             "test".to_string(),
             "Test".to_string(),
@@ -646,7 +776,7 @@ mod tests {
     #[test]
     fn idle_snapshot_reuses_shared_cells_until_terminal_changes() {
         let (backend_tx, _backend_rx) = std::sync::mpsc::channel();
-        let (event_tx, _event_rx) = std::sync::mpsc::channel();
+        let (event_tx, _event_rx) = backend_event_channel();
         let mut tab = TerminalTab::new_local(
             "test".to_string(),
             "Test".to_string(),
@@ -662,6 +792,48 @@ mod tests {
         tab.feed(b" world");
         let changed = tab.render_snapshot(false);
         assert!(!Arc::ptr_eq(&first.cells, &changed.cells));
+    }
+
+    #[test]
+    fn terminal_damage_tracks_only_touched_rows_for_simple_output() {
+        let (backend_tx, _backend_rx) = std::sync::mpsc::channel();
+        let (event_tx, _event_rx) = backend_event_channel();
+        let mut tab = TerminalTab::new_local(
+            "test".to_string(),
+            "Test".to_string(),
+            BackendTx::Local(backend_tx),
+            event_tx,
+        );
+        let _ = tab.render_snapshot(false);
+
+        tab.feed(b"hello");
+
+        let damage = tab.pending_render_damage.borrow();
+        assert!(matches!(
+            &*damage,
+            RenderDamage::Partial(lines)
+                if !lines.is_empty() && lines.iter().all(|line| line.line == 0)
+        ));
+    }
+
+    #[test]
+    #[ignore = "manual performance benchmark"]
+    fn benchmark_incremental_terminal_rendering() {
+        let (backend_tx, _backend_rx) = std::sync::mpsc::channel();
+        let (event_tx, _event_rx) = backend_event_channel();
+        let mut tab = TerminalTab::new_local(
+            "benchmark".to_string(),
+            "Benchmark".to_string(),
+            BackendTx::Local(backend_tx),
+            event_tx,
+        );
+        let _ = tab.render_snapshot(false);
+        let started = std::time::Instant::now();
+        for _ in 0..10_000 {
+            tab.feed(b"x");
+            std::hint::black_box(tab.render_snapshot(false));
+        }
+        eprintln!("10k incremental terminal renders: {:?}", started.elapsed());
     }
 }
 
@@ -718,7 +890,7 @@ fn viewport_selection_from_range(
 struct TerminalListener {
     tab_id: String,
     backend: std::sync::Arc<std::sync::Mutex<BackendTx>>,
-    events: std::sync::mpsc::Sender<BackendEvent>,
+    events: BackendEventSender,
 }
 
 impl EventListener for TerminalListener {
@@ -756,7 +928,7 @@ fn new_term(
     rows: u16,
     backend: std::sync::Arc<std::sync::Mutex<BackendTx>>,
     tab_id: String,
-    events: std::sync::mpsc::Sender<BackendEvent>,
+    events: BackendEventSender,
 ) -> Term<TerminalListener> {
     Term::new(
         Config {

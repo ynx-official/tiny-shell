@@ -353,7 +353,7 @@ fn open_window_with_options(
     session_store: Entity<SessionStore>,
     cx: &mut App,
 ) {
-    open_window_with_initializer(
+    if let Err(error) = open_window_with_initializer(
         window_options,
         session_store,
         move |view, cx| {
@@ -363,8 +363,9 @@ fn open_window_with_options(
             true
         },
         cx,
-    )
-    .expect("failed to open window");
+    ) {
+        tracing::error!(%error, "failed to open window");
+    }
 }
 
 #[allow(clippy::result_large_err)]

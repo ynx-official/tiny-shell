@@ -8,7 +8,7 @@ use std::{
 
 use anyhow::Result;
 
-use crate::terminal::{BackendEvent, TransferState};
+use crate::terminal::{BackendEvent, BackendEventSender, TransferState};
 
 /// Cooperative transfer control shared by upload/download tasks and their UI.
 pub(crate) struct TransferStateFlag(pub(crate) Arc<AtomicU8>);
@@ -32,7 +32,7 @@ impl TransferStateFlag {
 
     pub(crate) async fn yield_if_paused(
         &self,
-        events: &std::sync::mpsc::Sender<BackendEvent>,
+        events: &BackendEventSender,
         tab_id: &str,
         id: &str,
         transferred: u64,
@@ -75,6 +75,7 @@ impl TransferStateFlag {
 #[cfg(test)]
 mod tests {
     use super::TransferStateFlag;
+    use crate::terminal::backend_event_channel;
 
     #[test]
     fn cancellation_is_shared_between_clones() {
@@ -82,5 +83,18 @@ mod tests {
         let clone = TransferStateFlag(std::sync::Arc::clone(&original.0));
         original.cancel();
         assert_eq!(clone.0.load(std::sync::atomic::Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn cancelled_transfer_stops_at_next_cooperative_yield() {
+        let flag = TransferStateFlag::new();
+        let (events, _receiver) = backend_event_channel();
+        flag.cancel();
+
+        let result = flag
+            .yield_if_paused(&events, "tab", "transfer", 42, Some(100))
+            .await;
+
+        assert!(result.is_err_and(|error| error.to_string().contains("cancelled")));
     }
 }

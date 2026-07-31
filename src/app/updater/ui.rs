@@ -134,7 +134,7 @@ impl TinyShell {
         use crate::session::config::UpdateCheckMode;
 
         let generation = self.update_runtime.start_schedule();
-        let cancellation = self.task_supervisor.start("automatic-update");
+        let cancellation = self.async_runtime.supervisor.start("automatic-update");
 
         match self.config.update_check_mode() {
             UpdateCheckMode::Disabled => {}
@@ -191,7 +191,7 @@ impl TinyShell {
             _ => return,
         };
         let cancellation = crate::app::updater::DownloadCancellation::default();
-        let task_cancellation = self.task_supervisor.start("update-download");
+        let task_cancellation = self.async_runtime.supervisor.start("update-download");
         let generation = self.update_runtime.start_download(cancellation.clone());
         self.update_runtime.status = Some(crate::app::updater::UpdateStatus::Downloading(
             info.clone(),

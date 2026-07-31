@@ -661,7 +661,9 @@ impl TinyShell {
                                                     );
                                                     builder.curve_to(midpoint, previous);
                                                 }
-                                                builder.line_to(*points.last().unwrap());
+                                                if let Some(last) = points.last().copied() {
+                                                    builder.line_to(last);
+                                                }
                                             };
 
                                             let mut fill = PathBuilder::fill();
@@ -676,8 +678,10 @@ impl TinyShell {
                                                 );
                                                 fill.curve_to(midpoint, previous);
                                             }
-                                            fill.line_to(*points.last().unwrap());
-                                            fill.line_to(point(points.last().unwrap().x, baseline));
+                                            if let Some(last) = points.last().copied() {
+                                                fill.line_to(last);
+                                                fill.line_to(point(last.x, baseline));
+                                            }
                                             fill.close();
                                             if let Ok(path) = fill.build() {
                                                 fills.push((path, color.opacity(0.055)));

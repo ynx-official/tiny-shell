@@ -1,3 +1,4 @@
+mod backend_events;
 pub(crate) mod config_persistence;
 pub mod config_sync;
 pub mod connection_archive_dialogs;
@@ -32,22 +33,23 @@ use std::{
     sync::{
         Arc, Mutex, MutexGuard, OnceLock,
         atomic::{AtomicU64, Ordering},
-        mpsc,
     },
     time::{Duration, Instant},
 };
 
 use crate::app::{
+    backend_events::coalesce_backend_events,
     connection_manager::{actions::ConnectionManagerActions, state::ConnectionManagerState},
     resizable::ResizableState,
     runtime_state::{
-        AuxiliaryWindowsState, ConfigPersistenceState, SearchState, SyncRuntimeState,
-        TaskSupervisor, UpdateRuntimeState,
+        AsyncRuntimeState, AuxiliaryWindowsState, ConfigPersistenceState, SearchState,
+        SyncRuntimeState, UpdateRuntimeState,
     },
     settings::form::SettingsInputs,
     ssh_key_import::KeyImportState,
     workspace_presentation::WorkspaceMode,
 };
+use futures::{FutureExt as _, pin_mut, select_biased};
 use gpui::{
     AnyWindowHandle, App, AppContext as _, Bounds, Context, Entity, FocusHandle, Pixels, Point,
     SharedString, Size, UniformListScrollHandle, Window, point, px, size,
@@ -67,7 +69,10 @@ use crate::{
         ssh_config::SshConfigEntry,
     },
     system::{SharedSystemSampler, SystemSampler, SystemSnapshot},
-    terminal::{self, BackendCommand, BackendEvent, TabKind, TerminalTab},
+    terminal::{
+        self, BackendCommand, BackendEvent, BackendEventSender, TabKind, TerminalTab,
+        backend_event_channel,
+    },
 };
 
 /// Returns a process-wide shared tokio runtime.
@@ -800,9 +805,7 @@ pub(crate) struct TinyShell {
     /// stale response from an old SSH tab from releasing a newer request.
     pub(crate) remote_sample_in_flight: Option<String>,
     pub(crate) runtime: Arc<Runtime>,
-    pub(crate) task_supervisor: TaskSupervisor,
-    pub(crate) events_rx: mpsc::Receiver<BackendEvent>,
-    pub(crate) events_tx: mpsc::Sender<BackendEvent>,
+    pub(crate) async_runtime: AsyncRuntimeState,
     pub(crate) last_window_size: Option<gpui::Size<Pixels>>,
     pub(crate) last_sidebar_width: Option<Pixels>,
     pub(crate) should_move_window: bool,
@@ -848,10 +851,7 @@ pub(crate) struct SftpContextMenuState {
 }
 
 impl TinyShell {
-    pub(crate) fn backend_events_sender(
-        &self,
-        cx: &mut Context<Self>,
-    ) -> mpsc::Sender<BackendEvent> {
+    pub(crate) fn backend_events_sender(&self, cx: &mut Context<Self>) -> BackendEventSender {
         self.session_store.read(cx).events_sender()
     }
 
@@ -976,7 +976,7 @@ impl TinyShell {
                 .map(|input| cx.subscribe_in(&input, window, Self::on_input_event)),
         );
 
-        let (events_tx, events_rx) = mpsc::channel();
+        let (events_tx, events_rx) = backend_event_channel();
         let workspace_panels = cx.new(|_| ResizableState::default());
         let body_panels = cx.new(|_| ResizableState::default());
         let system_sampler = shared_system_sampler();
@@ -1210,9 +1210,7 @@ impl TinyShell {
 
             remote_sample_in_flight: None,
             runtime: shared_runtime(),
-            task_supervisor: TaskSupervisor::default(),
-            events_rx,
-            events_tx,
+            async_runtime: AsyncRuntimeState::new(events_tx, events_rx),
             last_window_size: None,
             last_sidebar_width,
             should_move_window: false,
@@ -1379,15 +1377,25 @@ impl TinyShell {
     }
 
     pub(crate) fn start_event_pump(&mut self, cx: &mut Context<Self>) {
-        let cancellation = self.task_supervisor.start("event-pump");
+        let cancellation = self.async_runtime.supervisor.start("event-pump");
+        let mut local_wake = self.async_runtime.events_tx.subscribe();
+        let mut backend_wake = self.session_store.read(cx).events_sender().subscribe();
         cx.spawn(async move |this, cx| {
             let mut last_blink_time = std::time::Instant::now();
-            let mut poll_interval = Duration::from_millis(16);
+            let mut fallback_interval = Duration::from_millis(250);
             loop {
                 if cancellation.is_cancelled() {
                     break;
                 }
-                cx.background_executor().timer(poll_interval).await;
+                let timer = cx.background_executor().timer(fallback_interval).fuse();
+                let local_event = local_wake.changed().fuse();
+                let backend_event = backend_wake.changed().fuse();
+                pin_mut!(timer, local_event, backend_event);
+                select_biased! {
+                    _ = local_event => {},
+                    _ = backend_event => {},
+                    _ = timer => {},
+                }
                 if cancellation.is_cancelled() {
                     break;
                 }
@@ -1417,10 +1425,10 @@ impl TinyShell {
                     Ok(active) => active,
                     Err(_) => break,
                 };
-                poll_interval = if active {
+                fallback_interval = if active {
                     Duration::from_millis(16)
                 } else {
-                    Duration::from_millis(33)
+                    Duration::from_millis(250)
                 };
             }
         })
@@ -1490,35 +1498,22 @@ impl TinyShell {
     }
 
     pub(crate) fn drain_backend_events(&mut self, cx: &mut Context<Self>) -> bool {
+        const MAX_EVENTS_PER_TICK: usize = 2_048;
         let mut changed = false;
         let mut transfers_changed = false;
-        let mut events = Vec::new();
-        while let Ok(event) = self.events_rx.try_recv() {
+        let mut events = Vec::with_capacity(MAX_EVENTS_PER_TICK);
+        while events.len() < MAX_EVENTS_PER_TICK
+            && let Ok(event) = self.async_runtime.events_rx.try_recv()
+        {
             events.push(event);
         }
         let owner_id = self.session_owner_id;
+        let remaining = MAX_EVENTS_PER_TICK.saturating_sub(events.len());
         events.extend(
             self.session_store
-                .update(cx, |store, _| store.drain_events_for(owner_id)),
+                .update(cx, |store, _| store.drain_events_for(owner_id, remaining)),
         );
-        let mut coalesced_events = Vec::with_capacity(events.len());
-        for event in events {
-            if let BackendEvent::Output { tab_id, bytes } = event {
-                if let Some(BackendEvent::Output {
-                    tab_id: previous_tab_id,
-                    bytes: previous_bytes,
-                }) = coalesced_events.last_mut()
-                    && previous_tab_id == &tab_id
-                {
-                    previous_bytes.extend(bytes);
-                    continue;
-                }
-                coalesced_events.push(BackendEvent::Output { tab_id, bytes });
-            } else {
-                coalesced_events.push(event);
-            }
-        }
-        for event in coalesced_events {
+        for event in coalesce_backend_events(events) {
             changed = true;
             match event {
                 BackendEvent::Output { tab_id, bytes } => {
@@ -2254,7 +2249,7 @@ impl TinyShell {
 
     /// Clean up all SSH sessions and SFTP handles when the window is closing.
     pub(crate) fn cleanup_on_window_close(&mut self) {
-        self.task_supervisor.cancel_all();
+        self.async_runtime.supervisor.cancel_all();
         tracing::info!(
             "[ui] cleaning up {} tabs and {} sftp handles on window close",
             self.tabs.len(),

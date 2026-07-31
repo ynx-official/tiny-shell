@@ -26,7 +26,10 @@ use russh::{
 use russh_sftp::{client::SftpSession, protocol::FileAttributes};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    sync::mpsc::{self, Receiver, Sender},
+    sync::{
+        Semaphore,
+        mpsc::{self, Receiver, Sender},
+    },
     task::JoinHandle,
 };
 use uuid::Uuid;
@@ -47,10 +50,22 @@ use crate::{
         EDITOR_HARD_LIMIT_BYTES, RemoteFileRevision, RemoteTextFile, RemoteTextSave,
         decode_remote_text, encode_remote_text,
     },
-    terminal::BackendEvent,
+    terminal::{BackendEvent, BackendEventSender},
 };
 
 const COMMAND_QUEUE_CAPACITY: usize = 256;
+
+struct TemporaryEditFile(PathBuf);
+
+impl Drop for TemporaryEditFile {
+    fn drop(&mut self) {
+        if let Err(error) = fs::remove_file(&self.0)
+            && error.kind() != std::io::ErrorKind::NotFound
+        {
+            tracing::debug!(path = %self.0.display(), %error, "failed to clean up SFTP edit file");
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct RemoteEntry {
@@ -231,7 +246,7 @@ pub fn spawn_sftp(
     runtime: &tokio::runtime::Handle,
     tab_id: String,
     session: Session,
-    events: std::sync::mpsc::Sender<BackendEvent>,
+    events: BackendEventSender,
 ) -> SftpHandle {
     let (cmd_tx, cmd_rx) = mpsc::channel(COMMAND_QUEUE_CAPACITY);
     let cmd_tx_clone = cmd_tx.clone();
@@ -266,7 +281,7 @@ async fn run_sftp(
     session: Session,
     mut commands: Receiver<SftpCommand>,
     commands_tx: Sender<SftpCommand>,
-    events: std::sync::mpsc::Sender<BackendEvent>,
+    events: BackendEventSender,
 ) -> Result<()> {
     let _ = events.send(BackendEvent::SftpStatus {
         tab_id: tab_id.clone(),
@@ -336,8 +351,10 @@ async fn run_sftp(
         std::collections::HashMap::new();
     let mut active_tasks: std::collections::HashMap<String, JoinHandle<()>> =
         std::collections::HashMap::new();
+    let channel_slots = Arc::new(Semaphore::new(4));
 
     while let Some(command) = commands.recv().await {
+        active_tasks.retain(|_, task| !task.is_finished());
         match command {
             SftpCommand::Close => {
                 for flag in active_transfers.values() {
@@ -453,12 +470,16 @@ async fn run_sftp(
                 });
 
                 let handle_clone = handle.clone();
+                let channel_slots_clone = channel_slots.clone();
                 let events_clone = events.clone();
                 let tab_id_clone = tab_id.clone();
                 let commands_tx_clone = commands_tx.clone();
 
                 let transfer_id = id.clone();
                 let task = tokio::spawn(async move {
+                    let Ok(_channel_permit) = channel_slots_clone.acquire_owned().await else {
+                        return;
+                    };
                     let Ok(channel) = handle_clone.channel_open_session().await else {
                         return;
                     };
@@ -568,12 +589,16 @@ async fn run_sftp(
                 });
 
                 let handle_clone = handle.clone();
+                let channel_slots_clone = channel_slots.clone();
                 let events_clone = events.clone();
                 let tab_id_clone = tab_id.clone();
                 let commands_tx_clone = commands_tx.clone();
 
                 let transfer_id = id.clone();
                 let task = tokio::spawn(async move {
+                    let Ok(_channel_permit) = channel_slots_clone.acquire_owned().await else {
+                        return;
+                    };
                     let Ok(channel) = handle_clone.channel_open_session().await else {
                         return;
                     };
@@ -664,6 +689,7 @@ async fn run_sftp(
 
                 let transfer_id = id.clone();
                 let task = tokio::spawn(async move {
+                    let _temporary_file = TemporaryEditFile(local_path.clone());
                     let flag = TransferStateFlag::new();
                     let Ok(channel) = handle_clone.channel_open_session().await else {
                         return;
@@ -755,10 +781,14 @@ async fn run_sftp(
                 remote_path,
             } => {
                 let handle_clone = handle.clone();
+                let channel_slots_clone = channel_slots.clone();
                 let events_clone = events.clone();
                 let tab_id_clone = tab_id.clone();
 
-                tokio::spawn(async move {
+                let task = tokio::spawn(async move {
+                    let Ok(_channel_permit) = channel_slots_clone.acquire_owned().await else {
+                        return;
+                    };
                     let flag = TransferStateFlag::new();
                     let Ok(channel) = handle_clone.channel_open_session().await else {
                         return;
@@ -803,13 +833,18 @@ async fn run_sftp(
                         }
                     }
                 });
+                active_tasks.insert(format!("edit-upload-{}", Uuid::new_v4()), task);
             }
             SftpCommand::DownloadFileContent { remote_path } => {
                 let handle_clone = handle.clone();
+                let channel_slots_clone = channel_slots.clone();
                 let events_clone = events.clone();
                 let tab_id_clone = tab_id.clone();
 
-                tokio::spawn(async move {
+                let task = tokio::spawn(async move {
+                    let Ok(_channel_permit) = channel_slots_clone.acquire_owned().await else {
+                        return;
+                    };
                     let Ok(channel) = handle_clone.channel_open_session().await else {
                         let _ = events_clone.send(BackendEvent::SftpStatus {
                             tab_id: tab_id_clone,
@@ -840,13 +875,18 @@ async fn run_sftp(
                         }
                     }
                 });
+                active_tasks.insert(format!("content-download-{}", Uuid::new_v4()), task);
             }
             SftpCommand::SaveFileContent(save) => {
                 let handle_clone = handle.clone();
+                let channel_slots_clone = channel_slots.clone();
                 let events_clone = events.clone();
                 let tab_id_clone = tab_id.clone();
 
-                tokio::spawn(async move {
+                let task = tokio::spawn(async move {
+                    let Ok(_channel_permit) = channel_slots_clone.acquire_owned().await else {
+                        return;
+                    };
                     let remote_path = save.remote_path.clone();
                     let Ok(channel) = handle_clone.channel_open_session().await else {
                         let error = "Failed to open SFTP channel".to_string();
@@ -911,6 +951,7 @@ async fn run_sftp(
                         }
                     }
                 });
+                active_tasks.insert(format!("content-save-{}", Uuid::new_v4()), task);
             }
             SftpCommand::CreateDir(path) => {
                 let actual_path = if path == "~" {
@@ -1135,6 +1176,7 @@ async fn run_sftp(
                 });
 
                 let handle_clone = handle.clone();
+                let channel_slots_clone = channel_slots.clone();
                 let events_clone = events.clone();
                 let tab_id_clone = tab_id.clone();
                 let commands_tx_clone = commands_tx.clone();
@@ -1144,6 +1186,9 @@ async fn run_sftp(
                     .unwrap_or_else(std::env::temp_dir);
                 let transfer_id = id.clone();
                 let task = tokio::spawn(async move {
+                    let Ok(_channel_permit) = channel_slots_clone.acquire_owned().await else {
+                        return;
+                    };
                     let result = pack_remote_paths_to_zip(
                         &handle_clone,
                         &remote_paths,
@@ -1287,7 +1332,7 @@ fn set_permissions_recursive<'a>(
 }
 
 async fn emit_entries(
-    events: &std::sync::mpsc::Sender<BackendEvent>,
+    events: &BackendEventSender,
     tab_id: &str,
     sftp: &SftpSession,
     path: &str,
@@ -1658,7 +1703,7 @@ async fn download_path_impl(
     remote: &str,
     local_dir: &Path,
     flag: TransferStateFlag,
-    events: &std::sync::mpsc::Sender<BackendEvent>,
+    events: &BackendEventSender,
     tab_id: &str,
     id: &str,
 ) -> Result<String> {
@@ -1712,7 +1757,7 @@ async fn download_dir_recursive(
     remote_dir: &str,
     local_dir: &Path,
     flag: &TransferStateFlag,
-    events: &std::sync::mpsc::Sender<BackendEvent>,
+    events: &BackendEventSender,
     tab_id: &str,
     id: &str,
 ) -> Result<()> {
@@ -1757,7 +1802,7 @@ async fn download_remote_directory_archive(
     remote_dir: &str,
     local_archive: &Path,
     flag: &TransferStateFlag,
-    events: &std::sync::mpsc::Sender<BackendEvent>,
+    events: &BackendEventSender,
     tab_id: &str,
     id: &str,
 ) -> Result<PathBuf> {
@@ -1988,7 +2033,7 @@ async fn download_file_impl(
     remote: &str,
     local: &Path,
     flag: &TransferStateFlag,
-    events: &std::sync::mpsc::Sender<BackendEvent>,
+    events: &BackendEventSender,
     tab_id: &str,
     id: &str,
 ) -> Result<()> {
@@ -2056,7 +2101,7 @@ async fn upload_paths_impl(
     locals: &[String],
     remote_dir: &str,
     flag: TransferStateFlag,
-    events: &std::sync::mpsc::Sender<BackendEvent>,
+    events: &BackendEventSender,
     tab_id: &str,
     id: &str,
 ) -> Result<String> {
@@ -2199,7 +2244,7 @@ async fn upload_file_impl(
     local_file: &Path,
     remote_path: &str,
     flag: &TransferStateFlag,
-    events: &std::sync::mpsc::Sender<BackendEvent>,
+    events: &BackendEventSender,
     tab_id: &str,
     id: &str,
     transferred: Arc<AtomicU64>,
@@ -2321,7 +2366,7 @@ async fn pack_remote_paths_to_zip(
     local_zip: &Path,
     tmp_dir: &Path,
     flag: &TransferStateFlag,
-    events: &std::sync::mpsc::Sender<BackendEvent>,
+    events: &BackendEventSender,
     tab_id: &str,
     id: &str,
 ) -> Result<()> {

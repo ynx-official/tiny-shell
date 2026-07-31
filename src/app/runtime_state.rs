@@ -9,6 +9,7 @@ use std::{
 use gpui::{AnyWindowHandle, Bounds, Pixels, SharedString};
 
 use crate::app::{SyncSecretsPasswordDialogState, updater};
+use crate::terminal::{BackendEvent, BackendEventSender};
 
 #[derive(Default)]
 struct TaskGeneration(u64);
@@ -37,6 +38,25 @@ impl TaskCancellation {
 #[derive(Default)]
 pub(crate) struct TaskSupervisor {
     tasks: HashMap<String, TaskCancellation>,
+}
+
+pub(crate) struct AsyncRuntimeState {
+    pub(crate) supervisor: TaskSupervisor,
+    pub(crate) events_rx: std::sync::mpsc::Receiver<BackendEvent>,
+    pub(crate) events_tx: BackendEventSender,
+}
+
+impl AsyncRuntimeState {
+    pub(crate) fn new(
+        events_tx: BackendEventSender,
+        events_rx: std::sync::mpsc::Receiver<BackendEvent>,
+    ) -> Self {
+        Self {
+            supervisor: TaskSupervisor::default(),
+            events_rx,
+            events_tx,
+        }
+    }
 }
 
 impl TaskSupervisor {

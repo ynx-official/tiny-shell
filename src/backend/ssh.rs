@@ -22,7 +22,7 @@ use crate::{
         },
     },
     system::{SystemSnapshot, remote_snapshot_from_kv},
-    terminal::{BackendCommand, BackendEvent, BackendTx},
+    terminal::{BackendCommand, BackendEvent, BackendEventSender, BackendTx},
 };
 
 pub fn spawn_ssh_terminal(
@@ -31,7 +31,7 @@ pub fn spawn_ssh_terminal(
     session: Session,
     cols: u16,
     rows: u16,
-    events: std::sync::mpsc::Sender<BackendEvent>,
+    events: BackendEventSender,
 ) -> BackendTx {
     let (cmd_tx, cmd_rx) = mpsc::unbounded_channel::<BackendCommand>();
     let task_tab = tab_id.clone();
@@ -90,7 +90,7 @@ async fn run_ssh(
     cols: u16,
     rows: u16,
     mut commands: mpsc::UnboundedReceiver<BackendCommand>,
-    events: std::sync::mpsc::Sender<BackendEvent>,
+    events: BackendEventSender,
 ) -> Result<()> {
     let _ = events.send(BackendEvent::Status {
         tab_id: tab_id.clone(),
@@ -228,7 +228,7 @@ async fn run_ssh(
 async fn connect_and_authenticate(
     tab_id: &str,
     session: &Session,
-    events: &std::sync::mpsc::Sender<BackendEvent>,
+    events: &BackendEventSender,
 ) -> Result<russh::client::Handle<ClientHandler>> {
     let config = Arc::new(client::Config {
         inactivity_timeout: Some(std::time::Duration::from_secs(600)),

@@ -352,6 +352,7 @@ impl TinyShell {
     }
 
     pub(crate) fn pick_ssh_key_path(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let cancellation = self.async_runtime.supervisor.start("pick-ssh-key-path");
         let start_dir = directories::BaseDirs::new()
             .map(|d| d.home_dir().join(".ssh"))
             .unwrap_or_else(|| std::path::PathBuf::from("/"));
@@ -362,6 +363,9 @@ impl TinyShell {
 
         cx.spawn_in(window, async move |this, cx| {
             if let Some(file) = file_dialog.await {
+                if cancellation.is_cancelled() {
+                    return Ok::<(), anyhow::Error>(());
+                }
                 let _ = gpui::AsyncWindowContext::update(cx, |window, cx| {
                     let _ = this.update(cx, |this, cx| {
                         Self::set_input_value(
@@ -534,6 +538,10 @@ impl TinyShell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let cancellation = self
+            .async_runtime
+            .supervisor
+            .start("pick-managed-key-import-file");
         let start_dir = directories::BaseDirs::new()
             .map(|d| d.home_dir().join(".ssh"))
             .unwrap_or_else(|| std::path::PathBuf::from("/"));
@@ -543,6 +551,9 @@ impl TinyShell {
 
         cx.spawn_in(window, async move |this, cx| {
             if let Some(file) = file_dialog.await {
+                if cancellation.is_cancelled() {
+                    return Ok::<(), anyhow::Error>(());
+                }
                 let path = file.path().to_path_buf();
                 let display_path = path.to_string_lossy().to_string();
                 let default_name = path
@@ -565,6 +576,9 @@ impl TinyShell {
                 let read_result = result_rx.await.unwrap_or_else(|_| {
                     Err(std::io::Error::other("private key validation task stopped"))
                 });
+                if cancellation.is_cancelled() {
+                    return Ok::<(), anyhow::Error>(());
+                }
                 let _ = gpui::AsyncWindowContext::update(cx, |window, cx| {
                     let _ = this.update(cx, |this, cx| {
                         if !this.key_import.open || this.key_import.path != display_path {
@@ -671,6 +685,7 @@ impl TinyShell {
     /// Reads the file content, validates it, detects type + fingerprint,
     /// and saves a new `ManagedKey`.
     pub(crate) fn import_managed_key(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let cancellation = self.async_runtime.supervisor.start("import-managed-key");
         let start_dir = directories::BaseDirs::new()
             .map(|d| d.home_dir().join(".ssh"))
             .unwrap_or_else(|| std::path::PathBuf::from("/"));
@@ -680,6 +695,9 @@ impl TinyShell {
 
         cx.spawn_in(window, async move |this, cx| {
             if let Some(file) = file_dialog.await {
+                if cancellation.is_cancelled() {
+                    return Ok::<(), anyhow::Error>(());
+                }
                 let path = file.path().to_path_buf();
                 let content = std::fs::read_to_string(&path).unwrap_or_default();
                 let file_name = path

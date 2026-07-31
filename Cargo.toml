@@ -73,8 +73,14 @@ assets = [
 [profile.release]
 opt-level = 3
 lto = "thin"
-codegen-units = 1
+codegen-units = 4
 strip = true
+panic = "abort"
+
+[profile.release-fast]
+inherits = "release"
+codegen-units = 16
+lto = false
 
 
 [profile.dev]
@@ -89,3 +95,7 @@ opt-level = 1
 
 [build-dependencies]
 winres = "0.1.12"
+
+[patch.crates-io]
+block = { path = "vendor/block-0.1.6" }
+proc-macro-error2 = { path = "vendor/proc-macro-error2-2.0.1" }

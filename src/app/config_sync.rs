@@ -182,8 +182,8 @@ impl TinyShell {
     where
         F: Future<Output = SyncResult> + Send + 'static,
     {
-        let cancellation = self.task_supervisor.start("sync-operation");
-        let events = self.events_tx.clone();
+        let cancellation = self.async_runtime.supervisor.start("sync-operation");
+        let events = self.async_runtime.events_tx.clone();
         self.runtime.spawn(async move {
             let result = operation.await;
             if !cancellation.is_cancelled() {
@@ -424,7 +424,7 @@ impl TinyShell {
         cx: &mut Context<Self>,
     ) {
         let generation = self.sync_runtime.start_schedule();
-        let cancellation = self.task_supervisor.start("automatic-sync");
+        let cancellation = self.async_runtime.supervisor.start("automatic-sync");
         if !self.config.sync_enabled() || self.config.sync_backend() != "webdav" {
             return;
         }
