@@ -15,7 +15,7 @@ use crate::{
 };
 
 use base64::Engine as _;
-use std::time::Duration;
+use std::{future::Future, time::Duration};
 
 const PRIVACY_PASSWORD_MIN_LEN: usize = 8;
 
@@ -178,6 +178,20 @@ fn upload_preflight_result(
 }
 
 impl TinyShell {
+    fn spawn_sync_operation<F>(&mut self, operation: F)
+    where
+        F: Future<Output = SyncResult> + Send + 'static,
+    {
+        let cancellation = self.task_supervisor.start("sync-operation");
+        let events = self.events_tx.clone();
+        self.runtime.spawn(async move {
+            let result = operation.await;
+            if !cancellation.is_cancelled() {
+                let _ = events.send(BackendEvent::SyncFinished(result));
+            }
+        });
+    }
+
     fn begin_sync(
         &mut self,
         credentials: SyncCredentials,
@@ -258,14 +272,11 @@ impl TinyShell {
         self.sync_runtime.status = t!("sync_verifying_connection").into();
         cx.notify();
 
-        let events = self.events_tx.clone();
-        self.runtime.spawn(async move {
-            let result = match sync::verify_webdav_connection(&endpoint, &username, &password).await
-            {
+        self.spawn_sync_operation(async move {
+            match sync::verify_webdav_connection(&endpoint, &username, &password).await {
                 Ok(()) => SyncResult::ConnectionVerified,
                 Err(failure) => SyncResult::Failed(failure),
-            };
-            let _ = events.send(BackendEvent::SyncFinished(result));
+            }
         });
     }
 
@@ -519,11 +530,9 @@ impl TinyShell {
             return;
         };
 
-        let events = self.events_tx.clone();
-        self.runtime.spawn(async move {
+        self.spawn_sync_operation(async move {
             let downloaded = sync::download(credentials.clone(), &password).await;
-            let result = privacy_password_verification_result(credentials, password, downloaded);
-            let _ = events.send(BackendEvent::SyncFinished(result));
+            privacy_password_verification_result(credentials, password, downloaded)
         });
     }
 
@@ -556,9 +565,8 @@ impl TinyShell {
             .quick_command_categories()
             .unwrap_or_default()
             .to_vec();
-        let events = self.events_tx.clone();
-        self.runtime.spawn(async move {
-            let result = match sync::download(credentials.clone(), &privacy_password).await {
+        self.spawn_sync_operation(async move {
+            match sync::download(credentials.clone(), &privacy_password).await {
                 Ok((payload, etag)) => match payload.privacy_password_status(&privacy_password) {
                     Ok(PrivacyPasswordStatus::Missing) => SyncResult::UploadPreflightBlocked {
                         credentials,
@@ -604,8 +612,7 @@ impl TinyShell {
                     }
                 }
                 Err(failure) => SyncResult::Failed(failure),
-            };
-            let _ = events.send(BackendEvent::SyncFinished(result));
+            }
         });
     }
 
@@ -672,16 +679,14 @@ impl TinyShell {
         self.sync_runtime.status = t!("sync_uploading").into();
         cx.notify();
 
-        let events = self.events_tx.clone();
-        self.runtime.spawn(async move {
-            let result = match sync::upload(credentials, payload, mode).await {
+        self.spawn_sync_operation(async move {
+            match sync::upload(credentials, payload, mode).await {
                 Ok(etag) => SyncResult::Uploaded {
                     etag,
                     privacy_password: uploaded_privacy_password,
                 },
                 Err(failure) => SyncResult::Failed(failure),
-            };
-            let _ = events.send(BackendEvent::SyncFinished(result));
+            }
         });
     }
 
@@ -703,9 +708,8 @@ impl TinyShell {
             .quick_command_categories()
             .unwrap_or_default()
             .to_vec();
-        let events = self.events_tx.clone();
-        self.runtime.spawn(async move {
-            let result = match sync::download(credentials.clone(), &privacy_password).await {
+        self.spawn_sync_operation(async move {
+            match sync::download(credentials.clone(), &privacy_password).await {
                 Ok((payload, etag)) => match payload.privacy_password_status(&privacy_password) {
                     Ok(password_status) => {
                         let MergedConfig {
@@ -754,8 +758,7 @@ impl TinyShell {
                     )),
                 },
                 Err(failure) => SyncResult::Failed(failure),
-            };
-            let _ = events.send(BackendEvent::SyncFinished(result));
+            }
         });
     }
 
@@ -815,13 +818,11 @@ impl TinyShell {
             }
         };
 
-        let events = self.events_tx.clone();
-        self.runtime.spawn(async move {
-            let result = match sync::upload(credentials, payload, UploadMode::Force).await {
+        self.spawn_sync_operation(async move {
+            match sync::upload(credentials, payload, UploadMode::Force).await {
                 Ok(etag) => SyncResult::PrivacyPasswordReset { new_password, etag },
                 Err(failure) => SyncResult::Failed(failure),
-            };
-            let _ = events.send(BackendEvent::SyncFinished(result));
+            }
         });
     }
 }

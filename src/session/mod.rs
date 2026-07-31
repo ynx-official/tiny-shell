@@ -2041,7 +2041,7 @@ impl TinyShell {
                 self.net_tx_history.clear();
                 self.selected_network_interface = None;
                 self.network_interface_histories.clear();
-                self.remote_sample_in_flight = false;
+                self.remote_sample_in_flight = None;
                 if self.system_tab_id.is_none() {
                     self.system_status = Some("monitored session closed".to_string().into());
                 } else {

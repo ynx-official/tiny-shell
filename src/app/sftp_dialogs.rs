@@ -308,7 +308,7 @@ impl TinyShell {
             } else {
                 crate::sftp::SftpCommand::CreateFile(path)
             };
-            let _ = handle.commands.send(command);
+            handle.send_command(command);
         }
         cx.notify();
         true
@@ -403,7 +403,7 @@ impl TinyShell {
             return false;
         }
         if let Some(handle) = self.active_sftp_handle() {
-            let _ = handle.commands.send(crate::sftp::SftpCommand::RenamePath {
+            handle.send_command(crate::sftp::SftpCommand::RenamePath {
                 old_path: remote_path.to_string(),
                 new_path: crate::sftp::join_remote(parent, &name),
             });
@@ -508,14 +508,12 @@ impl TinyShell {
             return false;
         }
         if let Some(handle) = self.active_sftp_handle() {
-            let _ = handle
-                .commands
-                .send(crate::sftp::SftpCommand::SetPermissions {
-                    remote_path: remote_path.to_string(),
-                    mode,
-                    recursive,
-                    apply_to,
-                });
+            handle.send_command(crate::sftp::SftpCommand::SetPermissions {
+                remote_path: remote_path.to_string(),
+                mode,
+                recursive,
+                apply_to,
+            });
         }
         cx.notify();
         true
@@ -604,7 +602,7 @@ impl TinyShell {
             } else {
                 crate::sftp::SftpCommand::DeletePaths(paths.to_vec())
             };
-            let _ = handle.commands.send(command);
+            handle.send_command(command);
         }
         if let Some(sftp) = self.active_sftp_mut() {
             sftp.selected_entries.clear();

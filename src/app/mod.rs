@@ -796,7 +796,9 @@ pub(crate) struct TinyShell {
     pub(crate) system_tab_id: Option<String>,
     pub(crate) sftp_handles: std::collections::HashMap<String, crate::sftp::SftpHandle>,
 
-    pub(crate) remote_sample_in_flight: bool,
+    /// Tab id currently being sampled remotely. Keeping the id prevents a
+    /// stale response from an old SSH tab from releasing a newer request.
+    pub(crate) remote_sample_in_flight: Option<String>,
     pub(crate) runtime: Arc<Runtime>,
     pub(crate) task_supervisor: TaskSupervisor,
     pub(crate) events_rx: mpsc::Receiver<BackendEvent>,
@@ -1206,7 +1208,7 @@ impl TinyShell {
             system_tab_id: None,
             sftp_handles: std::collections::HashMap::new(),
 
-            remote_sample_in_flight: false,
+            remote_sample_in_flight: None,
             runtime: shared_runtime(),
             task_supervisor: TaskSupervisor::default(),
             events_rx,
@@ -1308,9 +1310,7 @@ impl TinyShell {
                         let base_path = self.sftp_path_input.read(cx).text().to_string();
                         let path = crate::sftp::join_remote(&base_path, &name);
                         if let Some(handle) = self.active_sftp_handle() {
-                            let _ = handle
-                                .commands
-                                .send(crate::sftp::SftpCommand::CreateDir(path));
+                            handle.send_command(crate::sftp::SftpCommand::CreateDir(path));
                         }
                     }
                     self.sftp_creating_folder = false;
@@ -1629,7 +1629,9 @@ impl TinyShell {
                 }
                 BackendEvent::RemoteSystem { tab_id, snapshot } => {
                     let snapshot = *snapshot;
-                    self.remote_sample_in_flight = false;
+                    if self.remote_sample_in_flight.as_deref() == Some(tab_id.as_str()) {
+                        self.remote_sample_in_flight = None;
+                    }
                     self.remote_system_snapshots
                         .insert(tab_id.clone(), snapshot.clone());
                     if self.system_tab_id.as_deref() == Some(tab_id.as_str()) {
@@ -1642,14 +1644,18 @@ impl TinyShell {
                     }
                 }
                 BackendEvent::RemoteSystemUnavailable { tab_id, reason } => {
-                    self.remote_sample_in_flight = false;
+                    if self.remote_sample_in_flight.as_deref() == Some(tab_id.as_str()) {
+                        self.remote_sample_in_flight = None;
+                    }
                     if self.system_tab_id.as_deref() == Some(tab_id.as_str()) {
                         self.system_status = Some(reason.clone().into());
                         self.status = reason.into();
                     }
                 }
                 BackendEvent::Closed { tab_id, reason } => {
-                    self.remote_sample_in_flight = false;
+                    if self.remote_sample_in_flight.as_deref() == Some(tab_id.as_str()) {
+                        self.remote_sample_in_flight = None;
+                    }
                     let is_stale = self
                         .tabs
                         .iter()
@@ -2212,10 +2218,10 @@ impl TinyShell {
         })() else {
             return;
         };
-        if self.remote_sample_in_flight {
+        if self.remote_sample_in_flight.is_some() {
             return;
         }
-        self.remote_sample_in_flight = true;
+        self.remote_sample_in_flight = Some(tab_id.clone());
         if let Ok(backend) = backend.lock() {
             backend.send(crate::terminal::BackendCommand::SampleMetrics);
         }

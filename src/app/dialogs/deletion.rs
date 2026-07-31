@@ -166,9 +166,9 @@ impl TinyShell {
                     move |_, window, cx| {
                         view.update(cx, |this, cx| {
                             if let Some(handle) = this.active_sftp_handle() {
-                                let _ = handle.commands.send(
-                                    crate::sftp::SftpCommand::DeletePaths(paths_to_delete.clone()),
-                                );
+                                handle.send_command(crate::sftp::SftpCommand::DeletePaths(
+                                    paths_to_delete.clone(),
+                                ));
                             }
                             if let Some(sftp) = this.active_sftp_mut() {
                                 sftp.selected_entries.clear();
@@ -289,7 +289,7 @@ impl TinyShell {
                                     move |_, window, cx| {
                                         view.update(cx, |this, cx| {
                                             if let Some(handle) = this.active_sftp_handle() {
-                                                let _ = handle.commands.send(
+                                                handle.send_command(
                                                     crate::sftp::SftpCommand::DeletePaths(
                                                         paths_to_delete.clone(),
                                                     ),

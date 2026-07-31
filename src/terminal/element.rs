@@ -395,14 +395,14 @@ impl TerminalElement {
         let mut merged_highlights: std::collections::HashMap<(i32, i32), gpui::Hsla>;
         let highlights: &std::collections::HashMap<(i32, i32), gpui::Hsla> =
             if let Some(sm) = self.search_highlights.as_ref().filter(|sm| !sm.is_empty()) {
-                merged_highlights = self.snapshot.highlights.clone();
+                merged_highlights = self.snapshot.highlights.as_ref().clone();
                 merged_highlights.extend(sm.iter().map(|(k, v)| (*k, *v)));
                 &merged_highlights
             } else {
-                &self.snapshot.highlights
+                self.snapshot.highlights.as_ref()
             };
 
-        for render_cell in &self.snapshot.cells {
+        for render_cell in self.snapshot.cells.iter() {
             let cell = &render_cell.cell;
             if cell.flags.intersects(
                 Flags::HIDDEN | Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER,

@@ -616,7 +616,7 @@ impl TinyShell {
                     handle.download(remote_paths[0].clone(), local_dir);
                 } else {
                     for remote in remote_paths {
-                        let _ = handle.commands.send(crate::sftp::SftpCommand::Download {
+                        handle.send_command(crate::sftp::SftpCommand::Download {
                             remote,
                             local_dir: local_dir.clone(),
                         });
@@ -632,12 +632,10 @@ impl TinyShell {
                 suggested_name,
             } => {
                 let local_zip = directory.join(suggested_name);
-                let _ = handle
-                    .commands
-                    .send(crate::sftp::SftpCommand::PackDownload {
-                        remote_paths,
-                        local_zip: local_zip.to_string_lossy().to_string(),
-                    });
+                handle.send_command(crate::sftp::SftpCommand::PackDownload {
+                    remote_paths,
+                    local_zip: local_zip.to_string_lossy().to_string(),
+                });
             }
         }
         self.show_transfers_dialog = true;
@@ -943,7 +941,7 @@ impl TinyShell {
                     paths.len(),
                     sftp.current_path
                 );
-                let _ = handle.commands.send(crate::sftp::SftpCommand::UploadPaths {
+                handle.send_command(crate::sftp::SftpCommand::UploadPaths {
                     locals: paths,
                     remote_dir: sftp.current_path.clone(),
                 });

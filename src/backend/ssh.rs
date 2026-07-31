@@ -11,7 +11,7 @@ use russh::{
     client::{self, Handler},
     keys::{PrivateKey, decode_secret_key, load_secret_key},
 };
-use tokio::sync::mpsc;
+use tokio::{sync::mpsc, task::JoinSet};
 
 use crate::{
     session::{
@@ -126,9 +126,15 @@ async fn run_ssh(
 
     let exit_reason;
     let mut is_graceful_close = false;
+    let mut metrics_tasks = JoinSet::new();
 
     loop {
         tokio::select! {
+            completed = metrics_tasks.join_next(), if !metrics_tasks.is_empty() => {
+                if let Some(Err(error)) = completed {
+                    tracing::debug!("remote metrics task stopped: {error}");
+                }
+            }
             command = commands.recv() => {
                 match command {
                     Some(BackendCommand::Input(bytes)) => {
@@ -145,7 +151,7 @@ async fn run_ssh(
                         let handle_clone = handle.clone();
                         let tab_id_clone = tab_id.clone();
                         let events_clone = events.clone();
-                        tokio::spawn(async move {
+                        metrics_tasks.spawn(async move {
                             match sample_remote_system_with_handle(handle_clone).await {
                                 Ok(snapshot) => {
                                     let _ = events_clone.send(BackendEvent::RemoteSystem {

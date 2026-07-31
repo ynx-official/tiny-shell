@@ -3,7 +3,10 @@ pub mod element;
 pub mod highlight;
 pub mod input;
 
-use std::sync::mpsc::Sender;
+use std::{
+    collections::HashMap,
+    sync::{Arc, mpsc::Sender},
+};
 
 use alacritty_terminal::{
     event::{Event, EventListener},
@@ -22,10 +25,7 @@ use crate::sftp::{
 };
 use crate::system::SystemSnapshot;
 
-type HighlightCache = Option<(
-    Vec<RenderCell>,
-    std::collections::HashMap<(i32, i32), gpui::Hsla>,
-)>;
+type HighlightCache = Option<(u64, Arc<HashMap<(i32, i32), gpui::Hsla>>)>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TabKind {
@@ -177,6 +177,8 @@ pub struct TerminalTab {
     pub backend: std::sync::Arc<std::sync::Mutex<BackendTx>>,
     pub scroll_pixel_y: f32,
     pub(crate) highlight_cache: std::cell::RefCell<HighlightCache>,
+    render_revision: u64,
+    render_cache: std::cell::RefCell<Option<(u64, bool, RenderSnapshot)>>,
 }
 
 #[derive(Clone, Copy)]
@@ -195,14 +197,16 @@ pub struct RenderCell {
 
 #[derive(Clone)]
 pub struct RenderSnapshot {
-    pub cells: Vec<RenderCell>,
+    /// Shared between frames so an idle terminal does not clone its viewport
+    /// on every GPUI prepaint pass.
+    pub cells: Arc<Vec<RenderCell>>,
     pub cursor: Option<CursorState>,
     pub selection: Option<ViewportSelection>,
     pub display_offset: usize,
     pub history_size: usize,
     pub rows: usize,
     pub cols: usize,
-    pub highlights: std::collections::HashMap<(i32, i32), gpui::Hsla>,
+    pub highlights: Arc<HashMap<(i32, i32), gpui::Hsla>>,
 }
 
 #[derive(Clone, Copy)]
@@ -296,10 +300,18 @@ impl TerminalTab {
             backend: shared_backend,
             scroll_pixel_y: 0.0,
             highlight_cache: std::cell::RefCell::new(None),
+            render_revision: 0,
+            render_cache: std::cell::RefCell::new(None),
         }
     }
 
+    fn invalidate_render_cache(&mut self) {
+        self.render_revision = self.render_revision.wrapping_add(1);
+        self.render_cache.get_mut().take();
+    }
+
     pub fn feed(&mut self, bytes: &[u8]) {
+        self.invalidate_render_cache();
         self.processor.advance(&mut self.term, bytes);
     }
 
@@ -338,6 +350,7 @@ impl TerminalTab {
         if self.cols != new_cols || self.rows != new_rows {
             self.cols = new_cols;
             self.rows = new_rows;
+            self.invalidate_render_cache();
             tracing::info!(
                 "[ui] terminal resized to {}x{} (cols x rows)",
                 self.cols,
@@ -378,6 +391,14 @@ impl TerminalTab {
     }
 
     pub fn render_snapshot(&self, keyword_highlight: bool) -> RenderSnapshot {
+        if let Some((revision, cached_keyword_highlight, snapshot)) =
+            self.render_cache.borrow().as_ref()
+            && *revision == self.render_revision
+            && *cached_keyword_highlight == keyword_highlight
+        {
+            return snapshot.clone();
+        }
+
         let rows = self.rows;
         let cols = self.cols;
         let content = self.term.renderable_content();
@@ -411,25 +432,21 @@ impl TerminalTab {
 
         let highlights = if is_enabled {
             let mut cache = self.highlight_cache.borrow_mut();
-            let cache_valid = cache
-                .as_ref()
-                .is_some_and(|(cached_cells, _)| cached_cells == &cells);
-            if cache_valid {
-                cache
-                    .as_ref()
-                    .map(|(_, highlights)| highlights.clone())
-                    .unwrap_or_default()
+            if let Some((cached_revision, highlights)) = cache.as_ref()
+                && *cached_revision == self.render_revision
+            {
+                highlights.clone()
             } else {
-                let computed = self::highlight::highlight_cells(&cells, rows as usize);
-                *cache = Some((cells.clone(), computed.clone()));
+                let computed = Arc::new(self::highlight::highlight_cells(&cells, rows as usize));
+                *cache = Some((self.render_revision, computed.clone()));
                 computed
             }
         } else {
-            std::collections::HashMap::new()
+            Arc::new(HashMap::new())
         };
 
-        RenderSnapshot {
-            cells,
+        let snapshot = RenderSnapshot {
+            cells: Arc::new(cells),
             cursor: self.cursor_state(),
             selection: viewport_selection_from_range(
                 content.display_offset,
@@ -442,7 +459,10 @@ impl TerminalTab {
             rows: self.rows as usize,
             cols: self.cols as usize,
             highlights,
-        }
+        };
+        *self.render_cache.borrow_mut() =
+            Some((self.render_revision, keyword_highlight, snapshot.clone()));
+        snapshot
     }
 
     /// Return `(grid_line_base, rows_data)` for the **entire** terminal buffer
@@ -475,23 +495,27 @@ impl TerminalTab {
 
     pub fn scroll_history(&mut self, delta: i32) {
         if delta != 0 {
+            self.invalidate_render_cache();
             self.term.scroll_display(Scroll::Delta(delta));
         }
     }
 
     pub fn scroll_up_by(&mut self, lines: usize) {
         if lines != 0 {
+            self.invalidate_render_cache();
             self.term.scroll_display(Scroll::Delta(lines as i32));
         }
     }
 
     pub fn scroll_down_by(&mut self, lines: usize) {
         if lines != 0 {
+            self.invalidate_render_cache();
             self.term.scroll_display(Scroll::Delta(-(lines as i32)));
         }
     }
 
     pub fn scroll_to_bottom(&mut self) {
+        self.invalidate_render_cache();
         self.term.scroll_display(Scroll::Bottom);
     }
 
@@ -511,6 +535,7 @@ impl TerminalTab {
     }
 
     pub fn clear_selection(&mut self) {
+        self.invalidate_render_cache();
         self.term.selection = None;
     }
 
@@ -536,6 +561,7 @@ impl TerminalTab {
         side: Side,
         selection_type: SelectionType,
     ) {
+        self.invalidate_render_cache();
         let point = viewport_to_point(
             self.term.grid().display_offset(),
             Point::new(row, Column(col)),
@@ -544,6 +570,7 @@ impl TerminalTab {
     }
 
     pub fn update_selection(&mut self, row: usize, col: usize, side: Side) {
+        self.invalidate_render_cache();
         let point = viewport_to_point(
             self.term.grid().display_offset(),
             Point::new(row, Column(col)),
@@ -614,6 +641,27 @@ mod tests {
             backend_rx.try_recv(),
             Ok(BackendCommand::Input(bytes)) if bytes == vec![b'\x0c']
         ));
+    }
+
+    #[test]
+    fn idle_snapshot_reuses_shared_cells_until_terminal_changes() {
+        let (backend_tx, _backend_rx) = std::sync::mpsc::channel();
+        let (event_tx, _event_rx) = std::sync::mpsc::channel();
+        let mut tab = TerminalTab::new_local(
+            "test".to_string(),
+            "Test".to_string(),
+            BackendTx::Local(backend_tx),
+            event_tx,
+        );
+
+        tab.feed(b"hello");
+        let first = tab.render_snapshot(false);
+        let second = tab.render_snapshot(false);
+        assert!(Arc::ptr_eq(&first.cells, &second.cells));
+
+        tab.feed(b" world");
+        let changed = tab.render_snapshot(false);
+        assert!(!Arc::ptr_eq(&first.cells, &changed.cells));
     }
 }
 
