@@ -1,4 +1,4 @@
-use super::*;
+use super::{Context, TinyShell, Window};
 
 impl TinyShell {
     #[allow(dead_code)]

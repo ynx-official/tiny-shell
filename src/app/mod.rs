@@ -1,3 +1,4 @@
+mod config_persistence;
 pub mod config_sync;
 pub mod connection_archive_dialogs;
 pub mod connection_manager;
@@ -25,7 +26,7 @@ pub mod workspace_presentation;
 
 use std::{
     cell::{Cell, RefCell},
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     ops::Range,
     rc::Rc,
     sync::{
@@ -121,10 +122,6 @@ static WINDOW_ACTIVATION_SEQ: AtomicU64 = AtomicU64::new(1);
 static TAB_DRAG_SEQ: AtomicU64 = AtomicU64::new(1);
 static TAB_DRAG_HOVER_SEQ: AtomicU64 = AtomicU64::new(1);
 static SESSION_OWNER_SEQ: AtomicU64 = AtomicU64::new(1);
-static CONFIG_PREFERENCES_SAVE_SEQ: AtomicU64 = AtomicU64::new(0);
-static CONFIG_PREFERENCES_SAVE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-static CONFIG_PREFERENCES_SAVE_TX: OnceLock<mpsc::Sender<(u64, ConfigStore)>> = OnceLock::new();
-
 fn lock_recover<'a, T>(mutex: &'a Mutex<T>, name: &str) -> MutexGuard<'a, T> {
     match mutex.lock() {
         Ok(guard) => guard,
@@ -133,50 +130,6 @@ fn lock_recover<'a, T>(mutex: &'a Mutex<T>, name: &str) -> MutexGuard<'a, T> {
             poisoned.into_inner()
         }
     }
-}
-
-fn config_preferences_save_sender() -> mpsc::Sender<(u64, ConfigStore)> {
-    CONFIG_PREFERENCES_SAVE_TX
-        .get_or_init(|| {
-            let (sender, receiver) = mpsc::channel::<(u64, ConfigStore)>();
-            let worker = std::thread::Builder::new()
-                .name("tiny-shell-config-save".to_string())
-                .spawn(move || {
-                    while let Ok((mut sequence, mut source)) = receiver.recv() {
-                        while let Ok((next_sequence, next_source)) =
-                            receiver.recv_timeout(Duration::from_millis(100))
-                        {
-                            sequence = next_sequence;
-                            source = next_source;
-                        }
-
-                        let lock = CONFIG_PREFERENCES_SAVE_LOCK.get_or_init(|| Mutex::new(()));
-                        let Ok(_guard) = lock.lock() else {
-                            continue;
-                        };
-                        if sequence != CONFIG_PREFERENCES_SAVE_SEQ.load(Ordering::SeqCst) {
-                            continue;
-                        }
-                        let mut config =
-                            ConfigStore::load().unwrap_or_else(|_| ConfigStore::in_memory());
-                        config.merge_interactive_preferences_from(&source);
-                        // A newer window may have queued another snapshot while the config
-                        // was being loaded. Re-check immediately before the write so an older
-                        // snapshot can never overwrite a newer preference set.
-                        if sequence != CONFIG_PREFERENCES_SAVE_SEQ.load(Ordering::SeqCst) {
-                            continue;
-                        }
-                        if let Err(err) = config.save() {
-                            tracing::warn!("failed to save preferences in background: {err:#}");
-                        }
-                    }
-                });
-            if let Err(err) = worker {
-                tracing::warn!("failed to start config save worker: {err}");
-            }
-            sender
-        })
-        .clone()
 }
 
 pub(crate) fn window_registry() -> Arc<Mutex<Vec<WindowEntry>>> {
@@ -662,8 +615,15 @@ fn is_legacy_seeded_quick_commands(categories: &[QuickCommandCategory]) -> bool 
 
 #[derive(Default)]
 pub(crate) struct NetworkHistory {
-    pub(crate) receive: Vec<f32>,
-    pub(crate) transmit: Vec<f32>,
+    pub(crate) receive: VecDeque<f32>,
+    pub(crate) transmit: VecDeque<f32>,
+}
+
+fn push_bounded(history: &mut VecDeque<f32>, value: f32, capacity: usize) {
+    if history.len() == capacity {
+        history.pop_front();
+    }
+    history.push_back(value);
 }
 
 pub(crate) struct TinyShell {
@@ -818,9 +778,9 @@ pub(crate) struct TinyShell {
     /// Remote monitoring data is isolated per SSH terminal. It must never be
     /// replaced with a snapshot from the machine running TinyShell.
     pub(crate) remote_system_snapshots: HashMap<String, SystemSnapshot>,
-    pub(crate) cpu_history: Vec<f32>,
-    pub(crate) net_rx_history: Vec<f32>,
-    pub(crate) net_tx_history: Vec<f32>,
+    pub(crate) cpu_history: VecDeque<f32>,
+    pub(crate) net_rx_history: VecDeque<f32>,
+    pub(crate) net_tx_history: VecDeque<f32>,
     /// `None` represents the aggregate of all interfaces.
     pub(crate) selected_network_interface: Option<String>,
     pub(crate) network_interface_histories: HashMap<String, NetworkHistory>,
@@ -1222,9 +1182,9 @@ impl TinyShell {
             system,
             process_view: ProcessView::default(),
             remote_system_snapshots: HashMap::new(),
-            cpu_history: Vec::with_capacity(20),
-            net_rx_history: Vec::with_capacity(20),
-            net_tx_history: Vec::with_capacity(20),
+            cpu_history: VecDeque::with_capacity(20),
+            net_rx_history: VecDeque::with_capacity(20),
+            net_tx_history: VecDeque::with_capacity(20),
             selected_network_interface: None,
             network_interface_histories: HashMap::new(),
             last_system_sample: Instant::now(),
@@ -1649,18 +1609,9 @@ impl TinyShell {
                         self.record_network_interface_histories(&snapshot);
                         self.system_status = None;
                         self.system = snapshot.clone();
-                        self.cpu_history.push(snapshot.cpu_percent);
-                        if self.cpu_history.len() > 20 {
-                            self.cpu_history.remove(0);
-                        }
-                        self.net_rx_history.push(snapshot.net_rx_rate as f32);
-                        if self.net_rx_history.len() > 20 {
-                            self.net_rx_history.remove(0);
-                        }
-                        self.net_tx_history.push(snapshot.net_tx_rate as f32);
-                        if self.net_tx_history.len() > 20 {
-                            self.net_tx_history.remove(0);
-                        }
+                        push_bounded(&mut self.cpu_history, snapshot.cpu_percent, 20);
+                        push_bounded(&mut self.net_rx_history, snapshot.net_rx_rate as f32, 20);
+                        push_bounded(&mut self.net_tx_history, snapshot.net_tx_rate as f32, 20);
                     }
                 }
                 BackendEvent::RemoteSystemUnavailable { tab_id, reason } => {
@@ -2167,18 +2118,9 @@ impl TinyShell {
             };
             self.record_network_interface_histories(&snapshot);
             let cpu_usage = snapshot.cpu_percent;
-            self.cpu_history.push(cpu_usage);
-            if self.cpu_history.len() > 20 {
-                self.cpu_history.remove(0);
-            }
-            self.net_rx_history.push(snapshot.net_rx_rate as f32);
-            if self.net_rx_history.len() > 20 {
-                self.net_rx_history.remove(0);
-            }
-            self.net_tx_history.push(snapshot.net_tx_rate as f32);
-            if self.net_tx_history.len() > 20 {
-                self.net_tx_history.remove(0);
-            }
+            push_bounded(&mut self.cpu_history, cpu_usage, 20);
+            push_bounded(&mut self.net_rx_history, snapshot.net_rx_rate as f32, 20);
+            push_bounded(&mut self.net_tx_history, snapshot.net_tx_rate as f32, 20);
             self.system = snapshot;
             return true;
         }
@@ -2216,14 +2158,8 @@ impl TinyShell {
                 .network_interface_histories
                 .entry(interface.name.clone())
                 .or_default();
-            history.receive.push(interface.receive_rate as f32);
-            history.transmit.push(interface.transmit_rate as f32);
-            if history.receive.len() > 30 {
-                history.receive.remove(0);
-            }
-            if history.transmit.len() > 30 {
-                history.transmit.remove(0);
-            }
+            push_bounded(&mut history.receive, interface.receive_rate as f32, 30);
+            push_bounded(&mut history.transmit, interface.transmit_rate as f32, 30);
         }
     }
 
@@ -2435,14 +2371,7 @@ impl TinyShell {
         if !self.config_persistence.is_dirty() {
             return;
         }
-        CONFIG_PREFERENCES_SAVE_SEQ.fetch_add(1, Ordering::SeqCst);
-        let lock = CONFIG_PREFERENCES_SAVE_LOCK.get_or_init(|| Mutex::new(()));
-        let Ok(_guard) = lock.lock() else {
-            return;
-        };
-        let mut config = ConfigStore::load().unwrap_or_else(|_| ConfigStore::in_memory());
-        config.merge_interactive_preferences_from(&self.config);
-        match config.save() {
+        match config_persistence::persist_sync(&self.config) {
             Ok(()) => self.config_persistence.clear(),
             Err(err) => tracing::warn!("failed to save preferences: {err:#}"),
         }
@@ -2452,10 +2381,7 @@ impl TinyShell {
         if !self.config_persistence.is_dirty() {
             return;
         }
-        let sequence = CONFIG_PREFERENCES_SAVE_SEQ.fetch_add(1, Ordering::SeqCst) + 1;
-        if let Err(err) = config_preferences_save_sender().send((sequence, self.config.clone())) {
-            tracing::warn!("failed to queue preference save: {err}");
-        }
+        config_persistence::persist_async(self.config.clone());
     }
 
     pub(crate) fn save_layout_state(&self, window: &mut gpui::Window, cx: &gpui::App) {
@@ -2567,7 +2493,8 @@ impl TinyShell {
 
 #[cfg(test)]
 mod tests {
-    use super::TinyShell;
+    use super::{TinyShell, push_bounded};
+    use std::collections::VecDeque;
 
     #[test]
     fn parses_absolute_terminal_path() {
@@ -2591,5 +2518,16 @@ mod tests {
             TinyShell::parse_path_from_title("user@host", "/home/user"),
             None
         );
+    }
+
+    #[test]
+    fn bounded_history_keeps_latest_samples_without_shifting_a_vec() {
+        let mut history = VecDeque::new();
+        for value in 0..40 {
+            push_bounded(&mut history, value as f32, 20);
+        }
+        assert_eq!(history.len(), 20);
+        assert_eq!(history.front(), Some(&20.0));
+        assert_eq!(history.back(), Some(&39.0));
     }
 }

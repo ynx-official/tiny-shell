@@ -76,6 +76,10 @@ jobs:
       - name: Run tests
         run: cargo test --locked --all-targets
 
+      - name: Run release tests (Linux regression gate)
+        if: runner.os == 'Linux'
+        run: cargo test --locked --release --all-targets
+
   build:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}

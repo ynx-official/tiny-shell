@@ -79,20 +79,18 @@ impl TinyShell {
         let selected_tx_rate = selected_network
             .map(|interface| interface.transmit_rate)
             .unwrap_or(self.system.net_tx_rate);
-        let selected_rx_history = smooth_monitoring_series(
-            &selected_network_interface
-                .as_ref()
-                .and_then(|selected| self.network_interface_histories.get(selected))
-                .map(|history| history.receive.clone())
-                .unwrap_or_else(|| self.net_rx_history.clone()),
-        );
-        let selected_tx_history = smooth_monitoring_series(
-            &selected_network_interface
-                .as_ref()
-                .and_then(|selected| self.network_interface_histories.get(selected))
-                .map(|history| history.transmit.clone())
-                .unwrap_or_else(|| self.net_tx_history.clone()),
-        );
+        let selected_rx_values = selected_network_interface
+            .as_ref()
+            .and_then(|selected| self.network_interface_histories.get(selected))
+            .map(|history| history.receive.iter().copied().collect::<Vec<_>>())
+            .unwrap_or_else(|| self.net_rx_history.iter().copied().collect());
+        let selected_tx_values = selected_network_interface
+            .as_ref()
+            .and_then(|selected| self.network_interface_histories.get(selected))
+            .map(|history| history.transmit.iter().copied().collect::<Vec<_>>())
+            .unwrap_or_else(|| self.net_tx_history.iter().copied().collect());
+        let selected_rx_history = smooth_monitoring_series(&selected_rx_values);
+        let selected_tx_history = smooth_monitoring_series(&selected_tx_values);
         let network_chart_max = nice_network_scale(
             selected_rx_history
                 .iter()

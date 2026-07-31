@@ -1,3 +1,4 @@
+mod backend;
 mod merge;
 mod model;
 mod secrets;
@@ -13,6 +14,7 @@ use sha2::{Digest, Sha256};
 #[cfg(test)]
 use crate::crypto;
 use crate::session::config::{ManagedKey, QuickCommandCategory, Session};
+use backend::for_credentials;
 
 pub use merge::{
     MergeLocal, MergedConfig, merge_payload, merge_payload_with_deleted, merge_public_payload,
@@ -284,36 +286,12 @@ pub async fn upload(
     let backend = credentials.backend.kind();
     let body = serialize_payload(&payload)
         .map_err(|error| SyncFailure::other(Some(backend), format!("{error:#}")))?;
-    match credentials.backend {
-        SyncBackendCredentials::WebDav {
-            endpoint,
-            username,
-            password,
-        } => upload_webdav(&endpoint, &username, &password, body, mode).await,
-        SyncBackendCredentials::S3 {
-            endpoint,
-            region,
-            bucket,
-            object_key,
-            access_key,
-            secret_key,
-            session_token,
-        } => {
-            let config = S3Config {
-                endpoint,
-                region,
-                bucket,
-                object_key,
-                access_key,
-                secret_key,
-                session_token,
-            };
-            upload_s3(&config, body, mode).await
-        }
-    }
+    for_credentials(&credentials.backend)
+        .upload(&credentials.backend, body, mode)
+        .await
 }
 
-async fn upload_webdav(
+pub(super) async fn upload_webdav(
     endpoint: &str,
     username: &str,
     password: &str,
@@ -382,39 +360,15 @@ pub async fn download(
 ) -> SyncOperationResult<(SyncPayload, Option<String>)> {
     validate_credentials(&credentials)?;
     let backend = credentials.backend.kind();
-    let (body, etag) = match credentials.backend {
-        SyncBackendCredentials::WebDav {
-            endpoint,
-            username,
-            password,
-        } => download_webdav(&endpoint, &username, &password).await?,
-        SyncBackendCredentials::S3 {
-            endpoint,
-            region,
-            bucket,
-            object_key,
-            access_key,
-            secret_key,
-            session_token,
-        } => {
-            let config = S3Config {
-                endpoint,
-                region,
-                bucket,
-                object_key,
-                access_key,
-                secret_key,
-                session_token,
-            };
-            download_s3(&config).await?
-        }
-    };
+    let (body, etag) = for_credentials(&credentials.backend)
+        .download(&credentials.backend)
+        .await?;
     let payload = parse_payload(&body, legacy_password)
         .map_err(|error| SyncFailure::other(Some(backend), format!("{error:#}")))?;
     Ok((payload, etag))
 }
 
-async fn download_webdav(
+pub(super) async fn download_webdav(
     endpoint: &str,
     username: &str,
     password: &str,
@@ -568,17 +522,17 @@ fn webdav_verification_url(endpoint: &str) -> SyncOperationResult<reqwest::Url> 
     webdav_collection_url(endpoint)
 }
 
-struct S3Config {
-    endpoint: String,
-    region: String,
-    bucket: String,
-    object_key: String,
-    access_key: String,
-    secret_key: String,
-    session_token: String,
+pub(super) struct S3Config {
+    pub(super) endpoint: String,
+    pub(super) region: String,
+    pub(super) bucket: String,
+    pub(super) object_key: String,
+    pub(super) access_key: String,
+    pub(super) secret_key: String,
+    pub(super) session_token: String,
 }
 
-async fn upload_s3(
+pub(super) async fn upload_s3(
     config: &S3Config,
     body: Vec<u8>,
     mode: UploadMode,
@@ -637,7 +591,9 @@ async fn upload_s3(
         .map(str::to_string))
 }
 
-async fn download_s3(config: &S3Config) -> SyncOperationResult<(Vec<u8>, Option<String>)> {
+pub(super) async fn download_s3(
+    config: &S3Config,
+) -> SyncOperationResult<(Vec<u8>, Option<String>)> {
     let url = s3_url(config)
         .map_err(|error| SyncFailure::other(Some(SyncBackendKind::S3), format!("{error:#}")))?;
     let headers = signed_s3_headers("GET", &url, &[], config)

@@ -1,6 +1,11 @@
 pub mod ops;
 pub mod text_file;
 
+mod transfer;
+
+pub(crate) use transfer::TransferStateFlag;
+
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -123,67 +128,6 @@ pub enum SftpCommand {
     CancelTransfer(String),
     TransferFinished(String),
     Close,
-}
-
-use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
-
-pub struct TransferStateFlag(pub Arc<AtomicU8>);
-
-impl TransferStateFlag {
-    pub fn new() -> Self {
-        Self(Arc::new(AtomicU8::new(0)))
-    }
-
-    pub fn pause(&self) {
-        self.0.store(1, Ordering::SeqCst);
-    }
-    pub fn resume(&self) {
-        self.0.store(0, Ordering::SeqCst);
-    }
-    pub fn cancel(&self) {
-        self.0.store(2, Ordering::SeqCst);
-    }
-
-    pub async fn yield_if_paused(
-        &self,
-        events: &std::sync::mpsc::Sender<crate::terminal::BackendEvent>,
-        tab_id: &str,
-        id: &str,
-        transferred: u64,
-        total: Option<u64>,
-    ) -> anyhow::Result<()> {
-        let mut was_paused = false;
-        loop {
-            let state = self.0.load(Ordering::SeqCst);
-            if state == 2 {
-                return Err(anyhow::anyhow!("transfer cancelled"));
-            }
-            if state == 1 {
-                if !was_paused {
-                    let _ = events.send(crate::terminal::BackendEvent::TransferProgress {
-                        tab_id: tab_id.to_string(),
-                        id: id.to_string(),
-                        transferred,
-                        total,
-                        state: crate::terminal::TransferState::Paused,
-                    });
-                    was_paused = true;
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-            } else {
-                if was_paused {
-                    let _ = events.send(crate::terminal::BackendEvent::TransferProgress {
-                        tab_id: tab_id.to_string(),
-                        id: id.to_string(),
-                        transferred,
-                        total,
-                        state: crate::terminal::TransferState::Running,
-                    });
-                }
-                return Ok(());
-            }
-        }
-    }
 }
 
 pub struct SftpHandle {
