@@ -2024,7 +2024,9 @@ impl TinyShell {
                                                                     {
                                                                         session.group = None;
                                                                         this.config.upsert(session);
-                                                                        let _ = this.config.save();
+                                                                        if let Err(error) = this.config.save() {
+                                                                            tracing::warn!("failed to move connection to ungrouped: {error:#}");
+                                                                        }
                                                                         cx.notify();
                                                                     }
                                                                 }
@@ -2052,8 +2054,9 @@ impl TinyShell {
                                                                             );
                                                                             this.config
                                                                                 .upsert(session);
-                                                                            let _ =
-                                                                                this.config.save();
+                                                                            if let Err(error) = this.config.save() {
+                                                                                tracing::warn!("failed to move connection to group: {error:#}");
+                                                                            }
                                                                             cx.notify();
                                                                         }
                                                                     },

@@ -29,7 +29,7 @@ use std::{
     ops::Range,
     rc::Rc,
     sync::{
-        Arc, Mutex, OnceLock,
+        Arc, Mutex, MutexGuard, OnceLock,
         atomic::{AtomicU64, Ordering},
         mpsc,
     },
@@ -125,6 +125,16 @@ static CONFIG_PREFERENCES_SAVE_SEQ: AtomicU64 = AtomicU64::new(0);
 static CONFIG_PREFERENCES_SAVE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 static CONFIG_PREFERENCES_SAVE_TX: OnceLock<mpsc::Sender<(u64, ConfigStore)>> = OnceLock::new();
 
+fn lock_recover<'a, T>(mutex: &'a Mutex<T>, name: &str) -> MutexGuard<'a, T> {
+    match mutex.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => {
+            tracing::warn!("{name} lock was poisoned; recovering its state");
+            poisoned.into_inner()
+        }
+    }
+}
+
 fn config_preferences_save_sender() -> mpsc::Sender<(u64, ConfigStore)> {
     CONFIG_PREFERENCES_SAVE_TX
         .get_or_init(|| {
@@ -150,6 +160,12 @@ fn config_preferences_save_sender() -> mpsc::Sender<(u64, ConfigStore)> {
                         let mut config =
                             ConfigStore::load().unwrap_or_else(|_| ConfigStore::in_memory());
                         config.merge_interactive_preferences_from(&source);
+                        // A newer window may have queued another snapshot while the config
+                        // was being loaded. Re-check immediately before the write so an older
+                        // snapshot can never overwrite a newer preference set.
+                        if sequence != CONFIG_PREFERENCES_SAVE_SEQ.load(Ordering::SeqCst) {
+                            continue;
+                        }
                         if let Err(err) = config.save() {
                             tracing::warn!("failed to save preferences in background: {err:#}");
                         }
@@ -175,10 +191,8 @@ pub(crate) fn next_tab_drag_id() -> u64 {
 
 pub(crate) fn set_tab_drag_hover(drag_id: u64, target_window: AnyWindowHandle) -> u64 {
     let generation = TAB_DRAG_HOVER_SEQ.fetch_add(1, Ordering::Relaxed);
-    *TAB_DRAG_HOVER
-        .get_or_init(|| Mutex::new(None))
-        .lock()
-        .unwrap() = Some((drag_id, target_window, generation));
+    let hover = TAB_DRAG_HOVER.get_or_init(|| Mutex::new(None));
+    *lock_recover(hover, "tab drag hover") = Some((drag_id, target_window, generation));
     generation
 }
 
@@ -187,25 +201,21 @@ pub(crate) fn tab_drag_hover_is_current(
     target_window: AnyWindowHandle,
     generation: u64,
 ) -> bool {
-    TAB_DRAG_HOVER
-        .get_or_init(|| Mutex::new(None))
-        .lock()
-        .unwrap()
+    let hover = TAB_DRAG_HOVER.get_or_init(|| Mutex::new(None));
+    lock_recover(hover, "tab drag hover")
         .as_ref()
         .is_some_and(|current| *current == (drag_id, target_window, generation))
 }
 
 pub(crate) fn clear_tab_drag_hover() {
-    *TAB_DRAG_HOVER
-        .get_or_init(|| Mutex::new(None))
-        .lock()
-        .unwrap() = None;
+    let hover = TAB_DRAG_HOVER.get_or_init(|| Mutex::new(None));
+    *lock_recover(hover, "tab drag hover") = None;
 }
 
 /// Register a window when it opens.
 pub(crate) fn register_window(window_handle: AnyWindowHandle, entity: Entity<TinyShell>) {
     let registry = window_registry();
-    let mut guard = registry.lock().unwrap();
+    let mut guard = lock_recover(&registry, "window registry");
     if let Some(entry) = guard.iter_mut().find(|e| e.window_handle == window_handle) {
         entry.entity = entity;
     } else {
@@ -222,7 +232,7 @@ pub(crate) fn register_window(window_handle: AnyWindowHandle, entity: Entity<Tin
 pub(crate) fn deregister_window(window_handle: AnyWindowHandle, cx: &mut App) {
     let remaining = {
         let registry = window_registry();
-        let mut guard = registry.lock().unwrap();
+        let mut guard = lock_recover(&registry, "window registry");
         guard.retain(|entry| entry.window_handle != window_handle);
         guard
             .iter()
@@ -315,7 +325,7 @@ pub(crate) fn find_window_at_screen_pos(
     screen_pos: Point<Pixels>,
 ) -> Option<(AnyWindowHandle, Entity<TinyShell>, Bounds<Pixels>)> {
     let registry = window_registry();
-    let guard = registry.lock().unwrap();
+    let guard = lock_recover(&registry, "window registry");
     guard
         .iter()
         .filter(|entry| {
@@ -338,7 +348,7 @@ pub(crate) fn clear_incoming_tab_drag_except(
 ) {
     let targets = {
         let registry = window_registry();
-        let guard = registry.lock().unwrap();
+        let guard = lock_recover(&registry, "window registry");
         guard
             .iter()
             .filter(|entry| keep_window != Some(entry.window_handle))
@@ -364,7 +374,7 @@ pub(crate) fn clear_all_incoming_tab_drags(cx: &mut App) {
     clear_tab_drag_hover();
     let targets = {
         let registry = window_registry();
-        let guard = registry.lock().unwrap();
+        let guard = lock_recover(&registry, "window registry");
         guard
             .iter()
             .map(|entry| entry.entity.clone())
@@ -1000,7 +1010,13 @@ impl TinyShell {
         let workspace_panels = cx.new(|_| ResizableState::default());
         let body_panels = cx.new(|_| ResizableState::default());
         let system_sampler = shared_system_sampler();
-        let system = system_sampler.lock().unwrap().sample().clone();
+        let system = match system_sampler.lock() {
+            Ok(mut sampler) => sampler.sample().clone(),
+            Err(poisoned) => {
+                tracing::warn!("system sampler lock was poisoned; recovering its state");
+                poisoned.into_inner().sample().clone()
+            }
+        };
         let default_light_theme_name = ThemeRegistry::global(cx).default_light_theme().name.clone();
         let default_dark_theme_name = ThemeRegistry::global(cx).default_dark_theme().name.clone();
         let follow_system_theme =
@@ -1402,37 +1418,40 @@ impl TinyShell {
     pub(crate) fn start_event_pump(&self, cx: &mut Context<Self>) {
         cx.spawn(async move |this, cx| {
             let mut last_blink_time = std::time::Instant::now();
+            let mut poll_interval = Duration::from_millis(16);
             loop {
-                cx.background_executor()
-                    .timer(Duration::from_millis(16))
-                    .await;
-                if this
-                    .update(cx, |this, cx| {
-                        let changed = this.drain_backend_events(cx);
-                        let system_sampled = this.sample_system_if_due();
-                        this.sample_sftp_latency_if_due();
-                        let metrics_animated = this.animate_resource_metrics();
-                        this.sync_theme_if_due(cx);
-                        let is_blinking = matches!(
-                            this.cursor_style,
-                            crate::session::config::CursorStyle::Blink
-                                | crate::session::config::CursorStyle::BeamBlink
-                        );
-                        let now = std::time::Instant::now();
-                        let blink_due = is_blinking
-                            && now.duration_since(last_blink_time)
-                                >= std::time::Duration::from_millis(600);
-                        if changed || system_sampled || metrics_animated || blink_due {
-                            cx.notify();
-                            if blink_due {
-                                last_blink_time = now;
-                            }
+                cx.background_executor().timer(poll_interval).await;
+                let active = match this.update(cx, |this, cx| {
+                    let changed = this.drain_backend_events(cx);
+                    let system_sampled = this.sample_system_if_due();
+                    this.sample_sftp_latency_if_due();
+                    let metrics_animated = this.animate_resource_metrics();
+                    this.sync_theme_if_due(cx);
+                    let is_blinking = matches!(
+                        this.cursor_style,
+                        crate::session::config::CursorStyle::Blink
+                            | crate::session::config::CursorStyle::BeamBlink
+                    );
+                    let now = std::time::Instant::now();
+                    let blink_due = is_blinking
+                        && now.duration_since(last_blink_time)
+                            >= std::time::Duration::from_millis(600);
+                    if changed || system_sampled || metrics_animated || blink_due {
+                        cx.notify();
+                        if blink_due {
+                            last_blink_time = now;
                         }
-                    })
-                    .is_err()
-                {
-                    break;
-                }
+                    }
+                    changed || system_sampled || metrics_animated || blink_due
+                }) {
+                    Ok(active) => active,
+                    Err(_) => break,
+                };
+                poll_interval = if active {
+                    Duration::from_millis(16)
+                } else {
+                    Duration::from_millis(33)
+                };
             }
         })
         .detach();
@@ -2139,7 +2158,13 @@ impl TinyShell {
                     return false;
                 }
             }
-            let snapshot = self.system_sampler.lock().unwrap().sample().clone();
+            let snapshot = match self.system_sampler.lock() {
+                Ok(mut sampler) => sampler.sample().clone(),
+                Err(poisoned) => {
+                    tracing::warn!("system sampler lock was poisoned; recovering its state");
+                    poisoned.into_inner().sample().clone()
+                }
+            };
             self.record_network_interface_histories(&snapshot);
             let cpu_usage = snapshot.cpu_percent;
             self.cpu_history.push(cpu_usage);
@@ -2528,7 +2553,9 @@ impl TinyShell {
             config.set_sidebar_collapsed(self.sidebar_collapsed);
             config.set_sftp_panel_minimized(self.sftp_panel_minimized);
             config.set_show_hidden_files(self.show_hidden_files);
-            let _ = config.save();
+            if let Err(error) = config.save() {
+                tracing::warn!("failed to persist layout state: {error:#}");
+            }
         } else {
             tracing::warn!(
                 "[ui] window size is too small ({:?}), skipping save layout state to prevent corrupting saved bounds.",

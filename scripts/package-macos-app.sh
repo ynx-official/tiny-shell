@@ -56,10 +56,10 @@ fi
 VERSION_NUM="${VERSION#v}"
 
 if [[ -n "$TARGET" ]]; then
-  cargo build --release --target "$TARGET"
+  cargo build --locked --release --target "$TARGET"
   BINARY="target/$TARGET/release/$APP_NAME"
 else
-  cargo build --release
+  cargo build --locked --release
   BINARY="target/release/$APP_NAME"
 fi
 

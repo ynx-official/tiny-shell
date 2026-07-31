@@ -977,7 +977,9 @@ impl TinyShell {
 
     pub(crate) fn reset_layout(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         self.config.set_layout_state(None, None, None);
-        let _ = self.config.save();
+        if let Err(error) = self.config.save() {
+            tracing::warn!("failed to persist reset layout: {error:#}");
+        }
 
         self.is_layout_reset = true;
         self.workspace_panels = cx.new(|_| crate::app::resizable::ResizableState::default());

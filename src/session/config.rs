@@ -1834,6 +1834,10 @@ impl fmt::Debug for EnvProxy {
 
 pub static ENV_PROXY: OnceLock<Option<EnvProxy>> = OnceLock::new();
 
+fn configured_env_proxy() -> Option<&'static EnvProxy> {
+    ENV_PROXY.get().and_then(Option::as_ref)
+}
+
 pub async fn connect_proxy(session: &Session) -> Result<Box<dyn ProxyStream>> {
     let target_host = session.host.clone();
     let target_port = session.port;
@@ -1852,9 +1856,8 @@ pub async fn connect_proxy(session: &Session) -> Result<Box<dyn ProxyStream>> {
                     session.proxy_password.clone(),
                 )
             } else if config.cache.read_env_proxy
-                && ENV_PROXY.get().and_then(|opt| opt.as_ref()).is_some()
+                && let Some(env_p) = configured_env_proxy()
             {
-                let env_p = ENV_PROXY.get().and_then(|opt| opt.as_ref()).unwrap();
                 (
                     env_p.proxy_type.clone(),
                     env_p.host.clone(),
@@ -1969,9 +1972,8 @@ pub fn active_proxy(session: &Session) -> Option<(String, String, Option<u16>)> 
                 session.proxy_password.clone(),
             )
         } else if config.cache.read_env_proxy
-            && ENV_PROXY.get().and_then(|opt| opt.as_ref()).is_some()
+            && let Some(env_p) = configured_env_proxy()
         {
-            let env_p = ENV_PROXY.get().and_then(|opt| opt.as_ref()).unwrap();
             (
                 env_p.proxy_type.clone(),
                 env_p.host.clone(),
