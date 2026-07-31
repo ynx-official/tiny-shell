@@ -1005,7 +1005,7 @@ fn run_manager_action(
     let mut staged_actions = this.connection_manager_actions.clone();
     let result = staged_actions
         .execute(&mut staged_config, action)
-        .and_then(|_| staged_config.save());
+        .and_then(|_| crate::app::config_persistence::save_full(&staged_config));
     match result {
         Ok(()) => {
             this.config = staged_config;

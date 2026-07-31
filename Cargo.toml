@@ -41,7 +41,7 @@ walkdir = "2"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 image = { version = "0.25.9", default-features = false, features = ["png"] }
 futures = "0.3.32"
-notify = "6.1.1"
+notify = "7.0.0"
 open = "5.1"
 time = { version = "0.3.45", features = ["formatting", "local-offset"] }
 tracing-appender = "0.2.5"

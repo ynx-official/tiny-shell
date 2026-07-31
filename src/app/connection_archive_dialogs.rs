@@ -30,7 +30,7 @@ impl TinyShell {
         let archive = crate::session::connection_archive::import_json(&json, password)?;
         let mut staged = self.config.clone();
         let summary = crate::session::connection_archive::apply_import(&mut staged, archive);
-        staged.save()?;
+        crate::app::config_persistence::save_full(&staged)?;
         self.config = staged;
         self.status = t!(
             "connection_archive_imported",

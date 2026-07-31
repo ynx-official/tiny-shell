@@ -415,7 +415,10 @@ impl TerminalTab {
                 .as_ref()
                 .is_some_and(|(cached_cells, _)| cached_cells == &cells);
             if cache_valid {
-                cache.as_ref().unwrap().1.clone()
+                cache
+                    .as_ref()
+                    .map(|(_, highlights)| highlights.clone())
+                    .unwrap_or_default()
             } else {
                 let computed = self::highlight::highlight_cells(&cells, rows as usize);
                 *cache = Some((cells.clone(), computed.clone()));

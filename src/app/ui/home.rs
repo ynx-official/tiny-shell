@@ -1868,7 +1868,7 @@ impl TinyShell {
                                                         let group_name = group_name.clone();
                                                         move |this, _, _, cx| {
                                                             this.config.remove_connection_group(&group_name);
-                                                            if let Err(err) = this.config.save() {
+                                                            if let Err(err) = crate::app::config_persistence::save_full(&this.config) {
                                                                 tracing::warn!("failed to remove connection group: {err:#}");
                                                             }
                                                             if this.connection_group_filter.as_deref() == Some(group_name.as_str()) {
@@ -2024,7 +2024,7 @@ impl TinyShell {
                                                                     {
                                                                         session.group = None;
                                                                         this.config.upsert(session);
-                                                                        if let Err(error) = this.config.save() {
+                                                                        if let Err(error) = crate::app::config_persistence::save_full(&this.config) {
                                                                             tracing::warn!("failed to move connection to ungrouped: {error:#}");
                                                                         }
                                                                         cx.notify();
@@ -2054,7 +2054,7 @@ impl TinyShell {
                                                                             );
                                                                             this.config
                                                                                 .upsert(session);
-                                                                            if let Err(error) = this.config.save() {
+                                                                            if let Err(error) = crate::app::config_persistence::save_full(&this.config) {
                                                                                 tracing::warn!("failed to move connection to group: {error:#}");
                                                                             }
                                                                             cx.notify();

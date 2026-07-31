@@ -44,7 +44,13 @@ fn entries_for(session_id: &str) -> Vec<EditorWindowEntry> {
 }
 
 fn register(entry: EditorWindowEntry) {
-    registry().lock().unwrap().push(entry);
+    match registry().lock() {
+        Ok(mut entries) => entries.push(entry),
+        Err(poisoned) => {
+            tracing::warn!("SFTP editor registry lock was poisoned; recovering its state");
+            poisoned.into_inner().push(entry);
+        }
+    }
 }
 
 fn deregister(session_id: &str, window: AnyWindowHandle) {

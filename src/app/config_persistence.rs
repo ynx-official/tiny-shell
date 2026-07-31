@@ -76,6 +76,18 @@ pub(crate) fn persist_sync(source: &ConfigStore) -> anyhow::Result<()> {
     config.save()
 }
 
+/// Persist the complete configuration through the same serialized writer used
+/// by interactive preference saves. This keeps full session writes from racing
+/// with a queued preference snapshot.
+pub(crate) fn save_full(config: &ConfigStore) -> anyhow::Result<()> {
+    SAVE_SEQUENCE.fetch_add(1, Ordering::SeqCst);
+    let lock = SAVE_LOCK.get_or_init(|| Mutex::new(()));
+    let _guard = lock
+        .lock()
+        .map_err(|_| anyhow::anyhow!("config save lock is poisoned"))?;
+    config.save()
+}
+
 #[cfg(test)]
 mod tests {
     use super::SAVE_SEQUENCE;

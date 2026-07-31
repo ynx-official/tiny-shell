@@ -422,7 +422,7 @@ impl TinyShell {
                 this.update(cx, |this, cx| {
                     this.config
                         .set_sftp_external_editor(path.to_string_lossy().to_string());
-                    if let Err(err) = this.config.save() {
+                    if let Err(err) = crate::app::config_persistence::save_full(&this.config) {
                         this.status = format!("failed to save external editor: {err:#}").into();
                     } else {
                         this.status = t!("sftp_external_editor_saved").into();

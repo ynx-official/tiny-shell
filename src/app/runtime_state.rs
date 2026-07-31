@@ -1,9 +1,60 @@
+use std::{
+    collections::HashMap,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+};
+
 use gpui::{AnyWindowHandle, SharedString};
 
 use crate::app::{SyncSecretsPasswordDialogState, updater};
 
 #[derive(Default)]
 struct TaskGeneration(u64);
+
+#[derive(Clone, Debug)]
+pub(crate) struct TaskCancellation {
+    cancelled: Arc<AtomicBool>,
+}
+
+impl TaskCancellation {
+    fn new() -> Self {
+        Self {
+            cancelled: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    pub(crate) fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn cancel(&self) {
+        self.cancelled.store(true, Ordering::Release);
+    }
+}
+
+#[derive(Default)]
+pub(crate) struct TaskSupervisor {
+    tasks: HashMap<String, TaskCancellation>,
+}
+
+impl TaskSupervisor {
+    pub(crate) fn start(&mut self, name: impl Into<String>) -> TaskCancellation {
+        let name = name.into();
+        let task = TaskCancellation::new();
+        if let Some(previous) = self.tasks.insert(name, task.clone()) {
+            previous.cancel();
+        }
+        task
+    }
+
+    pub(crate) fn cancel_all(&mut self) {
+        for task in self.tasks.drain().map(|(_, task)| task) {
+            task.cancel();
+        }
+    }
+}
 
 impl TaskGeneration {
     fn next(&mut self) -> u64 {
@@ -117,7 +168,7 @@ impl SyncRuntimeState {
 
 #[cfg(test)]
 mod tests {
-    use super::{ConfigPersistenceState, TaskGeneration};
+    use super::{ConfigPersistenceState, TaskGeneration, TaskSupervisor};
 
     #[test]
     fn task_generation_invalidates_previous_work() {
@@ -140,5 +191,27 @@ mod tests {
 
         state.clear();
         assert!(!state.is_dirty());
+    }
+
+    #[test]
+    fn starting_same_task_cancels_previous_generation() {
+        let mut supervisor = TaskSupervisor::default();
+        let first = supervisor.start("sync");
+        let second = supervisor.start("sync");
+
+        assert!(first.is_cancelled());
+        assert!(!second.is_cancelled());
+    }
+
+    #[test]
+    fn cancel_all_stops_every_registered_task() {
+        let mut supervisor = TaskSupervisor::default();
+        let first = supervisor.start("sync");
+        let second = supervisor.start("update");
+
+        supervisor.cancel_all();
+
+        assert!(first.is_cancelled());
+        assert!(second.is_cancelled());
     }
 }

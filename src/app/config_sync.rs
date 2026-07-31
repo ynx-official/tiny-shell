@@ -226,7 +226,7 @@ impl TinyShell {
                 );
             }
         }
-        if let Err(err) = self.config.save() {
+        if let Err(err) = crate::app::config_persistence::save_full(&self.config) {
             self.sync_runtime.status = format!("{}: {err:#}", t!("sync_failed")).into();
             cx.notify();
             return None;
@@ -276,7 +276,7 @@ impl TinyShell {
         if backend == "s3" {
             self.config.set_sync_enabled(false);
         }
-        match self.config.save() {
+        match crate::app::config_persistence::save_full(&self.config) {
             Ok(()) => {
                 self.sync_runtime.status = if backend == "s3" {
                     t!("sync_disabled").into()
@@ -353,7 +353,7 @@ impl TinyShell {
         }
 
         self.config.set_sync_enabled(enabled);
-        match self.config.save() {
+        match crate::app::config_persistence::save_full(&self.config) {
             Ok(()) => {
                 self.sync_runtime.status = if enabled {
                     t!("sync_status_enabled").into()
@@ -413,6 +413,7 @@ impl TinyShell {
         cx: &mut Context<Self>,
     ) {
         let generation = self.sync_runtime.start_schedule();
+        let cancellation = self.task_supervisor.start("automatic-sync");
         if !self.config.sync_enabled() || self.config.sync_backend() != "webdav" {
             return;
         }
@@ -430,8 +431,14 @@ impl TinyShell {
         };
 
         cx.spawn(async move |this, cx| {
+            if cancellation.is_cancelled() {
+                return;
+            }
             cx.background_executor().timer(initial_delay).await;
             loop {
+                if cancellation.is_cancelled() {
+                    break;
+                }
                 let Ok(is_current_schedule) = this.update(cx, |this, cx| {
                     if !this.sync_runtime.is_current_schedule(generation)
                         || !this.config.sync_enabled()
@@ -461,7 +468,7 @@ impl TinyShell {
     ) -> bool {
         let previous = self.config.sync_include_secrets();
         self.config.set_sync_include_secrets(include);
-        match self.config.save() {
+        match crate::app::config_persistence::save_full(&self.config) {
             Ok(()) => {
                 self.sync_runtime.status = t!("sync_not_run").into();
                 cx.notify();
@@ -626,7 +633,7 @@ impl TinyShell {
                 .set_quick_command_categories(merged.quick_command_categories);
         }
         self.config.set_sync_etag(etag.clone());
-        if let Err(error) = self.config.save() {
+        if let Err(error) = crate::app::config_persistence::save_full(&self.config) {
             self.sync_runtime.in_progress = false;
             self.sync_runtime.status = format!("{}: {error:#}", t!("sync_failed")).into();
             cx.notify();

@@ -134,6 +134,7 @@ impl TinyShell {
         use crate::session::config::UpdateCheckMode;
 
         let generation = self.update_runtime.start_schedule();
+        let cancellation = self.task_supervisor.start("automatic-update");
 
         match self.config.update_check_mode() {
             UpdateCheckMode::Disabled => {}
@@ -152,8 +153,14 @@ impl TinyShell {
                 );
 
                 cx.spawn(async move |this, cx| {
+                    if cancellation.is_cancelled() {
+                        return;
+                    }
                     cx.background_executor().timer(initial_delay).await;
                     loop {
+                        if cancellation.is_cancelled() {
+                            break;
+                        }
                         let Ok(is_current_schedule) = this.update(cx, |this, cx| {
                             if !this.update_runtime.is_current_schedule(generation)
                                 || this.config.update_check_mode() != UpdateCheckMode::Interval
@@ -184,6 +191,7 @@ impl TinyShell {
             _ => return,
         };
         let cancellation = crate::app::updater::DownloadCancellation::default();
+        let task_cancellation = self.task_supervisor.start("update-download");
         let generation = self.update_runtime.start_download(cancellation.clone());
         self.update_runtime.status = Some(crate::app::updater::UpdateStatus::Downloading(
             info.clone(),
@@ -198,6 +206,9 @@ impl TinyShell {
             move |_, cx: &mut gpui::AsyncApp| {
                 let cx = cx.clone();
                 async move {
+                    if task_cancellation.is_cancelled() {
+                        return;
+                    }
                     let (result_tx, result_rx) = futures::channel::oneshot::channel();
                     let (progress_tx, mut progress_rx) = futures::channel::mpsc::unbounded();
                     let update_info = info.clone();
@@ -215,6 +226,9 @@ impl TinyShell {
                     });
                     use futures::StreamExt as _;
                     while let Some((done, total)) = progress_rx.next().await {
+                        if task_cancellation.is_cancelled() {
+                            break;
+                        }
                         cx.update(|cx| {
                             view.update(cx, |this, cx| {
                                 if !this.update_runtime.is_current_download(generation) {

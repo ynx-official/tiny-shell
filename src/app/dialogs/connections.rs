@@ -36,7 +36,7 @@ impl TinyShell {
             self.config.add_connection_group(full_name.clone());
             self.connection_group_filter = Some(full_name);
         }
-        if let Err(err) = self.config.save() {
+        if let Err(err) = crate::app::config_persistence::save_full(&self.config) {
             tracing::warn!("failed to save connection group: {err:#}");
         }
         self.active_dialog = None;
@@ -136,7 +136,7 @@ impl TinyShell {
                                                                     &group,
                                                                     None,
                                                                 )
-                                                                .and_then(|_| staged.save())
+                                                                .and_then(|_| crate::app::config_persistence::save_full(&staged))
                                                                 {
                                                                     Ok(()) => {
                                                                         this.config = staged;
@@ -183,7 +183,7 @@ impl TinyShell {
                                                                 &source,
                                                                 Some(&target),
                                                             )
-                                                            .and_then(|_| staged.save())
+                                                                .and_then(|_| crate::app::config_persistence::save_full(&staged))
                                                             {
                                                                 Ok(()) => {
                                                                     this.config = staged;
@@ -315,7 +315,7 @@ impl TinyShell {
                                                             &session_id,
                                                             None,
                                                         )
-                                                        .and_then(|_| staged.save())
+                                                                .and_then(|_| crate::app::config_persistence::save_full(&staged))
                                                         {
                                                             Ok(()) => {
                                                                 this.config = staged;
@@ -370,7 +370,7 @@ impl TinyShell {
                                                             &session_id,
                                                             Some(&target),
                                                         )
-                                                        .and_then(|_| staged.save())
+                                                                .and_then(|_| crate::app::config_persistence::save_full(&staged))
                                                         {
                                                             Ok(()) => {
                                                                 this.config = staged;

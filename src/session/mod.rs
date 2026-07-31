@@ -231,7 +231,7 @@ impl TinyShell {
         session.proxy_user = self.proxy_user_input.read(cx).value().trim().to_string();
         session.proxy_password = self.proxy_password_input.read(cx).value().to_string();
         self.config.upsert(session.clone());
-        if let Err(err) = self.config.save() {
+        if let Err(err) = crate::app::config_persistence::save_full(&self.config) {
             tracing::warn!("failed to save config: {err:#}");
         }
 
@@ -655,7 +655,7 @@ impl TinyShell {
         };
         let key_id = key.id.clone();
         self.config.upsert_managed_key(key);
-        if let Err(err) = self.config.save() {
+        if let Err(err) = crate::app::config_persistence::save_full(&self.config) {
             tracing::warn!("failed to save config: {err:#}");
             self.status = format!("{}: {err:#}", t!("key_import_failed")).into();
             cx.notify();
@@ -732,7 +732,7 @@ impl TinyShell {
                     created_at: chrono::Local::now().timestamp(),
                 };
                 self.config.upsert_managed_key(key.clone());
-                if let Err(err) = self.config.save() {
+                if let Err(err) = crate::app::config_persistence::save_full(&self.config) {
                     tracing::warn!("failed to save config: {err:#}");
                 }
                 self.managed_keys = self.config.managed_keys().to_vec();
@@ -765,7 +765,7 @@ impl TinyShell {
         let mut updated = key;
         updated.name = new_name;
         self.config.upsert_managed_key(updated);
-        if let Err(err) = self.config.save() {
+        if let Err(err) = crate::app::config_persistence::save_full(&self.config) {
             tracing::warn!("failed to save config: {err:#}");
         }
         self.managed_keys = self.config.managed_keys().to_vec();
@@ -777,7 +777,7 @@ impl TinyShell {
     /// session that used it.
     pub(crate) fn delete_managed_key(&mut self, key_id: String, cx: &mut Context<Self>) {
         self.config.remove_managed_key(&key_id);
-        if let Err(err) = self.config.save() {
+        if let Err(err) = crate::app::config_persistence::save_full(&self.config) {
             tracing::warn!("failed to save config: {err:#}");
         }
         self.managed_keys = self.config.managed_keys().to_vec();
@@ -967,7 +967,7 @@ impl TinyShell {
 
     pub(crate) fn reset_layout(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         self.config.set_layout_state(None, None, None);
-        if let Err(error) = self.config.save() {
+        if let Err(error) = crate::app::config_persistence::save_full(&self.config) {
             tracing::warn!("failed to persist reset layout: {error:#}");
         }
 
@@ -1158,7 +1158,7 @@ impl TinyShell {
         if let Some(mut saved_session) = self.config.get(&session.id).cloned() {
             saved_session.last_used = Some(last_used);
             self.config.upsert(saved_session);
-            if let Err(err) = self.config.save() {
+            if let Err(err) = crate::app::config_persistence::save_full(&self.config) {
                 tracing::warn!("failed to save session recency: {err:#}");
             }
         }
@@ -1249,7 +1249,7 @@ impl TinyShell {
 
     pub(crate) fn remove_saved_session(&mut self, session_id: String, cx: &mut Context<Self>) {
         self.config.remove(&session_id);
-        if let Err(err) = self.config.save() {
+        if let Err(err) = crate::app::config_persistence::save_full(&self.config) {
             tracing::warn!("failed to save config: {err:#}");
         }
         self.status = "session removed".into();
@@ -1559,7 +1559,9 @@ impl TinyShell {
             if let Some(handle) = self.sftp_handles.remove(&group.id) {
                 handle.close();
             }
-            self.tab_groups.remove(group_ix.unwrap());
+            if let Some(group_index) = group_ix {
+                self.tab_groups.remove(group_index);
+            }
             self.pane_root.remove_tab(&id);
         } else {
             // Just remove this tab from the group
@@ -2130,7 +2132,9 @@ impl TinyShell {
             if path.is_empty() {
                 *ratio = (*ratio + delta).clamp(0.1, 0.9);
             } else {
-                let (&first, rest) = path.split_first().unwrap();
+                let Some((&first, rest)) = path.split_first() else {
+                    return;
+                };
                 if let Some(child) = children.get_mut(first) {
                     Self::adjust_split_ratio(child, rest, _child_idx, delta);
                 }
@@ -2283,7 +2287,12 @@ impl TinyShell {
                     .map(|bounds| (group.clone(), bounds))
             })
             .collect::<Vec<_>>();
-        rows.sort_by(|(_, left), (_, right)| left.origin.y.partial_cmp(&right.origin.y).unwrap());
+        rows.sort_by(|(_, left), (_, right)| {
+            left.origin
+                .y
+                .partial_cmp(&right.origin.y)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
 
         let first = rows.first()?.1;
         let last = rows.last()?.1;
@@ -2319,10 +2328,9 @@ impl TinyShell {
             return;
         }
 
-        let source = self
-            .dragging_connection_group
-            .as_deref()
-            .expect("dragging group state must contain a source");
+        let Some(source) = self.dragging_connection_group.as_deref() else {
+            return;
+        };
         let next = self
             .connection_group_drop_before_at(source, event.position)
             .flatten();
@@ -2348,7 +2356,7 @@ impl TinyShell {
         if let Some(before) = target {
             self.config
                 .reorder_connection_group(&source, before.as_deref());
-            if let Err(err) = self.config.save() {
+            if let Err(err) = crate::app::config_persistence::save_full(&self.config) {
                 tracing::warn!("failed to save connection group order: {err:#}");
             }
         }
@@ -2388,10 +2396,9 @@ impl TinyShell {
                         .map(|bounds| (group.id.clone(), bounds))
                 })
                 .collect::<Vec<_>>();
-            let dragged_group = self
-                .tab_drag
-                .dragging_group()
-                .expect("dragging state must contain a group");
+            let Some(dragged_group) = self.tab_drag.dragging_group() else {
+                return;
+            };
             reorder_index_at_x(dragged_group, event.position.x, &ordered_bounds)
         } else {
             None

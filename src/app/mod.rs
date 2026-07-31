@@ -1,4 +1,4 @@
-mod config_persistence;
+pub(crate) mod config_persistence;
 pub mod config_sync;
 pub mod connection_archive_dialogs;
 pub mod connection_manager;
@@ -41,7 +41,8 @@ use crate::app::{
     connection_manager::{actions::ConnectionManagerActions, state::ConnectionManagerState},
     resizable::ResizableState,
     runtime_state::{
-        AuxiliaryWindowsState, ConfigPersistenceState, SyncRuntimeState, UpdateRuntimeState,
+        AuxiliaryWindowsState, ConfigPersistenceState, SyncRuntimeState, TaskSupervisor,
+        UpdateRuntimeState,
     },
     settings::form::SettingsInputs,
     ssh_key_import::KeyImportState,
@@ -805,6 +806,7 @@ pub(crate) struct TinyShell {
 
     pub(crate) remote_sample_in_flight: bool,
     pub(crate) runtime: Arc<Runtime>,
+    pub(crate) task_supervisor: TaskSupervisor,
     pub(crate) events_rx: mpsc::Receiver<BackendEvent>,
     pub(crate) events_tx: mpsc::Sender<BackendEvent>,
     pub(crate) last_window_size: Option<gpui::Size<Pixels>>,
@@ -1019,7 +1021,7 @@ impl TinyShell {
             merge_builtin_quick_commands(&mut categories, &active_locale);
             config.set_quick_command_categories(categories);
             config.set_quick_commands_builtin_version(BUILTIN_QUICK_COMMANDS_VERSION);
-            if let Err(err) = config.save() {
+            if let Err(err) = crate::app::config_persistence::save_full(&config) {
                 tracing::warn!("failed to initialize built-in quick commands: {err:#}");
             }
         }
@@ -1206,6 +1208,7 @@ impl TinyShell {
 
             remote_sample_in_flight: false,
             runtime: shared_runtime(),
+            task_supervisor: TaskSupervisor::default(),
             events_rx,
             events_tx,
             last_window_size: None,
@@ -1375,12 +1378,19 @@ impl TinyShell {
         cx.notify();
     }
 
-    pub(crate) fn start_event_pump(&self, cx: &mut Context<Self>) {
+    pub(crate) fn start_event_pump(&mut self, cx: &mut Context<Self>) {
+        let cancellation = self.task_supervisor.start("event-pump");
         cx.spawn(async move |this, cx| {
             let mut last_blink_time = std::time::Instant::now();
             let mut poll_interval = Duration::from_millis(16);
             loop {
+                if cancellation.is_cancelled() {
+                    break;
+                }
                 cx.background_executor().timer(poll_interval).await;
+                if cancellation.is_cancelled() {
+                    break;
+                }
                 let active = match this.update(cx, |this, cx| {
                     let changed = this.drain_backend_events(cx);
                     let system_sampled = this.sample_system_if_due();
@@ -1491,7 +1501,24 @@ impl TinyShell {
             self.session_store
                 .update(cx, |store, _| store.drain_events_for(owner_id)),
         );
+        let mut coalesced_events = Vec::with_capacity(events.len());
         for event in events {
+            if let BackendEvent::Output { tab_id, bytes } = event {
+                if let Some(BackendEvent::Output {
+                    tab_id: previous_tab_id,
+                    bytes: previous_bytes,
+                }) = coalesced_events.last_mut()
+                    && previous_tab_id == &tab_id
+                {
+                    previous_bytes.extend(bytes);
+                    continue;
+                }
+                coalesced_events.push(BackendEvent::Output { tab_id, bytes });
+            } else {
+                coalesced_events.push(event);
+            }
+        }
+        for event in coalesced_events {
             changed = true;
             match event {
                 BackendEvent::Output { tab_id, bytes } => {
@@ -1767,7 +1794,9 @@ impl TinyShell {
                                     },
                                 )
                             });
-                            match password_result.and_then(|()| self.config.save()) {
+                            match password_result.and_then(|()| {
+                                crate::app::config_persistence::save_full(&self.config)
+                            }) {
                                 Ok(()) => {
                                     self.sync_runtime.status = t!("sync_upload_complete").into();
                                     self.schedule_automatic_sync(false, cx);
@@ -1862,7 +1891,7 @@ impl TinyShell {
                             let previous_synced_at = self.config.sync_last_synced_at();
                             self.config
                                 .set_sync_last_synced_at(chrono::Utc::now().timestamp());
-                            match self.config.save() {
+                            match crate::app::config_persistence::save_full(&self.config) {
                                 Ok(()) => {
                                     let summary = t!(
                                         "sync_download_summary",
@@ -1935,7 +1964,7 @@ impl TinyShell {
                                     let previous_synced_at = self.config.sync_last_synced_at();
                                     self.config
                                         .set_sync_last_synced_at(chrono::Utc::now().timestamp());
-                                    match self.config.save() {
+                                    match crate::app::config_persistence::save_full(&self.config) {
                                         Ok(()) => {
                                             self.sync_runtime.status =
                                                 t!("sync_reset_complete").into();
@@ -2219,6 +2248,7 @@ impl TinyShell {
 
     /// Clean up all SSH sessions and SFTP handles when the window is closing.
     pub(crate) fn cleanup_on_window_close(&mut self) {
+        self.task_supervisor.cancel_all();
         tracing::info!(
             "[ui] cleaning up {} tabs and {} sftp handles on window close",
             self.tabs.len(),
@@ -2479,7 +2509,7 @@ impl TinyShell {
             config.set_sidebar_collapsed(self.sidebar_collapsed);
             config.set_sftp_panel_minimized(self.sftp_panel_minimized);
             config.set_show_hidden_files(self.show_hidden_files);
-            if let Err(error) = config.save() {
+            if let Err(error) = crate::app::config_persistence::save_full(&config) {
                 tracing::warn!("failed to persist layout state: {error:#}");
             }
         } else {
