@@ -5548,8 +5548,8 @@ impl TinyShell {
                                         .sidebar_width(px(180.))
                                         .sidebar_style(div().bg(cx.theme().background).style())
                                 .page(
-                                    SettingPage::new(t!("settings_general").to_string())
-                                        .icon(IconName::Settings)
+                                    SettingPage::new(t!("settings_appearance").to_string())
+                                        .icon(IconName::Sun)
                                         .default_open(true)
                                         .group(
                                             SettingGroup::new()
@@ -5721,7 +5721,11 @@ impl TinyShell {
                                                         })
                                                     )
                                                 )
-                                        )
+                                        ),
+                                )
+                                .page(
+                                    SettingPage::new(t!("settings_terminal").to_string())
+                                        .icon(IconName::SquareTerminal)
                                         .group(
                                             SettingGroup::new()
                                                 .title(t!("settings_group_font").to_string())
@@ -5968,7 +5972,11 @@ impl TinyShell {
                                                         })
                                                     )
                                                 )
-                                        )
+                                        ),
+                                )
+                                .page(
+                                    SettingPage::new(t!("settings_workspace").to_string())
+                                        .icon(IconName::FolderOpen)
                                         .group(
                                             SettingGroup::new()
                                                 .title(t!("settings_group_download").to_string())
@@ -6557,8 +6565,7 @@ impl TinyShell {
                                 )
                                 .page({
                                     let mut page = SettingPage::new(t!("settings_key_bindings").to_string())
-                                        .icon(IconName::SquareTerminal)
-                                        .default_open(true);
+                                        .icon(IconName::SquareTerminal);
                                     for group in crate::app::keybinding_recorder::KeybindingsPage::render_groups(self, view, &focus_handle) {
                                         page = page.group(group);
                                     }
