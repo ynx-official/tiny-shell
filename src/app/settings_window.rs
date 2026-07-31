@@ -11,57 +11,78 @@ use rust_i18n::t;
 use crate::{TinyShell, session::config::ConfigStore};
 
 #[derive(Clone)]
+pub(crate) struct ProxySettingsInputs {
+    pub(crate) host: Entity<InputState>,
+    pub(crate) port: Entity<InputState>,
+    pub(crate) user: Entity<InputState>,
+    pub(crate) password: Entity<InputState>,
+}
+
+#[derive(Clone)]
+pub(crate) struct SyncSettingsInputs {
+    pub(crate) endpoint: Entity<InputState>,
+    pub(crate) username: Entity<InputState>,
+    pub(crate) webdav_password: Entity<InputState>,
+    pub(crate) s3_endpoint: Entity<InputState>,
+    pub(crate) s3_region: Entity<InputState>,
+    pub(crate) s3_bucket: Entity<InputState>,
+    pub(crate) s3_object_key: Entity<InputState>,
+    pub(crate) s3_access_key: Entity<InputState>,
+    pub(crate) s3_secret_key: Entity<InputState>,
+    pub(crate) s3_session_token: Entity<InputState>,
+    pub(crate) privacy_password: Entity<InputState>,
+    pub(crate) interval_hours: Entity<InputState>,
+}
+
+#[derive(Clone)]
+pub(crate) struct UpdateSettingsInputs {
+    pub(crate) interval_hours: Entity<InputState>,
+}
+
+#[derive(Clone)]
 pub(crate) struct SettingsInputs {
-    pub(crate) global_proxy_host: Entity<InputState>,
-    pub(crate) global_proxy_port: Entity<InputState>,
-    pub(crate) global_proxy_user: Entity<InputState>,
-    pub(crate) global_proxy_password: Entity<InputState>,
-    pub(crate) sync_endpoint: Entity<InputState>,
-    pub(crate) sync_username: Entity<InputState>,
-    pub(crate) sync_webdav_password: Entity<InputState>,
-    pub(crate) sync_s3_endpoint: Entity<InputState>,
-    pub(crate) sync_s3_region: Entity<InputState>,
-    pub(crate) sync_s3_bucket: Entity<InputState>,
-    pub(crate) sync_s3_object_key: Entity<InputState>,
-    pub(crate) sync_s3_access_key: Entity<InputState>,
-    pub(crate) sync_s3_secret_key: Entity<InputState>,
-    pub(crate) sync_s3_session_token: Entity<InputState>,
-    pub(crate) sync_privacy_password: Entity<InputState>,
-    pub(crate) sync_interval_hours: Entity<InputState>,
-    pub(crate) update_interval_hours: Entity<InputState>,
+    pub(crate) proxy: ProxySettingsInputs,
+    pub(crate) sync: SyncSettingsInputs,
+    pub(crate) update: UpdateSettingsInputs,
 }
 
 impl SettingsInputs {
     pub(crate) fn from_main(owner: &TinyShell) -> Self {
         Self {
-            global_proxy_host: owner.global_proxy_host_input.clone(),
-            global_proxy_port: owner.global_proxy_port_input.clone(),
-            global_proxy_user: owner.global_proxy_user_input.clone(),
-            global_proxy_password: owner.global_proxy_password_input.clone(),
-            sync_endpoint: owner.sync_endpoint_input.clone(),
-            sync_username: owner.sync_username_input.clone(),
-            sync_webdav_password: owner.sync_webdav_password_input.clone(),
-            sync_s3_endpoint: owner.sync_s3_endpoint_input.clone(),
-            sync_s3_region: owner.sync_s3_region_input.clone(),
-            sync_s3_bucket: owner.sync_s3_bucket_input.clone(),
-            sync_s3_object_key: owner.sync_s3_object_key_input.clone(),
-            sync_s3_access_key: owner.sync_s3_access_key_input.clone(),
-            sync_s3_secret_key: owner.sync_s3_secret_key_input.clone(),
-            sync_s3_session_token: owner.sync_s3_session_token_input.clone(),
-            sync_privacy_password: owner.sync_privacy_password_input.clone(),
-            sync_interval_hours: owner.sync_interval_hours_input.clone(),
-            update_interval_hours: owner.update_interval_hours_input.clone(),
+            proxy: ProxySettingsInputs {
+                host: owner.global_proxy_host_input.clone(),
+                port: owner.global_proxy_port_input.clone(),
+                user: owner.global_proxy_user_input.clone(),
+                password: owner.global_proxy_password_input.clone(),
+            },
+            sync: SyncSettingsInputs {
+                endpoint: owner.sync_endpoint_input.clone(),
+                username: owner.sync_username_input.clone(),
+                webdav_password: owner.sync_webdav_password_input.clone(),
+                s3_endpoint: owner.sync_s3_endpoint_input.clone(),
+                s3_region: owner.sync_s3_region_input.clone(),
+                s3_bucket: owner.sync_s3_bucket_input.clone(),
+                s3_object_key: owner.sync_s3_object_key_input.clone(),
+                s3_access_key: owner.sync_s3_access_key_input.clone(),
+                s3_secret_key: owner.sync_s3_secret_key_input.clone(),
+                s3_session_token: owner.sync_s3_session_token_input.clone(),
+                privacy_password: owner.sync_privacy_password_input.clone(),
+                interval_hours: owner.sync_interval_hours_input.clone(),
+            },
+            update: UpdateSettingsInputs {
+                interval_hours: owner.update_interval_hours_input.clone(),
+            },
         }
     }
 
     fn new(config: &ConfigStore, window: &mut Window, cx: &mut Context<SettingsWindow>) -> Self {
-        Self {
-            global_proxy_host: cx.new(|cx| {
+        let proxy = ProxySettingsInputs {
+            host: cx.new(|cx| {
                 InputState::new(window, cx)
                     .placeholder(t!("proxy_host").to_string())
                     .default_value(config.global_proxy_host())
             }),
-            global_proxy_port: cx.new(|cx| {
+            port: cx.new(|cx| {
                 InputState::new(window, cx)
                     .placeholder(t!("proxy_port").to_string())
                     .default_value(
@@ -71,28 +92,30 @@ impl SettingsInputs {
                             .unwrap_or_default(),
                     )
             }),
-            global_proxy_user: cx.new(|cx| {
+            user: cx.new(|cx| {
                 InputState::new(window, cx)
                     .placeholder(t!("proxy_user").to_string())
                     .default_value(config.global_proxy_user())
             }),
-            global_proxy_password: cx.new(|cx| {
+            password: cx.new(|cx| {
                 InputState::new(window, cx)
                     .placeholder(t!("proxy_password").to_string())
                     .masked(true)
                     .default_value(config.global_proxy_password())
             }),
-            sync_endpoint: cx.new(|cx| {
+        };
+        let sync = SyncSettingsInputs {
+            endpoint: cx.new(|cx| {
                 InputState::new(window, cx)
                     .placeholder("https://dav.example.com/tiny-shell/")
                     .default_value(config.sync_endpoint())
             }),
-            sync_username: cx.new(|cx| {
+            username: cx.new(|cx| {
                 InputState::new(window, cx)
                     .placeholder(t!("sync_username").to_string())
                     .default_value(config.sync_username())
             }),
-            sync_webdav_password: cx.new(|cx| {
+            webdav_password: cx.new(|cx| {
                 InputState::new(window, cx)
                     .placeholder(t!("sync_webdav_password").to_string())
                     .masked(true)
@@ -103,40 +126,40 @@ impl SettingsInputs {
                         .unwrap_or_default(),
                     )
             }),
-            sync_s3_endpoint: cx.new(|cx| {
+            s3_endpoint: cx.new(|cx| {
                 InputState::new(window, cx)
                     .placeholder("https://s3.example.com")
                     .default_value(config.sync_s3_endpoint())
             }),
-            sync_s3_region: cx.new(|cx| {
+            s3_region: cx.new(|cx| {
                 InputState::new(window, cx)
                     .placeholder("us-east-1")
                     .default_value(config.sync_s3_region())
             }),
-            sync_s3_bucket: cx.new(|cx| {
+            s3_bucket: cx.new(|cx| {
                 InputState::new(window, cx)
                     .placeholder(t!("sync_s3_bucket").to_string())
                     .default_value(config.sync_s3_bucket())
             }),
-            sync_s3_object_key: cx.new(|cx| {
+            s3_object_key: cx.new(|cx| {
                 InputState::new(window, cx)
                     .placeholder("tiny-shell-sync.json")
                     .default_value(config.sync_s3_object_key())
             }),
-            sync_s3_access_key: cx.new(|cx| {
+            s3_access_key: cx.new(|cx| {
                 InputState::new(window, cx).placeholder(t!("sync_s3_access_key").to_string())
             }),
-            sync_s3_secret_key: cx.new(|cx| {
+            s3_secret_key: cx.new(|cx| {
                 InputState::new(window, cx)
                     .placeholder(t!("sync_s3_secret_key").to_string())
                     .masked(true)
             }),
-            sync_s3_session_token: cx.new(|cx| {
+            s3_session_token: cx.new(|cx| {
                 InputState::new(window, cx)
                     .placeholder(t!("sync_s3_session_token").to_string())
                     .masked(true)
             }),
-            sync_privacy_password: cx.new(|cx| {
+            privacy_password: cx.new(|cx| {
                 let mut state = InputState::new(window, cx)
                     .placeholder(t!("sync_privacy_password").to_string())
                     .masked(true);
@@ -151,16 +174,23 @@ impl SettingsInputs {
                 }
                 state
             }),
-            sync_interval_hours: cx.new(|cx| {
+            interval_hours: cx.new(|cx| {
                 InputState::new(window, cx)
                     .placeholder("24")
                     .default_value(config.sync_interval_hours().to_string())
             }),
-            update_interval_hours: cx.new(|cx| {
+        };
+        let update = UpdateSettingsInputs {
+            interval_hours: cx.new(|cx| {
                 InputState::new(window, cx)
                     .placeholder("24")
                     .default_value(config.update_interval_hours().to_string())
             }),
+        };
+        Self {
+            proxy,
+            sync,
+            update,
         }
     }
 }
@@ -183,7 +213,7 @@ impl SettingsWindow {
     ) -> Self {
         let inputs = SettingsInputs::new(&config, window, cx);
         let owner_subscription = cx.observe(&owner, |_, _, cx| cx.notify());
-        let sync_interval_hours = inputs.sync_interval_hours.clone();
+        let sync_interval_hours = inputs.sync.interval_hours.clone();
         let owner_for_sync_interval = owner.clone();
         let sync_interval_subscription = cx.subscribe_in(
             &sync_interval_hours,
@@ -216,7 +246,7 @@ impl SettingsWindow {
                 _ => {}
             },
         );
-        let update_interval_hours = inputs.update_interval_hours.clone();
+        let update_interval_hours = inputs.update.interval_hours.clone();
         let owner_for_interval = owner.clone();
         let interval_subscription = cx.subscribe_in(
             &update_interval_hours,
@@ -250,17 +280,17 @@ impl SettingsWindow {
             },
         );
         let mut input_subscriptions: Vec<_> = [
-            inputs.sync_endpoint.clone(),
-            inputs.sync_username.clone(),
-            inputs.sync_webdav_password.clone(),
-            inputs.sync_s3_endpoint.clone(),
-            inputs.sync_s3_region.clone(),
-            inputs.sync_s3_bucket.clone(),
-            inputs.sync_s3_object_key.clone(),
-            inputs.sync_s3_access_key.clone(),
-            inputs.sync_s3_secret_key.clone(),
-            inputs.sync_s3_session_token.clone(),
-            inputs.sync_privacy_password.clone(),
+            inputs.sync.endpoint.clone(),
+            inputs.sync.username.clone(),
+            inputs.sync.webdav_password.clone(),
+            inputs.sync.s3_endpoint.clone(),
+            inputs.sync.s3_region.clone(),
+            inputs.sync.s3_bucket.clone(),
+            inputs.sync.s3_object_key.clone(),
+            inputs.sync.s3_access_key.clone(),
+            inputs.sync.s3_secret_key.clone(),
+            inputs.sync.s3_session_token.clone(),
+            inputs.sync.privacy_password.clone(),
         ]
         .into_iter()
         .map(|input| cx.subscribe_in(&input, window, |_, _, _: &InputEvent, _, cx| cx.notify()))

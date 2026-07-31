@@ -6,6 +6,7 @@ pub mod input_focus;
 pub mod keybinding_recorder;
 pub mod resizable;
 pub mod search;
+pub mod settings;
 pub mod settings_window;
 pub mod sftp_editor;
 pub mod sftp_editor_window;

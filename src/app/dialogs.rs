@@ -5418,21 +5418,833 @@ impl TinyShell {
         cx.notify();
     }
 
-    pub(crate) fn render_settings_content(
-        &self,
-        view: &gpui::Entity<Self>,
-        settings_id: &'static str,
-        focus_handle: &gpui::FocusHandle,
-        settings_inputs: &crate::app::settings_window::SettingsInputs,
-        cx: &gpui::App,
-    ) -> gpui::AnyElement {
-        use gpui::IntoElement;
-        use gpui_component::setting::{
-            SettingField, SettingGroup, SettingItem, SettingPage, Settings,
-        };
+    fn render_settings_appearance_page(
+        settings_view: &gpui::Entity<Self>,
+    ) -> gpui_component::setting::SettingPage {
+        use gpui_component::setting::{SettingField, SettingGroup, SettingItem, SettingPage};
+
+        SettingPage::new(t!("settings_appearance").to_string())
+            .icon(IconName::Sun)
+            .default_open(true)
+            .group(
+                SettingGroup::new()
+                    .title(t!("settings_group_appearance").to_string())
+                    .item(
+                        SettingItem::new(
+                            t!("theme_mode").to_string(),
+                            SettingField::render({
+                                let view = settings_view.clone();
+                                move |_, _window, cx| {
+                                    let (follow_system, is_dark_mode) = {
+                                        let state = view.read(cx);
+                                        (state.follow_system_theme, state.theme_mode.is_dark())
+                                    };
+                                    Button::new("theme-mode-dropdown")
+                                        .small()
+                                        .icon(if follow_system { IconName::Sun } else if is_dark_mode { IconName::Moon } else { IconName::Sun })
+                                        .label(if follow_system { t!("follow_system").to_string() } else if is_dark_mode { t!("use_dark_mode").to_string() } else { t!("use_light_mode").to_string() })
+                                        .dropdown_menu_with_anchor(Anchor::BottomRight, {
+                                            let view = view.clone();
+                                            move |mut menu, window, cx| {
+                                                let (follow_system, is_dark_mode) = {
+                                                    let state = view.read(cx);
+                                                    (state.follow_system_theme, state.theme_mode.is_dark())
+                                                };
+                                                menu = menu.min_w(160.)
+                                                    .item(
+                                                        PopupMenuItem::new(t!("follow_system").to_string())
+                                                            .checked(follow_system)
+                                                            .on_click(window.listener_for(&view, |this, _, window, cx| {
+                                                                this.set_follow_system_theme(true, window, cx)
+                                                            }))
+                                                    )
+                                                    .item(
+                                                        PopupMenuItem::new(t!("use_light_mode").to_string())
+                                                            .checked(!follow_system && !is_dark_mode)
+                                                            .on_click(window.listener_for(&view, |this, _, window, cx| {
+                                                                this.switch_theme_mode(crate::app::ThemeMode::Light, window, cx)
+                                                            }))
+                                                    )
+                                                    .item(
+                                                        PopupMenuItem::new(t!("use_dark_mode").to_string())
+                                                            .checked(!follow_system && is_dark_mode)
+                                                            .on_click(window.listener_for(&view, |this, _, window, cx| {
+                                                                this.switch_theme_mode(crate::app::ThemeMode::Dark, window, cx)
+                                                            }))
+                                                    );
+                                                menu
+                                            }
+                                        })
+                                        .into_any_element()
+                                }
+                            })
+                        )
+                    )
+                    .item(
+                        SettingItem::new(
+                            t!("light_theme").to_string(),
+                            SettingField::render({
+                                let view = settings_view.clone();
+                                move |_, _window, cx| {
+                                    let current_theme = view.read(cx).light_theme_name.to_string();
+                                    Button::new("light-theme-dropdown")
+                                        .small()
+                                        .icon(IconName::Sun)
+                                        .label(current_theme.clone())
+                                        .dropdown_menu_with_anchor(Anchor::BottomRight, {
+                                            let view = view.clone();
+                                            move |mut menu, window, cx| {
+                                                let current_theme = view.read(cx).light_theme_name.to_string();
+                                                let themes = gpui_component::ThemeRegistry::global(cx).sorted_themes();
+                                                let light_themes: Vec<_> = themes.into_iter().filter(|t| !t.mode.is_dark()).map(|t| t.name.clone()).collect();
+                                                menu = menu.min_w(160.).max_h(px(320.)).scrollable(true);
+                                                for theme_name in light_themes {
+                                                    let checked = theme_name == current_theme;
+                                                    menu = menu.item(
+                                                        PopupMenuItem::new(theme_name.clone())
+                                                            .checked(checked)
+                                                            .on_click(window.listener_for(&view, move |this, _, window, cx| {
+                                                                this.apply_theme(theme_name.clone(), window, cx)
+                                                            }))
+                                                    );
+                                                }
+                                                menu
+                                            }
+                                        })
+                                        .into_any_element()
+                                }
+                            })
+                        )
+                    )
+                    .item(
+                        SettingItem::new(
+                            t!("dark_theme").to_string(),
+                            SettingField::render({
+                                let view = settings_view.clone();
+                                move |_, _window, cx| {
+                                    let current_theme = view.read(cx).dark_theme_name.to_string();
+                                    Button::new("dark-theme-dropdown")
+                                        .small()
+                                        .icon(IconName::Moon)
+                                        .label(current_theme.clone())
+                                        .dropdown_menu_with_anchor(Anchor::BottomRight, {
+                                            let view = view.clone();
+                                            move |mut menu, window, cx| {
+                                                let current_theme = view.read(cx).dark_theme_name.to_string();
+                                                let themes = gpui_component::ThemeRegistry::global(cx).sorted_themes();
+                                                let dark_themes: Vec<_> = themes.into_iter().filter(|t| t.mode.is_dark()).map(|t| t.name.clone()).collect();
+                                                menu = menu.min_w(160.).max_h(px(320.)).scrollable(true);
+                                                for theme_name in dark_themes {
+                                                    let checked = theme_name == current_theme;
+                                                    menu = menu.item(
+                                                        PopupMenuItem::new(theme_name.clone())
+                                                            .checked(checked)
+                                                            .on_click(window.listener_for(&view, move |this, _, window, cx| {
+                                                                this.apply_theme(theme_name.clone(), window, cx)
+                                                            }))
+                                                    );
+                                                }
+                                                menu
+                                            }
+                                        })
+                                        .into_any_element()
+                                }
+                            })
+                        )
+                    )
+                    .item(
+                        SettingItem::new(
+                            format!("{}{}", t!("title_bar_style"), t!("restart_hint")),
+                            SettingField::render({
+                                let view = settings_view.clone();
+                                move |_, _window, cx| {
+                                    let current_style = view.read(cx).config.title_bar_style();
+                                    Button::new("title-bar-style-dropdown")
+                                        .small()
+                                        .label({
+                                            let key = crate::app::settings::title_bar_style_key(
+                                                current_style,
+                                            );
+                                            t!(key).to_string()
+                                        })
+                                        .dropdown_menu_with_anchor(Anchor::BottomRight, {
+                                            let view = view.clone();
+                                            move |mut menu, window, cx| {
+                                                let current_style = view.read(cx).config.title_bar_style();
+                                                menu = menu.min_w(160.)
+                                                    .item(
+                                                        PopupMenuItem::new(t!("title_bar_native").to_string())
+                                                            .checked(current_style == crate::session::config::TitleBarStyle::Native)
+                                                            .on_click(window.listener_for(&view, |this, _, _, cx| {
+                                                                this.config.set_title_bar_style(crate::session::config::TitleBarStyle::Native);
+                                                                this.mark_config_preferences_dirty();
+                                                                cx.notify();
+                                                            }))
+                                                    )
+                                                    .item(
+                                                        PopupMenuItem::new(t!("title_bar_integrated").to_string())
+                                                            .checked(current_style == crate::session::config::TitleBarStyle::Integrated)
+                                                            .on_click(window.listener_for(&view, |this, _, _, cx| {
+                                                                this.config.set_title_bar_style(crate::session::config::TitleBarStyle::Integrated);
+                                                                this.mark_config_preferences_dirty();
+                                                                cx.notify();
+                                                            }))
+                                                    );
+                                                menu
+                                            }
+                                        })
+                                        .into_any_element()
+                                }
+                            })
+                        )
+                    ),
+            )
+    }
+
+    fn render_settings_terminal_page(
+        settings_view: &gpui::Entity<Self>,
+    ) -> gpui_component::setting::SettingPage {
+        use gpui_component::setting::{SettingField, SettingGroup, SettingItem, SettingPage};
+
+        SettingPage::new(t!("settings_terminal").to_string())
+            .icon(IconName::SquareTerminal)
+            .group(
+                SettingGroup::new()
+                    .title(t!("settings_group_font").to_string())
+                    .item(SettingItem::new(
+                        t!("ui_font_size").to_string(),
+                        SettingField::render({
+                            let view = settings_view.clone();
+                            move |_, window, cx| {
+                                h_flex()
+                                    .items_center()
+                                    .gap_3()
+                                    .child(
+                                        Button::new("ui-font-size-down")
+                                            .small()
+                                            .label("-")
+                                            .on_click(
+                                                window.listener_for(&view, |this, _, _, cx| {
+                                                    this.change_ui_font_size(-1.0, cx)
+                                                }),
+                                            ),
+                                    )
+                                    .child(
+                                        div()
+                                            .min_w(px(64.))
+                                            .text_center()
+                                            .child(format!("{:.0}px", view.read(cx).ui_font_size)),
+                                    )
+                                    .child(
+                                        Button::new("ui-font-size-up").small().label("+").on_click(
+                                            window.listener_for(&view, |this, _, _, cx| {
+                                                this.change_ui_font_size(1.0, cx)
+                                            }),
+                                        ),
+                                    )
+                                    .into_any_element()
+                            }
+                        }),
+                    ))
+                    .item(SettingItem::new(
+                        t!("terminal_font_size").to_string(),
+                        SettingField::render({
+                            let view = settings_view.clone();
+                            move |_, window, cx| {
+                                h_flex()
+                                    .items_center()
+                                    .gap_3()
+                                    .child(
+                                        Button::new("terminal-font-size-down")
+                                            .small()
+                                            .label("-")
+                                            .on_click(window.listener_for(
+                                                &view,
+                                                |this, _, _, cx| {
+                                                    this.change_terminal_font_size(-1.0, cx)
+                                                },
+                                            )),
+                                    )
+                                    .child(div().min_w(px(64.)).text_center().child(format!(
+                                        "{:.0}px",
+                                        view.read(cx).terminal_font_size
+                                    )))
+                                    .child(
+                                        Button::new("terminal-font-size-up")
+                                            .small()
+                                            .label("+")
+                                            .on_click(window.listener_for(
+                                                &view,
+                                                |this, _, _, cx| {
+                                                    this.change_terminal_font_size(1.0, cx)
+                                                },
+                                            )),
+                                    )
+                                    .into_any_element()
+                            }
+                        }),
+                    ))
+                    .item(SettingItem::new(
+                        t!("terminal_display_style").to_string(),
+                        SettingField::render({
+                            let view = settings_view.clone();
+                            move |_, _window, cx| {
+                                let current = view.read(cx).terminal_display_style;
+                                Button::new("terminal-display-style-dropdown")
+                                    .small()
+                                    .icon(IconName::ChevronsUpDown)
+                                    .label({
+                                        let key = crate::app::settings::terminal_display_style_key(
+                                            current,
+                                        );
+                                        t!(key).to_string()
+                                    })
+                                    .dropdown_menu_with_anchor(Anchor::BottomRight, {
+                                        let view = view.clone();
+                                        move |menu, window, _cx| {
+                                            menu.min_w(160.)
+                                                .item(
+                                                    PopupMenuItem::new(
+                                                        t!("terminal_display_style_standard")
+                                                            .to_string(),
+                                                    )
+                                                    .checked(
+                                                        current == TerminalDisplayStyle::Standard,
+                                                    )
+                                                    .on_click(window.listener_for(
+                                                        &view,
+                                                        |this, _, _, cx| {
+                                                            this.change_terminal_display_style(
+                                                                TerminalDisplayStyle::Standard,
+                                                                cx,
+                                                            );
+                                                        },
+                                                    )),
+                                                )
+                                                .item(
+                                                    PopupMenuItem::new(
+                                                        t!("terminal_display_style_compact")
+                                                            .to_string(),
+                                                    )
+                                                    .checked(
+                                                        current == TerminalDisplayStyle::Compact,
+                                                    )
+                                                    .on_click(window.listener_for(
+                                                        &view,
+                                                        |this, _, _, cx| {
+                                                            this.change_terminal_display_style(
+                                                                TerminalDisplayStyle::Compact,
+                                                                cx,
+                                                            );
+                                                        },
+                                                    )),
+                                                )
+                                        }
+                                    })
+                                    .into_any_element()
+                            }
+                        }),
+                    ))
+                    .item(SettingItem::new(
+                        t!("ui_font_family").to_string(),
+                        SettingField::render({
+                            let view = settings_view.clone();
+                            move |_, _window, cx| {
+                                Button::new("ui-font-dropdown")
+                                    .small()
+                                    .icon(IconName::ChevronsUpDown)
+                                    .label({
+                                        let current = view.read(cx).ui_font_family.to_string();
+                                        let names = cx.text_system().all_font_names();
+                                        let using_system_maple =
+                                            crate::app::theme::USING_SYSTEM_MAPLE
+                                                .load(std::sync::atomic::Ordering::Relaxed);
+                                        if current == ".SystemUIFont"
+                                            || current.is_empty()
+                                            || !names.contains(&current)
+                                        {
+                                            t!("system_default").to_string()
+                                        } else if !using_system_maple
+                                            && current == "Maple Mono NF CN"
+                                        {
+                                            format!("Maple Mono NF CN ({})", t!("software_builtin"))
+                                        } else {
+                                            current
+                                        }
+                                    })
+                                    .dropdown_menu_with_anchor(Anchor::BottomRight, {
+                                        let view = view.clone();
+                                        move |mut menu, window, cx| {
+                                            let current = view.read(cx).ui_font_family.to_string();
+                                            let mut names = cx.text_system().all_font_names();
+                                            menu =
+                                                menu.min_w(200.).max_h(px(320.)).scrollable(true);
+                                            menu = menu.item(
+                                                PopupMenuItem::new(
+                                                    t!("system_default").to_string(),
+                                                )
+                                                .checked(
+                                                    current == ".SystemUIFont"
+                                                        || current.is_empty(),
+                                                )
+                                                .on_click(window.listener_for(
+                                                    &view,
+                                                    move |this, _, window, cx| {
+                                                        this.change_ui_font_family(
+                                                            ".SystemUIFont",
+                                                            window,
+                                                            cx,
+                                                        );
+                                                    },
+                                                )),
+                                            );
+                                            let maple_font = "Maple Mono NF CN".to_string();
+                                            let using_system_maple =
+                                                crate::app::theme::USING_SYSTEM_MAPLE
+                                                    .load(std::sync::atomic::Ordering::Relaxed);
+                                            if !using_system_maple && names.contains(&maple_font) {
+                                                names.retain(|n| n != &maple_font);
+                                                menu = menu
+                                                    .item(
+                                                        PopupMenuItem::new(format!(
+                                                            "{} ({})",
+                                                            maple_font,
+                                                            t!("software_builtin")
+                                                        ))
+                                                        .checked(current == maple_font)
+                                                        .on_click(window.listener_for(
+                                                            &view,
+                                                            move |this, _, window, cx| {
+                                                                this.change_ui_font_family(
+                                                                    "Maple Mono NF CN",
+                                                                    window,
+                                                                    cx,
+                                                                );
+                                                            },
+                                                        )),
+                                                    )
+                                                    .separator();
+                                            }
+                                            for name in names {
+                                                let checked = name == current;
+                                                menu = menu.item(
+                                                    PopupMenuItem::new(name.clone())
+                                                        .checked(checked)
+                                                        .on_click(window.listener_for(
+                                                            &view,
+                                                            move |this, _, window, cx| {
+                                                                this.change_ui_font_family(
+                                                                    &name, window, cx,
+                                                                );
+                                                            },
+                                                        )),
+                                                );
+                                            }
+                                            menu
+                                        }
+                                    })
+                                    .into_any_element()
+                            }
+                        }),
+                    ))
+                    .item(SettingItem::new(
+                        t!("terminal_font_family").to_string(),
+                        SettingField::render({
+                            let view = settings_view.clone();
+                            move |_, _window, cx| {
+                                Button::new("terminal-font-dropdown")
+                                    .small()
+                                    .icon(IconName::ChevronsUpDown)
+                                    .label({
+                                        let current =
+                                            view.read(cx).terminal_font_family.to_string();
+                                        let using_system_maple =
+                                            crate::app::theme::USING_SYSTEM_MAPLE
+                                                .load(std::sync::atomic::Ordering::Relaxed);
+                                        if !using_system_maple && current == "Maple Mono NF CN" {
+                                            format!("Maple Mono NF CN ({})", t!("software_builtin"))
+                                        } else {
+                                            current
+                                        }
+                                    })
+                                    .dropdown_menu_with_anchor(Anchor::BottomRight, {
+                                        let view = view.clone();
+                                        move |mut menu, window, cx| {
+                                            let current =
+                                                view.read(cx).terminal_font_family.to_string();
+                                            let mut names = cx.text_system().all_font_names();
+                                            menu =
+                                                menu.min_w(200.).max_h(px(320.)).scrollable(true);
+                                            let maple_font = "Maple Mono NF CN".to_string();
+                                            let using_system_maple =
+                                                crate::app::theme::USING_SYSTEM_MAPLE
+                                                    .load(std::sync::atomic::Ordering::Relaxed);
+                                            if !using_system_maple && names.contains(&maple_font) {
+                                                names.retain(|n| n != &maple_font);
+                                                menu = menu
+                                                    .item(
+                                                        PopupMenuItem::new(format!(
+                                                            "{} ({})",
+                                                            maple_font,
+                                                            t!("software_builtin")
+                                                        ))
+                                                        .checked(current == maple_font)
+                                                        .on_click(window.listener_for(
+                                                            &view,
+                                                            move |this, _, _window, cx| {
+                                                                this.change_terminal_font_family(
+                                                                    "Maple Mono NF CN",
+                                                                    cx,
+                                                                );
+                                                            },
+                                                        )),
+                                                    )
+                                                    .separator();
+                                            }
+                                            for name in names {
+                                                let checked = name == current;
+                                                menu = menu.item(
+                                                    PopupMenuItem::new(name.clone())
+                                                        .checked(checked)
+                                                        .on_click(window.listener_for(
+                                                            &view,
+                                                            move |this, _, _window, cx| {
+                                                                this.change_terminal_font_family(
+                                                                    &name, cx,
+                                                                );
+                                                            },
+                                                        )),
+                                                );
+                                            }
+                                            menu
+                                        }
+                                    })
+                                    .into_any_element()
+                            }
+                        }),
+                    ))
+                    .item(SettingItem::new(
+                        t!("cursor_style").to_string(),
+                        SettingField::render({
+                            let view = settings_view.clone();
+                            move |_, _window, cx| {
+                                let current = view.read(cx).cursor_style;
+                                Button::new("cursor-style-dropdown")
+                                    .small()
+                                    .icon(IconName::ChevronsUpDown)
+                                    .label({
+                                        let key = crate::app::settings::cursor_style_key(current);
+                                        t!(key).to_string()
+                                    })
+                                    .dropdown_menu_with_anchor(Anchor::BottomRight, {
+                                        let view = view.clone();
+                                        move |mut menu, window, cx| {
+                                            use crate::session::config::CursorStyle;
+                                            let current = view.read(cx).cursor_style;
+                                            menu =
+                                                menu.min_w(160.).max_h(px(320.)).scrollable(true);
+                                            for style in [
+                                                CursorStyle::Default,
+                                                CursorStyle::Blink,
+                                                CursorStyle::Beam,
+                                                CursorStyle::BeamBlink,
+                                            ] {
+                                                let checked = style == current;
+                                                let key =
+                                                    crate::app::settings::cursor_style_key(style);
+                                                let label = t!(key).to_string();
+                                                menu = menu.item(
+                                                    PopupMenuItem::new(label)
+                                                        .checked(checked)
+                                                        .on_click(window.listener_for(
+                                                            &view,
+                                                            move |this, _, _window, cx| {
+                                                                this.change_cursor_style(style, cx);
+                                                            },
+                                                        )),
+                                                );
+                                            }
+                                            menu
+                                        }
+                                    })
+                                    .into_any_element()
+                            }
+                        }),
+                    )),
+            )
+            .group(
+                SettingGroup::new()
+                    .title(t!("settings_group_terminal_behavior").to_string())
+                    .item(SettingItem::new(
+                        t!("keyword_highlight").to_string(),
+                        SettingField::render({
+                            let view = settings_view.clone();
+                            move |_, window, cx| {
+                                Switch::new("keyword-highlight")
+                                    .small()
+                                    .checked(view.read(cx).config.keyword_highlight())
+                                    .on_click(window.listener_for(&view, |this, checked, _, cx| {
+                                        this.config.set_keyword_highlight(*checked);
+                                        this.mark_config_preferences_dirty();
+                                        cx.notify();
+                                    }))
+                                    .into_any_element()
+                            }
+                        }),
+                    )),
+            )
+    }
+
+    fn render_settings_workspace_page(
+        settings_view: &gpui::Entity<Self>,
+    ) -> gpui_component::setting::SettingPage {
+        use gpui_component::setting::{SettingField, SettingGroup, SettingItem, SettingPage};
+
+        SettingPage::new(t!("settings_workspace").to_string())
+            .icon(IconName::FolderOpen)
+            .group(
+                SettingGroup::new()
+                    .title(t!("settings_group_download").to_string())
+                    .item(SettingItem::render({
+                        let view = settings_view.clone();
+                        move |_, window, cx| {
+                            let directory = view.read(cx).config.download_directory();
+                            v_flex()
+                                .w_full()
+                                .gap_2()
+                                .child(
+                                    div()
+                                        .text_sm()
+                                        .font_weight(FontWeight::MEDIUM)
+                                        .child(t!("download_directory").to_string()),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(rems(0.78))
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child(t!("download_directory_desc").to_string()),
+                                )
+                                .child(
+                                    h_flex()
+                                        .w_full()
+                                        .min_w_0()
+                                        .gap_2()
+                                        .items_center()
+                                        .child(
+                                            div()
+                                                .min_w_0()
+                                                .flex_1()
+                                                .truncate()
+                                                .rounded_md()
+                                                .border_1()
+                                                .border_color(cx.theme().border)
+                                                .px_3()
+                                                .py_2()
+                                                .text_sm()
+                                                .text_color(if directory.is_some() {
+                                                    cx.theme().foreground
+                                                } else {
+                                                    cx.theme().muted_foreground
+                                                })
+                                                .child(
+                                                    directory
+                                                        .as_ref()
+                                                        .map(|path| {
+                                                            path.to_string_lossy().to_string()
+                                                        })
+                                                        .unwrap_or_else(|| {
+                                                            t!("download_directory_not_set")
+                                                                .to_string()
+                                                        }),
+                                                ),
+                                        )
+                                        .child(
+                                            Button::new("choose-download-directory")
+                                                .flex_shrink_0()
+                                                .small()
+                                                .icon(IconName::FolderOpen)
+                                                .label(t!("choose_directory").to_string())
+                                                .on_click(window.listener_for(
+                                                    &view,
+                                                    |this, _, window, cx| {
+                                                        this.choose_download_directory(window, cx)
+                                                    },
+                                                )),
+                                        )
+                                        .when(directory.is_some(), |this| {
+                                            this.child(
+                                                Button::new("clear-download-directory")
+                                                    .flex_shrink_0()
+                                                    .small()
+                                                    .ghost()
+                                                    .icon(IconName::Close)
+                                                    .label(t!("clear").to_string())
+                                                    .on_click({
+                                                        let view = view.clone();
+                                                        move |_, _, cx| {
+                                                            view.update(cx, |this, cx| {
+                                                                this.clear_download_directory(cx)
+                                                            });
+                                                        }
+                                                    }),
+                                            )
+                                        }),
+                                )
+                        }
+                    })),
+            )
+            .group(
+                SettingGroup::new()
+                    .title(t!("settings_group_other").to_string())
+                    .item(
+                        SettingItem::new(
+                            t!("lock_layout").to_string(),
+                            SettingField::render({
+                                let view = settings_view.clone();
+                                move |_, window, cx| {
+                                    Switch::new("lock-layout")
+                                        .small()
+                                        .checked(view.read(cx).config.lock_layout())
+                                        .on_click(window.listener_for(
+                                            &view,
+                                            |this, checked, _, cx| {
+                                                this.config.set_lock_layout(*checked);
+                                                this.mark_config_preferences_dirty();
+                                                cx.notify();
+                                            },
+                                        ))
+                                        .into_any_element()
+                                }
+                            }),
+                        )
+                        .description(t!("lock_layout_hint").to_string()),
+                    )
+                    .item(SettingItem::new(
+                        t!("monitoring_position").to_string(),
+                        SettingField::render({
+                            let view = settings_view.clone();
+                            move |_, _window, cx| {
+                                Button::new("monitoring-position-dropdown")
+                                    .small()
+                                    .icon(IconName::PanelLeftOpen)
+                                    .label({
+                                        let position = crate::app::settings::MonitoringPosition::from_config(
+                                            view.read(cx).config.monitoring_position(),
+                                        );
+                                        t!(position.translation_key()).to_string()
+                                    })
+                                    .dropdown_menu_with_anchor(Anchor::BottomRight, {
+                                        let view = view.clone();
+                                        move |mut menu, window, cx| {
+                                            let current = crate::app::settings::MonitoringPosition::from_config(
+                                                view.read(cx).config.monitoring_position(),
+                                            );
+                                            menu = menu.min_w(160.);
+                                            for position in crate::app::settings::MONITORING_POSITIONS {
+                                                menu = menu.item(
+                                                    PopupMenuItem::new(
+                                                        t!(position.translation_key()).to_string(),
+                                                    )
+                                                    .checked(position == current)
+                                                    .on_click(window.listener_for(
+                                                        &view,
+                                                        move |this, _, _window, cx| {
+                                                            this.config.set_monitoring_position(
+                                                                position.config_value(),
+                                                            );
+                                                            this.mark_config_preferences_dirty();
+                                                            cx.notify();
+                                                        },
+                                                    )),
+                                                );
+                                            }
+                                            menu
+                                        }
+                                    })
+                                    .into_any_element()
+                            }
+                        }),
+                    ))
+                    .item(SettingItem::new(
+                        t!("language").to_string(),
+                        SettingField::render({
+                            let view = settings_view.clone();
+                            move |_, _window, cx| {
+                                Button::new("language-dropdown")
+                                    .small()
+                                    .icon(IconName::Globe)
+                                    .label({
+                                        let language = crate::app::settings::DisplayLanguage::from_config(
+                                            view.read(cx).config.locale(),
+                                        );
+                                        t!(language.translation_key()).to_string()
+                                    })
+                                    .dropdown_menu_with_anchor(Anchor::BottomRight, {
+                                        let view = view.clone();
+                                        move |mut menu, window, cx| {
+                                            let current = crate::app::settings::DisplayLanguage::from_config(
+                                                view.read(cx).config.locale(),
+                                            );
+                                            menu = menu.min_w(160.);
+                                            for language in crate::app::settings::DISPLAY_LANGUAGES {
+                                                menu = menu.item(
+                                                    PopupMenuItem::new(
+                                                        t!(language.translation_key()).to_string(),
+                                                    )
+                                                    .checked(language == current)
+                                                    .on_click(window.listener_for(
+                                                        &view,
+                                                        move |this, _, window, cx| {
+                                                            this.set_display_language(
+                                                                language.config_value(),
+                                                                window,
+                                                                cx,
+                                                            )
+                                                        },
+                                                    )),
+                                                );
+                                                if language
+                                                    == crate::app::settings::DisplayLanguage::System
+                                                {
+                                                    menu = menu.separator();
+                                                }
+                                            }
+                                            menu
+                                        }
+                                    })
+                                    .into_any_element()
+                            }
+                        }),
+                    ))
+                    .item(
+                        SettingItem::new(
+                            t!("reset_layout").to_string(),
+                            SettingField::render({
+                                let view = settings_view.clone();
+                                move |_, window, _cx| {
+                                    Button::new("reset-layout")
+                                        .small()
+                                        .label(t!("reset").to_string())
+                                        .on_click(window.listener_for(
+                                            &view,
+                                            |this, _, window, cx| {
+                                                this.reset_layout(window, cx);
+                                            },
+                                        ))
+                                        .into_any_element()
+                                }
+                            }),
+                        )
+                        .description(t!("reset_layout_hint").to_string()),
+                    ),
+            )
+    }
+
+    fn render_settings_about_page() -> gpui_component::setting::SettingPage {
+        use gpui_component::setting::{SettingField, SettingGroup, SettingItem, SettingPage};
+
         let version = env!("CARGO_PKG_VERSION");
-        let installation_kind = crate::app::updater::installation_kind();
-        let installation_label = match installation_kind {
+        let installation_label = match crate::app::updater::installation_kind() {
             crate::app::updater::InstallationKind::WindowsInstaller => {
                 t!("installation_setup").to_string()
             }
@@ -5450,25 +6262,150 @@ impl TinyShell {
             }
         };
         let runtime_environment = crate::app::updater::runtime_environment_label();
-        let view_clone_for_general = view.clone();
-        let global_proxy_host_input = settings_inputs.global_proxy_host.clone();
-        let global_proxy_port_input = settings_inputs.global_proxy_port.clone();
-        let global_proxy_user_input = settings_inputs.global_proxy_user.clone();
-        let global_proxy_password_input = settings_inputs.global_proxy_password.clone();
-        let sync_endpoint_input = settings_inputs.sync_endpoint.clone();
-        let sync_username_input = settings_inputs.sync_username.clone();
-        let sync_webdav_password_input = settings_inputs.sync_webdav_password.clone();
-        let sync_s3_endpoint_input = settings_inputs.sync_s3_endpoint.clone();
-        let sync_s3_region_input = settings_inputs.sync_s3_region.clone();
-        let sync_s3_bucket_input = settings_inputs.sync_s3_bucket.clone();
-        let sync_s3_object_key_input = settings_inputs.sync_s3_object_key.clone();
-        let sync_s3_access_key_input = settings_inputs.sync_s3_access_key.clone();
-        let sync_s3_secret_key_input = settings_inputs.sync_s3_secret_key.clone();
-        let sync_s3_session_token_input = settings_inputs.sync_s3_session_token.clone();
-        let sync_privacy_password_input = settings_inputs.sync_privacy_password.clone();
-        let sync_interval_hours_input = settings_inputs.sync_interval_hours.clone();
-        let sync_form_inputs = settings_inputs.clone();
-        let update_interval_hours_input = settings_inputs.update_interval_hours.clone();
+
+        SettingPage::new(t!("settings_about").to_string())
+            .icon(IconName::Info)
+            .group(
+                SettingGroup::new().item(SettingItem::render(move |_, _, cx| {
+                    h_flex()
+                        .w_full()
+                        .items_center()
+                        .gap_4()
+                        .py_2()
+                        .child(
+                            div()
+                                .size(px(56.))
+                                .flex_shrink_0()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .rounded_md()
+                                .bg(cx.theme().primary.opacity(0.12))
+                                .text_color(cx.theme().primary)
+                                .child(Icon::new(IconName::SquareTerminal).with_size(Size::Large)),
+                        )
+                        .child(
+                            v_flex()
+                                .min_w_0()
+                                .flex_1()
+                                .gap_1()
+                                .child(
+                                    div()
+                                        .text_size(rems(1.2))
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .child(t!("app_name").to_string()),
+                                )
+                                .child(
+                                    div()
+                                        .text_sm()
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child(t!("about_subtitle").to_string()),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(rems(0.75))
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child(format!("v{version}")),
+                                ),
+                        )
+                        .child(
+                            Button::new("about-github")
+                                .secondary()
+                                .icon(IconName::Github)
+                                .label(t!("about_view_project").to_string())
+                                .on_click(|_, _, _| {
+                                    let _ =
+                                        open::that("https://github.com/ynx-official/tiny-shell");
+                                }),
+                        )
+                })),
+            )
+            .group(
+                SettingGroup::new()
+                    .title(t!("about_version_info").to_string())
+                    .item(SettingItem::new(
+                        t!("about_app_version").to_string(),
+                        SettingField::render(move |_, _, _| {
+                            div().text_sm().child(format!("v{version}"))
+                        }),
+                    ))
+                    .item(SettingItem::new(
+                        t!("about_installation_type").to_string(),
+                        SettingField::render(move |_, _, _| {
+                            div().text_sm().child(installation_label.clone())
+                        }),
+                    ))
+                    .item(SettingItem::new(
+                        t!("about_runtime").to_string(),
+                        SettingField::render(move |_, _, _| {
+                            div().text_sm().child(runtime_environment.clone())
+                        }),
+                    )),
+            )
+            .group(
+                SettingGroup::new().item(SettingItem::render(move |_, _, cx| {
+                    h_flex()
+                        .w_full()
+                        .items_center()
+                        .justify_between()
+                        .gap_4()
+                        .child(
+                            div()
+                                .min_w_0()
+                                .flex_1()
+                                .text_sm()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(t!("about_feedback_hint")),
+                        )
+                        .child(
+                            Button::new("github-link")
+                                .icon(IconName::ExternalLink)
+                                .label(t!("about_open_feedback").to_string())
+                                .secondary()
+                                .on_click(|_, _, _| {
+                                    let _ = open::that(
+                                        "https://github.com/ynx-official/tiny-shell/issues",
+                                    );
+                                }),
+                        )
+                })),
+            )
+    }
+
+    pub(crate) fn render_settings_content(
+        &self,
+        view: &gpui::Entity<Self>,
+        settings_id: &'static str,
+        focus_handle: &gpui::FocusHandle,
+        settings_inputs: &crate::app::settings_window::SettingsInputs,
+        cx: &gpui::App,
+    ) -> gpui::AnyElement {
+        use gpui::IntoElement;
+        use gpui_component::setting::{
+            SettingField, SettingGroup, SettingItem, SettingPage, Settings,
+        };
+        let settings_view = view.clone();
+        let proxy_inputs = &settings_inputs.proxy;
+        let sync_inputs = &settings_inputs.sync;
+        let update_inputs = &settings_inputs.update;
+        let global_proxy_host_input = proxy_inputs.host.clone();
+        let global_proxy_port_input = proxy_inputs.port.clone();
+        let global_proxy_user_input = proxy_inputs.user.clone();
+        let global_proxy_password_input = proxy_inputs.password.clone();
+        let sync_endpoint_input = sync_inputs.endpoint.clone();
+        let sync_username_input = sync_inputs.username.clone();
+        let sync_webdav_password_input = sync_inputs.webdav_password.clone();
+        let sync_s3_endpoint_input = sync_inputs.s3_endpoint.clone();
+        let sync_s3_region_input = sync_inputs.s3_region.clone();
+        let sync_s3_bucket_input = sync_inputs.s3_bucket.clone();
+        let sync_s3_object_key_input = sync_inputs.s3_object_key.clone();
+        let sync_s3_access_key_input = sync_inputs.s3_access_key.clone();
+        let sync_s3_secret_key_input = sync_inputs.s3_secret_key.clone();
+        let sync_s3_session_token_input = sync_inputs.s3_session_token.clone();
+        let sync_privacy_password_input = sync_inputs.privacy_password.clone();
+        let sync_interval_hours_input = sync_inputs.interval_hours.clone();
+        let sync_form_inputs = settings_inputs.sync.clone();
+        let update_interval_hours_input = update_inputs.interval_hours.clone();
 
         let focus_handle = focus_handle.clone();
 
@@ -5547,698 +6484,11 @@ impl TinyShell {
                                     Settings::new(settings_id)
                                         .sidebar_width(px(180.))
                                         .sidebar_style(div().bg(cx.theme().background).style())
-                                .page(
-                                    SettingPage::new(t!("settings_appearance").to_string())
-                                        .icon(IconName::Sun)
-                                        .default_open(true)
-                                        .group(
-                                            SettingGroup::new()
-                                                .title(t!("settings_group_appearance").to_string())
-                                                .item(
-                                                    SettingItem::new(
-                                                        t!("theme_mode").to_string(),
-                                                        SettingField::render({
-                                                            let view = view_clone_for_general.clone();
-                                                            move |_, _window, cx| {
-                                                                let (follow_system, is_dark_mode) = {
-                                                                    let state = view.read(cx);
-                                                                    (state.follow_system_theme, state.theme_mode.is_dark())
-                                                                };
-                                                                Button::new("theme-mode-dropdown")
-                                                                    .small()
-                                                                    .icon(if follow_system { IconName::Sun } else if is_dark_mode { IconName::Moon } else { IconName::Sun })
-                                                                    .label(if follow_system { t!("follow_system").to_string() } else if is_dark_mode { t!("use_dark_mode").to_string() } else { t!("use_light_mode").to_string() })
-                                                                    .dropdown_menu_with_anchor(Anchor::BottomRight, {
-                                                                        let view = view.clone();
-                                                                        move |mut menu, window, cx| {
-                                                                            let (follow_system, is_dark_mode) = {
-                                                                                let state = view.read(cx);
-                                                                                (state.follow_system_theme, state.theme_mode.is_dark())
-                                                                            };
-                                                                            menu = menu.min_w(160.)
-                                                                                .item(
-                                                                                    PopupMenuItem::new(t!("follow_system").to_string())
-                                                                                        .checked(follow_system)
-                                                                                        .on_click(window.listener_for(&view, |this, _, window, cx| {
-                                                                                            this.set_follow_system_theme(true, window, cx)
-                                                                                        }))
-                                                                                )
-                                                                                .item(
-                                                                                    PopupMenuItem::new(t!("use_light_mode").to_string())
-                                                                                        .checked(!follow_system && !is_dark_mode)
-                                                                                        .on_click(window.listener_for(&view, |this, _, window, cx| {
-                                                                                            this.switch_theme_mode(crate::app::ThemeMode::Light, window, cx)
-                                                                                        }))
-                                                                                )
-                                                                                .item(
-                                                                                    PopupMenuItem::new(t!("use_dark_mode").to_string())
-                                                                                        .checked(!follow_system && is_dark_mode)
-                                                                                        .on_click(window.listener_for(&view, |this, _, window, cx| {
-                                                                                            this.switch_theme_mode(crate::app::ThemeMode::Dark, window, cx)
-                                                                                        }))
-                                                                                );
-                                                                            menu
-                                                                        }
-                                                                    })
-                                                                    .into_any_element()
-                                                            }
-                                                        })
-                                                    )
-                                                )
-                                                .item(
-                                                    SettingItem::new(
-                                                        t!("light_theme").to_string(),
-                                                        SettingField::render({
-                                                            let view = view_clone_for_general.clone();
-                                                            move |_, _window, cx| {
-                                                                let current_theme = view.read(cx).light_theme_name.to_string();
-                                                                Button::new("light-theme-dropdown")
-                                                                    .small()
-                                                                    .icon(IconName::Sun)
-                                                                    .label(current_theme.clone())
-                                                                    .dropdown_menu_with_anchor(Anchor::BottomRight, {
-                                                                        let view = view.clone();
-                                                                        move |mut menu, window, cx| {
-                                                                            let current_theme = view.read(cx).light_theme_name.to_string();
-                                                                            let themes = gpui_component::ThemeRegistry::global(cx).sorted_themes();
-                                                                            let light_themes: Vec<_> = themes.into_iter().filter(|t| !t.mode.is_dark()).map(|t| t.name.clone()).collect();
-                                                                            menu = menu.min_w(160.).max_h(px(320.)).scrollable(true);
-                                                                            for theme_name in light_themes {
-                                                                                let checked = theme_name == current_theme;
-                                                                                menu = menu.item(
-                                                                                    PopupMenuItem::new(theme_name.clone())
-                                                                                        .checked(checked)
-                                                                                        .on_click(window.listener_for(&view, move |this, _, window, cx| {
-                                                                                            this.apply_theme(theme_name.clone(), window, cx)
-                                                                                        }))
-                                                                                );
-                                                                            }
-                                                                            menu
-                                                                        }
-                                                                    })
-                                                                    .into_any_element()
-                                                            }
-                                                        })
-                                                    )
-                                                )
-                                                .item(
-                                                    SettingItem::new(
-                                                        t!("dark_theme").to_string(),
-                                                        SettingField::render({
-                                                            let view = view_clone_for_general.clone();
-                                                            move |_, _window, cx| {
-                                                                let current_theme = view.read(cx).dark_theme_name.to_string();
-                                                                Button::new("dark-theme-dropdown")
-                                                                    .small()
-                                                                    .icon(IconName::Moon)
-                                                                    .label(current_theme.clone())
-                                                                    .dropdown_menu_with_anchor(Anchor::BottomRight, {
-                                                                        let view = view.clone();
-                                                                        move |mut menu, window, cx| {
-                                                                            let current_theme = view.read(cx).dark_theme_name.to_string();
-                                                                            let themes = gpui_component::ThemeRegistry::global(cx).sorted_themes();
-                                                                            let dark_themes: Vec<_> = themes.into_iter().filter(|t| t.mode.is_dark()).map(|t| t.name.clone()).collect();
-                                                                            menu = menu.min_w(160.).max_h(px(320.)).scrollable(true);
-                                                                            for theme_name in dark_themes {
-                                                                                let checked = theme_name == current_theme;
-                                                                                menu = menu.item(
-                                                                                    PopupMenuItem::new(theme_name.clone())
-                                                                                        .checked(checked)
-                                                                                        .on_click(window.listener_for(&view, move |this, _, window, cx| {
-                                                                                            this.apply_theme(theme_name.clone(), window, cx)
-                                                                                        }))
-                                                                                );
-                                                                            }
-                                                                            menu
-                                                                        }
-                                                                    })
-                                                                    .into_any_element()
-                                                            }
-                                                        })
-                                                    )
-                                                )
-                                                .item(
-                                                    SettingItem::new(
-                                                        format!("{}{}", t!("title_bar_style"), t!("restart_hint")),
-                                                        SettingField::render({
-                                                            let view = view_clone_for_general.clone();
-                                                            move |_, _window, cx| {
-                                                                let current_style = view.read(cx).config.title_bar_style();
-                                                                Button::new("title-bar-style-dropdown")
-                                                                    .small()
-                                                                    .label(match current_style {
-                                                                        crate::session::config::TitleBarStyle::Native => t!("title_bar_native").to_string(),
-                                                                        crate::session::config::TitleBarStyle::Integrated => t!("title_bar_integrated").to_string(),
-                                                                    })
-                                                                    .dropdown_menu_with_anchor(Anchor::BottomRight, {
-                                                                        let view = view.clone();
-                                                                        move |mut menu, window, cx| {
-                                                                            let current_style = view.read(cx).config.title_bar_style();
-                                                                            menu = menu.min_w(160.)
-                                                                                .item(
-                                                                                    PopupMenuItem::new(t!("title_bar_native").to_string())
-                                                                                        .checked(current_style == crate::session::config::TitleBarStyle::Native)
-                                                                                        .on_click(window.listener_for(&view, |this, _, _, cx| {
-                                                                                            this.config.set_title_bar_style(crate::session::config::TitleBarStyle::Native);
-                                                                                            this.mark_config_preferences_dirty();
-                                                                                            cx.notify();
-                                                                                        }))
-                                                                                )
-                                                                                .item(
-                                                                                    PopupMenuItem::new(t!("title_bar_integrated").to_string())
-                                                                                        .checked(current_style == crate::session::config::TitleBarStyle::Integrated)
-                                                                                        .on_click(window.listener_for(&view, |this, _, _, cx| {
-                                                                                            this.config.set_title_bar_style(crate::session::config::TitleBarStyle::Integrated);
-                                                                                            this.mark_config_preferences_dirty();
-                                                                                            cx.notify();
-                                                                                        }))
-                                                                                );
-                                                                            menu
-                                                                        }
-                                                                    })
-                                                                    .into_any_element()
-                                                            }
-                                                        })
-                                                    )
-                                                )
-                                        ),
-                                )
-                                .page(
-                                    SettingPage::new(t!("settings_terminal").to_string())
-                                        .icon(IconName::SquareTerminal)
-                                        .group(
-                                            SettingGroup::new()
-                                                .title(t!("settings_group_font").to_string())
-                                                .item(
-                                                    SettingItem::new(
-                                                        t!("ui_font_size").to_string(),
-                                                        SettingField::render({
-                                                            let view = view_clone_for_general.clone();
-                                                            move |_, window, cx| {
-                                                                h_flex()
-                                                                    .items_center()
-                                                                    .gap_3()
-                                                                    .child(Button::new("ui-font-size-down").small().label("-").on_click(window.listener_for(&view, |this, _, _, cx| this.change_ui_font_size(-1.0, cx))))
-                                                                    .child(div().min_w(px(64.)).text_center().child(format!("{:.0}px", view.read(cx).ui_font_size)))
-                                                                    .child(Button::new("ui-font-size-up").small().label("+").on_click(window.listener_for(&view, |this, _, _, cx| this.change_ui_font_size(1.0, cx))))
-                                                                    .into_any_element()
-                                                            }
-                                                        })
-                                                    )
-                                                )
-                                                .item(
-                                                    SettingItem::new(
-                                                        t!("terminal_font_size").to_string(),
-                                                        SettingField::render({
-                                                            let view = view_clone_for_general.clone();
-                                                            move |_, window, cx| {
-                                                                h_flex()
-                                                                    .items_center()
-                                                                    .gap_3()
-                                                                    .child(Button::new("terminal-font-size-down").small().label("-").on_click(window.listener_for(&view, |this, _, _, cx| this.change_terminal_font_size(-1.0, cx))))
-                                                                    .child(div().min_w(px(64.)).text_center().child(format!("{:.0}px", view.read(cx).terminal_font_size)))
-                                                                    .child(Button::new("terminal-font-size-up").small().label("+").on_click(window.listener_for(&view, |this, _, _, cx| this.change_terminal_font_size(1.0, cx))))
-                                                                    .into_any_element()
-                                                            }
-                                                        })
-                                                    )
-                                                )
-                                                .item(
-                                                    SettingItem::new(
-                                                        t!("terminal_display_style").to_string(),
-                                                        SettingField::render({
-                                                            let view = view_clone_for_general.clone();
-                                                            move |_, _window, cx| {
-                                                                let current = view.read(cx).terminal_display_style;
-                                                                Button::new("terminal-display-style-dropdown")
-                                                                    .small()
-                                                                    .icon(IconName::ChevronsUpDown)
-                                                                    .label(match current {
-                                                                        TerminalDisplayStyle::Standard => t!("terminal_display_style_standard").to_string(),
-                                                                        TerminalDisplayStyle::Compact => t!("terminal_display_style_compact").to_string(),
-                                                                    })
-                                                                    .dropdown_menu_with_anchor(Anchor::BottomRight, {
-                                                                        let view = view.clone();
-                                                                        move |menu, window, _cx| {
-                                                                            menu.min_w(160.)
-                                                                                .item(
-                                                                                    PopupMenuItem::new(t!("terminal_display_style_standard").to_string())
-                                                                                        .checked(current == TerminalDisplayStyle::Standard)
-                                                                                        .on_click(window.listener_for(&view, |this, _, _, cx| {
-                                                                                            this.change_terminal_display_style(TerminalDisplayStyle::Standard, cx);
-                                                                                        }))
-                                                                                )
-                                                                                .item(
-                                                                                    PopupMenuItem::new(t!("terminal_display_style_compact").to_string())
-                                                                                        .checked(current == TerminalDisplayStyle::Compact)
-                                                                                        .on_click(window.listener_for(&view, |this, _, _, cx| {
-                                                                                            this.change_terminal_display_style(TerminalDisplayStyle::Compact, cx);
-                                                                                        }))
-                                                                                )
-                                                                        }
-                                                                    })
-                                                                    .into_any_element()
-                                                            }
-                                                        })
-                                                    )
-                                                )
-                                                .item(
-                                                    SettingItem::new(
-                                                        t!("ui_font_family").to_string(),
-                                                        SettingField::render({
-                                                            let view = view_clone_for_general.clone();
-                                                            move |_, _window, cx| {
-                                                                Button::new("ui-font-dropdown")
-                                                                    .small()
-                                                                    .icon(IconName::ChevronsUpDown)
-                                                                    .label({
-                                                                        let current = view.read(cx).ui_font_family.to_string();
-                                                                        let names = cx.text_system().all_font_names();
-                                                                        let using_system_maple = crate::app::theme::USING_SYSTEM_MAPLE.load(std::sync::atomic::Ordering::Relaxed);
-                                                                        if current == *".SystemUIFont" || current.is_empty() || !names.contains(&current) {
-                                                                            t!("system_default").to_string()
-                                                                        } else if !using_system_maple && current == "Maple Mono NF CN" {
-                                                                            format!("Maple Mono NF CN ({})", t!("software_builtin"))
-                                                                        } else {
-                                                                            current
-                                                                        }
-                                                                    })
-                                                                    .dropdown_menu_with_anchor(Anchor::BottomRight, {
-                                                                        let view = view.clone();
-                                                                        move |mut menu, window, cx| {
-                                                                            let current = view.read(cx).ui_font_family.to_string();
-                                                                            let mut names = cx.text_system().all_font_names();
-                                                                            menu = menu.min_w(200.).max_h(px(320.)).scrollable(true);
-                                                                            menu = menu.item(
-                                                                                PopupMenuItem::new(t!("system_default").to_string())
-                                                                                    .checked(current == *".SystemUIFont" || current.is_empty())
-                                                                                    .on_click(window.listener_for(&view, move |this, _, window, cx| {
-                                                                                        this.change_ui_font_family(".SystemUIFont", window, cx);
-                                                                                    }))
-                                                                            );
-                                                                            let maple_font = "Maple Mono NF CN".to_string();
-                                                                            let using_system_maple = crate::app::theme::USING_SYSTEM_MAPLE.load(std::sync::atomic::Ordering::Relaxed);
-                                                                            if !using_system_maple && names.contains(&maple_font) {
-                                                                                names.retain(|n| n != &maple_font);
-                                                                                menu = menu.item(
-                                                                                    PopupMenuItem::new(format!("{} ({})", maple_font, t!("software_builtin")))
-                                                                                        .checked(current == maple_font)
-                                                                                        .on_click(window.listener_for(&view, move |this, _, window, cx| {
-                                                                                            this.change_ui_font_family("Maple Mono NF CN", window, cx);
-                                                                                        }))
-                                                                                ).separator();
-                                                                            }
-                                                                            for name in names {
-                                                                                let checked = name == current;
-                                                                                menu = menu.item(
-                                                                                    PopupMenuItem::new(name.clone())
-                                                                                        .checked(checked)
-                                                                                        .on_click(window.listener_for(&view, move |this, _, window, cx| {
-                                                                                            this.change_ui_font_family(&name, window, cx);
-                                                                                        }))
-                                                                                );
-                                                                            }
-                                                                            menu
-                                                                        }
-                                                                    })
-                                                                    .into_any_element()
-                                                            }
-                                                        })
-                                                    )
-                                                )
-                                                .item(
-                                                    SettingItem::new(
-                                                        t!("terminal_font_family").to_string(),
-                                                        SettingField::render({
-                                                            let view = view_clone_for_general.clone();
-                                                            move |_, _window, cx| {
-                                                                Button::new("terminal-font-dropdown")
-                                                                    .small()
-                                                                    .icon(IconName::ChevronsUpDown)
-                                                                    .label({
-                                                                        let current = view.read(cx).terminal_font_family.to_string();
-                                                                        let using_system_maple = crate::app::theme::USING_SYSTEM_MAPLE.load(std::sync::atomic::Ordering::Relaxed);
-                                                                        if !using_system_maple && current == "Maple Mono NF CN" {
-                                                                            format!("Maple Mono NF CN ({})", t!("software_builtin"))
-                                                                        } else {
-                                                                            current
-                                                                        }
-                                                                    })
-                                                                    .dropdown_menu_with_anchor(Anchor::BottomRight, {
-                                                                        let view = view.clone();
-                                                                        move |mut menu, window, cx| {
-                                                                            let current = view.read(cx).terminal_font_family.to_string();
-                                                                            let mut names = cx.text_system().all_font_names();
-                                                                            menu = menu.min_w(200.).max_h(px(320.)).scrollable(true);
-                                                                            let maple_font = "Maple Mono NF CN".to_string();
-                                                                            let using_system_maple = crate::app::theme::USING_SYSTEM_MAPLE.load(std::sync::atomic::Ordering::Relaxed);
-                                                                            if !using_system_maple && names.contains(&maple_font) {
-                                                                                names.retain(|n| n != &maple_font);
-                                                                                menu = menu.item(
-                                                                                    PopupMenuItem::new(format!("{} ({})", maple_font, t!("software_builtin")))
-                                                                                        .checked(current == maple_font)
-                                                                                        .on_click(window.listener_for(&view, move |this, _, _window, cx| {
-                                                                                            this.change_terminal_font_family("Maple Mono NF CN", cx);
-                                                                                        }))
-                                                                                ).separator();
-                                                                            }
-                                                                            for name in names {
-                                                                                let checked = name == current;
-                                                                                menu = menu.item(
-                                                                                    PopupMenuItem::new(name.clone())
-                                                                                        .checked(checked)
-                                                                                        .on_click(window.listener_for(&view, move |this, _, _window, cx| {
-                                                                                            this.change_terminal_font_family(&name, cx);
-                                                                                        }))
-                                                                                );
-                                                                            }
-                                                                            menu
-                                                                        }
-                                                                    })
-                                                                    .into_any_element()
-                                                            }
-                                                        })
-                                                    )
-                                                )
-                                                .item(
-                                                    SettingItem::new(
-                                                        t!("cursor_style").to_string(),
-                                                        SettingField::render({
-                                                            let view = view_clone_for_general.clone();
-                                                            move |_, _window, cx| {
-                                                                use crate::session::config::CursorStyle;
-                                                                let current = view.read(cx).cursor_style;
-                                                                Button::new("cursor-style-dropdown")
-                                                                    .small()
-                                                                    .icon(IconName::ChevronsUpDown)
-                                                                    .label(match current {
-                                                                        CursorStyle::Default => t!("cursor_style_default").to_string(),
-                                                                        CursorStyle::Blink => t!("cursor_style_blink").to_string(),
-                                                                        CursorStyle::Beam => t!("cursor_style_beam").to_string(),
-                                                                        CursorStyle::BeamBlink => t!("cursor_style_beam_blink").to_string(),
-                                                                    })
-                                                                    .dropdown_menu_with_anchor(Anchor::BottomRight, {
-                                                                        let view = view.clone();
-                                                                        move |mut menu, window, cx| {
-                                                                            use crate::session::config::CursorStyle;
-                                                                            let current = view.read(cx).cursor_style;
-                                                                            menu = menu.min_w(160.).max_h(px(320.)).scrollable(true);
-                                                                            for style in [
-                                                                                CursorStyle::Default,
-                                                                                CursorStyle::Blink,
-                                                                                CursorStyle::Beam,
-                                                                                CursorStyle::BeamBlink,
-                                                                            ] {
-                                                                                let checked = style == current;
-                                                                                let label = match style {
-                                                                                    CursorStyle::Default => t!("cursor_style_default").to_string(),
-                                                                                    CursorStyle::Blink => t!("cursor_style_blink").to_string(),
-                                                                                    CursorStyle::Beam => t!("cursor_style_beam").to_string(),
-                                                                                    CursorStyle::BeamBlink => t!("cursor_style_beam_blink").to_string(),
-                                                                                };
-                                                                                menu = menu.item(
-                                                                                    PopupMenuItem::new(label)
-                                                                                        .checked(checked)
-                                                                                        .on_click(window.listener_for(&view, move |this, _, _window, cx| {
-                                                                                            this.change_cursor_style(style, cx);
-                                                                                        }))
-                                                                                );
-                                                                            }
-                                                                            menu
-                                                                        }
-                                                                    })
-                                                                    .into_any_element()
-                                                            }
-                                                        })
-                                                    )
-                                                )
-                                        ),
-                                )
-                                .page(
-                                    SettingPage::new(t!("settings_workspace").to_string())
-                                        .icon(IconName::FolderOpen)
-                                        .group(
-                                            SettingGroup::new()
-                                                .title(t!("settings_group_download").to_string())
-                                                .item(SettingItem::render({
-                                                    let view = view_clone_for_general.clone();
-                                                    move |_, window, cx| {
-                                                        let directory = view
-                                                            .read(cx)
-                                                            .config
-                                                            .download_directory();
-                                                        v_flex()
-                                                            .w_full()
-                                                            .gap_2()
-                                                            .child(
-                                                                div()
-                                                                    .text_sm()
-                                                                    .font_weight(FontWeight::MEDIUM)
-                                                                    .child(t!("download_directory").to_string()),
-                                                            )
-                                                            .child(
-                                                                div()
-                                                                    .text_size(rems(0.78))
-                                                                    .text_color(cx.theme().muted_foreground)
-                                                                    .child(t!("download_directory_desc").to_string()),
-                                                            )
-                                                            .child(
-                                                                h_flex()
-                                                                    .w_full()
-                                                                    .min_w_0()
-                                                                    .gap_2()
-                                                                    .items_center()
-                                                                    .child(
-                                                                        div()
-                                                                            .min_w_0()
-                                                                            .flex_1()
-                                                                            .truncate()
-                                                                            .rounded_md()
-                                                                            .border_1()
-                                                                            .border_color(cx.theme().border)
-                                                                            .px_3()
-                                                                            .py_2()
-                                                                            .text_sm()
-                                                                            .text_color(if directory.is_some() {
-                                                                                cx.theme().foreground
-                                                                            } else {
-                                                                                cx.theme().muted_foreground
-                                                                            })
-                                                                            .child(
-                                                                                directory
-                                                                                    .as_ref()
-                                                                                    .map(|path| path.to_string_lossy().to_string())
-                                                                                    .unwrap_or_else(|| t!("download_directory_not_set").to_string()),
-                                                                            ),
-                                                                    )
-                                                                    .child(
-                                                                        Button::new("choose-download-directory")
-                                                                            .flex_shrink_0()
-                                                                            .small()
-                                                                            .icon(IconName::FolderOpen)
-                                                                            .label(t!("choose_directory").to_string())
-                                                                            .on_click(window.listener_for(
-                                                                                &view,
-                                                                                |this, _, window, cx| {
-                                                                                    this.choose_download_directory(window, cx)
-                                                                                },
-                                                                            )),
-                                                                    )
-                                                                    .when(directory.is_some(), |this| {
-                                                                        this.child(
-                                                                            Button::new("clear-download-directory")
-                                                                                .flex_shrink_0()
-                                                                                .small()
-                                                                                .ghost()
-                                                                                .icon(IconName::Close)
-                                                                                .label(t!("clear").to_string())
-                                                                                .on_click({
-                                                                                    let view = view.clone();
-                                                                                    move |_, _, cx| {
-                                                                                        view.update(cx, |this, cx| {
-                                                                                            this.clear_download_directory(cx)
-                                                                                        });
-                                                                                    }
-                                                                                }),
-                                                                        )
-                                                                    }),
-                                                            )
-                                                    }
-                                                }))
-                                        )
-                                        .group(
-                                            SettingGroup::new()
-                                                .title(t!("settings_group_other").to_string())
-                                                .item(
-                                                    SettingItem::new(
-                                                        t!("keyword_highlight").to_string(),
-                                                        SettingField::render({
-                                                            let view = view_clone_for_general.clone();
-                                                            move |_, window, cx| {
-                                                                Switch::new("keyword-highlight")
-                                                                    .small()
-                                                                    .checked(view.read(cx).config.keyword_highlight())
-                                                                    .on_click(window.listener_for(&view, |this, checked, _, cx| {
-                                                                        this.config.set_keyword_highlight(*checked);
-                                                                        this.mark_config_preferences_dirty();
-                                                                        cx.notify();
-                                                                    }))
-                                                                    .into_any_element()
-                                                            }
-                                                        })
-                                                    )
-                                                )
-                                                .item(
-                                                    SettingItem::new(
-                                                        t!("lock_layout").to_string(),
-                                                        SettingField::render({
-                                                            let view = view_clone_for_general.clone();
-                                                            move |_, window, cx| {
-                                                                Switch::new("lock-layout")
-                                                                    .small()
-                                                                    .checked(view.read(cx).config.lock_layout())
-                                                                    .on_click(window.listener_for(&view, |this, checked, _, cx| {
-                                                                        this.config.set_lock_layout(*checked);
-                                                                        this.mark_config_preferences_dirty();
-                                                                        cx.notify();
-                                                                    }))
-                                                                    .into_any_element()
-                                                            }
-                                                        })
-                                                    ).description(t!("lock_layout_hint").to_string())
-                                                )
-                                                .item(
-                                                    SettingItem::new(
-                                                        t!("monitoring_position").to_string(),
-                                                        SettingField::render({
-                                                            let view = view_clone_for_general.clone();
-                                                            move |_, _window, cx| {
-                                                                Button::new("monitoring-position-dropdown")
-                                                                    .small()
-                                                                    .icon(IconName::PanelLeftOpen)
-                                                                    .label({
-                                                                        let pos = view.read(cx).config.monitoring_position().to_string();
-                                                                        if pos == "Sidebar" {
-                                                                            t!("position_sidebar").to_string()
-                                                                        } else if pos == "Hidden" {
-                                                                            t!("position_hidden").to_string()
-                                                                        } else {
-                                                                            t!("position_bottom").to_string()
-                                                                        }
-                                                                    })
-                                                                    .dropdown_menu_with_anchor(Anchor::BottomRight, {
-                                                                        let view = view.clone();
-                                                                        move |mut menu, window, cx| {
-                                                                            let pos = view.read(cx).config.monitoring_position().to_string();
-                                                                            menu = menu.min_w(160.)
-                                                                                .item(
-                                                                                    PopupMenuItem::new(t!("position_bottom").to_string())
-                                                                                        .checked(pos == "Bottom")
-                                                                                        .on_click(window.listener_for(&view, |this, _, _window, cx| {
-                                                                                            this.config.set_monitoring_position("Bottom");
-                                                                                            this.mark_config_preferences_dirty();
-                                                                                            cx.notify();
-                                                                                        }))
-                                                                                )
-                                                                                .item(
-                                                                                    PopupMenuItem::new(t!("position_sidebar").to_string())
-                                                                                        .checked(pos == "Sidebar")
-                                                                                        .on_click(window.listener_for(&view, |this, _, _window, cx| {
-                                                                                            this.config.set_monitoring_position("Sidebar");
-                                                                                            this.mark_config_preferences_dirty();
-                                                                                            cx.notify();
-                                                                                        }))
-                                                                                )
-                                                                                .item(
-                                                                                    PopupMenuItem::new(t!("position_hidden").to_string())
-                                                                                        .checked(pos == "Hidden")
-                                                                                        .on_click(window.listener_for(&view, |this, _, _window, cx| {
-                                                                                            this.config.set_monitoring_position("Hidden");
-                                                                                            this.mark_config_preferences_dirty();
-                                                                                            cx.notify();
-                                                                                        }))
-                                                                                );
-                                                                            menu
-                                                                        }
-                                                                    })
-                                                                    .into_any_element()
-                                                            }
-                                                        })
-                                                    )
-                                                )
-                                                .item(
-                                                    SettingItem::new(
-                                                        t!("language").to_string(),
-                                                        SettingField::render({
-                                                            let view = view_clone_for_general.clone();
-                                                            move |_, _window, cx| {
-                                                                Button::new("language-dropdown")
-                                                                    .small()
-                                                                    .icon(IconName::Globe)
-                                                                    .label({
-                                                                        let current_locale = view.read(cx).config.locale().to_string();
-                                                                        if current_locale == "en" {
-                                                                            t!("english").to_string()
-                                                                        } else if current_locale == "zh-CN" {
-                                                                            t!("chinese").to_string()
-                                                                        } else {
-                                                                            t!("follow_system").to_string()
-                                                                        }
-                                                                    })
-                                                                    .dropdown_menu_with_anchor(Anchor::BottomRight, {
-                                                                        let view = view.clone();
-                                                                        move |mut menu, window, cx| {
-                                                                            let current_locale = view.read(cx).config.locale().to_string();
-                                                                            menu = menu.min_w(160.)
-                                                                                .item(
-                                                                                    PopupMenuItem::new(t!("follow_system").to_string())
-                                                                                        .checked(current_locale == "system")
-                                                                                        .on_click(window.listener_for(&view, |this, _, window, cx| {
-                                                                                            this.set_display_language("system", window, cx)
-                                                                                        }))
-                                                                                )
-                                                                                .separator()
-                                                                                .item(
-                                                                                    PopupMenuItem::new(t!("english").to_string())
-                                                                                        .checked(current_locale == "en")
-                                                                                        .on_click(window.listener_for(&view, |this, _, window, cx| {
-                                                                                            this.set_display_language("en", window, cx)
-                                                                                        }))
-                                                                                )
-                                                                                .item(
-                                                                                    PopupMenuItem::new(t!("chinese").to_string())
-                                                                                        .checked(current_locale == "zh-CN")
-                                                                                        .on_click(window.listener_for(&view, |this, _, window, cx| {
-                                                                                            this.set_display_language("zh-CN", window, cx)
-                                                                                        }))
-                                                                                );
-                                                                            menu
-                                                                        }
-                                                                    })
-                                                                    .into_any_element()
-                                                            }
-                                                        })
-                                                    )
-                                                )
-                                                .item(
-                                                    SettingItem::new(
-                                                        t!("reset_layout").to_string(),
-                                                        SettingField::render({
-                                                            let view = view_clone_for_general.clone();
-                                                            move |_, window, _cx| {
-                                                                Button::new("reset-layout")
-                                                                    .small()
-                                                                    .label(t!("reset").to_string())
-                                                                    .on_click(window.listener_for(&view, |this, _, window, cx| {
-                                                                        this.reset_layout(window, cx);
-                                                                    }))
-                                                                    .into_any_element()
-                                                            }
-                                                        })
-                                                    ).description(t!("reset_layout_hint").to_string())
-                                                )
-                                        )
-                                )
+                                .page(Self::render_settings_appearance_page(&settings_view))
+                                .page(Self::render_settings_terminal_page(&settings_view))
+                                .page(Self::render_settings_workspace_page(
+                                    &settings_view,
+                                ))
                                 .page(
                                     SettingPage::new(t!("settings_sync").to_string())
                                         .icon(IconName::Globe)
@@ -6539,25 +6789,35 @@ impl TinyShell {
                                                                     .small()
                                                                     .primary()
                                                                     .label(t!("save_proxy").to_string())
-                                                                    .on_click(window.listener_for(&view, |this, _, _, cx| {
-                                                                        let host = this.global_proxy_host_input.read(cx).value().trim().to_string();
-                                                                        let port_str = this.global_proxy_port_input.read(cx).value();
-                                                                        let port = port_str.trim().parse::<u16>().ok();
-                                                                        let user = this.global_proxy_user_input.read(cx).value().trim().to_string();
-                                                                        let password = this.global_proxy_password_input.read(cx).value().to_string();
+                                                                    .on_click({
+                                                                        let host_input = global_proxy_host_input.clone();
+                                                                        let port_input = global_proxy_port_input.clone();
+                                                                        let user_input = global_proxy_user_input.clone();
+                                                                        let password_input = global_proxy_password_input.clone();
+                                                                        window.listener_for(&view, move |this, _, _, cx| {
+                                                                            let host = host_input.read(cx).value().trim().to_string();
+                                                                            let port = port_input
+                                                                                .read(cx)
+                                                                                .value()
+                                                                                .trim()
+                                                                                .parse::<u16>()
+                                                                                .ok();
+                                                                            let user = user_input.read(cx).value().trim().to_string();
+                                                                            let password = password_input.read(cx).value().to_string();
 
-                                                                        if host.is_empty() || port.is_none() {
-                                                                            return;
-                                                                        }
+                                                                            if host.is_empty() || port.is_none() {
+                                                                                return;
+                                                                            }
 
-                                                                        this.config.set_global_proxy_type(this.global_proxy_type.clone());
-                                                                        this.config.set_global_proxy_host(host);
-                                                                        this.config.set_global_proxy_port(port);
-                                                                        this.config.set_global_proxy_user(user);
-                                                                        this.config.set_global_proxy_password(password);
-                                                                        this.mark_config_preferences_dirty();
-                                                                        cx.notify();
-                                                                    }))
+                                                                            this.config.set_global_proxy_type(this.global_proxy_type.clone());
+                                                                            this.config.set_global_proxy_host(host);
+                                                                            this.config.set_global_proxy_port(port);
+                                                                            this.config.set_global_proxy_user(user);
+                                                                            this.config.set_global_proxy_password(password);
+                                                                            this.mark_config_preferences_dirty();
+                                                                            cx.notify();
+                                                                        })
+                                                                    })
                                                             )
                                                     }
                                                 }))
@@ -6591,10 +6851,11 @@ impl TinyShell {
                                                                 let mode = view.read(cx).config.update_check_mode();
                                                                 Button::new("update-frequency-dropdown")
                                                                     .small()
-                                                                    .label(match mode {
-                                                                        UpdateCheckMode::Startup => t!("update_frequency_startup").to_string(),
-                                                                        UpdateCheckMode::Interval => t!("update_frequency_interval").to_string(),
-                                                                        UpdateCheckMode::Disabled => t!("update_frequency_disabled").to_string(),
+                                                                    .label({
+                                                                        let key = crate::app::settings::update_check_mode_key(
+                                                                            mode,
+                                                                        );
+                                                                        t!(key).to_string()
                                                                     })
                                                                     .dropdown_menu_with_anchor(Anchor::BottomRight, {
                                                                         let view = view.clone();
@@ -6826,123 +7087,7 @@ impl TinyShell {
                                                 }))
                                         )
                                 )
-                                .page(
-                                    SettingPage::new(t!("settings_about").to_string())
-                                        .icon(IconName::Info)
-                                        .group(
-                                            SettingGroup::new()
-                                                .item(SettingItem::render(move |_, _, cx| {
-                                                    h_flex()
-                                                        .w_full()
-                                                        .items_center()
-                                                        .gap_4()
-                                                        .py_2()
-                                                        .child(
-                                                            div()
-                                                                .size(px(56.))
-                                                                .flex_shrink_0()
-                                                                .flex()
-                                                                .items_center()
-                                                                .justify_center()
-                                                                .rounded_md()
-                                                                .bg(cx.theme().primary.opacity(0.12))
-                                                                .text_color(cx.theme().primary)
-                                                                .child(
-                                                                    Icon::new(IconName::SquareTerminal)
-                                                                        .with_size(Size::Large),
-                                                                ),
-                                                        )
-                                                        .child(
-                                                            v_flex()
-                                                                .min_w_0()
-                                                                .flex_1()
-                                                                .gap_1()
-                                                                .child(
-                                                                    div()
-                                                                        .text_size(rems(1.2))
-                                                                        .font_weight(FontWeight::SEMIBOLD)
-                                                                        .child(t!("app_name").to_string()),
-                                                                )
-                                                                .child(
-                                                                    div()
-                                                                        .text_sm()
-                                                                        .text_color(cx.theme().muted_foreground)
-                                                                        .child(t!("about_subtitle").to_string()),
-                                                                )
-                                                                .child(
-                                                                    div()
-                                                                        .text_size(rems(0.75))
-                                                                        .text_color(cx.theme().muted_foreground)
-                                                                        .child(format!("v{version}")),
-                                                                ),
-                                                        )
-                                                        .child(
-                                                            Button::new("about-github")
-                                                                .secondary()
-                                                                .icon(IconName::Github)
-                                                                .label(t!("about_view_project").to_string())
-                                                                .on_click(|_, _, _| {
-                                                                    let _ = open::that("https://github.com/ynx-official/tiny-shell");
-                                                                }),
-                                                        )
-                                                }))
-                                        )
-                                        .group(
-                                            SettingGroup::new()
-                                                .title(t!("about_version_info").to_string())
-                                                .item(
-                                                    SettingItem::new(
-                                                        t!("about_app_version").to_string(),
-                                                        SettingField::render(move |_, _, _| {
-                                                            div().text_sm().child(format!("v{version}"))
-                                                        })
-                                                    )
-                                                )
-                                                .item(
-                                                    SettingItem::new(
-                                                        t!("about_installation_type").to_string(),
-                                                        SettingField::render(move |_, _, _| {
-                                                            div().text_sm().child(installation_label.clone())
-                                                        })
-                                                    )
-                                                )
-                                                .item(
-                                                    SettingItem::new(
-                                                        t!("about_runtime").to_string(),
-                                                        SettingField::render(move |_, _, _| {
-                                                            div().text_sm().child(runtime_environment.clone())
-                                                        })
-                                                    )
-                                                )
-                                        )
-                                        .group(
-                                            SettingGroup::new()
-                                                .item(SettingItem::render(move |_, _, cx| {
-                                                    h_flex()
-                                                        .w_full()
-                                                        .items_center()
-                                                        .justify_between()
-                                                        .gap_4()
-                                                        .child(
-                                                            div()
-                                                                .min_w_0()
-                                                                .flex_1()
-                                                                .text_sm()
-                                                                .text_color(cx.theme().muted_foreground)
-                                                                .child(t!("about_feedback_hint")),
-                                                        )
-                                                        .child(
-                                                            Button::new("github-link")
-                                                                .icon(IconName::ExternalLink)
-                                                                .label(t!("about_open_feedback").to_string())
-                                                                .secondary()
-                                                                .on_click(|_, _, _| {
-                                                                    let _ = open::that("https://github.com/ynx-official/tiny-shell/issues");
-                                                                }),
-                                                        )
-                                                }))
-                                        )
-                                )
+                                .page(Self::render_settings_about_page())
                                 )
                         )
         .with_animation(

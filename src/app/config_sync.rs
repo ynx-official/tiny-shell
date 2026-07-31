@@ -3,7 +3,7 @@ use rust_i18n::t;
 
 use crate::{
     TinyShell,
-    app::settings_window::SettingsInputs,
+    app::settings_window::SyncSettingsInputs,
     crypto,
     session::config::hardware_uuid,
     sync::{
@@ -57,30 +57,30 @@ pub(crate) struct SyncFormSnapshot {
 }
 
 impl SyncFormSnapshot {
-    pub(crate) fn capture(backend: &str, inputs: &SettingsInputs, cx: &App) -> Self {
+    pub(crate) fn capture(backend: &str, inputs: &SyncSettingsInputs, cx: &App) -> Self {
         let input_value = |input: &gpui::Entity<gpui_component::input::InputState>| {
             input.read(cx).value().trim().to_string()
         };
         let backend = if backend == "s3" {
             SyncBackendCredentials::S3 {
-                endpoint: input_value(&inputs.sync_s3_endpoint),
-                region: input_value(&inputs.sync_s3_region),
-                bucket: input_value(&inputs.sync_s3_bucket),
-                object_key: input_value(&inputs.sync_s3_object_key),
-                access_key: input_value(&inputs.sync_s3_access_key),
-                secret_key: inputs.sync_s3_secret_key.read(cx).value().to_string(),
-                session_token: inputs.sync_s3_session_token.read(cx).value().to_string(),
+                endpoint: input_value(&inputs.s3_endpoint),
+                region: input_value(&inputs.s3_region),
+                bucket: input_value(&inputs.s3_bucket),
+                object_key: input_value(&inputs.s3_object_key),
+                access_key: input_value(&inputs.s3_access_key),
+                secret_key: inputs.s3_secret_key.read(cx).value().to_string(),
+                session_token: inputs.s3_session_token.read(cx).value().to_string(),
             }
         } else {
             SyncBackendCredentials::WebDav {
-                endpoint: input_value(&inputs.sync_endpoint),
-                username: input_value(&inputs.sync_username),
-                password: inputs.sync_webdav_password.read(cx).value().to_string(),
+                endpoint: input_value(&inputs.endpoint),
+                username: input_value(&inputs.username),
+                password: inputs.webdav_password.read(cx).value().to_string(),
             }
         };
         Self {
             credentials: SyncCredentials { backend },
-            privacy_password: inputs.sync_privacy_password.read(cx).value().to_string(),
+            privacy_password: inputs.privacy_password.read(cx).value().to_string(),
         }
     }
 
