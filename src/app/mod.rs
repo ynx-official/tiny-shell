@@ -27,7 +27,7 @@ pub mod workspace_presentation;
 use std::{
     cell::{Cell, RefCell},
     collections::{HashMap, VecDeque},
-    ops::Range,
+    ops::{Deref, DerefMut, Range},
     rc::Rc,
     sync::{
         Arc, Mutex, MutexGuard, OnceLock,
@@ -41,8 +41,8 @@ use crate::app::{
     connection_manager::{actions::ConnectionManagerActions, state::ConnectionManagerState},
     resizable::ResizableState,
     runtime_state::{
-        AuxiliaryWindowsState, ConfigPersistenceState, SyncRuntimeState, TaskSupervisor,
-        UpdateRuntimeState,
+        AuxiliaryWindowsState, ConfigPersistenceState, SearchState, SyncRuntimeState,
+        TaskSupervisor, UpdateRuntimeState,
     },
     settings::form::SettingsInputs,
     ssh_key_import::KeyImportState,
@@ -791,15 +791,7 @@ pub(crate) struct TinyShell {
     pub(crate) search_input: Entity<InputState>,
     pub(crate) connection_manager_state: Entity<ConnectionManagerState>,
     pub(crate) connection_manager_actions: ConnectionManagerActions,
-    pub(crate) search_active: bool,
-    /// Increments each time the search bar is opened, used as an animation
-    /// epoch so the search bar fade-in restarts on every open.
-    pub(crate) search_epoch: u64,
-    pub(crate) search_query: String,
-    pub(crate) search_matches: Vec<(i32, i32)>,
-    pub(crate) search_current: usize,
-    pub(crate) search_target_tab: Option<String>,
-    pub(crate) search_bar_bounds: Option<Bounds<Pixels>>,
+    pub(crate) search: SearchState,
 
     pub(crate) system_tab_id: Option<String>,
     pub(crate) sftp_handles: std::collections::HashMap<String, crate::sftp::SftpHandle>,
@@ -815,6 +807,20 @@ pub(crate) struct TinyShell {
     pub(crate) hovered_url: Option<HoveredUrl>,
     pub(crate) cmd_ctrl_pressed: bool,
     pub(crate) _subscriptions: Vec<gpui::Subscription>,
+}
+
+impl Deref for TinyShell {
+    type Target = SearchState;
+
+    fn deref(&self) -> &Self::Target {
+        &self.search
+    }
+}
+
+impl DerefMut for TinyShell {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.search
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1195,13 +1201,7 @@ impl TinyShell {
             search_input,
             connection_manager_state,
             connection_manager_actions: ConnectionManagerActions::default(),
-            search_active: false,
-            search_epoch: 0,
-            search_query: String::new(),
-            search_matches: Vec::new(),
-            search_current: 0,
-            search_target_tab: None,
-            search_bar_bounds: None,
+            search: SearchState::default(),
 
             system_tab_id: None,
             sftp_handles: std::collections::HashMap::new(),

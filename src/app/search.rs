@@ -94,7 +94,13 @@ impl TinyShell {
         };
 
         // Remember which tab was searched so highlights only appear in that pane.
-        self.search_target_tab = Some(tab.id.clone());
+        // Store the id before mutating the nested search state so the immutable
+        // tab borrow does not overlap the state update.
+        let tab_id = tab.id.clone();
+        self.search_target_tab = Some(tab_id.clone());
+        let Some(tab) = self.tabs.iter().find(|candidate| candidate.id == tab_id) else {
+            return;
+        };
 
         let query_lower = query.to_lowercase();
         let query_byte_len = query.len();
