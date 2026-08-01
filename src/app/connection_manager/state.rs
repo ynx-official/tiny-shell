@@ -185,6 +185,10 @@ impl ConnectionManagerState {
 }
 
 fn visible_groups(groups: &[String], sessions: &[Session], query: &str) -> Vec<String> {
+    if query.is_empty() {
+        return groups.to_vec();
+    }
+
     let mut result = groups
         .iter()
         .filter(|group| connection_catalog::group_matches_query(group, sessions, query))

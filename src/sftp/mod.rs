@@ -40,7 +40,7 @@ use rust_i18n::t;
 
 use crate::{
     session::{
-        config::{AuthMethod, Session},
+        config::{AuthMethod, ConfigStore, Session},
         ssh_keys::{
             authenticate_with_default_keys, normalize_inline_private_key, private_keys_with_algs,
             session_has_explicit_key,
@@ -246,6 +246,7 @@ pub fn spawn_sftp(
     runtime: &tokio::runtime::Handle,
     tab_id: String,
     session: Session,
+    proxy_config: ConfigStore,
     events: BackendEventSender,
 ) -> SftpHandle {
     let (cmd_tx, cmd_rx) = mpsc::channel(COMMAND_QUEUE_CAPACITY);
@@ -254,6 +255,7 @@ pub fn spawn_sftp(
         if let Err(err) = run_sftp(
             tab_id.clone(),
             session,
+            proxy_config,
             cmd_rx,
             cmd_tx_clone,
             events.clone(),
@@ -279,6 +281,7 @@ pub fn spawn_sftp(
 async fn run_sftp(
     tab_id: String,
     session: Session,
+    proxy_config: ConfigStore,
     mut commands: Receiver<SftpCommand>,
     commands_tx: Sender<SftpCommand>,
     events: BackendEventSender,
@@ -288,7 +291,7 @@ async fn run_sftp(
         text: t!("sftp_connecting").to_string(),
     });
 
-    let handle = connect_and_authenticate(&session).await?;
+    let handle = connect_and_authenticate(&session, &proxy_config).await?;
     let channel = handle
         .channel_open_session()
         .await
@@ -1348,6 +1351,7 @@ async fn emit_entries(
 
 async fn connect_and_authenticate(
     session: &Session,
+    proxy_config: &ConfigStore,
 ) -> Result<Arc<russh::client::Handle<SftpClientHandler>>> {
     let config = Arc::new(client::Config {
         inactivity_timeout: Some(std::time::Duration::from_secs(600)),
@@ -1356,7 +1360,7 @@ async fn connect_and_authenticate(
         ..Default::default()
     });
     let addr = format!("{}:{}", session.host, session.port);
-    let stream = crate::session::config::connect_proxy(session).await?;
+    let stream = crate::session::config::connect_proxy(session, proxy_config).await?;
     let mut handle = client::connect_stream(config, stream, SftpClientHandler)
         .await
         .with_context(|| format!("connect {addr} failed"))?;

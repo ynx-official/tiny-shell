@@ -1,3 +1,5 @@
+use std::collections::{HashMap, HashSet};
+
 use crate::{
     session::config::{
         DeletedConnectionGroup, DeletedSession, ManagedKey, QuickCommand, QuickCommandCategory,
@@ -99,6 +101,15 @@ fn merge_payload_with_secret_access_and_deleted(
     remote: SyncPayload,
     privacy_password: Option<&str>,
 ) -> MergedConfig {
+    tracing::debug!(
+        local_sessions = local.sessions.len(),
+        remote_sessions = remote.sessions.len(),
+        local_managed_keys = local.keys.len(),
+        remote_managed_keys = remote.managed_keys.len(),
+        local_deleted_sessions = local.deleted_sessions.len(),
+        remote_deleted_sessions = remote.deleted_sessions.len(),
+        "starting sync payload merge"
+    );
     let mut session_stats = SecretResolutionStats::default();
     let mut managed_key_stats = SecretResolutionStats::default();
     let remote_deleted_sessions = remote.deleted_sessions;
@@ -165,27 +176,38 @@ fn merge_deleted_sessions(
     stats: &mut SecretResolutionStats,
 ) -> Vec<DeletedSession> {
     let mut merged = local_deleted.to_vec();
+    let mut deleted_index: HashMap<String, usize> = merged
+        .iter()
+        .enumerate()
+        .map(|(index, item)| (item.session.id.clone(), index))
+        .collect();
+    let active_index: HashMap<&str, &Session> = local_sessions
+        .iter()
+        .map(|session| (session.id.as_str(), session))
+        .collect();
+
     for remote in remote_deleted {
-        let local = merged
-            .iter()
-            .find(|item| item.session.id == remote.session.id)
-            .map(|item| &item.session);
-        let local_active = local_sessions
-            .iter()
-            .find(|item| item.id == remote.session.id)
-            .or(local);
-        let session = session_from_remote(remote.session, local_active, password, stats);
-        if let Some(existing) = merged.iter_mut().find(|item| item.session.id == session.id) {
-            if remote.deleted_at >= existing.deleted_at {
-                *existing = DeletedSession {
+        let id = remote.session.id.clone();
+        let local = active_index.get(id.as_str()).copied().or_else(|| {
+            deleted_index
+                .get(id.as_str())
+                .and_then(|index| merged.get(*index))
+                .map(|item| &item.session)
+        });
+        let deleted_at = remote.deleted_at;
+        let session = session_from_remote(remote.session, local, password, stats);
+        if let Some(index) = deleted_index.get(&id).copied() {
+            if deleted_at >= merged[index].deleted_at {
+                merged[index] = DeletedSession {
                     session,
-                    deleted_at: remote.deleted_at,
+                    deleted_at,
                 };
             }
         } else {
+            deleted_index.insert(id, merged.len());
             merged.push(DeletedSession {
                 session,
-                deleted_at: remote.deleted_at,
+                deleted_at,
             });
         }
     }
@@ -200,15 +222,22 @@ fn merge_deleted_groups(
     stats: &mut SecretResolutionStats,
 ) -> Vec<DeletedConnectionGroup> {
     let mut merged = local_deleted.to_vec();
+    let mut group_index: HashMap<String, usize> = merged
+        .iter()
+        .enumerate()
+        .map(|(index, item)| (item.name.clone(), index))
+        .collect();
+    let session_index: HashMap<&str, &Session> = local_deleted_sessions
+        .iter()
+        .map(|item| (item.session.id.as_str(), &item.session))
+        .collect();
+
     for remote in remote_deleted {
         let sessions = remote
             .sessions
             .into_iter()
             .map(|session| {
-                let local = local_deleted_sessions
-                    .iter()
-                    .find(|item| item.session.id == session.id)
-                    .map(|item| &item.session);
+                let local = session_index.get(session.id.as_str()).copied();
                 session_from_remote(session, local, password, stats)
             })
             .collect();
@@ -218,11 +247,12 @@ fn merge_deleted_groups(
             sessions,
             deleted_at: remote.deleted_at,
         };
-        if let Some(existing) = merged.iter_mut().find(|item| item.name == group.name) {
-            if group.deleted_at >= existing.deleted_at {
-                *existing = group;
+        if let Some(index) = group_index.get(group.name.as_str()).copied() {
+            if group.deleted_at >= merged[index].deleted_at {
+                merged[index] = group;
             }
         } else {
+            group_index.insert(group.name.clone(), merged.len());
             merged.push(group);
         }
     }
@@ -235,66 +265,113 @@ fn apply_deleted_projection(
     deleted_sessions: &[DeletedSession],
     deleted_groups: &[DeletedConnectionGroup],
 ) {
-    let deleted_ids: std::collections::HashSet<&str> = deleted_sessions
+    let deleted_ids: HashSet<&str> = deleted_sessions
         .iter()
         .map(|item| item.session.id.as_str())
         .collect();
-    let deleted_group_names: Vec<&str> = deleted_groups
+    let deleted_group_names: HashSet<&str> = deleted_groups
         .iter()
         .flat_map(|item| item.groups.iter().map(String::as_str))
         .collect();
+
     sessions.retain(|session| {
         !deleted_ids.contains(session.id.as_str())
-            && !session.group.as_deref().is_some_and(|group| {
-                deleted_group_names
-                    .iter()
-                    .any(|deleted| group == *deleted || group.starts_with(&format!("{deleted}/")))
-            })
+            && !session
+                .group
+                .as_deref()
+                .is_some_and(|group| group_is_deleted(group, &deleted_group_names))
     });
-    groups.retain(|group| {
-        !deleted_group_names
-            .iter()
-            .any(|deleted| group == *deleted || group.starts_with(&format!("{deleted}/")))
-    });
+    groups.retain(|group| !group_is_deleted(group, &deleted_group_names));
 }
+
+fn group_is_deleted(group: &str, deleted_groups: &HashSet<&str>) -> bool {
+    if deleted_groups.contains(group) {
+        return true;
+    }
+
+    let mut boundary = 0;
+    while let Some(relative) = group[boundary..].find('/') {
+        boundary += relative;
+        if deleted_groups.contains(&group[..boundary]) {
+            return true;
+        }
+        boundary += 1;
+    }
+    false
+}
+
+struct SessionIndex<'a> {
+    by_id: HashMap<&'a str, usize>,
+    by_endpoint: HashMap<(&'a str, u16, &'a str), usize>,
+    by_endpoint_without_id: HashMap<(&'a str, u16, &'a str), usize>,
+}
+
+impl<'a> SessionIndex<'a> {
+    fn new(sessions: &'a [Session]) -> Self {
+        let mut index = Self {
+            by_id: HashMap::with_capacity(sessions.len()),
+            by_endpoint: HashMap::with_capacity(sessions.len()),
+            by_endpoint_without_id: HashMap::new(),
+        };
+        for (position, session) in sessions.iter().enumerate() {
+            if !session.id.is_empty() {
+                index.by_id.entry(session.id.as_str()).or_insert(position);
+            } else {
+                index
+                    .by_endpoint_without_id
+                    .entry((session.host.as_str(), session.port, session.user.as_str()))
+                    .or_insert(position);
+            }
+            index
+                .by_endpoint
+                .entry((session.host.as_str(), session.port, session.user.as_str()))
+                .or_insert(position);
+        }
+        index
+    }
+
+    fn find(&self, remote: &SyncSession) -> Option<usize> {
+        if !remote.id.is_empty() {
+            self.by_id.get(remote.id.as_str()).copied().or_else(|| {
+                self.by_endpoint_without_id
+                    .get(&(remote.host.as_str(), remote.port, remote.user.as_str()))
+                    .copied()
+            })
+        } else {
+            self.by_endpoint
+                .get(&(remote.host.as_str(), remote.port, remote.user.as_str()))
+                .copied()
+        }
+    }
+}
+
 fn merge_sessions(
     local_sessions: &[Session],
     remote_sessions: Vec<SyncSession>,
     password: Option<&str>,
     stats: &mut SecretResolutionStats,
 ) -> Vec<Session> {
-    let mut sessions: Vec<_> = remote_sessions
-        .into_iter()
-        .map(|remote| {
-            let local = local_sessions
-                .iter()
-                .find(|local| session_matches(local, &remote));
-            session_from_remote(remote, local, password, stats)
-        })
-        .collect();
-    let local_only: Vec<_> = local_sessions
-        .iter()
-        .filter(|local| !sessions.iter().any(|remote| sessions_match(remote, local)))
-        .cloned()
-        .collect();
-    sessions.extend(local_only);
+    let index = SessionIndex::new(local_sessions);
+    let mut consumed_local = HashSet::with_capacity(local_sessions.len());
+    let mut sessions = Vec::with_capacity(local_sessions.len() + remote_sessions.len());
+
+    for remote in remote_sessions {
+        let local_index = index.find(&remote);
+        let local = local_index.map(|position| &local_sessions[position]);
+        if let Some(position) = local_index {
+            consumed_local.insert(position);
+        }
+        sessions.push(session_from_remote(remote, local, password, stats));
+    }
+
+    sessions.extend(
+        local_sessions
+            .iter()
+            .enumerate()
+            .filter(|(position, _)| !consumed_local.contains(position))
+            .map(|(_, local)| local.clone()),
+    );
     sessions
-}
-
-fn session_matches(local: &Session, remote: &SyncSession) -> bool {
-    identifiers_match(&local.id, &remote.id)
-        || (identifier_missing(&local.id, &remote.id)
-            && local.host == remote.host
-            && local.port == remote.port
-            && local.user == remote.user)
-}
-
-fn sessions_match(a: &Session, b: &Session) -> bool {
-    identifiers_match(&a.id, &b.id)
-        || (identifier_missing(&a.id, &b.id)
-            && a.host == b.host
-            && a.port == b.port
-            && a.user == b.user)
 }
 
 fn session_from_remote(
@@ -350,48 +427,81 @@ fn session_from_remote(
     }
 }
 
+struct ManagedKeyIndex<'a> {
+    by_id: HashMap<&'a str, usize>,
+    by_fingerprint: HashMap<&'a str, usize>,
+    by_fingerprint_without_id: HashMap<&'a str, usize>,
+}
+
+impl<'a> ManagedKeyIndex<'a> {
+    fn new(keys: &'a [ManagedKey]) -> Self {
+        let mut index = Self {
+            by_id: HashMap::with_capacity(keys.len()),
+            by_fingerprint: HashMap::new(),
+            by_fingerprint_without_id: HashMap::new(),
+        };
+        for (position, key) in keys.iter().enumerate() {
+            if !key.id.is_empty() {
+                index.by_id.entry(key.id.as_str()).or_insert(position);
+            }
+            if !key.fingerprint.is_empty() {
+                index
+                    .by_fingerprint
+                    .entry(key.fingerprint.as_str())
+                    .or_insert(position);
+                if key.id.is_empty() {
+                    index
+                        .by_fingerprint_without_id
+                        .entry(key.fingerprint.as_str())
+                        .or_insert(position);
+                }
+            }
+        }
+        index
+    }
+
+    fn find(&self, remote: &SyncManagedKey) -> Option<usize> {
+        if !remote.id.is_empty() {
+            self.by_id.get(remote.id.as_str()).copied().or_else(|| {
+                self.by_fingerprint_without_id
+                    .get(remote.fingerprint.as_str())
+                    .copied()
+            })
+        } else {
+            self.by_fingerprint
+                .get(remote.fingerprint.as_str())
+                .copied()
+        }
+    }
+}
+
 fn merge_keys(
     local_keys: &[ManagedKey],
     remote_keys: Vec<SyncManagedKey>,
     password: Option<&str>,
     stats: &mut SecretResolutionStats,
 ) -> Vec<ManagedKey> {
-    let mut keys: Vec<_> = remote_keys
-        .into_iter()
-        .map(|remote| {
-            let local = local_keys.iter().find(|local| key_matches(local, &remote));
-            key_from_remote(remote, local, password, stats)
-        })
-        .collect();
-    let local_only: Vec<_> = local_keys
-        .iter()
-        .filter(|local| !keys.iter().any(|remote| managed_keys_match(remote, local)))
-        .cloned()
-        .collect();
-    keys.extend(local_only);
+    let index = ManagedKeyIndex::new(local_keys);
+    let mut consumed_local = HashSet::with_capacity(local_keys.len());
+    let mut keys = Vec::with_capacity(local_keys.len() + remote_keys.len());
+
+    for remote in remote_keys {
+        let local_index = index.find(&remote);
+        let local = local_index.map(|position| &local_keys[position]);
+        if let Some(position) = local_index {
+            consumed_local.insert(position);
+        }
+        keys.push(key_from_remote(remote, local, password, stats));
+    }
+
+    keys.extend(
+        local_keys
+            .iter()
+            .enumerate()
+            .filter(|(position, _)| !consumed_local.contains(position))
+            .map(|(_, local)| local.clone()),
+    );
     keys
-}
-
-fn key_matches(local: &ManagedKey, remote: &SyncManagedKey) -> bool {
-    identifiers_match(&local.id, &remote.id)
-        || (identifier_missing(&local.id, &remote.id)
-            && !local.fingerprint.is_empty()
-            && local.fingerprint == remote.fingerprint)
-}
-
-fn managed_keys_match(a: &ManagedKey, b: &ManagedKey) -> bool {
-    identifiers_match(&a.id, &b.id)
-        || (identifier_missing(&a.id, &b.id)
-            && !a.fingerprint.is_empty()
-            && a.fingerprint == b.fingerprint)
-}
-
-fn identifiers_match(a: &str, b: &str) -> bool {
-    !a.is_empty() && !b.is_empty() && a == b
-}
-
-fn identifier_missing(a: &str, b: &str) -> bool {
-    a.is_empty() || b.is_empty()
 }
 
 fn key_from_remote(
@@ -427,13 +537,14 @@ fn key_from_remote(
 }
 
 fn merge_unique_strings(local: &[String], remote: Vec<String>) -> Vec<String> {
+    let mut seen: HashSet<String> = remote.iter().cloned().collect();
     let mut merged = remote;
-    let local_only: Vec<_> = local
-        .iter()
-        .filter(|value| !merged.contains(value))
-        .cloned()
-        .collect();
-    merged.extend(local_only);
+    merged.extend(
+        local
+            .iter()
+            .filter(|value| seen.insert((*value).clone()))
+            .cloned(),
+    );
     merged
 }
 
@@ -441,44 +552,40 @@ fn merge_command_categories(
     local: &[QuickCommandCategory],
     remote: Vec<QuickCommandCategory>,
 ) -> Vec<QuickCommandCategory> {
+    let local_by_id: HashMap<&str, &QuickCommandCategory> = local
+        .iter()
+        .map(|category| (category.id.as_str(), category))
+        .collect();
+    let remote_ids: HashSet<String> = remote.iter().map(|category| category.id.clone()).collect();
+
     let mut categories: Vec<_> = remote
         .into_iter()
         .map(|mut remote_category| {
-            if let Some(local_category) = local
-                .iter()
-                .find(|local_category| local_category.id == remote_category.id)
-            {
+            if let Some(local_category) = local_by_id.get(remote_category.id.as_str()) {
                 remote_category.commands =
                     merge_commands(&local_category.commands, remote_category.commands);
             }
             remote_category
         })
         .collect();
-    let local_only: Vec<_> = local
-        .iter()
-        .filter(|local_category| {
-            !categories
-                .iter()
-                .any(|remote_category| remote_category.id == local_category.id)
-        })
-        .cloned()
-        .collect();
-    categories.extend(local_only);
+    categories.extend(
+        local
+            .iter()
+            .filter(|category| !remote_ids.contains(category.id.as_str()))
+            .cloned(),
+    );
     categories
 }
 
 fn merge_commands(local: &[QuickCommand], remote: Vec<QuickCommand>) -> Vec<QuickCommand> {
+    let remote_ids: HashSet<String> = remote.iter().map(|command| command.id.clone()).collect();
     let mut commands = remote;
-    let local_only: Vec<_> = local
-        .iter()
-        .filter(|local_command| {
-            !commands
-                .iter()
-                .any(|remote_command| remote_command.id == local_command.id)
-        })
-        .cloned()
-        .collect();
-    commands.extend(local_only);
+    commands.extend(
+        local
+            .iter()
+            .filter(|command| !remote_ids.contains(command.id.as_str()))
+            .cloned(),
+    );
     commands
 }
 
@@ -704,6 +811,55 @@ mod tests {
     }
 
     #[test]
+    fn stable_remote_session_id_replaces_matching_legacy_local_session() {
+        let local = session("", "Local", "local-password");
+        let mut remote = session("remote-id", "Remote", "remote-password");
+        remote.private_key_inline.clear();
+        remote.passphrase.clear();
+        remote.proxy_password.clear();
+        let payload = SyncPayload::new(
+            "device-1".into(),
+            vec![remote],
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            false,
+            "",
+        )
+        .unwrap();
+
+        let merged = merge_payload(&[local], &[], &[], &[], payload, "");
+
+        assert_eq!(merged.sessions.len(), 1);
+        assert_eq!(merged.sessions[0].id, "remote-id");
+        assert_eq!(merged.sessions[0].name, "Remote");
+        assert_eq!(merged.sessions[0].password, "local-password");
+    }
+
+    #[test]
+    fn stable_remote_key_id_replaces_matching_legacy_local_key() {
+        let local = key("", "Local key", "local-key-content");
+        let remote = key("remote-key", "Remote key", "remote-key-content");
+        let payload = SyncPayload::new(
+            "device-1".into(),
+            Vec::new(),
+            Vec::new(),
+            vec![remote],
+            Vec::new(),
+            false,
+            "",
+        )
+        .unwrap();
+
+        let merged = merge_payload(&[], &[], &[local], &[], payload, "");
+
+        assert_eq!(merged.managed_keys.len(), 1);
+        assert_eq!(merged.managed_keys[0].id, "remote-key");
+        assert_eq!(merged.managed_keys[0].name, "Remote key");
+        assert_eq!(merged.managed_keys[0].inline_content, "local-key-content");
+    }
+
+    #[test]
     fn newer_remote_tombstones_remove_active_objects_and_survive_merge() {
         let local_session = session("session-1", "Local", "local-password");
         let mut deleted_group_session = session("session-2", "Grouped", "group-password");
@@ -782,5 +938,127 @@ mod tests {
 
         assert!(merged.sessions.is_empty());
         assert_eq!(merged.deleted_sessions.len(), 1);
+    }
+
+    #[test]
+    fn repeated_merge_is_idempotent() {
+        let local = session("local", "Local", "password");
+        let remote = session("remote", "Remote", "password");
+        let payload = SyncPayload::new(
+            "device-1".into(),
+            vec![remote],
+            vec!["prod".into()],
+            Vec::new(),
+            Vec::new(),
+            false,
+            "",
+        )
+        .unwrap();
+
+        let first = merge_payload(&[local], &["local".into()], &[], &[], payload.clone(), "");
+        let second = merge_payload_with_deleted(
+            MergeLocal {
+                sessions: &first.sessions,
+                deleted_sessions: &first.deleted_sessions,
+                connection_groups: &first.connection_groups,
+                deleted_connection_groups: &first.deleted_connection_groups,
+                keys: &first.managed_keys,
+                commands: &first.quick_command_categories,
+            },
+            payload,
+            "",
+        );
+
+        assert_eq!(
+            serde_json::to_string(&first.sessions).unwrap(),
+            serde_json::to_string(&second.sessions).unwrap()
+        );
+        assert_eq!(first.connection_groups, second.connection_groups);
+        assert_eq!(first.deleted_sessions.len(), second.deleted_sessions.len());
+        assert_eq!(first.managed_keys.len(), second.managed_keys.len());
+        assert_eq!(
+            first.quick_command_categories.len(),
+            second.quick_command_categories.len()
+        );
+    }
+
+    #[test]
+    fn duplicate_remote_tombstones_collapse_to_one_latest_entry() {
+        let target = session("session-1", "Target", "password");
+        let payload = SyncPayload::new_with_deleted(
+            "device-1".into(),
+            Vec::new(),
+            vec![
+                DeletedSession {
+                    session: target.clone(),
+                    deleted_at: 10,
+                },
+                DeletedSession {
+                    session: Session {
+                        name: "Latest".into(),
+                        ..target
+                    },
+                    deleted_at: 20,
+                },
+            ],
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            false,
+            "",
+        )
+        .unwrap();
+
+        let merged = merge_payload_with_deleted(
+            MergeLocal {
+                sessions: &[],
+                deleted_sessions: &[],
+                connection_groups: &[],
+                deleted_connection_groups: &[],
+                keys: &[],
+                commands: &[],
+            },
+            payload,
+            "",
+        );
+
+        assert_eq!(merged.deleted_sessions.len(), 1);
+        assert_eq!(merged.deleted_sessions[0].deleted_at, 20);
+        assert_eq!(merged.deleted_sessions[0].session.name, "Latest");
+    }
+
+    #[test]
+    fn large_session_catalog_merges_overlapping_ids_once() {
+        let local: Vec<_> = (0..10_000)
+            .map(|index| session(&format!("session-{index}"), "Local", ""))
+            .collect();
+        let remote: Vec<_> = (5_000..15_000)
+            .map(|index| session(&format!("session-{index}"), "Remote", ""))
+            .collect();
+        let payload = SyncPayload::new(
+            "device-1".into(),
+            remote,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            false,
+            "",
+        )
+        .unwrap();
+
+        let merged = merge_payload(&local, &[], &[], &[], payload, "");
+        let ids: HashSet<_> = merged.sessions.iter().map(|item| &item.id).collect();
+
+        assert_eq!(merged.sessions.len(), 15_000);
+        assert_eq!(ids.len(), merged.sessions.len());
+        assert_eq!(
+            merged
+                .sessions
+                .iter()
+                .find(|item| item.id == "session-5000")
+                .map(|item| item.name.as_str()),
+            Some("Remote")
+        );
     }
 }

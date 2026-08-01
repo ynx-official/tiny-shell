@@ -214,7 +214,7 @@ fn event_route_id(event: &BackendEvent) -> Option<&str> {
         | BackendEvent::TransferStarted { tab_id, .. }
         | BackendEvent::Closed { tab_id, .. }
         | BackendEvent::TerminalTitleChanged { tab_id, .. } => Some(tab_id),
-        BackendEvent::SyncFinished(_) => None,
+        BackendEvent::SyncFinished { .. } => None,
     }
 }
 

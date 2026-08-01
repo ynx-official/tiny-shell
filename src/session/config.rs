@@ -1838,14 +1838,75 @@ fn configured_env_proxy() -> Option<&'static EnvProxy> {
     ENV_PROXY.get().and_then(Option::as_ref)
 }
 
-pub async fn connect_proxy(session: &Session) -> Result<Box<dyn ProxyStream>> {
+async fn read_http_connect_response(stream: &mut tokio::net::TcpStream) -> Result<()> {
+    const MAX_RESPONSE_BYTES: usize = 16 * 1024;
+    let mut response = Vec::with_capacity(256);
+    let mut byte = [0_u8; 1];
+    while response.len() < MAX_RESPONSE_BYTES {
+        let read = tokio::io::AsyncReadExt::read(stream, &mut byte).await?;
+        if read == 0 {
+            break;
+        }
+        response.push(byte[0]);
+        if response.ends_with(b"\r\n\r\n") {
+            return parse_http_connect_status(&response);
+        }
+    }
+
+    Err(anyhow::anyhow!(
+        "HTTP proxy returned an incomplete or oversized CONNECT response"
+    ))
+}
+
+fn valid_http_version(version: &str) -> bool {
+    let Some(version) = version.strip_prefix("HTTP/") else {
+        return false;
+    };
+    let Some((major, minor)) = version.split_once('.') else {
+        return false;
+    };
+    !major.is_empty()
+        && major.bytes().all(|byte| byte.is_ascii_digit())
+        && !minor.is_empty()
+        && minor.bytes().all(|byte| byte.is_ascii_digit())
+}
+
+fn parse_http_connect_status(response: &[u8]) -> Result<()> {
+    let header_end = response
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .ok_or_else(|| anyhow::anyhow!("HTTP proxy returned an incomplete CONNECT response"))?;
+    let status_line_end = response[..header_end + 2]
+        .windows(2)
+        .position(|window| window == b"\r\n")
+        .ok_or_else(|| anyhow::anyhow!("HTTP proxy returned an invalid CONNECT status line"))?;
+    let status_line = std::str::from_utf8(&response[..status_line_end])
+        .context("HTTP proxy returned a non-UTF-8 CONNECT status line")?;
+    let mut fields = status_line.split_ascii_whitespace();
+    let version = fields.next().unwrap_or_default();
+    let status = fields
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("HTTP proxy returned an invalid CONNECT status line"))?
+        .parse::<u16>()
+        .context("HTTP proxy returned an invalid CONNECT status code")?;
+    if !valid_http_version(version) || !(200..300).contains(&status) {
+        return Err(anyhow::anyhow!(
+            "HTTP proxy CONNECT failed with status {status}"
+        ));
+    }
+    Ok(())
+}
+
+pub async fn connect_proxy(
+    session: &Session,
+    config: &ConfigStore,
+) -> Result<Box<dyn ProxyStream>> {
     let target_host = session.host.clone();
     let target_port = session.port;
     let session = session.clone();
 
     let connect_fut = async move {
         let target_host = &target_host;
-        let config = ConfigStore::load().unwrap_or_else(|_| ConfigStore::in_memory());
         let (proxy_type, proxy_host, proxy_port, proxy_user, proxy_password) = {
             if !session.proxy_type.is_empty() && session.proxy_type != "none" {
                 (
@@ -1938,12 +1999,7 @@ pub async fn connect_proxy(session: &Session) -> Result<Box<dyn ProxyStream>> {
 
                 stream.write_all(request.as_bytes()).await?;
 
-                let mut response = [0u8; 1024];
-                let n = tokio::io::AsyncReadExt::read(&mut stream, &mut response).await?;
-                let resp_str = String::from_utf8_lossy(&response[..n]);
-                if !resp_str.contains("200") && !resp_str.contains("established") {
-                    return Err(anyhow::anyhow!("HTTP proxy CONNECT failed: {}", resp_str));
-                }
+                read_http_connect_response(&mut stream).await?;
 
                 Ok(Box::new(stream) as Box<dyn ProxyStream>)
             }
@@ -1960,8 +2016,10 @@ pub async fn connect_proxy(session: &Session) -> Result<Box<dyn ProxyStream>> {
         .map_err(|_| anyhow::anyhow!("connection timed out after 16 seconds"))?
 }
 
-pub fn active_proxy(session: &Session) -> Option<(String, String, Option<u16>)> {
-    let config = ConfigStore::load().unwrap_or_else(|_| ConfigStore::in_memory());
+pub fn active_proxy(
+    session: &Session,
+    config: &ConfigStore,
+) -> Option<(String, String, Option<u16>)> {
     let (proxy_type, proxy_host, proxy_port, _, _) = {
         if !session.proxy_type.is_empty() && session.proxy_type != "none" {
             (
@@ -2147,6 +2205,27 @@ fn decrypt_config(raw: &[u8], password: &str) -> Result<ConfigFile> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn http_connect_status_requires_a_success_status_code() {
+        assert!(parse_http_connect_status(b"HTTP/1.1 200 Connection Established\r\n\r\n").is_ok());
+        assert!(parse_http_connect_status(b"HTTP/1.1 204 No Content\r\n\r\n").is_ok());
+        assert!(
+            parse_http_connect_status(b"HTTP/1.1 407 Proxy Authentication Required\r\n\r\n")
+                .is_err()
+        );
+        assert!(parse_http_connect_status(b"HTTP/1.1 500 200 in body\r\n\r\n").is_err());
+    }
+
+    #[test]
+    fn http_connect_status_rejects_malformed_responses() {
+        assert!(parse_http_connect_status(b"200 Connection Established\r\n\r\n").is_err());
+        assert!(parse_http_connect_status(b"HTTP/1.1 OK\r\n\r\n").is_err());
+        assert!(parse_http_connect_status(b"HTTP/1.1 200 Connection Established").is_err());
+        assert!(parse_http_connect_status(b"HTTP/garbage 200 OK\r\n\r\n").is_err());
+        assert!(parse_http_connect_status(b"HTTP/ 200 OK\r\n\r\n").is_err());
+        assert!(parse_http_connect_status(b"HTTP/1 200 OK\r\n\r\n").is_err());
+    }
 
     #[test]
     fn sensitive_debug_output_is_redacted() {

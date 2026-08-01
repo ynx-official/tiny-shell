@@ -108,8 +108,12 @@ impl TinyShell {
         let events = self.backend_events_sender(cx);
         match local::spawn_local_terminal(id.clone(), DEFAULT_COLS, DEFAULT_ROWS, events.clone()) {
             Ok(backend) => {
-                let title = if cfg!(windows) { "PowerShell" } else { "Local" }.to_string();
-                let mut tab = TerminalTab::new_local(id.clone(), title, backend, events);
+                let title = if cfg!(windows) {
+                    t!("local_terminal_powershell").to_string()
+                } else {
+                    t!("local_terminal").to_string()
+                };
+                let mut tab = TerminalTab::new_local(id.clone(), title.clone(), backend, events);
                 tab.resize(DEFAULT_COLS, DEFAULT_ROWS);
                 self.tabs.push(tab);
                 self.register_backend_route(id.clone(), cx);
@@ -120,16 +124,16 @@ impl TinyShell {
                 self.tab_groups.push(TabGroup {
                     id: group_id.clone(),
                     ordinal,
-                    title: "Local".to_string(),
+                    title,
                     pane_root: PaneLayout::Single(id),
                     sftp: None,
                 });
                 self.active_group = Some(group_id);
                 self.tabs_scroll_handle.scroll_to_item(self.tabs.len() - 1);
-                self.status = "local terminal opened".into();
+                self.status = t!("local_terminal_opened").into();
             }
             Err(err) => {
-                self.status = format!("failed to open local terminal: {err:#}").into();
+                self.status = t!("local_terminal_open_failed", err = format!("{err:#}")).into();
             }
         }
         cx.notify();
@@ -163,7 +167,7 @@ impl TinyShell {
             let proxy_port_str = self.proxy_port_input.read(cx).value().trim().to_string();
             let proxy_port = proxy_port_str.parse::<u16>().ok();
             if proxy_host.is_empty() || proxy_port.is_none() {
-                self.status = "Proxy host and port are required".into();
+                self.status = t!("ssh_editor_proxy_required").into();
                 cx.notify();
                 return;
             }
@@ -250,33 +254,6 @@ impl TinyShell {
         cx: &mut Context<Self>,
     ) {
         input.update(cx, |state, cx| state.set_value(value, window, cx));
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn reset_ssh_form(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.editing_session_id = None;
-        self.ssh_auth_method = AuthMethod::Password;
-        self.ssh_config_selected = None;
-        self.managed_key_selected = None;
-        self.managed_key_dialog_selection = None;
-        self.editing_managed_key_id = None;
-        self.using_custom_key_path = false;
-        Self::set_input_value(&self.session_name_input, "", window, cx);
-        Self::set_input_value(&self.host_input, "", window, cx);
-        Self::set_input_value(&self.port_input, "22", window, cx);
-        Self::set_input_value(&self.user_input, "root", window, cx);
-        Self::set_input_value(&self.password_input, "", window, cx);
-        Self::set_input_value(&self.key_path_input, "", window, cx);
-        Self::set_input_value(&self.key_inline_input, "", window, cx);
-        Self::set_input_value(&self.passphrase_input, "", window, cx);
-        Self::set_input_value(&self.key_import_remark_input, "", window, cx);
-        Self::set_input_value(&self.key_import_passphrase_input, "", window, cx);
-        self.key_import.close();
-        self.ssh_proxy_type = "none".to_string();
-        Self::set_input_value(&self.proxy_host_input, "", window, cx);
-        Self::set_input_value(&self.proxy_port_input, "", window, cx);
-        Self::set_input_value(&self.proxy_user_input, "", window, cx);
-        Self::set_input_value(&self.proxy_password_input, "", window, cx);
     }
 
     #[allow(dead_code)]
@@ -876,7 +853,7 @@ impl TinyShell {
         cx: &mut Context<Self>,
     ) {
         let Some(session) = self.config.get(&session_id).cloned() else {
-            self.status = "saved session not found".into();
+            self.status = t!("saved_session_not_found").into();
             cx.notify();
             return;
         };
@@ -899,7 +876,7 @@ impl TinyShell {
         cx: &mut Context<Self>,
     ) {
         let Some(session) = self.config.get(&session_id).cloned() else {
-            self.status = "saved session not found".into();
+            self.status = t!("saved_session_not_found").into();
             cx.notify();
             return;
         };
@@ -1060,7 +1037,7 @@ impl TinyShell {
             session_id
         );
         let Some(session) = self.config.get(&session_id).cloned() else {
-            self.status = "saved session not found".into();
+            self.status = t!("saved_session_not_found").into();
             cx.notify();
             return;
         };
@@ -1200,11 +1177,13 @@ impl TinyShell {
 
         let id = Uuid::new_v4().to_string();
         let events = self.backend_events_sender(cx);
+        let proxy_config = self.config.clone();
         self.register_backend_route(id.clone(), cx);
         let backend = ssh::spawn_ssh_terminal(
             self.runtime.handle(),
             id.clone(),
             session.clone(),
+            proxy_config.clone(),
             DEFAULT_COLS,
             DEFAULT_ROWS,
             events.clone(),
@@ -1256,12 +1235,17 @@ impl TinyShell {
         }
         cx.notify();
         self.register_backend_route(group_id.clone(), cx);
-        let sftp_handle =
-            crate::sftp::spawn_sftp(self.runtime.handle(), group_id.clone(), session, events);
+        let sftp_handle = crate::sftp::spawn_sftp(
+            self.runtime.handle(),
+            group_id.clone(),
+            session,
+            proxy_config,
+            events,
+        );
         self.sftp_handles.insert(group_id.clone(), sftp_handle);
         self.active_tab = Some(id.clone());
         self.pending_sftp_path_sync = Some("/".into());
-        self.status = "ssh tab opened".into();
+        self.status = t!("ssh_tab_opened").into();
         cx.notify();
     }
 
@@ -1270,7 +1254,7 @@ impl TinyShell {
         if let Err(err) = crate::app::config_persistence::save_full(&self.config) {
             tracing::warn!("failed to save config: {err:#}");
         }
-        self.status = "session removed".into();
+        self.status = t!("session_removed").into();
         cx.notify();
     }
 
@@ -1295,6 +1279,7 @@ impl TinyShell {
         let cols = self.tabs[ix].cols;
         let rows = self.tabs[ix].rows;
         let events = self.backend_events_sender(cx);
+        let proxy_config = self.config.clone();
         self.register_backend_route(tab_id.to_string(), cx);
 
         // Close old backend (sends Close through the shared Arc<Mutex>)
@@ -1306,6 +1291,7 @@ impl TinyShell {
                 self.runtime.handle(),
                 tab_id.to_string(),
                 session.clone(),
+                proxy_config.clone(),
                 cols,
                 rows,
                 events.clone(),
@@ -1344,6 +1330,7 @@ impl TinyShell {
                         self.runtime.handle(),
                         group_id.clone(),
                         session,
+                        proxy_config.clone(),
                         events.clone(),
                     );
                     self.sftp_handles.insert(group_id.clone(), sftp_handle);
@@ -1370,7 +1357,8 @@ impl TinyShell {
                     self.tabs[ix].send_backend(BackendCommand::Resize { cols, rows });
                 }
                 Err(err) => {
-                    self.status = format!("failed to reopen local terminal: {err:#}").into();
+                    self.status =
+                        t!("local_terminal_reopen_failed", err = format!("{err:#}")).into();
                     cx.notify();
                     return;
                 }
@@ -1378,9 +1366,9 @@ impl TinyShell {
         }
 
         self.status = if is_ssh {
-            "ssh tab retrying"
+            t!("ssh_tab_retrying")
         } else {
-            "local tab reopened"
+            t!("local_tab_reopened")
         }
         .into();
         cx.notify();
@@ -1768,6 +1756,7 @@ impl TinyShell {
         };
         let new_id = Uuid::new_v4().to_string();
         let events = self.backend_events_sender(cx);
+        let proxy_config = self.config.clone();
         self.register_backend_route(new_id.clone(), cx);
         let mut tab = match current_kind {
             TabKind::Local => {
@@ -1779,12 +1768,12 @@ impl TinyShell {
                 ) {
                     Ok(backend) => TerminalTab::new_local(
                         new_id.clone(),
-                        "Local".into(),
+                        t!("local_terminal").to_string(),
                         backend,
                         events.clone(),
                     ),
                     Err(err) => {
-                        self.status = format!("failed to split: {err:#}").into();
+                        self.status = t!("split_failed", err = format!("{err:#}")).into();
                         cx.notify();
                         return;
                     }
@@ -1792,7 +1781,7 @@ impl TinyShell {
             }
             TabKind::Ssh => {
                 let Some(session) = current_session else {
-                    self.status = "cannot split: no session info".into();
+                    self.status = t!("split_no_session").into();
                     cx.notify();
                     return;
                 };
@@ -1800,6 +1789,7 @@ impl TinyShell {
                     self.runtime.handle(),
                     new_id.clone(),
                     session.clone(),
+                    proxy_config.clone(),
                     DEFAULT_COLS,
                     DEFAULT_ROWS,
                     events.clone(),
@@ -1808,6 +1798,7 @@ impl TinyShell {
                     self.runtime.handle(),
                     new_id.clone(),
                     session.clone(),
+                    proxy_config,
                     events.clone(),
                 );
                 self.sftp_handles.insert(new_id.clone(), sftp_handle);

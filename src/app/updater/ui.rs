@@ -60,10 +60,17 @@ impl TinyShell {
                 let cx = cx.clone();
                 async move {
                     let (tx, rx) = futures::channel::oneshot::channel();
-                    crate::app::shared_runtime().spawn(async move {
-                        let result = crate::app::updater::check_for_update().await;
-                        let _ = tx.send(result);
-                    });
+                    match crate::app::shared_runtime() {
+                        Ok(runtime) => {
+                            runtime.spawn(async move {
+                                let result = crate::app::updater::check_for_update().await;
+                                let _ = tx.send(result);
+                            });
+                        }
+                        Err(error) => {
+                            let _ = tx.send(Err(anyhow::anyhow!(error)));
+                        }
+                    }
                     let result = rx
                         .await
                         .unwrap_or_else(|_| Err(anyhow::anyhow!("update check cancelled")));
@@ -133,15 +140,22 @@ impl TinyShell {
     ) {
         use crate::session::config::UpdateCheckMode;
 
+        let mode = self.config.update_check_mode();
+        if matches!(mode, UpdateCheckMode::Disabled)
+            || matches!(mode, UpdateCheckMode::Startup) && !on_startup
+        {
+            self.update_runtime.start_schedule();
+            self.async_runtime.supervisor.cancel("automatic-update");
+            return;
+        }
+
         let generation = self.update_runtime.start_schedule();
         let cancellation = self.async_runtime.supervisor.start("automatic-update");
 
-        match self.config.update_check_mode() {
-            UpdateCheckMode::Disabled => {}
+        match mode {
+            UpdateCheckMode::Disabled => (),
             UpdateCheckMode::Startup => {
-                if on_startup {
-                    self.check_for_updates_with_notification(Some(window_handle), cx);
-                }
+                self.check_for_updates_with_notification(Some(window_handle), cx);
             }
             UpdateCheckMode::Interval => {
                 let interval_hours = self.config.update_interval_hours() as u64;
@@ -213,17 +227,24 @@ impl TinyShell {
                     let (progress_tx, mut progress_rx) = futures::channel::mpsc::unbounded();
                     let update_info = info.clone();
                     let download_cancellation = cancellation.clone();
-                    crate::app::shared_runtime().spawn(async move {
-                        let result = crate::app::updater::download_update(
-                            &update_info,
-                            &download_cancellation,
-                            |done, total| {
-                                let _ = progress_tx.unbounded_send((done, total));
-                            },
-                        )
-                        .await;
-                        let _ = result_tx.send(result);
-                    });
+                    match crate::app::shared_runtime() {
+                        Ok(runtime) => {
+                            runtime.spawn(async move {
+                                let result = crate::app::updater::download_update(
+                                    &update_info,
+                                    &download_cancellation,
+                                    |done, total| {
+                                        let _ = progress_tx.unbounded_send((done, total));
+                                    },
+                                )
+                                .await;
+                                let _ = result_tx.send(result);
+                            });
+                        }
+                        Err(error) => {
+                            let _ = result_tx.send(Err(anyhow::anyhow!(error)));
+                        }
+                    }
                     use futures::StreamExt as _;
                     while let Some((done, total)) = progress_rx.next().await {
                         if task_cancellation.is_cancelled() {
@@ -249,6 +270,9 @@ impl TinyShell {
                         .unwrap_or_else(|_| Err(anyhow::anyhow!("update download cancelled")));
                     cx.update(|cx| {
                         view.update(cx, |this, cx| {
+                            this.async_runtime
+                                .supervisor
+                                .finish("update-download", task_cancellation.id());
                             if !this.update_runtime.finish_download(generation) {
                                 return;
                             }

@@ -255,14 +255,20 @@ impl RenderOnce for ResizablePanel {
             return div().id(("resizable-panel", self.panel_ix));
         }
 
-        let state = self
-            .state
-            .expect("BUG: The `state` in ResizablePanel should be present.");
-        let panel_state = state
-            .read(cx)
-            .panels
-            .get(self.panel_ix)
-            .expect("BUG: The `index` of ResizablePanel should be one of in `state`.");
+        let Some(state) = self.state else {
+            tracing::warn!(
+                panel_ix = self.panel_ix,
+                "resizable panel rendered without state"
+            );
+            return div().id(("resizable-panel", self.panel_ix));
+        };
+        let Some(panel_state) = state.read(cx).panels.get(self.panel_ix).cloned() else {
+            tracing::warn!(
+                panel_ix = self.panel_ix,
+                "resizable panel index is outside the current state"
+            );
+            return div().id(("resizable-panel", self.panel_ix));
+        };
         let size_range = self.size_range.clone();
 
         div()

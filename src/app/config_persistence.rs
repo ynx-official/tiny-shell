@@ -1,6 +1,6 @@
 use std::{
     sync::{
-        Mutex, OnceLock,
+        Arc, Mutex, OnceLock,
         atomic::{AtomicU64, Ordering},
         mpsc,
     },
@@ -10,93 +10,192 @@ use std::{
 
 use crate::session::config::ConfigStore;
 
-static SAVE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
-static SAVE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-static SAVE_TX: OnceLock<mpsc::Sender<(u64, ConfigStore)>> = OnceLock::new();
+struct ConfigRepository {
+    save_sequence: AtomicU64,
+    save_lock: Mutex<()>,
+    save_tx: OnceLock<mpsc::Sender<(u64, ConfigStore)>>,
+}
 
-fn save_sender() -> mpsc::Sender<(u64, ConfigStore)> {
-    SAVE_TX
+static REPOSITORY: OnceLock<Arc<ConfigRepository>> = OnceLock::new();
+
+fn repository() -> Arc<ConfigRepository> {
+    REPOSITORY
         .get_or_init(|| {
-            let (sender, receiver) = mpsc::channel::<(u64, ConfigStore)>();
-            let worker = thread::Builder::new()
-                .name("tiny-shell-config-save".to_string())
-                .spawn(move || {
-                    while let Ok((mut sequence, mut source)) = receiver.recv() {
-                        while let Ok((next_sequence, next_source)) =
-                            receiver.recv_timeout(Duration::from_millis(100))
-                        {
-                            sequence = next_sequence;
-                            source = next_source;
-                        }
-
-                        let lock = SAVE_LOCK.get_or_init(|| Mutex::new(()));
-                        let Ok(_guard) = lock.lock() else {
-                            tracing::warn!(
-                                "config save lock is poisoned; skipping background save"
-                            );
-                            continue;
-                        };
-                        if sequence != SAVE_SEQUENCE.load(Ordering::SeqCst) {
-                            continue;
-                        }
-                        let mut config =
-                            ConfigStore::load().unwrap_or_else(|_| ConfigStore::in_memory());
-                        config.merge_interactive_preferences_from(&source);
-                        if sequence != SAVE_SEQUENCE.load(Ordering::SeqCst) {
-                            continue;
-                        }
-                        if let Err(error) = config.save() {
-                            tracing::warn!("failed to save preferences in background: {error:#}");
-                        }
-                    }
-                });
-            if let Err(error) = worker {
-                tracing::warn!("failed to start config save worker: {error}");
-            }
-            sender
+            Arc::new(ConfigRepository {
+                save_sequence: AtomicU64::new(0),
+                save_lock: Mutex::new(()),
+                save_tx: OnceLock::new(),
+            })
         })
         .clone()
 }
 
-pub(crate) fn persist_async(source: ConfigStore) {
-    let sequence = SAVE_SEQUENCE.fetch_add(1, Ordering::SeqCst) + 1;
-    if let Err(error) = save_sender().send((sequence, source)) {
-        tracing::warn!("failed to queue preference save: {error}");
+impl ConfigRepository {
+    fn next_sequence(&self) -> u64 {
+        self.save_sequence.fetch_add(1, Ordering::SeqCst) + 1
+    }
+
+    fn is_current(&self, sequence: u64) -> bool {
+        sequence == self.save_sequence.load(Ordering::SeqCst)
+    }
+
+    fn save_sender(self: &Arc<Self>) -> mpsc::Sender<(u64, ConfigStore)> {
+        self.save_tx
+            .get_or_init(|| {
+                let (sender, receiver) = mpsc::channel::<(u64, ConfigStore)>();
+                let repository = Arc::clone(self);
+                let worker = thread::Builder::new()
+                    .name("tiny-shell-config-save".to_string())
+                    .spawn(move || {
+                        while let Ok((mut sequence, mut source)) = receiver.recv() {
+                            while let Ok((next_sequence, next_source)) =
+                                receiver.recv_timeout(Duration::from_millis(100))
+                            {
+                                sequence = next_sequence;
+                                source = next_source;
+                            }
+
+                            let Ok(_guard) = repository.save_lock.lock() else {
+                                tracing::warn!(
+                                    "config repository lock is poisoned; skipping background save"
+                                );
+                                continue;
+                            };
+                            if !repository.is_current(sequence) {
+                                continue;
+                            }
+
+                            let mut config = match ConfigStore::load() {
+                                Ok(config) => config,
+                                Err(error) => {
+                                    tracing::warn!(
+                                        "failed to load config before background preference save: {error:#}"
+                                    );
+                                    continue;
+                                }
+                            };
+                            config.merge_interactive_preferences_from(&source);
+                            if !repository.is_current(sequence) {
+                                continue;
+                            }
+                            if let Err(error) = config.save() {
+                                tracing::warn!(
+                                    "failed to save preferences in background: {error:#}"
+                                );
+                            }
+                        }
+                    });
+                if let Err(error) = worker {
+                    tracing::warn!("failed to start config save worker: {error}");
+                }
+                sender
+            })
+            .clone()
+    }
+
+    fn persist_async(self: &Arc<Self>, source: ConfigStore) {
+        let sequence = self.next_sequence();
+        if let Err(error) = self.save_sender().send((sequence, source)) {
+            tracing::warn!("failed to queue preference save: {error}");
+        }
+    }
+
+    fn persist_sync(&self, source: &ConfigStore) -> anyhow::Result<()> {
+        self.next_sequence();
+        let _guard = self
+            .save_lock
+            .lock()
+            .map_err(|_| anyhow::anyhow!("config repository lock is poisoned"))?;
+        let mut config = ConfigStore::load()?;
+        config.merge_interactive_preferences_from(source);
+        config.save()
+    }
+
+    fn save_full(&self, config: &ConfigStore) -> anyhow::Result<()> {
+        self.next_sequence();
+        let _guard = self
+            .save_lock
+            .lock()
+            .map_err(|_| anyhow::anyhow!("config repository lock is poisoned"))?;
+        config.save()
     }
 }
 
-pub(crate) fn persist_sync(source: &ConfigStore) -> anyhow::Result<()> {
-    SAVE_SEQUENCE.fetch_add(1, Ordering::SeqCst);
-    let lock = SAVE_LOCK.get_or_init(|| Mutex::new(()));
-    let _guard = lock
-        .lock()
-        .map_err(|_| anyhow::anyhow!("config save lock is poisoned"))?;
-    let mut config = ConfigStore::load().unwrap_or_else(|_| ConfigStore::in_memory());
-    config.merge_interactive_preferences_from(source);
-    config.save()
+pub(crate) fn persist_async(source: ConfigStore) {
+    repository().persist_async(source);
 }
 
-/// Persist the complete configuration through the same serialized writer used
-/// by interactive preference saves. This keeps full session writes from racing
-/// with a queued preference snapshot.
+pub(crate) fn persist_sync(source: &ConfigStore) -> anyhow::Result<()> {
+    repository().persist_sync(source)
+}
+
 pub(crate) fn save_full(config: &ConfigStore) -> anyhow::Result<()> {
-    SAVE_SEQUENCE.fetch_add(1, Ordering::SeqCst);
-    let lock = SAVE_LOCK.get_or_init(|| Mutex::new(()));
-    let _guard = lock
-        .lock()
-        .map_err(|_| anyhow::anyhow!("config save lock is poisoned"))?;
-    config.save()
+    repository().save_full(config)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::SAVE_SEQUENCE;
-    use std::sync::atomic::Ordering;
+    use std::sync::{Arc, atomic::AtomicU64, mpsc};
+
+    use super::ConfigRepository;
+    use crate::session::config::ConfigStore;
+
+    fn test_repository() -> Arc<ConfigRepository> {
+        Arc::new(ConfigRepository {
+            save_sequence: AtomicU64::new(0),
+            save_lock: std::sync::Mutex::new(()),
+            save_tx: std::sync::OnceLock::new(),
+        })
+    }
 
     #[test]
-    fn save_sequence_always_advances() {
-        let first = SAVE_SEQUENCE.fetch_add(1, Ordering::SeqCst);
-        let second = SAVE_SEQUENCE.fetch_add(1, Ordering::SeqCst);
-        assert_eq!(second, first + 1);
+    fn save_sequence_is_monotonic_across_concurrent_writers() {
+        let repository = test_repository();
+        let (tx, rx) = mpsc::channel();
+        std::thread::scope(|scope| {
+            for _ in 0..8 {
+                let repository = Arc::clone(&repository);
+                let tx = tx.clone();
+                scope.spawn(move || {
+                    tx.send(repository.next_sequence()).unwrap();
+                });
+            }
+        });
+        drop(tx);
+
+        let mut sequences: Vec<_> = rx.iter().collect();
+        sequences.sort_unstable();
+        assert_eq!(sequences, (1..=8).collect::<Vec<_>>());
+        assert!(repository.is_current(8));
+        assert!(!repository.is_current(7));
+    }
+
+    #[test]
+    fn interactive_save_preserves_domain_data_and_updates_preferences() {
+        let mut domain = ConfigStore::in_memory();
+        domain.set_sync_connection("https://sync.example.test".to_string(), "alice".to_string());
+        domain.replace_connection_groups(vec!["production".to_string()]);
+
+        let mut preferences = ConfigStore::in_memory();
+        preferences.set_locale("zh-CN");
+        preferences.set_terminal_font_size(16.0);
+
+        domain.merge_interactive_preferences_from(&preferences);
+
+        assert_eq!(domain.locale(), "zh-CN");
+        assert_eq!(domain.terminal_font_size(), 16.0);
+        assert_eq!(domain.sync_endpoint(), "https://sync.example.test");
+        assert_eq!(domain.sync_username(), "alice");
+        assert_eq!(domain.connection_groups(), &["production".to_string()]);
+    }
+
+    #[test]
+    fn full_save_invalidates_older_async_sequences() {
+        let repository = test_repository();
+        let async_sequence = repository.next_sequence();
+        let full_save_sequence = repository.next_sequence();
+
+        assert!(!repository.is_current(async_sequence));
+        assert!(repository.is_current(full_save_sequence));
     }
 }

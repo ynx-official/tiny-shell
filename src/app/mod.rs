@@ -81,11 +81,15 @@ use crate::{
 /// every additional window spawned another full set of worker threads
 /// (one per CPU core by default). Sharing a single `Arc<Runtime>` across all
 /// windows keeps the thread count flat regardless of how many windows are open.
-static SHARED_RUNTIME: OnceLock<Arc<Runtime>> = OnceLock::new();
+static SHARED_RUNTIME: OnceLock<Result<Arc<Runtime>, String>> = OnceLock::new();
 
-pub(crate) fn shared_runtime() -> Arc<Runtime> {
+pub(crate) fn shared_runtime() -> Result<Arc<Runtime>, String> {
     SHARED_RUNTIME
-        .get_or_init(|| Arc::new(Runtime::new().expect("create tokio runtime")))
+        .get_or_init(|| {
+            Runtime::new()
+                .map(Arc::new)
+                .map_err(|error| format!("failed to create shared tokio runtime: {error}"))
+        })
         .clone()
 }
 
@@ -1044,6 +1048,12 @@ impl TinyShell {
             .workspace_panels()
             .and_then(|s| s.first().copied())
             .unwrap_or(constants::SIDEBAR_WIDTH)));
+        let runtime = shared_runtime().unwrap_or_else(|error| {
+            tracing::error!("cannot initialize application runtime: {error}");
+            // TinyShell cannot create backend sessions without a Tokio runtime;
+            // abort explicitly instead of continuing with a partially usable UI.
+            std::process::abort();
+        });
         let mut this = Self {
             focus_handle: cx.focus_handle(),
             selector_focus_handle: cx.focus_handle(),
@@ -1209,7 +1219,7 @@ impl TinyShell {
             sftp_handles: std::collections::HashMap::new(),
 
             remote_sample_in_flight: None,
-            runtime: shared_runtime(),
+            runtime,
             async_runtime: AsyncRuntimeState::new(events_tx, events_rx),
             last_window_size: None,
             last_sidebar_width,
@@ -1776,7 +1786,10 @@ impl TinyShell {
                         }
                     }
                 }
-                BackendEvent::SyncFinished(result) => {
+                BackendEvent::SyncFinished { result, task_id } => {
+                    self.async_runtime
+                        .supervisor
+                        .finish("sync-operation", task_id);
                     self.sync_runtime.in_progress = false;
                     match result {
                         crate::sync::SyncResult::Uploaded {
@@ -2429,7 +2442,13 @@ impl TinyShell {
         let size = bounds.size;
         if size.width.as_f32() > 400.0 && size.height.as_f32() > 300.0 {
             tracing::info!("[ui] saving layout state...");
-            let mut config = ConfigStore::load().unwrap_or_else(|_| ConfigStore::in_memory());
+            let mut config = match ConfigStore::load() {
+                Ok(config) => config,
+                Err(error) => {
+                    tracing::warn!("failed to load config before saving layout state: {error:#}");
+                    return;
+                }
+            };
             let saved_bounds = match current_bounds {
                 gpui::WindowBounds::Fullscreen(b) => {
                     crate::session::config::SavedWindowBounds::Fullscreen {

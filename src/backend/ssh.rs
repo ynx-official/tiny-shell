@@ -15,7 +15,7 @@ use tokio::{sync::mpsc, task::JoinSet};
 
 use crate::{
     session::{
-        config::{AuthMethod, Session},
+        config::{AuthMethod, ConfigStore, Session},
         ssh_keys::{
             authenticate_with_default_keys, normalize_inline_private_key, private_keys_with_algs,
             session_has_explicit_key,
@@ -29,6 +29,7 @@ pub fn spawn_ssh_terminal(
     runtime: &tokio::runtime::Handle,
     tab_id: String,
     session: Session,
+    proxy_config: ConfigStore,
     cols: u16,
     rows: u16,
     events: BackendEventSender,
@@ -39,6 +40,7 @@ pub fn spawn_ssh_terminal(
         if let Err(err) = run_ssh(
             task_tab.clone(),
             session,
+            proxy_config,
             cols,
             rows,
             cmd_rx,
@@ -87,6 +89,7 @@ async fn sample_remote_system_with_handle(
 async fn run_ssh(
     tab_id: String,
     session: Session,
+    proxy_config: ConfigStore,
     cols: u16,
     rows: u16,
     mut commands: mpsc::UnboundedReceiver<BackendCommand>,
@@ -101,7 +104,7 @@ async fn run_ssh(
     });
 
     let handle = Arc::new(tokio::sync::Mutex::new(
-        connect_and_authenticate(&tab_id, &session, &events).await?,
+        connect_and_authenticate(&tab_id, &session, &events, &proxy_config).await?,
     ));
 
     let mut channel = handle
@@ -229,6 +232,7 @@ async fn connect_and_authenticate(
     tab_id: &str,
     session: &Session,
     events: &BackendEventSender,
+    proxy_config: &ConfigStore,
 ) -> Result<russh::client::Handle<ClientHandler>> {
     let config = Arc::new(client::Config {
         inactivity_timeout: Some(std::time::Duration::from_secs(600)),
@@ -242,23 +246,24 @@ async fn connect_and_authenticate(
         addr,
         session.user
     );
-    let status_text =
-        if let Some((ptype, phost, pport)) = crate::session::config::active_proxy(session) {
-            let pport_val = pport.unwrap_or_else(|| if ptype == "http" { 8080 } else { 1080 });
-            format!(
-                "connecting to {addr} via {} proxy {}:{}",
-                ptype.to_uppercase(),
-                phost,
-                pport_val
-            )
-        } else {
-            format!("opening tcp connection to {addr}")
-        };
+    let status_text = if let Some((ptype, phost, pport)) =
+        crate::session::config::active_proxy(session, proxy_config)
+    {
+        let pport_val = pport.unwrap_or_else(|| if ptype == "http" { 8080 } else { 1080 });
+        format!(
+            "connecting to {addr} via {} proxy {}:{}",
+            ptype.to_uppercase(),
+            phost,
+            pport_val
+        )
+    } else {
+        format!("opening tcp connection to {addr}")
+    };
     let _ = events.send(BackendEvent::Status {
         tab_id: tab_id.to_string(),
         text: status_text,
     });
-    let stream = crate::session::config::connect_proxy(session).await?;
+    let stream = crate::session::config::connect_proxy(session, proxy_config).await?;
     let mut handle = client::connect_stream(config, stream, ClientHandler)
         .await
         .with_context(|| format!("connect {addr} failed"))?;

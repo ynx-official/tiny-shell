@@ -140,7 +140,10 @@ pub enum BackendEvent {
         tab_id: String,
         title: String,
     },
-    SyncFinished(crate::sync::SyncResult),
+    SyncFinished {
+        result: crate::sync::SyncResult,
+        task_id: u64,
+    },
 }
 
 #[derive(Clone)]

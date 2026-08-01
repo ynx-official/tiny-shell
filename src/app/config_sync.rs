@@ -187,7 +187,10 @@ impl TinyShell {
         self.runtime.spawn(async move {
             let result = operation.await;
             if !cancellation.is_cancelled() {
-                let _ = events.send(BackendEvent::SyncFinished(result));
+                let _ = events.send(BackendEvent::SyncFinished {
+                    result,
+                    task_id: cancellation.id(),
+                });
             }
         });
     }
@@ -423,11 +426,13 @@ impl TinyShell {
         run_immediately: bool,
         cx: &mut Context<Self>,
     ) {
-        let generation = self.sync_runtime.start_schedule();
-        let cancellation = self.async_runtime.supervisor.start("automatic-sync");
         if !self.config.sync_enabled() || self.config.sync_backend() != "webdav" {
+            self.sync_runtime.start_schedule();
+            self.async_runtime.supervisor.cancel("automatic-sync");
             return;
         }
+        let generation = self.sync_runtime.start_schedule();
+        let cancellation = self.async_runtime.supervisor.start("automatic-sync");
 
         let interval =
             Duration::from_secs(u64::from(self.config.sync_interval_hours()).saturating_mul(3_600));

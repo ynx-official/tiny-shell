@@ -17,13 +17,19 @@ struct TaskGeneration(u64);
 #[derive(Clone, Debug)]
 pub(crate) struct TaskCancellation {
     cancelled: Arc<AtomicBool>,
+    id: u64,
 }
 
 impl TaskCancellation {
-    fn new() -> Self {
+    fn new(id: u64) -> Self {
         Self {
             cancelled: Arc::new(AtomicBool::new(false)),
+            id,
         }
+    }
+
+    pub(crate) fn id(&self) -> u64 {
+        self.id
     }
 
     pub(crate) fn is_cancelled(&self) -> bool {
@@ -38,6 +44,7 @@ impl TaskCancellation {
 #[derive(Default)]
 pub(crate) struct TaskSupervisor {
     tasks: HashMap<String, TaskCancellation>,
+    next_id: u64,
 }
 
 pub(crate) struct AsyncRuntimeState {
@@ -62,11 +69,30 @@ impl AsyncRuntimeState {
 impl TaskSupervisor {
     pub(crate) fn start(&mut self, name: impl Into<String>) -> TaskCancellation {
         let name = name.into();
-        let task = TaskCancellation::new();
+        self.next_id = self.next_id.wrapping_add(1);
+        let task = TaskCancellation::new(self.next_id);
         if let Some(previous) = self.tasks.insert(name, task.clone()) {
             previous.cancel();
         }
         task
+    }
+
+    pub(crate) fn cancel(&mut self, name: &str) -> bool {
+        if let Some(task) = self.tasks.remove(name) {
+            task.cancel();
+            true
+        } else {
+            false
+        }
+    }
+
+    pub(crate) fn finish(&mut self, name: &str, id: u64) -> bool {
+        if self.tasks.get(name).is_some_and(|task| task.id() == id) {
+            self.tasks.remove(name);
+            true
+        } else {
+            false
+        }
     }
 
     pub(crate) fn cancel_all(&mut self) {
@@ -231,6 +257,38 @@ mod tests {
         let second = supervisor.start("sync");
 
         assert!(first.is_cancelled());
+        assert!(!second.is_cancelled());
+    }
+
+    #[test]
+    fn cancelling_named_task_removes_and_stops_it() {
+        let mut supervisor = TaskSupervisor::default();
+        let task = supervisor.start("sync");
+
+        assert!(supervisor.cancel("sync"));
+        assert!(task.is_cancelled());
+        assert!(!supervisor.cancel("sync"));
+    }
+
+    #[test]
+    fn finishing_task_releases_its_name_for_future_work() {
+        let mut supervisor = TaskSupervisor::default();
+        let first = supervisor.start("sync");
+
+        supervisor.finish("sync", first.id());
+        let second = supervisor.start("sync");
+
+        assert!(!first.is_cancelled());
+        assert!(!second.is_cancelled());
+    }
+
+    #[test]
+    fn stale_completion_cannot_remove_replacement_task() {
+        let mut supervisor = TaskSupervisor::default();
+        let first = supervisor.start("sync");
+        let second = supervisor.start("sync");
+
+        assert!(!supervisor.finish("sync", first.id()));
         assert!(!second.is_cancelled());
     }
 
