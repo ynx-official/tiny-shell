@@ -86,6 +86,8 @@ impl Default for SftpFooterVisibility {
 pub enum AuthMethod {
     Password,
     Key,
+    #[serde(rename = "key-pending")]
+    KeyPending,
     Config,
 }
 

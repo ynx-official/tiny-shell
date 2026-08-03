@@ -1,6 +1,7 @@
 pub mod config;
 pub mod connection_archive;
 pub mod connection_catalog;
+pub mod connection_import;
 pub mod quick_commands;
 pub mod ssh_config;
 pub mod ssh_keys;
@@ -190,7 +191,7 @@ impl TinyShell {
 
         let mut session = match self.ssh_auth_method {
             AuthMethod::Password => Session::password(host, port, user, password),
-            AuthMethod::Key => {
+            AuthMethod::Key | AuthMethod::KeyPending => {
                 // If a managed key is selected, reference it by id.
                 // The actual key content is resolved at connection time.
                 if let Some(mk_id) = &self.managed_key_selected {
@@ -268,9 +269,10 @@ impl TinyShell {
         self.ssh_auth_method = session.auth;
         // Restore managed key selection or custom path mode.
         self.managed_key_selected = session.managed_key_id.clone();
-        self.using_custom_key_path = session.auth == AuthMethod::Key
-            && session.managed_key_id.is_none()
-            && !session.private_key_path.is_empty();
+        self.using_custom_key_path =
+            matches!(session.auth, AuthMethod::Key | AuthMethod::KeyPending)
+                && session.managed_key_id.is_none()
+                && !session.private_key_path.is_empty();
         Self::set_input_value(&self.session_name_input, session.name.clone(), window, cx);
         Self::set_input_value(&self.host_input, session.host.clone(), window, cx);
         Self::set_input_value(&self.port_input, session.port.to_string(), window, cx);
@@ -1031,7 +1033,12 @@ impl TinyShell {
         cx.notify();
     }
 
-    pub(crate) fn connect_saved_session(&mut self, session_id: String, cx: &mut Context<Self>) {
+    pub(crate) fn connect_saved_session(
+        &mut self,
+        session_id: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         tracing::info!(
             "[ui] user clicked to connect saved session '{}'",
             session_id
@@ -1041,6 +1048,34 @@ impl TinyShell {
             cx.notify();
             return;
         };
+        let missing_credentials = match session.auth {
+            AuthMethod::Password => session.password.is_empty(),
+            AuthMethod::KeyPending => true,
+            AuthMethod::Key => {
+                let managed_key_available = session
+                    .managed_key_id
+                    .as_deref()
+                    .and_then(|id| self.config.get_managed_key(id))
+                    .is_some();
+                !managed_key_available
+                    && session.private_key_path.trim().is_empty()
+                    && session.private_key_inline.trim().is_empty()
+            }
+            AuthMethod::Config => false,
+        };
+        if missing_credentials {
+            let owner = cx.entity();
+            window.defer(cx, move |_, cx| {
+                crate::app::connection_manager::ssh_editor_window::open(
+                    owner,
+                    crate::app::connection_manager::ssh_editor_window::SshEditorRequest::Credentials {
+                        session,
+                    },
+                    cx,
+                );
+            });
+            return;
+        }
         self.open_ssh_session(session, cx);
     }
 
@@ -1100,7 +1135,7 @@ impl TinyShell {
                 self.open_new_ssh_dialog(window, cx);
             }
             SelectorEntry::Saved(session_id) => {
-                self.connect_saved_session(session_id, cx);
+                self.connect_saved_session(session_id, window, cx);
                 window.close_dialog(cx);
             }
         }

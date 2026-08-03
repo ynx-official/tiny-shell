@@ -192,6 +192,7 @@ impl TinyShell {
                                                                 this.active_dialog = None;
                                                                 this.connect_saved_session(
                                                                     connect_id.clone(),
+                                                                    window,
                                                                     cx,
                                                                 );
                                                                 window.close_dialog(cx);

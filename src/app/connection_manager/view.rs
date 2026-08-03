@@ -263,16 +263,30 @@ fn render_toolbar(
             Button::new("connection-manager-import")
                 .small()
                 .label(t!("connection_archive_import").to_string())
-                .on_click(window.listener_for(view, |this, _, window, cx| {
-                    this.open_connection_operation_window(
-                        crate::app::connection_manager::operation_window::ConnectionOperation::Archive {
-                            path: PathBuf::new(),
-                            importing: true,
-                        },
-                        window,
-                        cx,
-                    );
-                })),
+                .dropdown_menu_with_anchor(gpui::Anchor::BottomRight, {
+                    let view = view.clone();
+                    move |mut menu, window, _| {
+                        menu = menu.item(
+                            PopupMenuItem::new(t!("connection_archive_import_tiny_shell").to_string())
+                                .on_click(window.listener_for(&view, |this, _, window, cx| {
+                                    this.open_connection_operation_window(
+                                        crate::app::connection_manager::operation_window::ConnectionOperation::Archive {
+                                            path: PathBuf::new(),
+                                            importing: true,
+                                        },
+                                        window,
+                                        cx,
+                                    );
+                                })),
+                        );
+                        menu.item(
+                            PopupMenuItem::new(t!("finalshell_import_title").to_string())
+                                .on_click(window.listener_for(&view, |this, _, window, cx| {
+                                    this.open_finalshell_import_window(window, cx);
+                                })),
+                        )
+                    }
+                }),
         )
         .child(
             Button::new("connection-manager-export")
@@ -644,7 +658,7 @@ fn render_session_row(
             window.listener_for(view, move |this, event: &MouseDownEvent, window, cx| {
                 if event.click_count >= 2 {
                     this.active_dialog = None;
-                    this.connect_saved_session(session_id.clone(), cx);
+                    this.connect_saved_session(session_id.clone(), window, cx);
                     window.remove_window();
                 } else {
                     this.connection_manager_state
@@ -712,7 +726,7 @@ fn session_menu(
                         let id = session_id.clone();
                         move |this, _, window, cx| {
                             this.active_dialog = None;
-                            this.connect_saved_session(id.clone(), cx);
+                            this.connect_saved_session(id.clone(), window, cx);
                             window.remove_window();
                         }
                     },
@@ -964,7 +978,7 @@ fn render_empty_menu(
         )
         .separator()
         .item(
-            PopupMenuItem::new(t!("connection_archive_import").to_string()).on_click(
+            PopupMenuItem::new(t!("connection_archive_import_tiny_shell").to_string()).on_click(
                 window.listener_for(view, |this, _, window, cx| {
                     this.open_connection_operation_window(
                         crate::app::connection_manager::operation_window::ConnectionOperation::Archive {
@@ -974,6 +988,13 @@ fn render_empty_menu(
                         window,
                         cx,
                     );
+                }),
+            ),
+        )
+        .item(
+            PopupMenuItem::new(t!("finalshell_import_title").to_string()).on_click(
+                window.listener_for(view, |this, _, window, cx| {
+                    this.open_finalshell_import_window(window, cx);
                 }),
             ),
         );

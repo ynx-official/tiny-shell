@@ -1370,7 +1370,7 @@ async fn connect_and_authenticate(
             .authenticate_password(&session.user, &session.password)
             .await
             .context("password authentication failed")?,
-        AuthMethod::Key => {
+        AuthMethod::Key | AuthMethod::KeyPending => {
             let has_explicit_key = session_has_explicit_key(session);
 
             if has_explicit_key {
@@ -1482,7 +1482,7 @@ async fn connect_and_authenticate(
             "authentication failed: server rejected {} authentication for {}@{}:{}",
             match session.auth {
                 AuthMethod::Password => "password",
-                AuthMethod::Key => "public key",
+                AuthMethod::Key | AuthMethod::KeyPending => "public key",
                 AuthMethod::Config => "ssh-config",
             },
             session.user,

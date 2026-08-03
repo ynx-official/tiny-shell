@@ -631,41 +631,34 @@ impl TinyShell {
         cx: &mut Context<Self>,
     ) {
         let remote_exists = merged.is_some();
-        if let Some(merged) = merged {
-            self.config.replace_sessions(merged.sessions);
-            self.config
-                .replace_deleted_sessions(merged.deleted_sessions);
-            self.config
-                .replace_connection_groups(merged.connection_groups);
-            self.config
-                .replace_deleted_connection_groups(merged.deleted_connection_groups);
-            self.config.replace_managed_keys(merged.managed_keys);
-            self.managed_keys = self.config.managed_keys().to_vec();
-            self.config
-                .set_quick_command_categories(merged.quick_command_categories);
-        }
-        self.config.set_sync_etag(etag.clone());
-        if let Err(error) = crate::app::config_persistence::save_full(&self.config) {
-            self.sync_runtime.in_progress = false;
-            self.sync_runtime.status = format!("{}: {error:#}", t!("sync_failed")).into();
-            cx.notify();
-            return;
-        }
-
-        let payload = match SyncPayload::new_with_deleted(
-            self.config.sync_device_id().to_string(),
-            self.config.sessions().to_vec(),
-            self.config.deleted_sessions().to_vec(),
-            self.config.connection_groups().to_vec(),
-            self.config.deleted_connection_groups().to_vec(),
-            self.config.managed_keys().to_vec(),
-            self.config
-                .quick_command_categories()
-                .unwrap_or_default()
-                .to_vec(),
-            include_secrets,
-            &privacy_password,
-        ) {
+        let payload = match merged.as_ref() {
+            Some(merged) => SyncPayload::new_with_deleted(
+                self.config.sync_device_id().to_string(),
+                merged.sessions.clone(),
+                merged.deleted_sessions.clone(),
+                merged.connection_groups.clone(),
+                merged.deleted_connection_groups.clone(),
+                merged.managed_keys.clone(),
+                merged.quick_command_categories.clone(),
+                include_secrets,
+                &privacy_password,
+            ),
+            None => SyncPayload::new_with_deleted(
+                self.config.sync_device_id().to_string(),
+                self.config.sessions().to_vec(),
+                self.config.deleted_sessions().to_vec(),
+                self.config.connection_groups().to_vec(),
+                self.config.deleted_connection_groups().to_vec(),
+                self.config.managed_keys().to_vec(),
+                self.config
+                    .quick_command_categories()
+                    .unwrap_or_default()
+                    .to_vec(),
+                include_secrets,
+                &privacy_password,
+            ),
+        };
+        let payload = match payload {
             Ok(payload) => payload,
             Err(error) => {
                 self.sync_runtime.in_progress = false;
@@ -689,6 +682,7 @@ impl TinyShell {
                 Ok(etag) => SyncResult::Uploaded {
                     etag,
                     privacy_password: uploaded_privacy_password,
+                    merged,
                 },
                 Err(failure) => SyncResult::Failed(failure),
             }
@@ -706,7 +700,9 @@ impl TinyShell {
         };
 
         let local_sessions = self.config.sessions().to_vec();
+        let local_deleted_sessions = self.config.deleted_sessions().to_vec();
         let local_connection_groups = self.config.connection_groups().to_vec();
+        let local_deleted_connection_groups = self.config.deleted_connection_groups().to_vec();
         let local_keys = self.config.managed_keys().to_vec();
         let local_commands = self
             .config
@@ -719,6 +715,8 @@ impl TinyShell {
                     Ok(password_status) => {
                         let MergedConfig {
                             sessions,
+                            deleted_sessions,
+                            deleted_connection_groups,
                             connection_groups,
                             managed_keys,
                             quick_command_categories,
@@ -727,20 +725,30 @@ impl TinyShell {
                             ..
                         } = match password_status {
                             PrivacyPasswordStatus::Verified
-                            | PrivacyPasswordStatus::NotConfigured => sync::merge_payload(
-                                &local_sessions,
-                                &local_connection_groups,
-                                &local_keys,
-                                &local_commands,
-                                payload,
-                                &privacy_password,
-                            ),
+                            | PrivacyPasswordStatus::NotConfigured => {
+                                sync::merge_payload_with_deleted(
+                                    sync::MergeLocal {
+                                        sessions: &local_sessions,
+                                        deleted_sessions: &local_deleted_sessions,
+                                        connection_groups: &local_connection_groups,
+                                        deleted_connection_groups: &local_deleted_connection_groups,
+                                        keys: &local_keys,
+                                        commands: &local_commands,
+                                    },
+                                    payload,
+                                    &privacy_password,
+                                )
+                            }
                             PrivacyPasswordStatus::Missing | PrivacyPasswordStatus::Mismatch => {
-                                sync::merge_public_payload(
-                                    &local_sessions,
-                                    &local_connection_groups,
-                                    &local_keys,
-                                    &local_commands,
+                                sync::merge_public_payload_with_deleted(
+                                    sync::MergeLocal {
+                                        sessions: &local_sessions,
+                                        deleted_sessions: &local_deleted_sessions,
+                                        connection_groups: &local_connection_groups,
+                                        deleted_connection_groups: &local_deleted_connection_groups,
+                                        keys: &local_keys,
+                                        commands: &local_commands,
+                                    },
                                     payload,
                                 )
                             }
@@ -749,6 +757,8 @@ impl TinyShell {
                             credentials,
                             password_status,
                             sessions,
+                            deleted_sessions,
+                            deleted_connection_groups,
                             connection_groups,
                             managed_keys,
                             quick_command_categories,

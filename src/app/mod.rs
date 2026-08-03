@@ -2,11 +2,13 @@ mod backend_events;
 pub(crate) mod config_persistence;
 pub mod config_sync;
 pub mod connection_archive_dialogs;
+pub(crate) mod connection_import_window;
 pub mod connection_manager;
 pub mod constants;
 pub mod dialogs;
 pub mod input_focus;
 pub mod keybinding_recorder;
+pub(crate) mod monitoring;
 pub mod resizable;
 pub mod runtime_state;
 pub mod search;
@@ -40,6 +42,7 @@ use std::{
 use crate::app::{
     backend_events::coalesce_backend_events,
     connection_manager::{actions::ConnectionManagerActions, state::ConnectionManagerState},
+    monitoring::{MonitoringVisibilityContext, metrics_visible, push_bounded},
     resizable::ResizableState,
     runtime_state::{
         AsyncRuntimeState, AuxiliaryWindowsState, ConfigPersistenceState, SearchState,
@@ -627,13 +630,6 @@ fn is_legacy_seeded_quick_commands(categories: &[QuickCommandCategory]) -> bool 
 pub(crate) struct NetworkHistory {
     pub(crate) receive: VecDeque<f32>,
     pub(crate) transmit: VecDeque<f32>,
-}
-
-fn push_bounded(history: &mut VecDeque<f32>, value: f32, capacity: usize) {
-    if history.len() == capacity {
-        history.pop_front();
-    }
-    history.push_back(value);
 }
 
 pub(crate) struct TinyShell {
@@ -1473,10 +1469,16 @@ impl TinyShell {
     }
 
     fn monitoring_metrics_visible(&self) -> bool {
-        self.active_system_info_tab.is_some()
-            || (!self.sidebar_collapsed
-                && (self.active_kind() == Some(TabKind::Ssh)
-                    || self.config.monitoring_position() == "Sidebar"))
+        metrics_visible(MonitoringVisibilityContext {
+            position: crate::app::settings::MonitoringPosition::from_config(
+                self.config.monitoring_position(),
+            ),
+            sidebar_collapsed: self.sidebar_collapsed,
+            system_info_open: self.active_system_info_tab.is_some(),
+            active_tab_open: self.active_tab.is_some(),
+            active_tab_is_ssh: self.active_kind() == Some(TabKind::Ssh),
+            home_page_open: self.home_page_open,
+        })
     }
 
     pub(crate) fn set_home_page(&mut self, page: HomePage, cx: &mut Context<Self>) {
@@ -1795,9 +1797,25 @@ impl TinyShell {
                         crate::sync::SyncResult::Uploaded {
                             etag,
                             privacy_password,
+                            merged,
                         } => {
+                            let previous_config = self.config.clone();
+                            let previous_managed_keys = self.managed_keys.clone();
+                            if let Some(merged) = merged {
+                                self.config.replace_sessions(merged.sessions);
+                                self.config
+                                    .replace_deleted_sessions(merged.deleted_sessions);
+                                self.config
+                                    .replace_connection_groups(merged.connection_groups);
+                                self.config.replace_deleted_connection_groups(
+                                    merged.deleted_connection_groups,
+                                );
+                                self.config.replace_managed_keys(merged.managed_keys);
+                                self.managed_keys = self.config.managed_keys().to_vec();
+                                self.config
+                                    .set_quick_command_categories(merged.quick_command_categories);
+                            }
                             self.config.set_sync_etag(etag);
-                            let previous_synced_at = self.config.sync_last_synced_at();
                             self.config
                                 .set_sync_last_synced_at(chrono::Utc::now().timestamp());
                             let password_result = privacy_password.map_or(Ok(()), |password| {
@@ -1816,7 +1834,8 @@ impl TinyShell {
                                     self.schedule_automatic_sync(false, cx);
                                 }
                                 Err(err) => {
-                                    self.config.set_sync_last_synced_at(previous_synced_at);
+                                    self.config = previous_config;
+                                    self.managed_keys = previous_managed_keys;
                                     self.sync_runtime.status =
                                         format!("{}: {err:#}", t!("sync_failed")).into();
                                 }
@@ -1881,7 +1900,9 @@ impl TinyShell {
                             credentials,
                             password_status,
                             sessions,
+                            deleted_sessions,
                             connection_groups,
+                            deleted_connection_groups,
                             managed_keys,
                             quick_command_categories,
                             etag,
@@ -1895,14 +1916,18 @@ impl TinyShell {
                                 .iter()
                                 .map(|category| category.commands.len())
                                 .sum::<usize>();
+                            let previous_config = self.config.clone();
+                            let previous_managed_keys = self.managed_keys.clone();
                             self.config.replace_sessions(sessions);
+                            self.config.replace_deleted_sessions(deleted_sessions);
                             self.config.replace_connection_groups(connection_groups);
+                            self.config
+                                .replace_deleted_connection_groups(deleted_connection_groups);
                             self.config.replace_managed_keys(managed_keys);
                             self.managed_keys = self.config.managed_keys().to_vec();
                             self.config
                                 .set_quick_command_categories(quick_command_categories);
                             self.config.set_sync_etag(etag);
-                            let previous_synced_at = self.config.sync_last_synced_at();
                             self.config
                                 .set_sync_last_synced_at(chrono::Utc::now().timestamp());
                             match crate::app::config_persistence::save_full(&self.config) {
@@ -1963,7 +1988,8 @@ impl TinyShell {
                                     self.schedule_automatic_sync(false, cx);
                                 }
                                 Err(err) => {
-                                    self.config.set_sync_last_synced_at(previous_synced_at);
+                                    self.config = previous_config;
+                                    self.managed_keys = previous_managed_keys;
                                     self.sync_runtime.status =
                                         format!("{}: {err:#}", t!("sync_failed")).into()
                                 }

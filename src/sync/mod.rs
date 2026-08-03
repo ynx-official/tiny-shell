@@ -19,7 +19,7 @@ use backend::for_credentials;
 use http::{http_client, send_with_retry};
 
 pub use merge::{
-    MergeLocal, MergedConfig, merge_payload, merge_payload_with_deleted, merge_public_payload,
+    MergeLocal, MergedConfig, merge_payload_with_deleted, merge_public_payload_with_deleted,
 };
 pub use model::{PrivacyPasswordStatus, SyncPayload};
 
@@ -128,6 +128,7 @@ pub enum SyncResult {
     Uploaded {
         etag: Option<String>,
         privacy_password: Option<String>,
+        merged: Option<MergedConfig>,
     },
     UploadPreflightReady {
         credentials: SyncCredentials,
@@ -144,7 +145,9 @@ pub enum SyncResult {
         credentials: SyncCredentials,
         password_status: PrivacyPasswordStatus,
         sessions: Vec<Session>,
+        deleted_sessions: Vec<crate::session::config::DeletedSession>,
         connection_groups: Vec<String>,
+        deleted_connection_groups: Vec<crate::session::config::DeletedConnectionGroup>,
         managed_keys: Vec<ManagedKey>,
         quick_command_categories: Vec<QuickCommandCategory>,
         etag: Option<String>,
@@ -176,6 +179,7 @@ impl fmt::Debug for SyncResult {
             Self::Uploaded {
                 etag,
                 privacy_password,
+                ..
             } => formatter
                 .debug_struct("Uploaded")
                 .field("etag", etag)

@@ -30,7 +30,7 @@ use std::{
 use crate::{
     PaneLayout, TinyShell,
     app::constants::{COLLAPSED_SIDEBAR_WIDTH, SIDEBAR_WIDTH, TERMINAL_KEY_CONTEXT},
-    app::{HomePage, IncomingTabDrag, ProcessView, SftpPanelView},
+    app::{HomePage, IncomingTabDrag, ProcessView, SftpPanelView, settings::MonitoringPosition},
     sftp::format_mtime,
     sftp::ops::is_editable_text_file,
     system::format_bytes,
@@ -126,55 +126,6 @@ fn animation_key(value: &str) -> u64 {
     })
 }
 
-fn smooth_monitoring_series(values: &[f32]) -> Vec<f32> {
-    let Some((&first, rest)) = values.split_first() else {
-        return Vec::new();
-    };
-    let mut smoothed = Vec::with_capacity(values.len());
-    smoothed.push(first);
-    let mut previous = first;
-    for value in rest {
-        previous = previous * 0.58 + *value * 0.42;
-        smoothed.push(previous);
-    }
-    smoothed
-}
-
-fn nice_network_scale(max_value: f32) -> f32 {
-    if max_value <= 1.0 {
-        return 1.0;
-    }
-    let magnitude = 10_f32.powf(max_value.log10().floor());
-    let normalized = max_value / magnitude;
-    let step = if normalized <= 1.0 {
-        1.0
-    } else if normalized <= 2.0 {
-        2.0
-    } else if normalized <= 5.0 {
-        5.0
-    } else {
-        10.0
-    };
-    step * magnitude
-}
-
-fn format_network_axis(bytes_per_second: f32) -> String {
-    let (value, unit) = if bytes_per_second >= 1024.0 * 1024.0 * 1024.0 {
-        (bytes_per_second / (1024.0 * 1024.0 * 1024.0), "G")
-    } else if bytes_per_second >= 1024.0 * 1024.0 {
-        (bytes_per_second / (1024.0 * 1024.0), "M")
-    } else if bytes_per_second >= 1024.0 {
-        (bytes_per_second / 1024.0, "K")
-    } else {
-        (bytes_per_second, "B")
-    };
-    if value >= 10.0 {
-        format!("{value:.0}{unit}")
-    } else {
-        format!("{value:.1}{unit}")
-    }
-}
-
 impl Render for TinyShell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if self
@@ -239,11 +190,13 @@ impl Render for TinyShell {
         let main_content_raw = if self.active_system_info_tab.is_some() {
             self.render_system_info_page(cx).into_any_element()
         } else if self.active_tab.is_some() && !self.home_page_open {
+            let monitoring_position =
+                MonitoringPosition::from_config(self.config.monitoring_position());
             let monitoring_contents = v_flex()
                 .size_full()
                 .min_h(px(0.))
                 .overflow_hidden()
-                .when(self.config.monitoring_position() == "Bottom", |this| {
+                .when(monitoring_position == MonitoringPosition::Bottom, |this| {
                     this.child(self.render_monitoring_panel(window.viewport_size().width, cx))
                 })
                 .child(
@@ -254,7 +207,7 @@ impl Render for TinyShell {
                         .child(self.render_sftp_panel(window, cx)),
                 );
 
-            let is_monitor_bottom = self.config.monitoring_position() == "Bottom";
+            let is_monitor_bottom = monitoring_position == MonitoringPosition::Bottom;
             let minimized_height = if presentation.clean {
                 1.
             } else if is_monitor_bottom {
@@ -688,6 +641,7 @@ impl Render for TinyShell {
     }
 }
 mod home;
+mod monitoring;
 mod sftp;
 mod sidebar;
 #[path = "ui/terminal.rs"]

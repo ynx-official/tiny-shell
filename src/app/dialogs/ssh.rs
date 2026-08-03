@@ -63,7 +63,7 @@ impl TinyShell {
                     move |content, window, cx| {
                         let auth_method = view.read(cx).ssh_auth_method;
                         let is_password = auth_method == AuthMethod::Password;
-                        let is_key = auth_method == AuthMethod::Key;
+                        let is_key = matches!(auth_method, AuthMethod::Key | AuthMethod::KeyPending);
                         let is_config = auth_method == AuthMethod::Config;
                         let is_editing = view.read(cx).editing_session_id.is_some();
                         let proxy_type = view.read(cx).ssh_proxy_type.clone();

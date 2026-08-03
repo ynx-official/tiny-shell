@@ -37,6 +37,7 @@ pub struct MergeLocal<'a> {
     pub commands: &'a [QuickCommandCategory],
 }
 
+#[allow(dead_code)]
 pub fn merge_payload(
     local_sessions: &[Session],
     local_connection_groups: &[String],
@@ -45,7 +46,7 @@ pub fn merge_payload(
     remote: SyncPayload,
     privacy_password: &str,
 ) -> MergedConfig {
-    merge_payload_with_secret_access(
+    merge_payload_with_deleted(
         MergeLocal {
             sessions: local_sessions,
             deleted_sessions: &[],
@@ -55,10 +56,11 @@ pub fn merge_payload(
             commands: local_commands,
         },
         remote,
-        Some(privacy_password),
+        privacy_password,
     )
 }
 
+#[allow(dead_code)]
 pub fn merge_public_payload(
     local_sessions: &[Session],
     local_connection_groups: &[String],
@@ -66,7 +68,7 @@ pub fn merge_public_payload(
     local_commands: &[QuickCommandCategory],
     remote: SyncPayload,
 ) -> MergedConfig {
-    merge_payload_with_secret_access(
+    merge_public_payload_with_deleted(
         MergeLocal {
             sessions: local_sessions,
             deleted_sessions: &[],
@@ -76,7 +78,6 @@ pub fn merge_public_payload(
             commands: local_commands,
         },
         remote,
-        None,
     )
 }
 
@@ -86,6 +87,13 @@ pub fn merge_payload_with_deleted(
     privacy_password: &str,
 ) -> MergedConfig {
     merge_payload_with_secret_access(local, remote, Some(privacy_password))
+}
+
+pub fn merge_public_payload_with_deleted(
+    local: MergeLocal<'_>,
+    remote: SyncPayload,
+) -> MergedConfig {
+    merge_payload_with_secret_access(local, remote, None)
 }
 
 fn merge_payload_with_secret_access(
@@ -938,6 +946,79 @@ mod tests {
 
         assert!(merged.sessions.is_empty());
         assert_eq!(merged.deleted_sessions.len(), 1);
+    }
+
+    #[test]
+    fn public_merge_preserves_local_tombstones_without_secret_access() {
+        let local = session("session-1", "Local", "local-password");
+        let payload = SyncPayload::new(
+            "device-1".into(),
+            vec![local.clone()],
+            vec!["prod".into()],
+            Vec::new(),
+            Vec::new(),
+            false,
+            "",
+        )
+        .unwrap();
+        let deleted = DeletedSession {
+            session: local,
+            deleted_at: 100,
+        };
+
+        let merged = merge_public_payload_with_deleted(
+            MergeLocal {
+                sessions: &[],
+                deleted_sessions: &[deleted],
+                connection_groups: &[],
+                deleted_connection_groups: &[],
+                keys: &[],
+                commands: &[],
+            },
+            payload,
+        );
+
+        assert!(merged.sessions.is_empty());
+        assert_eq!(merged.connection_groups, vec!["prod"]);
+        assert_eq!(merged.deleted_sessions.len(), 1);
+    }
+
+    #[test]
+    fn local_group_tombstones_prevent_remote_group_contents_from_returning() {
+        let mut remote = session("session-1", "Remote", "");
+        remote.group = Some("prod/eu".into());
+        let payload = SyncPayload::new(
+            "device-1".into(),
+            vec![remote],
+            vec!["prod".into(), "prod/eu".into()],
+            Vec::new(),
+            Vec::new(),
+            false,
+            "",
+        )
+        .unwrap();
+        let deleted_group = DeletedConnectionGroup {
+            name: "prod".into(),
+            groups: vec!["prod".into(), "prod/eu".into()],
+            sessions: Vec::new(),
+            deleted_at: 100,
+        };
+
+        let merged = merge_public_payload_with_deleted(
+            MergeLocal {
+                sessions: &[],
+                deleted_sessions: &[],
+                connection_groups: &[],
+                deleted_connection_groups: &[deleted_group],
+                keys: &[],
+                commands: &[],
+            },
+            payload,
+        );
+
+        assert!(merged.sessions.is_empty());
+        assert!(merged.connection_groups.is_empty());
+        assert_eq!(merged.deleted_connection_groups.len(), 1);
     }
 
     #[test]

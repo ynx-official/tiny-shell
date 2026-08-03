@@ -27,6 +27,9 @@ pub(crate) enum SshEditorRequest {
     Edit {
         session: Session,
     },
+    Credentials {
+        session: Session,
+    },
     Clone {
         session: Session,
     },
@@ -59,6 +62,7 @@ pub(crate) struct SshEditorWindow {
     group: Option<String>,
     proxy_type: String,
     managed_key_id: Option<String>,
+    connect_after_save: bool,
     inputs: SshEditorInputs,
     error: Option<SharedString>,
     focus_handle: FocusHandle,
@@ -88,9 +92,16 @@ impl SshEditorWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        let connect_after_save = matches!(&request, SshEditorRequest::Credentials { .. });
         let (editing_id, baseline, session, group) = match request {
             SshEditorRequest::New { group, prefill } => (None, None, prefill, group),
             SshEditorRequest::Edit { session } => (
+                Some(session.id.clone()),
+                Some(session.clone()),
+                Some(session.clone()),
+                session.group.clone(),
+            ),
+            SshEditorRequest::Credentials { session } => (
                 Some(session.id.clone()),
                 Some(session.clone()),
                 Some(session.clone()),
@@ -233,6 +244,7 @@ impl SshEditorWindow {
             group,
             proxy_type,
             managed_key_id,
+            connect_after_save,
             inputs,
             error: None,
             focus_handle: cx.focus_handle(),
@@ -278,14 +290,14 @@ impl SshEditorWindow {
                 .iter()
                 .any(|key| &key.id == selected)
         });
-        if self.auth == AuthMethod::Key && !managed_key_available {
+        if matches!(self.auth, AuthMethod::Key | AuthMethod::KeyPending) && !managed_key_available {
             anyhow::bail!(t!("select_managed_key_hint").to_string());
         }
 
         let password = Self::input_value(&self.inputs.password, cx);
         let mut session = match self.auth {
             AuthMethod::Password => Session::password(host.clone(), port, user.clone(), password),
-            AuthMethod::Key | AuthMethod::Config => {
+            AuthMethod::Key | AuthMethod::KeyPending | AuthMethod::Config => {
                 let mut session = Session::key(
                     host.clone(),
                     port,
@@ -344,7 +356,7 @@ impl SshEditorWindow {
             staged.upsert(session.clone());
             crate::app::config_persistence::save_full(&staged)?;
             owner.config = staged;
-            if editing_id.is_none() {
+            if editing_id.is_none() || self.connect_after_save {
                 owner.open_ssh_session(session, cx);
             }
             cx.notify();
@@ -822,6 +834,14 @@ impl Render for SshEditorWindow {
                 }
             })
             .bg(cx.theme().background)
+            .child(gpui::div().when(self.connect_after_save, |this| {
+                this.text_color(cx.theme().muted_foreground)
+                    .child(t!(if self.auth == AuthMethod::Password {
+                        "session_password_required"
+                    } else {
+                        "session_key_required"
+                    }))
+            }))
             .child(
                 h_flex()
                     .flex_1()
@@ -865,7 +885,9 @@ impl Render for SshEditorWindow {
                     .child(
                         Button::new("ssh-editor-submit")
                             .primary()
-                            .label(if is_editing {
+                            .label(if self.connect_after_save {
+                                t!("save_and_connect").to_string()
+                            } else if is_editing {
                                 t!("save").to_string()
                             } else {
                                 t!("save_and_connect").to_string()
@@ -930,8 +952,14 @@ fn window_options(cx: &App) -> WindowOptions {
 }
 
 pub(crate) fn open(owner: Entity<TinyShell>, request: SshEditorRequest, cx: &mut App) {
-    let editing = matches!(request, SshEditorRequest::Edit { .. });
-    let title = if editing {
+    let credentials_only = matches!(&request, SshEditorRequest::Credentials { .. });
+    let editing = matches!(
+        request,
+        SshEditorRequest::Edit { .. } | SshEditorRequest::Credentials { .. }
+    );
+    let title = if credentials_only {
+        t!("session_credentials_required").to_string()
+    } else if editing {
         t!("create_or_edit_ssh_session").to_string()
     } else {
         t!("new_ssh_connection").to_string()
@@ -939,10 +967,15 @@ pub(crate) fn open(owner: Entity<TinyShell>, request: SshEditorRequest, cx: &mut
     let opened = cx.open_window(window_options(cx), move |window, cx| {
         window.set_window_title(&title);
         let editor = cx.new(|cx| SshEditorWindow::new(owner, request, window, cx));
-        let host = editor.read(cx).inputs.host.clone();
+        let focus_input =
+            if editor.read(cx).connect_after_save && editor.read(cx).auth == AuthMethod::Password {
+                editor.read(cx).inputs.password.clone()
+            } else {
+                editor.read(cx).inputs.host.clone()
+            };
         window.defer(cx, move |window, cx| {
             window.activate_window();
-            window.focus(&host.read(cx).focus_handle(cx), cx);
+            window.focus(&focus_input.read(cx).focus_handle(cx), cx);
         });
         cx.new(|cx| Root::new(editor, window, cx))
     });

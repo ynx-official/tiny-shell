@@ -64,7 +64,7 @@ impl Render for ConnectionManagerWindow {
     }
 }
 
-fn window_options(cx: &App) -> WindowOptions {
+pub(crate) fn window_options(cx: &App) -> WindowOptions {
     let mut options = WindowOptions {
         is_movable: true,
         is_resizable: true,

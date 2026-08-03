@@ -289,7 +289,7 @@ async fn connect_and_authenticate(
                 .await
                 .context("password authentication failed")?
         }
-        AuthMethod::Key => {
+        AuthMethod::Key | AuthMethod::KeyPending => {
             let has_explicit_key = session_has_explicit_key(session);
             let source = if has_explicit_key {
                 key_source_label(session)
@@ -454,7 +454,7 @@ async fn connect_and_authenticate(
                     "authentication failed: server rejected password authentication for {}@{}:{}",
                     session.user, session.host, session.port
                 ),
-                AuthMethod::Key => format!(
+                AuthMethod::Key | AuthMethod::KeyPending => format!(
                     "authentication failed: server rejected public key authentication for {}@{}:{} using {}",
                     session.user,
                     session.host,
