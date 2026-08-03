@@ -1048,22 +1048,7 @@ impl TinyShell {
             cx.notify();
             return;
         };
-        let missing_credentials = match session.auth {
-            AuthMethod::Password => session.password.is_empty(),
-            AuthMethod::KeyPending => true,
-            AuthMethod::Key => {
-                let managed_key_available = session
-                    .managed_key_id
-                    .as_deref()
-                    .and_then(|id| self.config.get_managed_key(id))
-                    .is_some();
-                !managed_key_available
-                    && session.private_key_path.trim().is_empty()
-                    && session.private_key_inline.trim().is_empty()
-            }
-            AuthMethod::Config => false,
-        };
-        if missing_credentials {
+        if session.requires_credential_prompt() {
             let owner = cx.entity();
             window.defer(cx, move |_, cx| {
                 crate::app::connection_manager::ssh_editor_window::open(

@@ -1,17 +1,73 @@
-use std::{collections::HashSet, fs::File, io::Read, path::Path};
+use std::{
+    collections::HashSet,
+    fs::File,
+    io::{self, Read},
+    path::Path,
+};
 
-use anyhow::{Context, Result, bail};
 use chrono::{TimeZone, Utc};
 use encoding_rs::GBK;
 use serde::Deserialize;
+use thiserror::Error;
 use uuid::Uuid;
-use zip::ZipArchive;
+use zip::{ZipArchive, result::ZipError};
 
 use super::super::config::{AuthMethod, ConfigStore, Session};
 
 const MAX_ENTRIES: usize = 2_000;
 const MAX_JSON_SIZE: u64 = 1_048_576;
 const MAX_TOTAL_SIZE: u64 = 32 * 1_048_576;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FinalShellImportErrorKind {
+    Open,
+    InvalidArchive,
+    TooManyEntries,
+    TooLarge,
+    ReadEntry,
+    InvalidFilenameEncoding,
+    UnsafePath,
+    ReadConnection,
+    NoConnections,
+}
+
+#[derive(Debug, Error)]
+pub enum FinalShellImportError {
+    #[error("failed to open FinalShell backup")]
+    Open(#[source] io::Error),
+    #[error("invalid FinalShell ZIP archive")]
+    InvalidArchive(#[source] ZipError),
+    #[error("FinalShell archive contains too many entries")]
+    TooManyEntries,
+    #[error("FinalShell archive is too large")]
+    TooLarge,
+    #[error("failed to read FinalShell ZIP entry")]
+    ReadEntry(#[source] ZipError),
+    #[error("invalid ZIP filename encoding")]
+    InvalidFilenameEncoding,
+    #[error("unsafe ZIP path")]
+    UnsafePath,
+    #[error("failed to read FinalShell connection")]
+    ReadConnection(#[source] io::Error),
+    #[error("no supported FinalShell connections found")]
+    NoConnections,
+}
+
+impl FinalShellImportError {
+    pub fn kind(&self) -> FinalShellImportErrorKind {
+        match self {
+            Self::Open(_) => FinalShellImportErrorKind::Open,
+            Self::InvalidArchive(_) => FinalShellImportErrorKind::InvalidArchive,
+            Self::TooManyEntries => FinalShellImportErrorKind::TooManyEntries,
+            Self::TooLarge => FinalShellImportErrorKind::TooLarge,
+            Self::ReadEntry(_) => FinalShellImportErrorKind::ReadEntry,
+            Self::InvalidFilenameEncoding => FinalShellImportErrorKind::InvalidFilenameEncoding,
+            Self::UnsafePath => FinalShellImportErrorKind::UnsafePath,
+            Self::ReadConnection(_) => FinalShellImportErrorKind::ReadConnection,
+            Self::NoConnections => FinalShellImportErrorKind::NoConnections,
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct FinalShellImportPreview {
@@ -56,12 +112,11 @@ struct FinalShellConnection {
     access_time: i64,
 }
 
-pub fn parse_finalshell_zip(path: &Path) -> Result<FinalShellImportPreview> {
-    let file =
-        File::open(path).with_context(|| format!("open FinalShell backup {}", path.display()))?;
-    let mut archive = ZipArchive::new(file).context("read FinalShell ZIP archive")?;
+pub fn parse_finalshell_zip(path: &Path) -> Result<FinalShellImportPreview, FinalShellImportError> {
+    let file = File::open(path).map_err(FinalShellImportError::Open)?;
+    let mut archive = ZipArchive::new(file).map_err(FinalShellImportError::InvalidArchive)?;
     if archive.len() > MAX_ENTRIES {
-        bail!("FinalShell archive contains too many entries");
+        return Err(FinalShellImportError::TooManyEntries);
     }
 
     let mut groups = Vec::new();
@@ -69,14 +124,15 @@ pub fn parse_finalshell_zip(path: &Path) -> Result<FinalShellImportPreview> {
     let mut sessions = Vec::new();
     let mut skipped_entries = 0;
     let mut total_size = 0_u64;
+    let mut total_json_size = 0_u64;
 
     for index in 0..archive.len() {
-        let mut entry = archive
+        let entry = archive
             .by_index(index)
-            .with_context(|| format!("read FinalShell ZIP entry {index}"))?;
+            .map_err(FinalShellImportError::ReadEntry)?;
         total_size = total_size.saturating_add(entry.size());
         if total_size > MAX_TOTAL_SIZE {
-            bail!("FinalShell archive is too large");
+            return Err(FinalShellImportError::TooLarge);
         }
 
         let path = decode_zip_path(entry.name_raw())?;
@@ -95,10 +151,19 @@ pub fn parse_finalshell_zip(path: &Path) -> Result<FinalShellImportPreview> {
             continue;
         }
 
-        let mut raw = Vec::with_capacity(entry.size() as usize);
+        let mut raw = Vec::with_capacity(entry.size().min(MAX_JSON_SIZE) as usize);
         entry
+            .take(MAX_JSON_SIZE + 1)
             .read_to_end(&mut raw)
-            .with_context(|| format!("read FinalShell connection {path}"))?;
+            .map_err(FinalShellImportError::ReadConnection)?;
+        if raw.len() as u64 > MAX_JSON_SIZE {
+            skipped_entries += 1;
+            continue;
+        }
+        total_json_size = total_json_size.saturating_add(raw.len() as u64);
+        if total_json_size > MAX_TOTAL_SIZE {
+            return Err(FinalShellImportError::TooLarge);
+        }
         let connection = match serde_json::from_slice::<FinalShellConnection>(&raw) {
             Ok(connection) => connection,
             Err(_) => {
@@ -161,7 +226,7 @@ pub fn parse_finalshell_zip(path: &Path) -> Result<FinalShellImportPreview> {
     }
 
     if sessions.is_empty() {
-        bail!("no supported FinalShell connections found");
+        return Err(FinalShellImportError::NoConnections);
     }
     Ok(FinalShellImportPreview {
         groups,
@@ -192,7 +257,7 @@ pub fn apply_finalshell_import(
                 && existing.host == imported.host
                 && existing.port == imported.port
                 && existing.user == imported.user
-                && existing.auth == imported.auth
+                && equivalent_import_auth(existing.auth, imported.auth)
         }) {
             skipped_sessions += 1;
             continue;
@@ -251,6 +316,16 @@ fn unique_session_name(config: &ConfigStore, requested: &str, group: Option<&str
         .unwrap_or_else(|| format!("{requested} ({})", Uuid::new_v4()))
 }
 
+fn equivalent_import_auth(existing: AuthMethod, imported: AuthMethod) -> bool {
+    match imported {
+        AuthMethod::Password => existing == AuthMethod::Password,
+        AuthMethod::Key | AuthMethod::KeyPending => {
+            matches!(existing, AuthMethod::Key | AuthMethod::KeyPending)
+        }
+        AuthMethod::Config => existing == AuthMethod::Config,
+    }
+}
+
 fn add_group_path(path: &str, groups: &mut Vec<String>, group_set: &mut HashSet<String>) {
     let mut current = String::new();
     for segment in path.split('/') {
@@ -267,13 +342,13 @@ fn add_group_path(path: &str, groups: &mut Vec<String>, group_set: &mut HashSet<
     }
 }
 
-fn decode_zip_path(raw: &[u8]) -> Result<String> {
+fn decode_zip_path(raw: &[u8]) -> Result<String, FinalShellImportError> {
     let decoded = match std::str::from_utf8(raw) {
         Ok(value) => value.to_string(),
         Err(_) => {
             let (value, _, had_errors) = GBK.decode(raw);
             if had_errors {
-                bail!("invalid ZIP filename encoding");
+                return Err(FinalShellImportError::InvalidFilenameEncoding);
             }
             value.into_owned()
         }
@@ -285,7 +360,7 @@ fn decode_zip_path(raw: &[u8]) -> Result<String> {
             .split('/')
             .any(|part| part == ".." || part.contains(':'))
     {
-        bail!("unsafe ZIP path");
+        return Err(FinalShellImportError::UnsafePath);
     }
     Ok(normalized.trim_matches('/').to_string())
 }
@@ -372,5 +447,37 @@ mod tests {
         assert!(session.password.is_empty());
         assert!(session.private_key_inline.is_empty());
         assert!(session.managed_key_id.is_none());
+    }
+
+    #[test]
+    fn reimport_skips_key_connection_after_credentials_are_selected() {
+        let mut config = ConfigStore::in_memory();
+        let preview = FinalShellImportPreview {
+            groups: vec!["prod".to_string()],
+            sessions: vec![ImportedSession {
+                name: "server".to_string(),
+                host: "example.test".to_string(),
+                port: 22,
+                user: "alice".to_string(),
+                auth: AuthMethod::KeyPending,
+                group: Some("prod".to_string()),
+                last_used: None,
+            }],
+            skipped_entries: 0,
+        };
+
+        let first = apply_finalshell_import(&mut config, preview.clone());
+        assert_eq!(first.imported_sessions, 1);
+
+        let id = config.sessions()[0].id.clone();
+        let mut completed = config.get(&id).cloned().unwrap();
+        completed.auth = AuthMethod::Key;
+        completed.managed_key_id = Some("managed-key".to_string());
+        config.upsert(completed);
+
+        let second = apply_finalshell_import(&mut config, preview);
+        assert_eq!(second.imported_sessions, 0);
+        assert_eq!(second.skipped_sessions, 1);
+        assert_eq!(config.sessions().len(), 1);
     }
 }

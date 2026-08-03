@@ -655,7 +655,7 @@ impl TinyShell {
                                 .into_iter()
                                 .enumerate()
                                 .map(|(ix, session)| {
-                                    let session_to_open = session.clone();
+                                    let connect_id = session.id.clone();
                                     let title = session.name.clone();
                                     let detail = format!(
                                         "{}@{}:{} · {}",
@@ -674,8 +674,12 @@ impl TinyShell {
                                         .bg(cx.theme().muted)
                                         .cursor_pointer()
                                         .hover(|this| this.bg(cx.theme().secondary))
-                                        .on_click(cx.listener(move |this, _, _, cx| {
-                                            this.open_ssh_session(session_to_open.clone(), cx);
+                                        .on_click(cx.listener(move |this, _, window, cx| {
+                                            this.connect_saved_session(
+                                                connect_id.clone(),
+                                                window,
+                                                cx,
+                                            );
                                         }))
                                         .child(
                                             h_flex()
@@ -1971,7 +1975,8 @@ impl TinyShell {
                                     .overflow_y_scrollbar()
                                     .children(sessions.into_iter().enumerate().map(
                                         |(ix, session)| {
-                                            let connect_session = session.clone();
+                                            let connect_id = session.id.clone();
+                                            let double_click_id = connect_id.clone();
                                             let edit_id = session.id.clone();
                                             let delete_id = session.id.clone();
                                             let session_id = session.id.clone();
@@ -1994,11 +1999,11 @@ impl TinyShell {
                                                 .on_mouse_down(
                                                     MouseButton::Left,
                                                     cx.listener({
-                                                        let connect_session = connect_session.clone();
-                                                        move |this, event: &MouseDownEvent, _, cx| {
+                                                        move |this, event: &MouseDownEvent, window, cx| {
                                                             if event.click_count >= 2 {
-                                                                this.open_ssh_session(
-                                                                    connect_session.clone(),
+                                                                this.connect_saved_session(
+                                                                    double_click_id.clone(),
+                                                                    window,
                                                                     cx,
                                                                 );
                                                             }
@@ -2126,9 +2131,10 @@ impl TinyShell {
                                                             .primary()
                                                             .label(t!("connect").to_string())
                                                             .on_click(cx.listener(
-                                                                move |this, _, _, cx| {
-                                                                    this.open_ssh_session(
-                                                                        connect_session.clone(),
+                                                                move |this, _, window, cx| {
+                                                                    this.connect_saved_session(
+                                                                        connect_id.clone(),
+                                                                        window,
                                                                         cx,
                                                                     )
                                                                 },

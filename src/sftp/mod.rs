@@ -1353,6 +1353,10 @@ async fn connect_and_authenticate(
     session: &Session,
     proxy_config: &ConfigStore,
 ) -> Result<Arc<russh::client::Handle<SftpClientHandler>>> {
+    if session.requires_credential_prompt() {
+        return Err(anyhow!(t!("session_credentials_required").to_string()));
+    }
+
     let config = Arc::new(client::Config {
         inactivity_timeout: Some(std::time::Duration::from_secs(600)),
         keepalive_interval: Some(std::time::Duration::from_secs(3)),
@@ -1370,7 +1374,7 @@ async fn connect_and_authenticate(
             .authenticate_password(&session.user, &session.password)
             .await
             .context("password authentication failed")?,
-        AuthMethod::Key | AuthMethod::KeyPending => {
+        AuthMethod::Key => {
             let has_explicit_key = session_has_explicit_key(session);
 
             if has_explicit_key {
@@ -1419,6 +1423,9 @@ async fn connect_and_authenticate(
                 }
                 success
             }
+        }
+        AuthMethod::KeyPending => {
+            return Err(anyhow!(t!("session_credentials_required").to_string()));
         }
         AuthMethod::Config => {
             // For Config auth, try the identity file from config entry, or default keys

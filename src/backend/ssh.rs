@@ -11,6 +11,7 @@ use russh::{
     client::{self, Handler},
     keys::{PrivateKey, decode_secret_key, load_secret_key},
 };
+use rust_i18n::t;
 use tokio::{sync::mpsc, task::JoinSet};
 
 use crate::{
@@ -234,6 +235,10 @@ async fn connect_and_authenticate(
     events: &BackendEventSender,
     proxy_config: &ConfigStore,
 ) -> Result<russh::client::Handle<ClientHandler>> {
+    if session.requires_credential_prompt() {
+        return Err(anyhow!(t!("session_credentials_required").to_string()));
+    }
+
     let config = Arc::new(client::Config {
         inactivity_timeout: Some(std::time::Duration::from_secs(600)),
         keepalive_interval: Some(std::time::Duration::from_secs(3)),
@@ -289,7 +294,7 @@ async fn connect_and_authenticate(
                 .await
                 .context("password authentication failed")?
         }
-        AuthMethod::Key | AuthMethod::KeyPending => {
+        AuthMethod::Key => {
             let has_explicit_key = session_has_explicit_key(session);
             let source = if has_explicit_key {
                 key_source_label(session)
@@ -368,6 +373,9 @@ async fn connect_and_authenticate(
                 }
                 success
             }
+        }
+        AuthMethod::KeyPending => {
+            return Err(anyhow!(t!("session_credentials_required").to_string()));
         }
         AuthMethod::Config => {
             // SSH Config auth: try the identity file from config, or default keys

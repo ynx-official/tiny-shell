@@ -211,6 +211,14 @@ impl fmt::Debug for DeletedConnectionGroup {
 }
 
 impl Session {
+    pub fn requires_credential_prompt(&self) -> bool {
+        match self.auth {
+            AuthMethod::Password => self.password.is_empty(),
+            AuthMethod::KeyPending => true,
+            AuthMethod::Key | AuthMethod::Config => false,
+        }
+    }
+
     pub fn password(host: String, port: u16, user: String, password: String) -> Self {
         let name = format!("{user}@{host}");
         Self {
@@ -2484,5 +2492,30 @@ mod tests {
             store.connection_groups(),
             ["second", "second/child", "first", "third"]
         );
+    }
+
+    #[test]
+    fn only_incomplete_imported_credentials_require_a_prompt() {
+        let empty_password =
+            Session::password("example.test".into(), 22, "alice".into(), String::new());
+        assert!(empty_password.requires_credential_prompt());
+
+        let password =
+            Session::password("example.test".into(), 22, "alice".into(), "secret".into());
+        assert!(!password.requires_credential_prompt());
+
+        let default_key = Session::key(
+            "example.test".into(),
+            22,
+            "alice".into(),
+            String::new(),
+            String::new(),
+            String::new(),
+        );
+        assert!(!default_key.requires_credential_prompt());
+
+        let mut pending_key = default_key;
+        pending_key.auth = AuthMethod::KeyPending;
+        assert!(pending_key.requires_credential_prompt());
     }
 }

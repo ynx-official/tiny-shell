@@ -12,9 +12,38 @@ use rust_i18n::t;
 use crate::{
     TinyShell,
     session::connection_import::{
-        FinalShellImportPreview, apply_finalshell_import, parse_finalshell_zip,
+        FinalShellImportError, FinalShellImportErrorKind, FinalShellImportPreview,
+        apply_finalshell_import, parse_finalshell_zip,
     },
 };
+
+fn localized_import_error(error: &FinalShellImportError) -> String {
+    match error.kind() {
+        FinalShellImportErrorKind::Open => t!("finalshell_import_error_open").to_string(),
+        FinalShellImportErrorKind::InvalidArchive => {
+            t!("finalshell_import_error_invalid_archive").to_string()
+        }
+        FinalShellImportErrorKind::TooManyEntries => {
+            t!("finalshell_import_error_too_many_entries").to_string()
+        }
+        FinalShellImportErrorKind::TooLarge => t!("finalshell_import_error_too_large").to_string(),
+        FinalShellImportErrorKind::ReadEntry => {
+            t!("finalshell_import_error_read_entry").to_string()
+        }
+        FinalShellImportErrorKind::InvalidFilenameEncoding => {
+            t!("finalshell_import_error_filename_encoding").to_string()
+        }
+        FinalShellImportErrorKind::UnsafePath => {
+            t!("finalshell_import_error_unsafe_path").to_string()
+        }
+        FinalShellImportErrorKind::ReadConnection => {
+            t!("finalshell_import_error_read_connection").to_string()
+        }
+        FinalShellImportErrorKind::NoConnections => {
+            t!("finalshell_import_error_no_connections").to_string()
+        }
+    }
+}
 
 pub(crate) struct FinalShellImportWindow {
     owner: Entity<TinyShell>,
@@ -48,7 +77,10 @@ impl FinalShellImportWindow {
             match prompt.await {
                 Ok(Ok(Some(mut paths))) => {
                     if let Some(path) = paths.pop() {
-                        let parsed = parse_finalshell_zip(&path);
+                        let parsed = cx
+                            .background_executor()
+                            .spawn(async move { parse_finalshell_zip(&path) })
+                            .await;
                         this.update(cx, |this, cx| {
                             match parsed {
                                 Ok(preview) => {
@@ -56,8 +88,9 @@ impl FinalShellImportWindow {
                                     this.error = None;
                                 }
                                 Err(error) => {
+                                    tracing::warn!(error = ?error, "failed to parse FinalShell backup");
                                     this.preview = None;
-                                    this.error = Some(error.to_string());
+                                    this.error = Some(localized_import_error(&error));
                                 }
                             }
                             cx.notify();
@@ -67,7 +100,10 @@ impl FinalShellImportWindow {
                 }
                 Ok(Err(error)) => {
                     this.update(cx, |this, cx| {
-                        this.error = Some(error.to_string());
+                        this.error = Some(
+                            t!("finalshell_import_picker_failed", error = error.to_string())
+                                .to_string(),
+                        );
                         cx.notify();
                     })?;
                 }
