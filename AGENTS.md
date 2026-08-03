@@ -154,7 +154,7 @@ cargo build --locked --release
 4. 执行 `cargo check` 更新 `Cargo.lock`，确认其中的 `tiny-shell` 包版本一致，再执行 `cargo check --locked`。
 5. 创建或更新 `docs/upgrade/<version>/README.md`，按 5.3 节要求填写完整详情和实际验证结果。
 6. 更新 `docs/upgrade/README.md`，将新版本加入索引顶部，并同步当前版本、发布日期和一句话摘要。
-7. 更新根目录 `CHANGELOG.md`，加入新版本的精简用户可见摘要和详情链接。
+7. 更新根目录 `CHANGELOG.md`，加入新版本的精简用户可见摘要，并在文件底部链接列表顶部加入对应的 `[X.Y.Z]: docs/upgrade/vX.Y.Z/README.md` 引用；缺少该引用会导致发布资料校验失败。
 8. 完成格式、Clippy、测试和适用平台的 release 构建；将最终结果回填到版本详情文档。
 9. 运行 `python scripts/release_notes.py --check-current`，复核版本号、锁文件、详情文档、更新索引和 `CHANGELOG.md` 一致。
 10. 单独提交版本升级和发布文档，不要混入未验证的新功能。
