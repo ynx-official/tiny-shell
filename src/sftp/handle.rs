@@ -46,11 +46,6 @@ impl SftpHandle {
         self.send_command(SftpCommand::MeasureLatency);
     }
 
-    #[allow(dead_code)]
-    pub fn preview(&self, path: String) {
-        self.send_command(SftpCommand::Preview(path));
-    }
-
     pub fn download(&self, remote: String, local_dir: String) {
         self.send_command(SftpCommand::Download { remote, local_dir });
     }

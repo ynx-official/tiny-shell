@@ -2384,7 +2384,6 @@ async fn exec_remote_command(
     }
 }
 
-#[allow(dead_code)]
 async fn maybe_extract_archive(path: &Path) -> Result<Option<PathBuf>> {
     let Some(file_name) = path
         .file_name()

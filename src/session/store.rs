@@ -11,7 +11,6 @@ use crate::{
 pub(crate) type SessionId = String;
 pub(crate) type WindowOwnerId = u64;
 
-#[allow(dead_code)]
 pub(crate) struct SessionStore {
     sessions: HashMap<SessionId, TerminalTab>,
     sftp_handles: HashMap<SessionId, SftpHandle>,
@@ -23,7 +22,6 @@ pub(crate) struct SessionStore {
     events_rx: Receiver<BackendEvent>,
 }
 
-#[allow(dead_code)]
 impl SessionStore {
     pub(crate) fn new() -> Self {
         let (events_tx, events_rx) = backend_event_channel();

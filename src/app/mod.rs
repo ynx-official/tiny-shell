@@ -548,7 +548,6 @@ pub(crate) enum DialogKind {
     ManagedKeyImport,
     ConnectionGroup,
     ConnectionGroupMove,
-    #[allow(dead_code)]
     SessionGroupMove,
     QuickCommandCategory,
     QuickCommand,

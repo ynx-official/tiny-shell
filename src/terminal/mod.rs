@@ -657,13 +657,6 @@ impl TerminalTab {
         self.term.grid().display_offset()
     }
 
-    #[allow(dead_code)]
-    pub fn has_selection(&self) -> bool {
-        self.term
-            .selection_to_string()
-            .is_some_and(|text| !text.is_empty())
-    }
-
     pub fn clear_selection(&mut self) {
         self.invalidate_render_cache();
         self.term.selection = None;

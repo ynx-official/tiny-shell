@@ -1037,7 +1037,6 @@ impl ConfigStore {
         }
     }
 
-    #[allow(dead_code)]
     pub fn move_connection_group(&mut self, name: &str, new_parent: Option<&str>) {
         let leaf = name.rsplit('/').next().unwrap_or(name);
         let destination = new_parent

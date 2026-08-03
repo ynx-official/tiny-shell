@@ -37,7 +37,6 @@ pub struct MergeLocal<'a> {
     pub commands: &'a [QuickCommandCategory],
 }
 
-#[allow(dead_code)]
 pub fn merge_payload(
     local_sessions: &[Session],
     local_connection_groups: &[String],

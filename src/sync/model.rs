@@ -234,7 +234,6 @@ pub struct SyncPayload {
 }
 
 impl SyncPayload {
-    #[allow(dead_code)]
     pub fn new(
         device_id: String,
         sessions: Vec<Session>,
