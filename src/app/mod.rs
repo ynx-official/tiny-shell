@@ -1511,628 +1511,94 @@ impl TinyShell {
             changed = true;
             match event {
                 BackendEvent::Output { tab_id, bytes } => {
-                    if let Some(tab) = self.tabs.iter_mut().find(|t| t.id == tab_id) {
-                        tab.backend_initialized = true;
-                        tab.feed(&bytes);
-                    }
+                    self.handle_terminal_output(tab_id, bytes, cx);
                 }
                 BackendEvent::Status { tab_id, text } => {
-                    if let Some(tab) = self.tabs.iter_mut().find(|t| t.id == tab_id) {
-                        tab.backend_initialized = true;
-                        tab.status = text.clone();
-                    }
-                    self.status = text.into();
+                    self.handle_terminal_status(tab_id, text, cx);
                 }
                 BackendEvent::Connected { tab_id } => {
-                    if let Some(tab) = self.tabs.iter_mut().find(|t| t.id == tab_id) {
-                        tab.backend_initialized = true;
-                        tab.feed_status_line(&t!("connection_succeeded"));
-                        tab.connected = true;
-                        tab.disconnected_reason = None;
+                    self.handle_terminal_connected(tab_id, cx);
+                }
+                BackendEvent::TerminalTitleChanged { tab_id, title } => {
+                    self.handle_terminal_title_changed(tab_id, title, cx);
+                }
+                BackendEvent::Closed { tab_id, reason } => {
+                    if self.handle_terminal_closed(tab_id, reason, cx) {
+                        continue;
                     }
-                    self.sync_system_tab_to_active_group();
-                    self.request_active_system_snapshot();
                 }
                 BackendEvent::SftpEntries {
                     tab_id,
                     path,
                     entries,
                 } => {
-                    if let Some(group) = self.tab_groups.iter_mut().find(|g| g.id == tab_id) {
-                        if let Some(sftp) = group.sftp.as_mut() {
-                            sftp.directory_entries.insert(path.clone(), entries.clone());
-                            if sftp.current_path == path {
-                                sftp.entries = entries;
-                                if self.active_group.as_deref() == Some(tab_id.as_str()) {
-                                    self.pending_sftp_path_sync = Some(path);
-                                }
-                            }
-                        }
-                    }
+                    self.handle_sftp_entries(tab_id, path, entries, cx);
                 }
                 BackendEvent::SftpDirectoryEntries {
                     tab_id,
                     path,
                     entries,
                 } => {
-                    if let Some(group) = self.tab_groups.iter_mut().find(|g| g.id == tab_id) {
-                        if let Some(sftp) = group.sftp.as_mut() {
-                            sftp.directory_entries.insert(path, entries);
-                        }
-                    }
+                    self.handle_sftp_directory_entries(tab_id, path, entries, cx);
                 }
                 BackendEvent::SftpStatus { tab_id, text } => {
-                    if let Some(group) = self.tab_groups.iter_mut().find(|g| g.id == tab_id) {
-                        if let Some(sftp) = group.sftp.as_mut() {
-                            sftp.status = text.clone();
-                        }
-                    }
-                    if self.active_group.as_ref() == Some(&tab_id) {
-                        self.status = text.into();
-                    }
+                    self.handle_sftp_status(tab_id, text, cx);
                 }
                 BackendEvent::SftpLatency { tab_id, latency_ms } => {
-                    if let Some(group) = self.tab_groups.iter_mut().find(|group| group.id == tab_id)
-                        && let Some(sftp) = group.sftp.as_mut()
-                    {
-                        sftp.latency_ms = latency_ms;
-                    }
+                    self.handle_sftp_latency(tab_id, latency_ms, cx);
+                }
+                BackendEvent::SftpHome { tab_id, home } => {
+                    self.handle_sftp_home(tab_id, home, cx);
                 }
                 BackendEvent::SftpFileContent {
                     tab_id,
                     remote_path,
                     file,
                 } => {
-                    if let Some(handle) = self.sftp_handles.get(&tab_id).cloned() {
-                        sftp_editor_window::open_or_focus(tab_id, remote_path, file, handle, cx);
-                    }
+                    self.handle_sftp_file_content(tab_id, remote_path, file, cx);
                 }
                 BackendEvent::SftpContentUploaded {
                     tab_id,
                     remote_path,
                     revision,
                 } => {
-                    sftp_editor_window::mark_uploaded(&tab_id, &remote_path, revision, cx);
+                    self.handle_sftp_content_uploaded(tab_id, remote_path, revision, cx);
                 }
                 BackendEvent::SftpContentConflict {
                     tab_id,
                     remote_path,
                     remote_file,
                 } => {
-                    sftp_editor_window::mark_conflict(&tab_id, &remote_path, remote_file, cx);
+                    self.handle_sftp_content_conflict(tab_id, remote_path, remote_file, cx);
                 }
                 BackendEvent::SftpContentUploadFailed {
                     tab_id,
                     remote_path,
                     error,
                 } => {
-                    sftp_editor_window::mark_upload_failed(&tab_id, &remote_path, error, cx);
+                    self.handle_sftp_content_upload_failed(tab_id, remote_path, error, cx);
                 }
                 BackendEvent::RemoteSystem { tab_id, snapshot } => {
-                    let snapshot = *snapshot;
-                    if self.monitoring.remote_sample_in_flight.as_deref() == Some(tab_id.as_str()) {
-                        self.monitoring.remote_sample_in_flight = None;
-                    }
-                    self.monitoring
-                        .remote_system_snapshots
-                        .insert(tab_id.clone(), snapshot.clone());
-                    if self.system_tab_id.as_deref() == Some(tab_id.as_str()) {
-                        self.record_network_interface_histories(&snapshot);
-                        self.monitoring.system_status = None;
-                        self.monitoring.system = snapshot.clone();
-                        push_bounded(&mut self.monitoring.cpu_history, snapshot.cpu_percent, 20);
-                        push_bounded(
-                            &mut self.monitoring.net_rx_history,
-                            snapshot.net_rx_rate as f32,
-                            20,
-                        );
-                        push_bounded(
-                            &mut self.monitoring.net_tx_history,
-                            snapshot.net_tx_rate as f32,
-                            20,
-                        );
-                    }
+                    self.handle_remote_system(tab_id, snapshot, cx);
                 }
                 BackendEvent::RemoteSystemUnavailable { tab_id, reason } => {
-                    if self.monitoring.remote_sample_in_flight.as_deref() == Some(tab_id.as_str()) {
-                        self.monitoring.remote_sample_in_flight = None;
-                    }
-                    if self.system_tab_id.as_deref() == Some(tab_id.as_str()) {
-                        self.monitoring.system_status = Some(reason.clone().into());
-                        self.status = reason.into();
-                    }
+                    self.handle_remote_system_unavailable(tab_id, reason, cx);
                 }
-                BackendEvent::Closed { tab_id, reason } => {
-                    if self.monitoring.remote_sample_in_flight.as_deref() == Some(tab_id.as_str()) {
-                        self.monitoring.remote_sample_in_flight = None;
-                    }
-                    let is_stale = self
-                        .tabs
-                        .iter()
-                        .find(|t| t.id == tab_id)
-                        .is_some_and(|tab| {
-                            // After retry_disconnected_tab, the old backend's threads
-                            // may still send Closed events. Skip those — they arrive
-                            // before the new backend sends its first Output/Connected.
-                            // Once backend_initialized is set, any Closed is from the
-                            // current backend and should be processed.
-                            tab.backend_generation > 0 && !tab.backend_initialized
-                        });
-                    if is_stale {
-                        continue;
-                    }
-                    self.terminal_completions.remove(&tab_id);
-                    let was_manually_disconnected = self
-                        .tabs
-                        .iter()
-                        .find(|tab| tab.id == tab_id)
-                        .is_some_and(|tab| !tab.connected && tab.disconnected_reason.is_some());
-                    let is_graceful_exit = !was_manually_disconnected
-                        && (reason == "local shell closed" || reason == "ssh session closed");
-                    let editor_session = self
-                        .tab_groups
-                        .iter()
-                        .find(|group| group.pane_root.contains(&tab_id))
-                        .filter(|group| self.sftp_handles.contains_key(&group.id))
-                        .filter(|group| !is_graceful_exit || group.pane_root.total_panes() <= 1)
-                        .map(|group| group.id.clone());
-                    if let Some(session_id) = editor_session {
-                        sftp_editor_window::notify_connection_lost(&session_id, cx);
-                    }
-                    if is_graceful_exit {
-                        self.handle_tab_close(tab_id.clone());
-                        self.status = reason.into();
-                        continue;
-                    }
-                    if !was_manually_disconnected
-                        && let Some(tab) = self.tabs.iter_mut().find(|t| t.id == tab_id)
-                    {
-                        let terminal_message = if tab.connected {
-                            t!("session_disconnected", "reason" = reason.clone()).to_string()
-                        } else {
-                            format!("{}: {reason}", t!("connection_failed"))
-                        };
-                        tab.feed_status_line(&terminal_message);
-                        tab.connected = false;
-                        tab.status = reason.clone();
-                        tab.disconnected_reason = Some(reason.clone());
-                        self.disconnect_epoch = self.disconnect_epoch.wrapping_add(1);
-                    }
-                    if self.system_tab_id.as_deref() == Some(tab_id.as_str()) {
-                        self.monitoring.system_status = Some(reason.clone().into());
-                    }
-                    self.status = reason.into();
+                BackendEvent::TransferStarted { tab_id, info } => {
+                    transfers_changed |= self.handle_transfer_started(tab_id, info, cx);
                 }
                 BackendEvent::TransferProgress {
-                    tab_id: _,
+                    tab_id,
                     id,
                     transferred,
                     total,
                     state,
                 } => {
-                    if let Some(t) = self.transfers.iter_mut().find(|t| t.info.id == id) {
-                        t.transferred = transferred;
-                        if let Some(total) = total {
-                            t.total = Some(total);
-                        }
-                        t.state = state;
-                        transfers_changed = true;
-                    }
-                }
-                BackendEvent::TransferStarted { tab_id, info } => {
-                    let tab_title = self.transfer_source_title(&tab_id);
-                    self.transfers.insert(
-                        0,
-                        crate::terminal::Transfer {
-                            tab_id,
-                            tab_title,
-                            info,
-                            transferred: 0,
-                            total: None,
-                            state: crate::terminal::TransferState::Running,
-                        },
-                    );
-                    if self.transfers.len() > 100 {
-                        self.transfers.truncate(100);
-                    }
-                    transfers_changed = true;
-                }
-                BackendEvent::SftpHome { tab_id, home } => {
-                    if let Some(group) = self.tab_groups.iter_mut().find(|g| g.id == tab_id) {
-                        if let Some(sftp) = group.sftp.as_mut() {
-                            sftp.home_dir = home.clone();
-                            sftp.current_path = home.clone();
-                            sftp.entries.clear();
-                            Self::expand_sftp_tree_to_path(sftp, &home);
-                            if self.active_group.as_deref() == Some(tab_id.as_str()) {
-                                self.pending_sftp_path_sync = Some(home.clone());
-                                self.pending_sftp_tree_scroll_path = Some(home);
-                            }
-                        }
-                    }
-                    if let Some(terminal_tab_id) =
-                        self.active_tab.clone().filter(|terminal_tab_id| {
-                            self.tab_groups.iter().any(|group| {
-                                group.id == tab_id && group.pane_root.contains(terminal_tab_id)
-                            })
-                        })
-                    {
-                        self.sync_initial_sftp_to_terminal_tab(&terminal_tab_id);
-                    }
-                }
-                BackendEvent::TerminalTitleChanged { tab_id, title } => {
-                    if let Some(tab) = self.tabs.iter_mut().find(|t| t.id == tab_id) {
-                        tab.dynamic_title = title;
-                    }
-                    if self.active_tab.as_deref() == Some(tab_id.as_str()) {
-                        let initially_synced = self.sync_initial_sftp_to_terminal_tab(&tab_id);
-                        if !initially_synced {
-                            self.sync_sftp_to_terminal_tab(&tab_id, true);
-                        }
-                    }
+                    transfers_changed |=
+                        self.handle_transfer_progress(tab_id, id, transferred, total, state, cx);
                 }
                 BackendEvent::SyncFinished { result, task_id } => {
-                    self.async_runtime
-                        .supervisor
-                        .finish("sync-operation", task_id);
-                    self.sync_runtime.in_progress = false;
-                    match result {
-                        crate::sync::SyncResult::Uploaded {
-                            etag,
-                            privacy_password,
-                            merged,
-                        } => {
-                            let previous_config = self.config.clone();
-                            let previous_managed_keys = self.managed_keys.clone();
-                            if let Some(merged) = merged {
-                                self.config.replace_sessions(merged.sessions);
-                                self.config
-                                    .replace_deleted_sessions(merged.deleted_sessions);
-                                self.config
-                                    .replace_connection_groups(merged.connection_groups);
-                                self.config.replace_deleted_connection_groups(
-                                    merged.deleted_connection_groups,
-                                );
-                                self.config.replace_managed_keys(merged.managed_keys);
-                                self.managed_keys = self.config.managed_keys().to_vec();
-                                self.config
-                                    .set_quick_command_categories(merged.quick_command_categories);
-                            }
-                            self.config.set_sync_etag(etag);
-                            self.config
-                                .set_sync_last_synced_at(chrono::Utc::now().timestamp());
-                            let password_result = privacy_password.map_or(Ok(()), |password| {
-                                crate::app::config_sync::seal_privacy_password(&password).map(
-                                    |(sealed, hash)| {
-                                        self.config.set_sync_secrets_password_sealed(sealed);
-                                        self.config.set_sync_secrets_password_hash(hash);
-                                    },
-                                )
-                            });
-                            match password_result.and_then(|()| {
-                                crate::app::config_persistence::save_full(&self.config)
-                            }) {
-                                Ok(()) => {
-                                    self.sync_runtime.status = t!("sync_upload_complete").into();
-                                    self.schedule_automatic_sync(false, cx);
-                                }
-                                Err(err) => {
-                                    self.config = previous_config;
-                                    self.managed_keys = previous_managed_keys;
-                                    self.sync_runtime.status =
-                                        format!("{}: {err:#}", t!("sync_failed")).into();
-                                }
-                            }
-                        }
-                        crate::sync::SyncResult::UploadPreflightReady {
-                            credentials,
-                            privacy_password,
-                            include_secrets,
-                            merged,
-                            etag,
-                        } => {
-                            self.continue_sync_upload(
-                                credentials,
-                                privacy_password,
-                                include_secrets,
-                                merged,
-                                etag,
-                                cx,
-                            );
-                        }
-                        crate::sync::SyncResult::UploadPreflightBlocked {
-                            credentials,
-                            reason,
-                        } => {
-                            self.sync_runtime.status = match &reason {
-                                crate::sync::UploadBlockReason::PasswordRequired => {
-                                    t!("sync_upload_password_required").into()
-                                }
-                                crate::sync::UploadBlockReason::PasswordMismatch => {
-                                    t!("sync_privacy_password_incorrect").into()
-                                }
-                                crate::sync::UploadBlockReason::UnavailableSecrets {
-                                    session_secret_count,
-                                    managed_key_secret_count,
-                                } => t!(
-                                    "sync_upload_secrets_blocked",
-                                    sessions = *session_secret_count,
-                                    keys = *managed_key_secret_count
-                                )
-                                .into(),
-                            };
-                            if let Some(handle) = self.auxiliary_windows.settings.handle {
-                                let owner = cx.entity();
-                                let form =
-                                    crate::app::config_sync::SyncFormSnapshot::from_credentials(
-                                        credentials,
-                                    );
-                                let _ = handle.update(cx, move |_, window, cx| {
-                                    owner.update(cx, |this, cx| {
-                                        this.show_sync_upload_secrets_blocked_dialog(
-                                            form.clone(),
-                                            reason.clone(),
-                                            window,
-                                            cx,
-                                        );
-                                    });
-                                });
-                            }
-                        }
-                        crate::sync::SyncResult::Downloaded {
-                            credentials,
-                            password_status,
-                            sessions,
-                            deleted_sessions,
-                            connection_groups,
-                            deleted_connection_groups,
-                            managed_keys,
-                            quick_command_categories,
-                            etag,
-                            decrypted_count,
-                            unavailable_secret_count,
-                        } => {
-                            let session_count = sessions.len();
-                            let group_count = connection_groups.len();
-                            let key_count = managed_keys.len();
-                            let command_count = quick_command_categories
-                                .iter()
-                                .map(|category| category.commands.len())
-                                .sum::<usize>();
-                            let previous_config = self.config.clone();
-                            let previous_managed_keys = self.managed_keys.clone();
-                            self.config.replace_sessions(sessions);
-                            self.config.replace_deleted_sessions(deleted_sessions);
-                            self.config.replace_connection_groups(connection_groups);
-                            self.config
-                                .replace_deleted_connection_groups(deleted_connection_groups);
-                            self.config.replace_managed_keys(managed_keys);
-                            self.managed_keys = self.config.managed_keys().to_vec();
-                            self.config
-                                .set_quick_command_categories(quick_command_categories);
-                            self.config.set_sync_etag(etag);
-                            self.config
-                                .set_sync_last_synced_at(chrono::Utc::now().timestamp());
-                            match crate::app::config_persistence::save_full(&self.config) {
-                                Ok(()) => {
-                                    let summary = t!(
-                                        "sync_download_summary",
-                                        sessions = session_count,
-                                        groups = group_count,
-                                        keys = key_count,
-                                        commands = command_count
-                                    )
-                                    .to_string();
-                                    self.sync_runtime.status = match password_status {
-                                        crate::sync::PrivacyPasswordStatus::Mismatch => format!(
-                                            "{summary}; {}",
-                                            t!("sync_privacy_password_incorrect")
-                                        )
-                                        .into(),
-                                        crate::sync::PrivacyPasswordStatus::Missing => format!(
-                                            "{summary}; {}",
-                                            t!("sync_privacy_password_missing")
-                                        )
-                                        .into(),
-                                        _ if unavailable_secret_count > 0 => format!(
-                                            "{summary}; {}",
-                                            t!(
-                                                "sync_secrets_unavailable",
-                                                count = unavailable_secret_count
-                                            )
-                                        )
-                                        .into(),
-                                        _ if decrypted_count > 0 => format!(
-                                            "{summary}; {}",
-                                            t!("sync_secrets_decrypted", count = decrypted_count)
-                                        )
-                                        .into(),
-                                        _ => summary.into(),
-                                    };
-                                    if password_status
-                                        == crate::sync::PrivacyPasswordStatus::Mismatch
-                                        && let Some(handle) = self.auxiliary_windows.settings.handle
-                                    {
-                                        let owner = cx.entity();
-                                        let form = crate::app::config_sync::SyncFormSnapshot::from_credentials(
-                                            credentials,
-                                        );
-                                        let _ = handle.update(cx, move |_, window, cx| {
-                                            owner.update(cx, |this, cx| {
-                                                this.show_sync_upload_secrets_blocked_dialog(
-                                                    form.clone(),
-                                                    crate::sync::UploadBlockReason::PasswordMismatch,
-                                                    window,
-                                                    cx,
-                                                );
-                                            });
-                                        });
-                                    }
-                                    self.schedule_automatic_sync(false, cx);
-                                }
-                                Err(err) => {
-                                    self.config = previous_config;
-                                    self.managed_keys = previous_managed_keys;
-                                    self.sync_runtime.status =
-                                        format!("{}: {err:#}", t!("sync_failed")).into()
-                                }
-                            }
-                        }
-                        crate::sync::SyncResult::PrivacyPasswordReset { new_password, etag } => {
-                            match crate::app::config_sync::seal_privacy_password(&new_password) {
-                                Ok((sealed, hash)) => {
-                                    self.config.set_sync_secrets_password_sealed(sealed);
-                                    self.config.set_sync_secrets_password_hash(hash);
-                                    self.config.set_sync_etag(etag);
-                                    let previous_synced_at = self.config.sync_last_synced_at();
-                                    self.config
-                                        .set_sync_last_synced_at(chrono::Utc::now().timestamp());
-                                    match crate::app::config_persistence::save_full(&self.config) {
-                                        Ok(()) => {
-                                            self.sync_runtime.status =
-                                                t!("sync_reset_complete").into();
-                                            self.schedule_automatic_sync(false, cx);
-                                        }
-                                        Err(err) => {
-                                            self.config.set_sync_last_synced_at(previous_synced_at);
-                                            self.sync_runtime.status = format!(
-                                                "{}: {err:#}; {}",
-                                                t!("sync_failed"),
-                                                t!("sync_reset_local_save_failed")
-                                            )
-                                            .into();
-                                        }
-                                    }
-                                }
-                                Err(err) => {
-                                    self.sync_runtime.status =
-                                        format!("{}: {err:#}", t!("sync_failed")).into();
-                                }
-                            }
-                        }
-                        crate::sync::SyncResult::PrivacyPasswordInitializationReady {
-                            credentials,
-                            password,
-                        } => {
-                            if self.set_sync_include_secrets(true, cx) {
-                                if let Some(dialog) =
-                                    self.sync_runtime.secrets_password_dialog.take()
-                                {
-                                    self.active_dialog = None;
-                                    let input = dialog.settings_password_input;
-                                    let input_password = password.clone();
-                                    let _ = dialog.window.update(cx, move |_, window, cx| {
-                                        input.update(cx, |input, cx| {
-                                            input.set_value(input_password.clone(), window, cx);
-                                        });
-                                        window.close_dialog(cx);
-                                    });
-                                }
-                                let form = crate::app::config_sync::SyncFormSnapshot::with_privacy_password(
-                                    credentials,
-                                    password,
-                                );
-                                self.upload_sync_config(form, cx);
-                            } else {
-                                let message = self.sync_runtime.status.clone();
-                                if let Some(dialog) =
-                                    self.sync_runtime.secrets_password_dialog.as_mut()
-                                {
-                                    dialog.status =
-                                        crate::app::SyncSecretsPasswordDialogStatus::Failed;
-                                    dialog.message = Some(message);
-                                }
-                            }
-                        }
-                        crate::sync::SyncResult::PrivacyPasswordChecked { password, status } => {
-                            match status {
-                                crate::sync::PrivacyPasswordStatus::Verified => {
-                                    if self.set_sync_include_secrets(true, cx) {
-                                        if let Some(dialog) =
-                                            self.sync_runtime.secrets_password_dialog.take()
-                                        {
-                                            self.active_dialog = None;
-                                            let input = dialog.settings_password_input;
-                                            let _ =
-                                                dialog.window.update(cx, move |_, window, cx| {
-                                                    input.update(cx, |input, cx| {
-                                                        input.set_value(
-                                                            password.clone(),
-                                                            window,
-                                                            cx,
-                                                        );
-                                                    });
-                                                    window.close_dialog(cx);
-                                                });
-                                        }
-                                    } else {
-                                        let message = self.sync_runtime.status.clone();
-                                        if let Some(dialog) =
-                                            self.sync_runtime.secrets_password_dialog.as_mut()
-                                        {
-                                            dialog.status =
-                                                crate::app::SyncSecretsPasswordDialogStatus::Failed;
-                                            dialog.message = Some(message);
-                                        }
-                                    }
-                                }
-                                crate::sync::PrivacyPasswordStatus::Mismatch => {
-                                    if let Some(dialog) =
-                                        self.sync_runtime.secrets_password_dialog.as_mut()
-                                    {
-                                        dialog.status = crate::app::SyncSecretsPasswordDialogStatus::PasswordMismatch;
-                                        dialog.message = Some(
-                                            t!("sync_secret_toggle_password_incorrect").into(),
-                                        );
-                                    }
-                                }
-                                crate::sync::PrivacyPasswordStatus::Missing => {
-                                    if let Some(dialog) =
-                                        self.sync_runtime.secrets_password_dialog.as_mut()
-                                    {
-                                        dialog.status = crate::app::SyncSecretsPasswordDialogStatus::PasswordRequired;
-                                        dialog.message =
-                                            Some(t!("sync_secret_toggle_password_required").into());
-                                    }
-                                }
-                                crate::sync::PrivacyPasswordStatus::NotConfigured => {
-                                    if let Some(dialog) =
-                                        self.sync_runtime.secrets_password_dialog.as_mut()
-                                    {
-                                        dialog.status = crate::app::SyncSecretsPasswordDialogStatus::RemotePasswordNotConfigured;
-                                        dialog.message = Some(
-                                            t!("sync_secret_toggle_remote_password_missing").into(),
-                                        );
-                                    }
-                                }
-                            }
-                        }
-                        crate::sync::SyncResult::ConnectionVerified => {
-                            self.sync_runtime.status = t!("sync_connection_verified").into();
-                        }
-                        crate::sync::SyncResult::Failed(error) => {
-                            self.sync_runtime.status =
-                                crate::app::config_sync::sync_failure_status(&error).into();
-                            if self
-                                .sync_runtime
-                                .secrets_password_dialog
-                                .as_ref()
-                                .is_some_and(|dialog| {
-                                    dialog.status
-                                        == crate::app::SyncSecretsPasswordDialogStatus::Verifying
-                                })
-                            {
-                                let message = self.sync_runtime.status.clone();
-                                if let Some(dialog) =
-                                    self.sync_runtime.secrets_password_dialog.as_mut()
-                                {
-                                    dialog.status =
-                                        crate::app::SyncSecretsPasswordDialogStatus::Failed;
-                                    dialog.message = Some(message);
-                                }
-                            }
-                        }
-                    }
+                    self.handle_sync_finished(result, task_id, cx);
                 }
             }
         }
@@ -2140,6 +1606,777 @@ impl TinyShell {
             self.config.set_transfers(self.transfers.clone());
         }
         changed
+    }
+
+    fn handle_terminal_output(&mut self, tab_id: String, bytes: Vec<u8>, _cx: &mut Context<Self>) {
+        if let Some(tab) = self.tabs.iter_mut().find(|t| t.id == tab_id) {
+            tab.backend_initialized = true;
+            tab.feed(&bytes);
+        }
+    }
+
+    fn handle_terminal_status(&mut self, tab_id: String, text: String, _cx: &mut Context<Self>) {
+        if let Some(tab) = self.tabs.iter_mut().find(|t| t.id == tab_id) {
+            tab.backend_initialized = true;
+            tab.status = text.clone();
+        }
+        self.status = text.into();
+    }
+
+    fn handle_terminal_connected(&mut self, tab_id: String, _cx: &mut Context<Self>) {
+        if let Some(tab) = self.tabs.iter_mut().find(|t| t.id == tab_id) {
+            tab.backend_initialized = true;
+            tab.feed_status_line(&t!("connection_succeeded"));
+            tab.connected = true;
+            tab.disconnected_reason = None;
+        }
+        self.sync_system_tab_to_active_group();
+        self.request_active_system_snapshot();
+    }
+
+    fn handle_terminal_title_changed(
+        &mut self,
+        tab_id: String,
+        title: String,
+        _cx: &mut Context<Self>,
+    ) {
+        if let Some(tab) = self.tabs.iter_mut().find(|t| t.id == tab_id) {
+            tab.dynamic_title = title;
+        }
+        if self.active_tab.as_deref() == Some(tab_id.as_str()) {
+            let initially_synced = self.sync_initial_sftp_to_terminal_tab(&tab_id);
+            if !initially_synced {
+                self.sync_sftp_to_terminal_tab(&tab_id, true);
+            }
+        }
+    }
+
+    fn handle_terminal_closed(
+        &mut self,
+        tab_id: String,
+        reason: String,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if self.monitoring.remote_sample_in_flight.as_deref() == Some(tab_id.as_str()) {
+            self.monitoring.remote_sample_in_flight = None;
+        }
+        let is_stale = self
+            .tabs
+            .iter()
+            .find(|t| t.id == tab_id)
+            .is_some_and(|tab| {
+                // After retry_disconnected_tab, the old backend's threads
+                // may still send Closed events. Skip those — they arrive
+                // before the new backend sends its first Output/Connected.
+                // Once backend_initialized is set, any Closed is from the
+                // current backend and should be processed.
+                tab.backend_generation > 0 && !tab.backend_initialized
+            });
+        if is_stale {
+            return true;
+        }
+        self.terminal_completions.remove(&tab_id);
+        let was_manually_disconnected = self
+            .tabs
+            .iter()
+            .find(|tab| tab.id == tab_id)
+            .is_some_and(|tab| !tab.connected && tab.disconnected_reason.is_some());
+        let is_graceful_exit = !was_manually_disconnected
+            && (reason == "local shell closed" || reason == "ssh session closed");
+        let editor_session = self
+            .tab_groups
+            .iter()
+            .find(|group| group.pane_root.contains(&tab_id))
+            .filter(|group| self.sftp_handles.contains_key(&group.id))
+            .filter(|group| !is_graceful_exit || group.pane_root.total_panes() <= 1)
+            .map(|group| group.id.clone());
+        if let Some(session_id) = editor_session {
+            sftp_editor_window::notify_connection_lost(&session_id, cx);
+        }
+        if is_graceful_exit {
+            self.handle_tab_close(tab_id.clone());
+            self.status = reason.into();
+            return true;
+        }
+        if !was_manually_disconnected
+            && let Some(tab) = self.tabs.iter_mut().find(|t| t.id == tab_id)
+        {
+            let terminal_message = if tab.connected {
+                t!("session_disconnected", "reason" = reason.clone()).to_string()
+            } else {
+                format!("{}: {reason}", t!("connection_failed"))
+            };
+            tab.feed_status_line(&terminal_message);
+            tab.connected = false;
+            tab.status = reason.clone();
+            tab.disconnected_reason = Some(reason.clone());
+            self.disconnect_epoch = self.disconnect_epoch.wrapping_add(1);
+        }
+        if self.system_tab_id.as_deref() == Some(tab_id.as_str()) {
+            self.monitoring.system_status = Some(reason.clone().into());
+        }
+        self.status = reason.into();
+        false
+    }
+
+    fn handle_sftp_entries(
+        &mut self,
+        tab_id: String,
+        path: String,
+        entries: Vec<crate::sftp::RemoteEntry>,
+        _cx: &mut Context<Self>,
+    ) {
+        if let Some(group) = self.tab_groups.iter_mut().find(|g| g.id == tab_id) {
+            if let Some(sftp) = group.sftp.as_mut() {
+                sftp.directory_entries.insert(path.clone(), entries.clone());
+                if sftp.current_path == path {
+                    sftp.entries = entries;
+                    if self.active_group.as_deref() == Some(tab_id.as_str()) {
+                        self.pending_sftp_path_sync = Some(path);
+                    }
+                }
+            }
+        }
+    }
+
+    fn handle_sftp_directory_entries(
+        &mut self,
+        tab_id: String,
+        path: String,
+        entries: Vec<crate::sftp::RemoteEntry>,
+        _cx: &mut Context<Self>,
+    ) {
+        if let Some(group) = self.tab_groups.iter_mut().find(|g| g.id == tab_id) {
+            if let Some(sftp) = group.sftp.as_mut() {
+                sftp.directory_entries.insert(path, entries);
+            }
+        }
+    }
+
+    fn handle_sftp_status(&mut self, tab_id: String, text: String, _cx: &mut Context<Self>) {
+        if let Some(group) = self.tab_groups.iter_mut().find(|g| g.id == tab_id) {
+            if let Some(sftp) = group.sftp.as_mut() {
+                sftp.status = text.clone();
+            }
+        }
+        if self.active_group.as_ref() == Some(&tab_id) {
+            self.status = text.into();
+        }
+    }
+
+    fn handle_sftp_latency(
+        &mut self,
+        tab_id: String,
+        latency_ms: Option<u64>,
+        _cx: &mut Context<Self>,
+    ) {
+        if let Some(group) = self.tab_groups.iter_mut().find(|group| group.id == tab_id)
+            && let Some(sftp) = group.sftp.as_mut()
+        {
+            sftp.latency_ms = latency_ms;
+        }
+    }
+
+    fn handle_sftp_home(&mut self, tab_id: String, home: String, _cx: &mut Context<Self>) {
+        if let Some(group) = self.tab_groups.iter_mut().find(|g| g.id == tab_id) {
+            if let Some(sftp) = group.sftp.as_mut() {
+                sftp.home_dir = home.clone();
+                sftp.current_path = home.clone();
+                sftp.entries.clear();
+                Self::expand_sftp_tree_to_path(sftp, &home);
+                if self.active_group.as_deref() == Some(tab_id.as_str()) {
+                    self.pending_sftp_path_sync = Some(home.clone());
+                    self.pending_sftp_tree_scroll_path = Some(home);
+                }
+            }
+        }
+        if let Some(terminal_tab_id) = self.active_tab.clone().filter(|terminal_tab_id| {
+            self.tab_groups
+                .iter()
+                .any(|group| group.id == tab_id && group.pane_root.contains(terminal_tab_id))
+        }) {
+            self.sync_initial_sftp_to_terminal_tab(&terminal_tab_id);
+        }
+    }
+
+    fn handle_sftp_file_content(
+        &mut self,
+        tab_id: String,
+        remote_path: String,
+        file: crate::sftp::text_file::RemoteTextFile,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(handle) = self.sftp_handles.get(&tab_id).cloned() {
+            sftp_editor_window::open_or_focus(tab_id, remote_path, file, handle, cx);
+        }
+    }
+
+    fn handle_sftp_content_uploaded(
+        &mut self,
+        tab_id: String,
+        remote_path: String,
+        revision: crate::sftp::text_file::RemoteFileRevision,
+        cx: &mut Context<Self>,
+    ) {
+        sftp_editor_window::mark_uploaded(&tab_id, &remote_path, revision, cx);
+    }
+
+    fn handle_sftp_content_conflict(
+        &mut self,
+        tab_id: String,
+        remote_path: String,
+        remote_file: crate::sftp::text_file::RemoteTextFile,
+        cx: &mut Context<Self>,
+    ) {
+        sftp_editor_window::mark_conflict(&tab_id, &remote_path, remote_file, cx);
+    }
+
+    fn handle_sftp_content_upload_failed(
+        &mut self,
+        tab_id: String,
+        remote_path: String,
+        error: String,
+        cx: &mut Context<Self>,
+    ) {
+        sftp_editor_window::mark_upload_failed(&tab_id, &remote_path, error, cx);
+    }
+
+    fn handle_remote_system(
+        &mut self,
+        tab_id: String,
+        snapshot: Box<SystemSnapshot>,
+        _cx: &mut Context<Self>,
+    ) {
+        let snapshot = *snapshot;
+        if self.monitoring.remote_sample_in_flight.as_deref() == Some(tab_id.as_str()) {
+            self.monitoring.remote_sample_in_flight = None;
+        }
+        self.monitoring
+            .remote_system_snapshots
+            .insert(tab_id.clone(), snapshot.clone());
+        if self.system_tab_id.as_deref() == Some(tab_id.as_str()) {
+            self.record_network_interface_histories(&snapshot);
+            self.monitoring.system_status = None;
+            self.monitoring.system = snapshot.clone();
+            push_bounded(&mut self.monitoring.cpu_history, snapshot.cpu_percent, 20);
+            push_bounded(
+                &mut self.monitoring.net_rx_history,
+                snapshot.net_rx_rate as f32,
+                20,
+            );
+            push_bounded(
+                &mut self.monitoring.net_tx_history,
+                snapshot.net_tx_rate as f32,
+                20,
+            );
+        }
+    }
+
+    fn handle_remote_system_unavailable(
+        &mut self,
+        tab_id: String,
+        reason: String,
+        _cx: &mut Context<Self>,
+    ) {
+        if self.monitoring.remote_sample_in_flight.as_deref() == Some(tab_id.as_str()) {
+            self.monitoring.remote_sample_in_flight = None;
+        }
+        if self.system_tab_id.as_deref() == Some(tab_id.as_str()) {
+            self.monitoring.system_status = Some(reason.clone().into());
+            self.status = reason.into();
+        }
+    }
+
+    fn handle_transfer_started(
+        &mut self,
+        tab_id: String,
+        info: crate::terminal::TransferInfo,
+        _cx: &mut Context<Self>,
+    ) -> bool {
+        let tab_title = self.transfer_source_title(&tab_id);
+        self.transfers.insert(
+            0,
+            crate::terminal::Transfer {
+                tab_id,
+                tab_title,
+                info,
+                transferred: 0,
+                total: None,
+                state: crate::terminal::TransferState::Running,
+            },
+        );
+        if self.transfers.len() > 100 {
+            self.transfers.truncate(100);
+        }
+        true
+    }
+
+    fn handle_transfer_progress(
+        &mut self,
+        _tab_id: String,
+        id: String,
+        transferred: u64,
+        total: Option<u64>,
+        state: crate::terminal::TransferState,
+        _cx: &mut Context<Self>,
+    ) -> bool {
+        if let Some(t) = self.transfers.iter_mut().find(|t| t.info.id == id) {
+            t.transferred = transferred;
+            if let Some(total) = total {
+                t.total = Some(total);
+            }
+            t.state = state;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn handle_sync_finished(
+        &mut self,
+        result: crate::sync::SyncResult,
+        task_id: u64,
+        cx: &mut Context<Self>,
+    ) {
+        self.async_runtime
+            .supervisor
+            .finish("sync-operation", task_id);
+        self.sync_runtime.in_progress = false;
+        match result {
+            crate::sync::SyncResult::Uploaded {
+                etag,
+                privacy_password,
+                merged,
+            } => {
+                self.handle_sync_uploaded(etag, privacy_password, merged, cx);
+            }
+            crate::sync::SyncResult::UploadPreflightReady {
+                credentials,
+                privacy_password,
+                include_secrets,
+                merged,
+                etag,
+            } => {
+                self.handle_sync_upload_preflight_ready(
+                    credentials,
+                    privacy_password,
+                    include_secrets,
+                    merged,
+                    etag,
+                    cx,
+                );
+            }
+            crate::sync::SyncResult::UploadPreflightBlocked {
+                credentials,
+                reason,
+            } => {
+                self.handle_sync_upload_preflight_blocked(credentials, reason, cx);
+            }
+            crate::sync::SyncResult::Downloaded {
+                credentials,
+                password_status,
+                sessions,
+                deleted_sessions,
+                connection_groups,
+                deleted_connection_groups,
+                managed_keys,
+                quick_command_categories,
+                etag,
+                decrypted_count,
+                unavailable_secret_count,
+            } => {
+                self.handle_sync_downloaded(
+                    credentials,
+                    password_status,
+                    sessions,
+                    deleted_sessions,
+                    connection_groups,
+                    deleted_connection_groups,
+                    managed_keys,
+                    quick_command_categories,
+                    etag,
+                    decrypted_count,
+                    unavailable_secret_count,
+                    cx,
+                );
+            }
+            crate::sync::SyncResult::PrivacyPasswordReset { new_password, etag } => {
+                self.handle_sync_privacy_password_reset(new_password, etag, cx);
+            }
+            crate::sync::SyncResult::PrivacyPasswordInitializationReady {
+                credentials,
+                password,
+            } => {
+                self.handle_sync_privacy_password_initialization_ready(credentials, password, cx);
+            }
+            crate::sync::SyncResult::PrivacyPasswordChecked { password, status } => {
+                self.handle_sync_privacy_password_checked(password, status, cx);
+            }
+            crate::sync::SyncResult::ConnectionVerified => {
+                self.handle_sync_connection_verified(cx);
+            }
+            crate::sync::SyncResult::Failed(error) => {
+                self.handle_sync_failed(error, cx);
+            }
+        }
+    }
+
+    fn handle_sync_uploaded(
+        &mut self,
+        etag: Option<String>,
+        privacy_password: Option<String>,
+        merged: Option<crate::sync::MergedConfig>,
+        cx: &mut Context<Self>,
+    ) {
+        let previous_config = self.config.clone();
+        let previous_managed_keys = self.managed_keys.clone();
+        if let Some(merged) = merged {
+            self.config.replace_sessions(merged.sessions);
+            self.config
+                .replace_deleted_sessions(merged.deleted_sessions);
+            self.config
+                .replace_connection_groups(merged.connection_groups);
+            self.config
+                .replace_deleted_connection_groups(merged.deleted_connection_groups);
+            self.config.replace_managed_keys(merged.managed_keys);
+            self.managed_keys = self.config.managed_keys().to_vec();
+            self.config
+                .set_quick_command_categories(merged.quick_command_categories);
+        }
+        self.config.set_sync_etag(etag);
+        self.config
+            .set_sync_last_synced_at(chrono::Utc::now().timestamp());
+        let password_result = privacy_password.map_or(Ok(()), |password| {
+            crate::app::config_sync::seal_privacy_password(&password).map(|(sealed, hash)| {
+                self.config.set_sync_secrets_password_sealed(sealed);
+                self.config.set_sync_secrets_password_hash(hash);
+            })
+        });
+        match password_result.and_then(|()| crate::app::config_persistence::save_full(&self.config))
+        {
+            Ok(()) => {
+                self.sync_runtime.status = t!("sync_upload_complete").into();
+                self.schedule_automatic_sync(false, cx);
+            }
+            Err(err) => {
+                self.config = previous_config;
+                self.managed_keys = previous_managed_keys;
+                self.sync_runtime.status = format!("{}: {err:#}", t!("sync_failed")).into();
+            }
+        }
+    }
+
+    fn handle_sync_upload_preflight_ready(
+        &mut self,
+        credentials: crate::sync::SyncCredentials,
+        privacy_password: String,
+        include_secrets: bool,
+        merged: Option<crate::sync::MergedConfig>,
+        etag: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        self.continue_sync_upload(
+            credentials,
+            privacy_password,
+            include_secrets,
+            merged,
+            etag,
+            cx,
+        );
+    }
+
+    fn handle_sync_upload_preflight_blocked(
+        &mut self,
+        credentials: crate::sync::SyncCredentials,
+        reason: crate::sync::UploadBlockReason,
+        cx: &mut Context<Self>,
+    ) {
+        self.sync_runtime.status = match &reason {
+            crate::sync::UploadBlockReason::PasswordRequired => {
+                t!("sync_upload_password_required").into()
+            }
+            crate::sync::UploadBlockReason::PasswordMismatch => {
+                t!("sync_privacy_password_incorrect").into()
+            }
+            crate::sync::UploadBlockReason::UnavailableSecrets {
+                session_secret_count,
+                managed_key_secret_count,
+            } => t!(
+                "sync_upload_secrets_blocked",
+                sessions = *session_secret_count,
+                keys = *managed_key_secret_count
+            )
+            .into(),
+        };
+        if let Some(handle) = self.auxiliary_windows.settings.handle {
+            let owner = cx.entity();
+            let form = crate::app::config_sync::SyncFormSnapshot::from_credentials(credentials);
+            let _ = handle.update(cx, move |_, window, cx| {
+                owner.update(cx, |this, cx| {
+                    this.show_sync_upload_secrets_blocked_dialog(
+                        form.clone(),
+                        reason.clone(),
+                        window,
+                        cx,
+                    );
+                });
+            });
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn handle_sync_downloaded(
+        &mut self,
+        credentials: crate::sync::SyncCredentials,
+        password_status: crate::sync::PrivacyPasswordStatus,
+        sessions: Vec<crate::session::config::Session>,
+        deleted_sessions: Vec<crate::session::config::DeletedSession>,
+        connection_groups: Vec<String>,
+        deleted_connection_groups: Vec<crate::session::config::DeletedConnectionGroup>,
+        managed_keys: Vec<crate::session::config::ManagedKey>,
+        quick_command_categories: Vec<crate::session::config::QuickCommandCategory>,
+        etag: Option<String>,
+        decrypted_count: u32,
+        unavailable_secret_count: u32,
+        cx: &mut Context<Self>,
+    ) {
+        let session_count = sessions.len();
+        let group_count = connection_groups.len();
+        let key_count = managed_keys.len();
+        let command_count = quick_command_categories
+            .iter()
+            .map(|category| category.commands.len())
+            .sum::<usize>();
+        let (previous_config, previous_managed_keys) = self.apply_sync_downloaded_config(
+            sessions,
+            deleted_sessions,
+            connection_groups,
+            deleted_connection_groups,
+            managed_keys,
+            quick_command_categories,
+            etag,
+        );
+        match crate::app::config_persistence::save_full(&self.config) {
+            Ok(()) => {
+                let summary = t!(
+                    "sync_download_summary",
+                    sessions = session_count,
+                    groups = group_count,
+                    keys = key_count,
+                    commands = command_count
+                )
+                .to_string();
+                self.sync_runtime.status = match password_status {
+                    crate::sync::PrivacyPasswordStatus::Mismatch => {
+                        format!("{summary}; {}", t!("sync_privacy_password_incorrect")).into()
+                    }
+                    crate::sync::PrivacyPasswordStatus::Missing => {
+                        format!("{summary}; {}", t!("sync_privacy_password_missing")).into()
+                    }
+                    _ if unavailable_secret_count > 0 => format!(
+                        "{summary}; {}",
+                        t!("sync_secrets_unavailable", count = unavailable_secret_count)
+                    )
+                    .into(),
+                    _ if decrypted_count > 0 => format!(
+                        "{summary}; {}",
+                        t!("sync_secrets_decrypted", count = decrypted_count)
+                    )
+                    .into(),
+                    _ => summary.into(),
+                };
+                if password_status == crate::sync::PrivacyPasswordStatus::Mismatch
+                    && let Some(handle) = self.auxiliary_windows.settings.handle
+                {
+                    let owner = cx.entity();
+                    let form =
+                        crate::app::config_sync::SyncFormSnapshot::from_credentials(credentials);
+                    let _ = handle.update(cx, move |_, window, cx| {
+                        owner.update(cx, |this, cx| {
+                            this.show_sync_upload_secrets_blocked_dialog(
+                                form.clone(),
+                                crate::sync::UploadBlockReason::PasswordMismatch,
+                                window,
+                                cx,
+                            );
+                        });
+                    });
+                }
+                self.schedule_automatic_sync(false, cx);
+            }
+            Err(err) => {
+                self.config = previous_config;
+                self.managed_keys = previous_managed_keys;
+                self.sync_runtime.status = format!("{}: {err:#}", t!("sync_failed")).into()
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn apply_sync_downloaded_config(
+        &mut self,
+        sessions: Vec<crate::session::config::Session>,
+        deleted_sessions: Vec<crate::session::config::DeletedSession>,
+        connection_groups: Vec<String>,
+        deleted_connection_groups: Vec<crate::session::config::DeletedConnectionGroup>,
+        managed_keys: Vec<crate::session::config::ManagedKey>,
+        quick_command_categories: Vec<crate::session::config::QuickCommandCategory>,
+        etag: Option<String>,
+    ) -> (ConfigStore, Vec<ManagedKey>) {
+        let previous_config = self.config.clone();
+        let previous_managed_keys = self.managed_keys.clone();
+        self.config.replace_sessions(sessions);
+        self.config.replace_deleted_sessions(deleted_sessions);
+        self.config.replace_connection_groups(connection_groups);
+        self.config
+            .replace_deleted_connection_groups(deleted_connection_groups);
+        self.config.replace_managed_keys(managed_keys);
+        self.managed_keys = self.config.managed_keys().to_vec();
+        self.config
+            .set_quick_command_categories(quick_command_categories);
+        self.config.set_sync_etag(etag);
+        self.config
+            .set_sync_last_synced_at(chrono::Utc::now().timestamp());
+        (previous_config, previous_managed_keys)
+    }
+
+    fn handle_sync_privacy_password_reset(
+        &mut self,
+        new_password: String,
+        etag: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        match crate::app::config_sync::seal_privacy_password(&new_password) {
+            Ok((sealed, hash)) => {
+                self.config.set_sync_secrets_password_sealed(sealed);
+                self.config.set_sync_secrets_password_hash(hash);
+                self.config.set_sync_etag(etag);
+                let previous_synced_at = self.config.sync_last_synced_at();
+                self.config
+                    .set_sync_last_synced_at(chrono::Utc::now().timestamp());
+                match crate::app::config_persistence::save_full(&self.config) {
+                    Ok(()) => {
+                        self.sync_runtime.status = t!("sync_reset_complete").into();
+                        self.schedule_automatic_sync(false, cx);
+                    }
+                    Err(err) => {
+                        self.config.set_sync_last_synced_at(previous_synced_at);
+                        self.sync_runtime.status = format!(
+                            "{}: {err:#}; {}",
+                            t!("sync_failed"),
+                            t!("sync_reset_local_save_failed")
+                        )
+                        .into();
+                    }
+                }
+            }
+            Err(err) => {
+                self.sync_runtime.status = format!("{}: {err:#}", t!("sync_failed")).into();
+            }
+        }
+    }
+
+    fn handle_sync_privacy_password_initialization_ready(
+        &mut self,
+        credentials: crate::sync::SyncCredentials,
+        password: String,
+        cx: &mut Context<Self>,
+    ) {
+        if self.set_sync_include_secrets(true, cx) {
+            if let Some(dialog) = self.sync_runtime.secrets_password_dialog.take() {
+                self.active_dialog = None;
+                let input = dialog.settings_password_input;
+                let input_password = password.clone();
+                let _ = dialog.window.update(cx, move |_, window, cx| {
+                    input.update(cx, |input, cx| {
+                        input.set_value(input_password.clone(), window, cx);
+                    });
+                    window.close_dialog(cx);
+                });
+            }
+            let form = crate::app::config_sync::SyncFormSnapshot::with_privacy_password(
+                credentials,
+                password,
+            );
+            self.upload_sync_config(form, cx);
+        } else {
+            let message = self.sync_runtime.status.clone();
+            if let Some(dialog) = self.sync_runtime.secrets_password_dialog.as_mut() {
+                dialog.status = crate::app::SyncSecretsPasswordDialogStatus::Failed;
+                dialog.message = Some(message);
+            }
+        }
+    }
+
+    fn handle_sync_privacy_password_checked(
+        &mut self,
+        password: String,
+        status: crate::sync::PrivacyPasswordStatus,
+        cx: &mut Context<Self>,
+    ) {
+        match status {
+            crate::sync::PrivacyPasswordStatus::Verified => {
+                if self.set_sync_include_secrets(true, cx) {
+                    if let Some(dialog) = self.sync_runtime.secrets_password_dialog.take() {
+                        self.active_dialog = None;
+                        let input = dialog.settings_password_input;
+                        let _ = dialog.window.update(cx, move |_, window, cx| {
+                            input.update(cx, |input, cx| {
+                                input.set_value(password.clone(), window, cx);
+                            });
+                            window.close_dialog(cx);
+                        });
+                    }
+                } else {
+                    let message = self.sync_runtime.status.clone();
+                    if let Some(dialog) = self.sync_runtime.secrets_password_dialog.as_mut() {
+                        dialog.status = crate::app::SyncSecretsPasswordDialogStatus::Failed;
+                        dialog.message = Some(message);
+                    }
+                }
+            }
+            crate::sync::PrivacyPasswordStatus::Mismatch => {
+                if let Some(dialog) = self.sync_runtime.secrets_password_dialog.as_mut() {
+                    dialog.status = crate::app::SyncSecretsPasswordDialogStatus::PasswordMismatch;
+                    dialog.message = Some(t!("sync_secret_toggle_password_incorrect").into());
+                }
+            }
+            crate::sync::PrivacyPasswordStatus::Missing => {
+                if let Some(dialog) = self.sync_runtime.secrets_password_dialog.as_mut() {
+                    dialog.status = crate::app::SyncSecretsPasswordDialogStatus::PasswordRequired;
+                    dialog.message = Some(t!("sync_secret_toggle_password_required").into());
+                }
+            }
+            crate::sync::PrivacyPasswordStatus::NotConfigured => {
+                if let Some(dialog) = self.sync_runtime.secrets_password_dialog.as_mut() {
+                    dialog.status =
+                        crate::app::SyncSecretsPasswordDialogStatus::RemotePasswordNotConfigured;
+                    dialog.message = Some(t!("sync_secret_toggle_remote_password_missing").into());
+                }
+            }
+        }
+    }
+
+    fn handle_sync_connection_verified(&mut self, _cx: &mut Context<Self>) {
+        self.sync_runtime.status = t!("sync_connection_verified").into();
+    }
+
+    fn handle_sync_failed(&mut self, error: crate::sync::SyncFailure, _cx: &mut Context<Self>) {
+        self.sync_runtime.status = crate::app::config_sync::sync_failure_status(&error).into();
+        if self
+            .sync_runtime
+            .secrets_password_dialog
+            .as_ref()
+            .is_some_and(|dialog| {
+                dialog.status == crate::app::SyncSecretsPasswordDialogStatus::Verifying
+            })
+        {
+            let message = self.sync_runtime.status.clone();
+            if let Some(dialog) = self.sync_runtime.secrets_password_dialog.as_mut() {
+                dialog.status = crate::app::SyncSecretsPasswordDialogStatus::Failed;
+                dialog.message = Some(message);
+            }
+        }
     }
 
     pub(crate) fn sample_system_if_due(&mut self) -> bool {

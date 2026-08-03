@@ -5,7 +5,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use anyhow::{Result, anyhow};
+use anyhow::{Context, Result, anyhow};
 use sysinfo::{Disks, Networks, ProcessesToUpdate, System};
 
 /// Known virtual/ram filesystems to exclude from disk monitoring.
@@ -317,65 +317,47 @@ pub(crate) fn remote_snapshot_from_kv(raw: &str) -> Result<SystemSnapshot> {
 
     for line in raw.lines().map(str::trim).filter(|line| !line.is_empty()) {
         if let Some(rest) = line.strip_prefix("DISK=") {
-            let mut parts = rest.split('\t');
-            let mount = parts.next().unwrap_or_default().to_string();
-            let available_bytes = parts
-                .next()
-                .unwrap_or("0")
-                .parse::<u64>()
-                .unwrap_or_default();
-            let total_bytes = parts
-                .next()
-                .unwrap_or("0")
-                .parse::<u64>()
-                .unwrap_or_default();
-            disks.push(DiskSample {
-                mount,
-                available_bytes,
-                total_bytes,
-            });
+            if let Some(sample) = parse_disk_sample(rest) {
+                disks.push(sample);
+            } else {
+                tracing::debug!(line, "skipping malformed DISK entry");
+            }
             continue;
         }
 
         if let Some(rest) = line.strip_prefix("FILESYSTEM=") {
-            let mut parts = rest.split('\t');
-            filesystems.push(DiskSample {
-                mount: parts.next().unwrap_or_default().to_string(),
-                available_bytes: parts.next().unwrap_or("0").parse().unwrap_or_default(),
-                total_bytes: parts.next().unwrap_or("0").parse().unwrap_or_default(),
-            });
+            if let Some(sample) = parse_disk_sample(rest) {
+                filesystems.push(sample);
+            } else {
+                tracing::debug!(line, "skipping malformed FILESYSTEM entry");
+            }
             continue;
         }
 
         if let Some(rest) = line.strip_prefix("NETIF=") {
-            let mut parts = rest.split('\t');
-            network_interfaces.push(NetworkSample {
-                name: parts.next().unwrap_or_default().to_string(),
-                received_bytes: parts.next().unwrap_or("0").parse().unwrap_or_default(),
-                transmitted_bytes: parts.next().unwrap_or("0").parse().unwrap_or_default(),
-                receive_rate: parts.next().unwrap_or("0").parse().unwrap_or_default(),
-                transmit_rate: parts.next().unwrap_or("0").parse().unwrap_or_default(),
-            });
+            if let Some(sample) = parse_network_sample(rest) {
+                network_interfaces.push(sample);
+            } else {
+                tracing::debug!(line, "skipping malformed NETIF entry");
+            }
             continue;
         }
 
         if let Some(rest) = line.strip_prefix("IP_ENTRY=") {
-            let mut parts = rest.splitn(2, '\t');
-            ip_address_entries.push(IpAddressSample {
-                interface: parts.next().unwrap_or_default().to_string(),
-                address: parts.next().unwrap_or_default().to_string(),
-            });
+            if let Some(sample) = parse_ip_address_sample(rest) {
+                ip_address_entries.push(sample);
+            } else {
+                tracing::debug!(line, "skipping malformed IP_ENTRY");
+            }
             continue;
         }
 
         if let Some(rest) = line.strip_prefix("PROCESS=") {
-            let mut parts = rest.splitn(4, '\t');
-            let _pid = parts.next();
-            processes.push(ProcessSample {
-                memory_bytes: parts.next().unwrap_or("0").parse().unwrap_or_default(),
-                cpu_percent: parts.next().unwrap_or("0").parse().unwrap_or_default(),
-                command: parts.next().unwrap_or_default().to_string(),
-            });
+            if let Some(sample) = parse_process_sample(rest) {
+                processes.push(sample);
+            } else {
+                tracing::debug!(line, "skipping malformed PROCESS entry");
+            }
             continue;
         }
 
@@ -389,15 +371,15 @@ pub(crate) fn remote_snapshot_from_kv(raw: &str) -> Result<SystemSnapshot> {
         .get("CPU_PERCENT")
         .ok_or_else(|| anyhow!("missing CPU_PERCENT"))?
         .parse::<f32>()
-        .unwrap_or_default()
+        .with_context(|| format!("invalid CPU_PERCENT value: {}", kv["CPU_PERCENT"]))?
         / 100.0;
 
-    let mem_used = parse_u64(&kv, "MEM_USED");
-    let mem_total = parse_u64(&kv, "MEM_TOTAL");
-    let swap_used = parse_u64(&kv, "SWAP_USED");
-    let swap_total = parse_u64(&kv, "SWAP_TOTAL");
-    let rx_rate = parse_u64(&kv, "NET_RX");
-    let tx_rate = parse_u64(&kv, "NET_TX");
+    let mem_used = parse_u64(&kv, "MEM_USED")?;
+    let mem_total = parse_u64(&kv, "MEM_TOTAL")?;
+    let swap_used = parse_u64(&kv, "SWAP_USED")?;
+    let swap_total = parse_u64(&kv, "SWAP_TOTAL")?;
+    let rx_rate = parse_u64(&kv, "NET_RX")?;
+    let tx_rate = parse_u64(&kv, "NET_TX")?;
 
     // Safety filter: exclude entries with zero/negligible total size
     // (catches any virtual fs lines that slipped past the script filter)
@@ -474,11 +456,11 @@ pub(crate) fn remote_snapshot_from_kv(raw: &str) -> Result<SystemSnapshot> {
         hostname: kv.get("HOSTNAME").cloned().unwrap_or_default(),
         ip_address: primary_ip,
         ip_address_entries: unique_entries,
-        uptime_seconds: parse_u64(&kv, "UPTIME_SECONDS"),
+        uptime_seconds: parse_u64(&kv, "UPTIME_SECONDS")?,
         load_average: kv.get("LOAD_AVERAGE").cloned().unwrap_or_default(),
         cpu_model: kv.get("CPU_MODEL").cloned().unwrap_or_default(),
-        cpu_cores: parse_u64(&kv, "CPU_CORES") as usize,
-        cpu_frequency_mhz: parse_u64(&kv, "CPU_FREQUENCY_MHZ"),
+        cpu_cores: parse_u64(&kv, "CPU_CORES")? as usize,
+        cpu_frequency_mhz: parse_u64(&kv, "CPU_FREQUENCY_MHZ")?,
         cpu_percent: cpu_percent.clamp(0.0, 1.0),
         mem_percent: ratio(mem_used, mem_total),
         swap_percent: ratio(swap_used, swap_total),
@@ -500,10 +482,61 @@ pub(crate) fn remote_snapshot_from_kv(raw: &str) -> Result<SystemSnapshot> {
     })
 }
 
-fn parse_u64(kv: &BTreeMap<String, String>, key: &str) -> u64 {
-    kv.get(key)
-        .and_then(|value| value.parse::<u64>().ok())
-        .unwrap_or_default()
+fn parse_u64(kv: &BTreeMap<String, String>, key: &str) -> Result<u64> {
+    match kv.get(key) {
+        Some(value) if !value.is_empty() => value
+            .parse::<u64>()
+            .with_context(|| format!("invalid {key} value: {value}")),
+        _ => Ok(0),
+    }
+}
+
+fn parse_disk_sample(rest: &str) -> Option<DiskSample> {
+    let mut parts = rest.split('\t');
+    let mount = parts.next()?.to_string();
+    let available_bytes = parts.next()?.parse().ok()?;
+    let total_bytes = parts.next()?.parse().ok()?;
+    Some(DiskSample {
+        mount,
+        available_bytes,
+        total_bytes,
+    })
+}
+
+fn parse_network_sample(rest: &str) -> Option<NetworkSample> {
+    let mut parts = rest.split('\t');
+    let name = parts.next()?.to_string();
+    let received_bytes = parts.next()?.parse().ok()?;
+    let transmitted_bytes = parts.next()?.parse().ok()?;
+    let receive_rate = parts.next()?.parse().ok()?;
+    let transmit_rate = parts.next()?.parse().ok()?;
+    Some(NetworkSample {
+        name,
+        received_bytes,
+        transmitted_bytes,
+        receive_rate,
+        transmit_rate,
+    })
+}
+
+fn parse_ip_address_sample(rest: &str) -> Option<IpAddressSample> {
+    let mut parts = rest.splitn(2, '\t');
+    let interface = parts.next()?.to_string();
+    let address = parts.next()?.to_string();
+    Some(IpAddressSample { interface, address })
+}
+
+fn parse_process_sample(rest: &str) -> Option<ProcessSample> {
+    let mut parts = rest.splitn(4, '\t');
+    let _pid = parts.next()?;
+    let memory_bytes = parts.next()?.parse().ok()?;
+    let cpu_percent = parts.next()?.parse().ok()?;
+    let command = parts.next()?.to_string();
+    Some(ProcessSample {
+        memory_bytes,
+        cpu_percent,
+        command,
+    })
 }
 
 #[cfg(test)]

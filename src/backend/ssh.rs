@@ -235,22 +235,25 @@ async fn connect_and_authenticate(
     events: &BackendEventSender,
     proxy_config: &ConfigStore,
 ) -> Result<russh::client::Handle<ClientHandler>> {
-    if session.requires_credential_prompt() {
-        return Err(anyhow!(t!("session_credentials_required").to_string()));
-    }
+    const CONNECTION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
-    let config = Arc::new(client::Config {
-        inactivity_timeout: Some(std::time::Duration::from_secs(600)),
-        keepalive_interval: Some(std::time::Duration::from_secs(3)),
-        keepalive_max: 2,
-        ..Default::default()
-    });
-    let addr = format!("{}:{}", session.host, session.port);
-    tracing::info!(
-        "[ssh] initiating tcp connection to {} (user: {})",
-        addr,
-        session.user
-    );
+    tokio::time::timeout(CONNECTION_TIMEOUT, async move {
+        if session.requires_credential_prompt() {
+            return Err(anyhow!(t!("session_credentials_required").to_string()));
+        }
+
+        let config = Arc::new(client::Config {
+            inactivity_timeout: Some(std::time::Duration::from_secs(600)),
+            keepalive_interval: Some(std::time::Duration::from_secs(3)),
+            keepalive_max: 2,
+            ..Default::default()
+        });
+        let addr = format!("{}:{}", session.host, session.port);
+        tracing::info!(
+            "[ssh] initiating tcp connection to {} (user: {})",
+            addr,
+            session.user
+        );
     let status_text = if let Some((ptype, phost, pport)) =
         crate::session::config::active_proxy(session, proxy_config)
     {
@@ -491,7 +494,10 @@ async fn connect_and_authenticate(
         ),
     });
 
-    Ok(handle)
+        Ok(handle)
+    })
+    .await
+    .context("connection timed out")?
 }
 
 fn load_session_private_key(session: &Session) -> Result<PrivateKey> {

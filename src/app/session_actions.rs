@@ -19,7 +19,7 @@ use crate::{
         },
     },
     backend::{local, ssh},
-    session::config::{AuthMethod, Session},
+    session::config::{AuthMethod, ConfigStore, Session},
     terminal::{BackendCommand, RenderSnapshot, TabKind, TerminalTab},
 };
 
@@ -133,6 +133,19 @@ impl TinyShell {
 
     pub(crate) fn connect_ssh(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         tracing::info!("[ui] user initiating new ssh connection from form");
+        let Some((session, proxy_config)) = self.prepare_ssh_session(cx) else {
+            return;
+        };
+
+        self.spawn_ssh_backend(session, proxy_config, cx);
+        self.editing_session_id = None;
+        self.session_group_selection = self.connection_group_filter.clone();
+        self.active_dialog = None;
+        window.close_dialog(cx);
+        cx.notify();
+    }
+
+    fn prepare_ssh_session(&mut self, cx: &mut Context<Self>) -> Option<(Session, ConfigStore)> {
         let session_name = self.session_name_input.read(cx).value().trim().to_string();
         let host = self.host_input.read(cx).value().trim().to_string();
         let port = self
@@ -151,7 +164,7 @@ impl TinyShell {
         if host.is_empty() || user.is_empty() {
             self.status = t!("host_and_user_required").into();
             cx.notify();
-            return;
+            return None;
         }
 
         if self.ssh_proxy_type != "none" {
@@ -161,7 +174,7 @@ impl TinyShell {
             if proxy_host.is_empty() || proxy_port.is_none() {
                 self.status = t!("ssh_editor_proxy_required").into();
                 cx.notify();
-                return;
+                return None;
             }
         }
 
@@ -226,17 +239,23 @@ impl TinyShell {
             .ok();
         session.proxy_user = self.proxy_user_input.read(cx).value().trim().to_string();
         session.proxy_password = self.proxy_password_input.read(cx).value().to_string();
+
+        Some((session, self.config.clone()))
+    }
+
+    fn spawn_ssh_backend(
+        &mut self,
+        session: Session,
+        _proxy_config: ConfigStore,
+        cx: &mut Context<Self>,
+    ) {
+        // Persist the edited/new session before opening it.
         self.config.upsert(session.clone());
         if let Err(err) = crate::app::config_persistence::save_full(&self.config) {
             tracing::warn!("failed to save config: {err:#}");
         }
 
         self.open_ssh_session(session, cx);
-        self.editing_session_id = None;
-        self.session_group_selection = self.connection_group_filter.clone();
-        self.active_dialog = None;
-        window.close_dialog(cx);
-        cx.notify();
     }
 
     // ── SSH 对话框 ──
@@ -433,6 +452,7 @@ impl TinyShell {
 
     pub(crate) fn handle_tab_close(&mut self, id: String) {
         self.terminal_completions.remove(&id);
+
         let removed_active_info = self.system_info_tabs.iter().any(|tab| {
             tab.source_tab_id == id
                 && self.active_system_info_tab.as_deref() == Some(tab.id.as_str())
@@ -441,11 +461,8 @@ impl TinyShell {
         if removed_active_info {
             self.active_system_info_tab = None;
         }
-        let group_ix = self
-            .tab_groups
-            .iter()
-            .position(|g| g.pane_root.contains(&id));
-        let Some(ref group) = group_ix.map(|i| self.tab_groups[i].clone()) else {
+
+        let Some((group_index, tab_index)) = self.find_tab_and_group(&id) else {
             // Fallback: find and close individual tab
             tracing::info!(
                 "[handle_tab_close] no group found for tab '{}', closing individually",
@@ -459,57 +476,99 @@ impl TinyShell {
             return;
         };
 
-        let pane_ids = group.pane_root.tab_ids();
-        let pane_ids_str = pane_ids.to_vec();
-        let is_group_close = pane_ids.len() <= 1;
-        tracing::info!(
-            "[handle_tab_close] id='{}' group_panes={:?} is_group_close={}",
-            id,
-            pane_ids_str,
-            is_group_close
-        );
+        let (was_active, next_active_id) = self.resolve_next_active(group_index, tab_index);
+        self.close_tab_at(group_index, tab_index);
 
-        let was_active = self.active_tab.as_deref() == Some(id.as_str());
-        let mut next_active_id = None;
-        if was_active {
-            let tabs_in_group = group.pane_root.tab_ids();
-            if let Some(pos) = tabs_in_group.iter().position(|&s| s == id.as_str()) {
-                if pos > 0 {
-                    next_active_id = Some(tabs_in_group[pos - 1].to_string());
-                } else if pos + 1 < tabs_in_group.len() {
-                    next_active_id = Some(tabs_in_group[pos + 1].to_string());
-                }
+        if self.tabs.is_empty() || self.tab_groups.is_empty() {
+            self.pane_root = PaneLayout::Single(String::new());
+            self.focused_pane_path = vec![];
+            self.active_tab = None;
+            self.active_group = None;
+            self.system_info_tabs.clear();
+            self.active_system_info_tab = None;
+            self.tab_groups.clear();
+            self.tabs.clear();
+            self.system_tab_id = None;
+            self.monitoring.cpu_history.clear();
+            self.monitoring.net_rx_history.clear();
+            self.monitoring.net_tx_history.clear();
+            self.monitoring.selected_network_interface = None;
+            self.monitoring.network_interface_histories.clear();
+            self.monitoring.system_status = None;
+            self.monitoring.remote_system_snapshots.clear();
+            for (_, handle) in self.sftp_handles.drain() {
+                handle.close();
             }
-            if next_active_id.is_none() {
-                // Find next group's active tab
-                let all_groups = &self.tab_groups;
-                if let Some(pos) = all_groups.iter().position(|g| g.id == group.id) {
-                    if pos > 0 {
-                        next_active_id = all_groups[pos - 1]
-                            .pane_root
-                            .tab_ids()
-                            .first()
-                            .copied()
-                            .map(String::from);
-                    } else if pos + 1 < all_groups.len() {
-                        next_active_id = all_groups[pos + 1]
-                            .pane_root
-                            .tab_ids()
-                            .first()
-                            .copied()
-                            .map(String::from);
-                    }
+            self.home_page_open = true;
+            return;
+        }
+
+        self.activate_tab_after_close(was_active, next_active_id);
+        self.sync_system_tab_to_active_group();
+    }
+
+    fn find_tab_and_group(&self, tab_id: &str) -> Option<(usize, usize)> {
+        let group_index = self
+            .tab_groups
+            .iter()
+            .position(|g| g.pane_root.contains(tab_id))?;
+        let tab_index = self.tab_groups[group_index]
+            .pane_root
+            .tab_ids()
+            .iter()
+            .position(|&s| s == tab_id)?;
+        Some((group_index, tab_index))
+    }
+
+    fn resolve_next_active(&self, group_index: usize, tab_index: usize) -> (bool, Option<String>) {
+        let group = &self.tab_groups[group_index];
+        let tabs_in_group = group.pane_root.tab_ids();
+        let id = tabs_in_group[tab_index];
+        let was_active = self.active_tab.as_deref() == Some(id);
+        let mut next_active_id = None;
+
+        if was_active {
+            if tab_index > 0 {
+                next_active_id = Some(tabs_in_group[tab_index - 1].to_string());
+            } else if tab_index + 1 < tabs_in_group.len() {
+                next_active_id = Some(tabs_in_group[tab_index + 1].to_string());
+            } else if let Some(pos) = self.tab_groups.iter().position(|g| g.id == group.id) {
+                if pos > 0 {
+                    next_active_id = self.tab_groups[pos - 1]
+                        .pane_root
+                        .tab_ids()
+                        .first()
+                        .copied()
+                        .map(String::from);
+                } else if pos + 1 < self.tab_groups.len() {
+                    next_active_id = self.tab_groups[pos + 1]
+                        .pane_root
+                        .tab_ids()
+                        .first()
+                        .copied()
+                        .map(String::from);
                 }
             }
         }
+
+        (was_active, next_active_id)
+    }
+
+    fn close_tab_at(&mut self, group_index: usize, tab_index: usize) {
+        let group = self.tab_groups[group_index].clone();
+        let pane_ids = group.pane_root.tab_ids();
+        let id = pane_ids[tab_index].to_string();
+        let is_group_close = pane_ids.len() <= 1;
+
+        tracing::info!(
+            "[handle_tab_close] id='{}' group_panes={:?} is_group_close={}",
+            id,
+            pane_ids,
+            is_group_close
+        );
+
         if is_group_close {
-            // Close all tabs in the group
-            let tab_ids: Vec<String> = group
-                .pane_root
-                .tab_ids()
-                .iter()
-                .map(|s| s.to_string())
-                .collect();
+            let tab_ids: Vec<String> = pane_ids.iter().map(|s| s.to_string()).collect();
             for tab_id in &tab_ids {
                 if let Some(ix) = self.tabs.iter().position(|tab| tab.id == *tab_id) {
                     self.tabs[ix].send_backend(BackendCommand::Close);
@@ -520,12 +579,9 @@ impl TinyShell {
             if let Some(handle) = self.sftp_handles.remove(&group.id) {
                 handle.close();
             }
-            if let Some(group_index) = group_ix {
-                self.tab_groups.remove(group_index);
-            }
+            self.tab_groups.remove(group_index);
             self.pane_root.remove_tab(&id);
         } else {
-            // Just remove this tab from the group
             if let Some(ix) = self.tabs.iter().position(|tab| tab.id == id) {
                 self.tabs[ix].send_backend(BackendCommand::Close);
                 self.tabs.retain(|t| t.id != id);
@@ -556,38 +612,15 @@ impl TinyShell {
         {
             self.active_system_info_tab = None;
         }
+    }
 
-        if self.tabs.is_empty() || self.tab_groups.is_empty() {
-            self.pane_root = PaneLayout::Single(String::new());
-            self.focused_pane_path = vec![];
-            self.active_tab = None;
-            self.active_group = None;
-            self.system_info_tabs.clear();
-            self.active_system_info_tab = None;
-            self.tab_groups.clear();
-            self.tabs.clear();
-            self.system_tab_id = None;
-            self.monitoring.cpu_history.clear();
-            self.monitoring.net_rx_history.clear();
-            self.monitoring.net_tx_history.clear();
-            self.monitoring.selected_network_interface = None;
-            self.monitoring.network_interface_histories.clear();
-            self.monitoring.system_status = None;
-            self.monitoring.remote_system_snapshots.clear();
-            for (_, handle) in self.sftp_handles.drain() {
-                handle.close();
-            }
-            self.home_page_open = true;
-            return;
-        }
-
+    fn activate_tab_after_close(&mut self, was_active: bool, next_active_id: Option<String>) {
         if was_active
             || self
                 .active_tab
                 .as_ref()
                 .is_some_and(|active_id| !self.tabs.iter().any(|tab| &tab.id == active_id))
         {
-            // Activate next available pane
             let new_id = next_active_id.or_else(|| {
                 self.pane_root
                     .tab_ids()
@@ -608,13 +641,10 @@ impl TinyShell {
                 }
                 self.focus_pane_with_id(new_id);
             }
-        } else {
-            // Pane root structure may have changed (e.g. sibling removed), recalc path
-            if let Some(active_id) = self.active_tab.clone() {
-                self.focus_pane_with_id(active_id);
-            }
+        } else if let Some(active_id) = self.active_tab.clone() {
+            // Pane root structure may have changed (e.g. sibling removed), recalc path.
+            self.focus_pane_with_id(active_id);
         }
-        self.sync_system_tab_to_active_group();
     }
 
     pub(crate) fn focus_terminal(
@@ -703,11 +733,31 @@ impl TinyShell {
             self.active_tab,
             self.tabs.len(),
         );
-        let current_id = match self.pane_root.focused_tab_id(&self.focused_pane_path) {
-            Some(id) if !id.is_empty() => id.to_string(),
-            _ => return,
+        let Some((current_id, title)) = self.find_focused_tab() else {
+            return;
         };
-        let (current_kind, current_session) = match self.tabs.iter().find(|t| t.id == current_id) {
+        let path = self.focused_pane_path.clone();
+        self.split_pane_at(&path, current_id.to_string(), title, direction, cx);
+    }
+
+    fn find_focused_tab(&self) -> Option<(&str, String)> {
+        let id = self.pane_root.focused_tab_id(&self.focused_pane_path)?;
+        if id.is_empty() {
+            return None;
+        }
+        let title = self.tabs.iter().find(|t| t.id == id)?.title.clone();
+        Some((id, title))
+    }
+
+    fn split_pane_at(
+        &mut self,
+        path: &[usize],
+        tab_id: String,
+        _title: String,
+        direction: &str,
+        cx: &mut Context<Self>,
+    ) {
+        let (current_kind, current_session) = match self.tabs.iter().find(|t| t.id == tab_id) {
             Some(tab) => (tab.kind, tab.session.clone()),
             None => return,
         };
@@ -767,7 +817,7 @@ impl TinyShell {
         self.tabs.push(tab);
         // Do NOT scroll tab bar or add tab bar entry
 
-        let current_pane = PaneLayout::Single(current_id);
+        let current_pane = PaneLayout::Single(tab_id);
         let new_pane = PaneLayout::Single(new_id.clone());
 
         let split_layout = match direction {
@@ -788,12 +838,10 @@ impl TinyShell {
             _ => return,
         };
 
-        self.pane_root
-            .replace_at(&self.focused_pane_path, split_layout);
+        self.pane_root.replace_at(path, split_layout);
         self.sync_pane_root_to_group();
         // Update focused_pane_path: the new pane is at the indicated child index
-        let parent_path = self.focused_pane_path.clone();
-        let mut new_full_path = parent_path;
+        let mut new_full_path = path.to_vec();
         if direction == "right" || direction == "down" {
             new_full_path.push(1);
         } else {
@@ -868,6 +916,14 @@ impl TinyShell {
         if path.is_empty() {
             return None;
         }
+        Self::adjacent_pane_in_layout(layout, path, direction)
+    }
+
+    fn adjacent_pane_in_layout(
+        layout: &PaneLayout,
+        path: &[usize],
+        direction: &str,
+    ) -> Option<Vec<usize>> {
         match layout {
             PaneLayout::Single(_) => None,
             PaneLayout::Horizontal(children, _) | PaneLayout::Vertical(children, _) => {
@@ -905,7 +961,7 @@ impl TinyShell {
                 } else {
                     // Recurse into child first
                     if let Some(mut child_path) =
-                        Self::find_adjacent_pane(&children[idx], &path[1..], direction)
+                        Self::adjacent_pane_in_layout(&children[idx], &path[1..], direction)
                     {
                         child_path.insert(0, idx);
                         Some(child_path)
@@ -1674,6 +1730,12 @@ impl TinyShell {
     }
 
     fn take_group_transfer(&mut self, group_id: &str) -> Result<GroupTransfer, String> {
+        let transfer = self.prepare_group_for_transfer(group_id)?;
+        self.clear_transferred_group(transfer.group_index);
+        Ok(transfer)
+    }
+
+    fn prepare_group_for_transfer(&mut self, group_id: &str) -> Result<GroupTransfer, String> {
         let group_index = self
             .tab_groups
             .iter()
@@ -1729,17 +1791,11 @@ impl TinyShell {
             }
         }
 
-        self.tab_groups.remove(group_index);
         let mut route_ids = tab_ids;
         route_ids.extend(sftp_handles.keys().cloned());
         route_ids.sort();
         route_ids.dedup();
 
-        if was_active_group {
-            self.activate_after_group_extraction(group_index);
-        } else {
-            self.sync_system_tab_to_active_group();
-        }
         Ok(GroupTransfer {
             group,
             group_index,
@@ -1749,6 +1805,17 @@ impl TinyShell {
             active_tab,
             was_active_group,
         })
+    }
+
+    fn clear_transferred_group(&mut self, group_index: usize) {
+        let was_active_group =
+            self.active_group.as_deref() == Some(&self.tab_groups[group_index].id);
+        self.tab_groups.remove(group_index);
+        if was_active_group {
+            self.activate_after_group_extraction(group_index);
+        } else {
+            self.sync_system_tab_to_active_group();
+        }
     }
 
     fn activate_after_group_extraction(&mut self, removed_index: usize) {
@@ -1890,18 +1957,59 @@ impl TinyShell {
             active_tab,
             ..
         } = transfer;
-        let group_id = group.id.clone();
-        self.next_tab_group_ordinal = self.next_tab_group_ordinal.max(group.ordinal + 1);
-        let group_layout = group.pane_root.clone();
-        let fallback_tab = group_layout.tab_ids().first().copied().map(str::to_string);
-        self.tabs.extend(tabs.into_iter().map(|(_, tab)| tab));
-        self.sftp_handles.extend(sftp_handles);
-        self.tab_groups.push(group);
+        let group_id = self.create_group_for_transfer(
+            group.pane_root.clone(),
+            group.title.clone(),
+            group.ordinal,
+            group.sftp.clone(),
+            cx,
+        );
+        let fallback_tab = self
+            .pane_root
+            .tab_ids()
+            .first()
+            .copied()
+            .map(str::to_string);
+        self.adopt_transferred_tabs(group_id, tabs, sftp_handles, active_tab, fallback_tab, cx);
+        Ok(())
+    }
+
+    fn create_group_for_transfer(
+        &mut self,
+        pane_root: PaneLayout,
+        title: String,
+        ordinal: u64,
+        sftp: Option<crate::terminal::SftpUiState>,
+        _cx: &mut Context<Self>,
+    ) -> String {
+        self.next_tab_group_ordinal = self.next_tab_group_ordinal.max(ordinal + 1);
+        let group_id = Uuid::new_v4().to_string();
+        self.tab_groups.push(TabGroup {
+            id: group_id.clone(),
+            ordinal,
+            title,
+            pane_root: pane_root.clone(),
+            sftp,
+        });
         self.home_page_open = false;
         self.active_system_info_tab = None;
-        self.active_group = Some(group_id);
-        self.pane_root = group_layout;
+        self.active_group = Some(group_id.clone());
+        self.pane_root = pane_root;
         self.focused_pane_path.clear();
+        group_id
+    }
+
+    fn adopt_transferred_tabs(
+        &mut self,
+        _group_id: String,
+        tabs: Vec<(usize, TerminalTab)>,
+        sftp_handles: HashMap<String, crate::sftp::SftpHandle>,
+        active_tab: Option<String>,
+        fallback_tab: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        self.tabs.extend(tabs.into_iter().map(|(_, tab)| tab));
+        self.sftp_handles.extend(sftp_handles);
         self.active_tab = active_tab.or(fallback_tab);
         if let Some(tab_id) = self.active_tab.clone() {
             self.focus_pane_with_id(tab_id);
@@ -1909,6 +2017,5 @@ impl TinyShell {
         self.sync_system_tab_to_active_group();
         self.status = "tab group moved from another window".into();
         cx.notify();
-        Ok(())
     }
 }
