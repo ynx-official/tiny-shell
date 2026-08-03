@@ -89,7 +89,6 @@ pub enum PermissionApplyTarget {
     DirectoriesOnly,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct PreviewData {
     pub path: String,
@@ -103,7 +102,6 @@ pub enum SftpCommand {
     ListDir(String),
     ListDirectoryTree(String),
     MeasureLatency,
-    #[allow(dead_code)]
     Preview(String),
     Download {
         remote: String,
@@ -1606,7 +1604,6 @@ async fn download_path_impl(
     Ok(t!("downloaded_file", path = local_path.display()).to_string())
 }
 
-#[allow(dead_code)]
 async fn download_dir_recursive(
     sftp: &SftpSession,
     remote_dir: &str,

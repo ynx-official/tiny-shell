@@ -59,27 +59,6 @@ pub fn merge_payload(
     )
 }
 
-#[allow(dead_code)]
-pub fn merge_public_payload(
-    local_sessions: &[Session],
-    local_connection_groups: &[String],
-    local_keys: &[ManagedKey],
-    local_commands: &[QuickCommandCategory],
-    remote: SyncPayload,
-) -> MergedConfig {
-    merge_public_payload_with_deleted(
-        MergeLocal {
-            sessions: local_sessions,
-            deleted_sessions: &[],
-            connection_groups: local_connection_groups,
-            deleted_connection_groups: &[],
-            keys: local_keys,
-            commands: local_commands,
-        },
-        remote,
-    )
-}
-
 pub fn merge_payload_with_deleted(
     local: MergeLocal<'_>,
     remote: SyncPayload,
@@ -701,7 +680,17 @@ mod tests {
         )
         .unwrap();
 
-        let merged = merge_public_payload(&[local_session], &[], &[], &[], payload);
+        let merged = merge_public_payload_with_deleted(
+            MergeLocal {
+                sessions: &[local_session],
+                deleted_sessions: &[],
+                connection_groups: &[],
+                deleted_connection_groups: &[],
+                keys: &[],
+                commands: &[],
+            },
+            payload,
+        );
 
         assert_eq!(merged.sessions[0].name, "Remote name");
         assert_eq!(merged.sessions[0].password, "local-password");
