@@ -26,7 +26,7 @@ use crate::{
     terminal::{BackendCommand, BackendEvent, BackendEventSender, BackendTx},
 };
 
-pub fn spawn_ssh_terminal(
+pub(crate) fn spawn_ssh_terminal(
     runtime: &tokio::runtime::Handle,
     tab_id: String,
     session: Session,

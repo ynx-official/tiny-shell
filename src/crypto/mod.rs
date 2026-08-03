@@ -17,14 +17,14 @@ use chacha20poly1305::{
 use rand::{RngCore, rngs::OsRng};
 
 /// 字段级密文的前缀，用于在上传/下载时区分密文与明文/脱敏占位。
-pub const FIELD_CIPHER_PREFIX: &str = "v1:";
+pub(crate) const FIELD_CIPHER_PREFIX: &str = "v1:";
 
 const SALT_LEN: usize = 16;
 const NONCE_LEN: usize = 24;
 const KEY_LEN: usize = 32;
 
 /// 用 Argon2id 从用户口令派生 32 字节密钥。
-pub fn derive_key(password: &str, salt: &[u8]) -> Result<[u8; KEY_LEN]> {
+pub(crate) fn derive_key(password: &str, salt: &[u8]) -> Result<[u8; KEY_LEN]> {
     let mut key = [0u8; KEY_LEN];
     Argon2::default()
         .hash_password_into(password.as_bytes(), salt, &mut key)
@@ -35,7 +35,7 @@ pub fn derive_key(password: &str, salt: &[u8]) -> Result<[u8; KEY_LEN]> {
 /// 生成可同步的隐私密码校验值。
 ///
 /// 返回标准 PHC 字符串，只能用于验证输入是否一致，不能恢复原密码。
-pub fn hash_privacy_password(password: &str) -> Result<String> {
+pub(crate) fn hash_privacy_password(password: &str) -> Result<String> {
     let mut salt = [0u8; SALT_LEN];
     OsRng.fill_bytes(&mut salt);
     let salt = SaltString::encode_b64(&salt)
@@ -47,7 +47,7 @@ pub fn hash_privacy_password(password: &str) -> Result<String> {
 }
 
 /// 验证输入密码是否与同步文件中的不可逆校验值一致。
-pub fn verify_privacy_password(password: &str, verifier: &str) -> Result<bool> {
+pub(crate) fn verify_privacy_password(password: &str, verifier: &str) -> Result<bool> {
     let parsed = PasswordHash::new(verifier)
         .map_err(|err| anyhow!("parse privacy password verifier: {err}"))?;
     Ok(Argon2::default()
@@ -60,7 +60,7 @@ pub fn verify_privacy_password(password: &str, verifier: &str) -> Result<bool> {
 /// 格式：`v1:{base64(salt)}:{base64(nonce)}:{base64(ciphertext)}`
 /// 每个字段独立生成 salt 与 nonce，避免跨字段信息关联。
 /// 空串输入会原样返回空串（脱敏标记），不进入加密路径。
-pub fn encrypt_field(plaintext: &str, password: &str) -> Result<String> {
+pub(crate) fn encrypt_field(plaintext: &str, password: &str) -> Result<String> {
     if plaintext.is_empty() {
         return Ok(String::new());
     }
@@ -87,7 +87,7 @@ pub fn encrypt_field(plaintext: &str, password: &str) -> Result<String> {
 /// - 空串返回空串（脱敏占位，调用方负责保留本地原值）。
 /// - 不以 `v1:` 开头的输入返回错误，调用方可据此判断是否为密文。
 /// - 格式错误或密码错误时返回 `Err`。
-pub fn decrypt_field(ciphertext: &str, password: &str) -> Result<String> {
+pub(crate) fn decrypt_field(ciphertext: &str, password: &str) -> Result<String> {
     if ciphertext.is_empty() {
         return Ok(String::new());
     }
@@ -121,7 +121,7 @@ pub fn decrypt_field(ciphertext: &str, password: &str) -> Result<String> {
 
 /// 判断字符串是否为 `encrypt_field` 产生的密文。
 /// 下载合并时用于决定是解密覆盖、保留本地，还是当作明文处理。
-pub fn is_sealed_field(value: &str) -> bool {
+pub(crate) fn is_sealed_field(value: &str) -> bool {
     value.starts_with(FIELD_CIPHER_PREFIX)
 }
 
@@ -134,7 +134,7 @@ pub fn is_sealed_field(value: &str) -> bool {
     not(any(target_os = "windows", target_os = "macos", target_os = "linux")),
     allow(dead_code)
 )]
-pub fn seal_with_hardware_key(plaintext: &str, hardware_uuid: &str) -> Result<String> {
+pub(crate) fn seal_with_hardware_key(plaintext: &str, hardware_uuid: &str) -> Result<String> {
     if plaintext.is_empty() {
         return Ok(String::new());
     }
@@ -146,7 +146,7 @@ pub fn seal_with_hardware_key(plaintext: &str, hardware_uuid: &str) -> Result<St
     not(any(target_os = "windows", target_os = "macos", target_os = "linux")),
     allow(dead_code)
 )]
-pub fn open_with_hardware_key(ciphertext: &str, hardware_uuid: &str) -> Result<String> {
+pub(crate) fn open_with_hardware_key(ciphertext: &str, hardware_uuid: &str) -> Result<String> {
     if ciphertext.is_empty() {
         return Ok(String::new());
     }

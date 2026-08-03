@@ -1,7 +1,7 @@
-pub mod custom_blocks;
-pub mod element;
-pub mod highlight;
-pub mod input;
+pub(crate) mod custom_blocks;
+pub(crate) mod element;
+pub(crate) mod highlight;
+pub(crate) mod input;
 
 use std::{
     collections::HashMap,
@@ -35,13 +35,13 @@ use crate::system::SystemSnapshot;
 type HighlightCache = Option<(u64, Arc<HashMap<(i32, i32), gpui::Hsla>>)>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TabKind {
+pub(crate) enum TabKind {
     Local,
     Ssh,
 }
 
 #[derive(Debug)]
-pub enum BackendCommand {
+pub(crate) enum BackendCommand {
     Input(Vec<u8>),
     Resize { cols: u16, rows: u16 },
     SampleMetrics,
@@ -50,7 +50,7 @@ pub enum BackendCommand {
 
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone)]
-pub enum BackendEvent {
+pub(crate) enum BackendEvent {
     Output {
         tab_id: String,
         bytes: Vec<u8>,
@@ -121,7 +121,6 @@ pub enum BackendEvent {
         home: String,
     },
     TransferProgress {
-        #[allow(dead_code)]
         tab_id: String,
         id: String,
         transferred: u64,
@@ -147,14 +146,14 @@ pub enum BackendEvent {
 }
 
 #[derive(Clone)]
-pub struct BackendEventSender {
+pub(crate) struct BackendEventSender {
     events: Sender<BackendEvent>,
     wake_generation: Arc<AtomicU64>,
     wake: tokio::sync::watch::Sender<u64>,
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct BackendEventSendError;
+pub(crate) struct BackendEventSendError;
 
 impl BackendEventSender {
     pub fn send(&self, event: BackendEvent) -> Result<(), BackendEventSendError> {
@@ -183,7 +182,7 @@ pub(crate) fn backend_event_channel() -> (BackendEventSender, Receiver<BackendEv
 }
 
 #[derive(Clone)]
-pub enum BackendTx {
+pub(crate) enum BackendTx {
     Local(Sender<BackendCommand>),
     Ssh(tokio::sync::mpsc::UnboundedSender<BackendCommand>),
 }
@@ -200,7 +199,7 @@ impl BackendTx {
     }
 }
 
-pub struct TerminalTab {
+pub(crate) struct TerminalTab {
     pub id: String,
     pub title: String,
     pub dynamic_title: String,
@@ -262,21 +261,21 @@ impl RenderDamage {
 }
 
 #[derive(Clone, Copy)]
-pub struct CursorState {
+pub(crate) struct CursorState {
     pub row: usize,
     pub col: usize,
     pub shape: CursorShape,
 }
 
 #[derive(Clone, PartialEq)]
-pub struct RenderCell {
+pub(crate) struct RenderCell {
     pub row: i32,
     pub col: i32,
     pub cell: Cell,
 }
 
 #[derive(Clone)]
-pub struct RenderSnapshot {
+pub(crate) struct RenderSnapshot {
     /// Shared between frames so an idle terminal does not clone its viewport
     /// on every GPUI prepaint pass.
     pub cells: Arc<Vec<RenderCell>>,
@@ -290,7 +289,7 @@ pub struct RenderSnapshot {
 }
 
 #[derive(Clone, Copy)]
-pub struct ViewportSelection {
+pub(crate) struct ViewportSelection {
     pub start_row: usize,
     pub start_col: usize,
     pub end_row: usize,
@@ -299,7 +298,7 @@ pub struct ViewportSelection {
 }
 
 #[derive(Clone, Default)]
-pub struct SftpUiState {
+pub(crate) struct SftpUiState {
     pub current_path: String,
     pub status: String,
     pub entries: Vec<RemoteEntry>,
@@ -975,7 +974,7 @@ impl Dimensions for TerminalSize {
     }
 }
 
-pub fn encode_key(
+pub(crate) fn encode_key(
     keystroke: &Keystroke,
     app_cursor_mode: bool,
     option_as_meta: bool,
@@ -1151,13 +1150,13 @@ fn modifier_code(keystroke: &Keystroke) -> u32 {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub enum TransferType {
+pub(crate) enum TransferType {
     Upload,
     Download,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
-pub enum TransferState {
+pub(crate) enum TransferState {
     Running,
     Paused,
     Completed,
@@ -1203,7 +1202,7 @@ impl<'de> serde::Deserialize<'de> for TransferState {
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct TransferInfo {
+pub(crate) struct TransferInfo {
     pub id: String,
     pub name: String,
     pub source: String,
@@ -1213,7 +1212,7 @@ pub struct TransferInfo {
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
-pub struct Transfer {
+pub(crate) struct Transfer {
     pub tab_id: String,
     pub tab_title: String,
     pub info: TransferInfo,

@@ -674,7 +674,6 @@ fn unique_connection_group_name(existing: &[String], requested: &str) -> String 
     format!("{requested} ({})", Uuid::new_v4())
 }
 
-#[allow(dead_code)]
 impl ConfigStore {
     pub fn load() -> Result<Self> {
         let path = Self::config_path()?;
@@ -1038,6 +1037,7 @@ impl ConfigStore {
         }
     }
 
+    #[allow(dead_code)]
     pub fn move_connection_group(&mut self, name: &str, new_parent: Option<&str>) {
         let leaf = name.rsplit('/').next().unwrap_or(name);
         let destination = new_parent
@@ -1328,7 +1328,6 @@ impl ConfigStore {
         self.cache.workspace_panels.as_ref()
     }
 
-    #[allow(dead_code)]
     pub fn body_panels(&self) -> Option<&Vec<f32>> {
         self.cache.body_panels.as_ref()
     }

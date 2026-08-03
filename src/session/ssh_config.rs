@@ -6,7 +6,7 @@ use directories::BaseDirs;
 
 /// A parsed entry from ~/.ssh/config
 #[derive(Debug, Clone)]
-pub struct SshConfigEntry {
+pub(crate) struct SshConfigEntry {
     /// The Host pattern (alias) from the config, e.g. "myserver"
     pub host_alias: String,
     /// The actual hostname (HostName), defaults to the host alias if not specified
@@ -23,7 +23,7 @@ pub struct SshConfigEntry {
 
 /// Parse ~/.ssh/config and return a list of concrete host entries.
 /// Wildcard patterns (Host *) are excluded.
-pub fn parse_ssh_config() -> Result<Vec<SshConfigEntry>> {
+pub(crate) fn parse_ssh_config() -> Result<Vec<SshConfigEntry>> {
     let config_path = ssh_config_path()?;
     if !config_path.is_file() {
         return Ok(Vec::new());
@@ -42,7 +42,7 @@ fn ssh_config_path() -> Result<PathBuf> {
 }
 
 /// Parse the content of an ssh config file into entries.
-pub fn parse_ssh_config_content(content: &str) -> Result<Vec<SshConfigEntry>> {
+pub(crate) fn parse_ssh_config_content(content: &str) -> Result<Vec<SshConfigEntry>> {
     let mut entries: Vec<SshConfigEntry> = Vec::new();
     let mut current_host: Option<SshConfigEntry> = None;
 

@@ -1,6 +1,6 @@
 use gpui::{Bounds, Hsla, Path, Pixels, Window, fill, point, px, size};
 
-pub fn is_custom_block_supported(c: char) -> bool {
+pub(crate) fn is_custom_block_supported(c: char) -> bool {
     match c as u32 {
         0x2580..=0x258F | 0x2590 | 0x2594..=0x259F => true, // Block Elements
         0x2500 | 0x2502 | 0x250C | 0x2510 | 0x2514 | 0x2518 | 0x251C | 0x2524 | 0x252C | 0x2534
@@ -12,7 +12,7 @@ pub fn is_custom_block_supported(c: char) -> bool {
     }
 }
 
-pub fn paint_custom_block(
+pub(crate) fn paint_custom_block(
     window: &mut Window,
     c: char,
     raw_x: f32,

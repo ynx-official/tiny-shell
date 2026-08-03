@@ -1,11 +1,11 @@
 use anyhow::{Result, anyhow};
 use sha2::{Digest, Sha256};
 
-pub const EDITOR_SOFT_LIMIT_BYTES: u64 = 1024 * 1024;
-pub const EDITOR_HARD_LIMIT_BYTES: u64 = 5 * 1024 * 1024;
+pub(crate) const EDITOR_SOFT_LIMIT_BYTES: u64 = 1024 * 1024;
+pub(crate) const EDITOR_HARD_LIMIT_BYTES: u64 = 5 * 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RemoteFileRevision {
+pub(crate) struct RemoteFileRevision {
     pub size: u64,
     pub modified: Option<u32>,
     pub permissions: Option<u32>,
@@ -28,7 +28,7 @@ impl RemoteFileRevision {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TextEncoding {
+pub(crate) enum TextEncoding {
     Utf8,
     Utf8Bom,
 }
@@ -43,7 +43,7 @@ impl TextEncoding {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LineEnding {
+pub(crate) enum LineEnding {
     Lf,
     Crlf,
 }
@@ -58,13 +58,13 @@ impl LineEnding {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct RemoteTextFormat {
+pub(crate) struct RemoteTextFormat {
     pub encoding: TextEncoding,
     pub line_ending: LineEnding,
 }
 
 #[derive(Debug, Clone)]
-pub struct RemoteTextFile {
+pub(crate) struct RemoteTextFile {
     pub content: String,
     pub revision: RemoteFileRevision,
     pub format: RemoteTextFormat,
@@ -72,7 +72,7 @@ pub struct RemoteTextFile {
 }
 
 #[derive(Debug, Clone)]
-pub struct RemoteTextSave {
+pub(crate) struct RemoteTextSave {
     pub remote_path: String,
     pub content: String,
     pub expected_revision: RemoteFileRevision,
@@ -80,7 +80,7 @@ pub struct RemoteTextSave {
     pub force: bool,
 }
 
-pub fn decode_remote_text(
+pub(crate) fn decode_remote_text(
     bytes: Vec<u8>,
     modified: Option<u32>,
     permissions: Option<u32>,
@@ -117,7 +117,7 @@ pub fn decode_remote_text(
     })
 }
 
-pub fn encode_remote_text(content: &str, format: RemoteTextFormat) -> Vec<u8> {
+pub(crate) fn encode_remote_text(content: &str, format: RemoteTextFormat) -> Vec<u8> {
     let normalized = content.replace("\r\n", "\n");
     let body = match format.line_ending {
         LineEnding::Lf => normalized,

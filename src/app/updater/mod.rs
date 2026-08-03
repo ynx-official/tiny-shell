@@ -54,7 +54,7 @@ const MACOS_PKG_IDENTIFIER: &str = "dev.tiny-shell.app";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(dead_code)]
-pub enum InstallationKind {
+pub(crate) enum InstallationKind {
     WindowsInstaller,
     Portable,
     MacApp,
@@ -62,7 +62,7 @@ pub enum InstallationKind {
     LinuxPackage,
 }
 
-pub fn installation_kind() -> InstallationKind {
+pub(crate) fn installation_kind() -> InstallationKind {
     #[cfg(target_os = "windows")]
     {
         return if windows_installer_matches_current_exe() {
@@ -104,7 +104,7 @@ pub fn installation_kind() -> InstallationKind {
     InstallationKind::Portable
 }
 
-pub fn runtime_environment_label() -> String {
+pub(crate) fn runtime_environment_label() -> String {
     let operating_system = if cfg!(target_os = "windows") {
         "Windows"
     } else if cfg!(target_os = "macos") {
@@ -290,31 +290,29 @@ fn select_release_asset<'a>(
 }
 
 #[derive(Debug, Clone)]
-pub struct ReleaseInfo {
+pub(crate) struct ReleaseInfo {
     pub version: String,
     pub notes: String,
 }
 
 #[derive(Debug, Clone)]
-pub struct UpdateInfo {
+pub(crate) struct UpdateInfo {
     pub version: String,
-    #[allow(dead_code)]
     pub notes: String,
     pub download_url: String,
-    #[allow(dead_code)]
     pub size: u64,
     pub digest: String,
     pub installation_kind: InstallationKind,
 }
 
 #[derive(Debug, Clone)]
-pub enum UpdateCheckResult {
+pub(crate) enum UpdateCheckResult {
     UpToDate(ReleaseInfo),
     UpdateAvailable(UpdateInfo),
 }
 
 #[derive(Debug, Clone)]
-pub enum UpdateStatus {
+pub(crate) enum UpdateStatus {
     Checking,
     UpToDate(ReleaseInfo),
     UpdateAvailable(UpdateInfo),
@@ -332,7 +330,7 @@ struct DownloadCancellationInner {
 }
 
 #[derive(Clone, Debug, Default)]
-pub struct DownloadCancellation {
+pub(crate) struct DownloadCancellation {
     inner: Arc<DownloadCancellationInner>,
 }
 
@@ -355,7 +353,7 @@ impl DownloadCancellation {
 }
 
 /// Check the latest release and return both availability and release notes.
-pub async fn check_for_update() -> anyhow::Result<UpdateCheckResult> {
+pub(crate) async fn check_for_update() -> anyhow::Result<UpdateCheckResult> {
     let client = reqwest::Client::builder()
         .user_agent(format!("{}/{}", REPO_NAME, CURRENT_VERSION))
         .connect_timeout(HTTP_CONNECT_TIMEOUT)
@@ -556,7 +554,7 @@ where
 }
 
 /// Download and extract an update without touching the running application.
-pub async fn download_update<F>(
+pub(crate) async fn download_update<F>(
     info: &UpdateInfo,
     cancellation: &DownloadCancellation,
     on_progress: F,
@@ -640,7 +638,7 @@ fn stage_windows_portable_binary_at(
 }
 
 /// Install a prepared update, then close this process while the new version starts.
-pub fn install_and_restart(
+pub(crate) fn install_and_restart(
     new_path: &std::path::Path,
     expected_version: &str,
     installation_kind: InstallationKind,
@@ -678,8 +676,7 @@ pub fn install_and_restart(
 }
 
 /// Restart the application by launching the new binary and exiting.
-#[allow(dead_code)]
-pub fn restart() -> ! {
+fn restart() -> ! {
     let current_exe = match std::env::current_exe() {
         Ok(p) => p,
         Err(e) => {

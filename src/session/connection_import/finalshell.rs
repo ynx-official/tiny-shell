@@ -19,7 +19,7 @@ const MAX_JSON_SIZE: u64 = 1_048_576;
 const MAX_TOTAL_SIZE: u64 = 32 * 1_048_576;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FinalShellImportErrorKind {
+pub(crate) enum FinalShellImportErrorKind {
     Open,
     InvalidArchive,
     TooManyEntries,
@@ -32,7 +32,7 @@ pub enum FinalShellImportErrorKind {
 }
 
 #[derive(Debug, Error)]
-pub enum FinalShellImportError {
+pub(crate) enum FinalShellImportError {
     #[error("failed to open FinalShell backup")]
     Open(#[source] io::Error),
     #[error("invalid FinalShell ZIP archive")]
@@ -70,14 +70,14 @@ impl FinalShellImportError {
 }
 
 #[derive(Debug, Clone)]
-pub struct FinalShellImportPreview {
+pub(crate) struct FinalShellImportPreview {
     pub groups: Vec<String>,
     pub sessions: Vec<ImportedSession>,
     pub skipped_entries: usize,
 }
 
 #[derive(Debug, Clone)]
-pub struct ImportedSession {
+pub(crate) struct ImportedSession {
     pub name: String,
     pub host: String,
     pub port: u16,
@@ -88,7 +88,7 @@ pub struct ImportedSession {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct FinalShellImportSummary {
+pub(crate) struct FinalShellImportSummary {
     pub imported_sessions: usize,
     pub skipped_sessions: usize,
     pub imported_groups: usize,
@@ -112,7 +112,9 @@ struct FinalShellConnection {
     access_time: i64,
 }
 
-pub fn parse_finalshell_zip(path: &Path) -> Result<FinalShellImportPreview, FinalShellImportError> {
+pub(crate) fn parse_finalshell_zip(
+    path: &Path,
+) -> Result<FinalShellImportPreview, FinalShellImportError> {
     let file = File::open(path).map_err(FinalShellImportError::Open)?;
     let mut archive = ZipArchive::new(file).map_err(FinalShellImportError::InvalidArchive)?;
     if archive.len() > MAX_ENTRIES {
@@ -244,7 +246,7 @@ fn apply_finalshell_import(
     apply_finalshell_import_selected(config, preview, &selected)
 }
 
-pub fn apply_finalshell_import_selected(
+pub(crate) fn apply_finalshell_import_selected(
     config: &mut ConfigStore,
     preview: FinalShellImportPreview,
     selected: &[bool],
@@ -330,7 +332,7 @@ pub fn apply_finalshell_import_selected(
     }
 }
 
-pub fn import_matches_existing(existing: &Session, imported: &ImportedSession) -> bool {
+pub(crate) fn import_matches_existing(existing: &Session, imported: &ImportedSession) -> bool {
     existing.group == imported.group
         && existing.name == imported.name
         && existing.host == imported.host

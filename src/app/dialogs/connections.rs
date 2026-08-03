@@ -1,7 +1,6 @@
 use super::*;
 
 impl TinyShell {
-    #[allow(dead_code)]
     pub(crate) fn confirm_connection_group_dialog(
         &mut self,
         window: &mut Window,

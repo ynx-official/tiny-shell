@@ -143,7 +143,7 @@ struct CursorLayout {
     color: Hsla,
 }
 
-pub struct TerminalElement {
+pub(crate) struct TerminalElement {
     view: Entity<TinyShell>,
     focus_handle: FocusHandle,
     snapshot: RenderSnapshot,
@@ -156,7 +156,7 @@ pub struct TerminalElement {
     search_highlights: Option<std::collections::HashMap<(i32, i32), Hsla>>,
 }
 
-pub struct PrepaintState {
+pub(crate) struct PrepaintState {
     bounds: Bounds<Pixels>,
     metrics: TerminalMetrics,
     rects: Vec<LayoutRect>,

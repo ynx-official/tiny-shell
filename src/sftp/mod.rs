@@ -161,7 +161,7 @@ pub fn spawn_sftp(
 ) -> SftpHandle {
     let (cmd_tx, cmd_rx) = mpsc::channel(COMMAND_QUEUE_CAPACITY);
     let cmd_tx_clone = cmd_tx.clone();
-    let join = runtime.spawn(async move {
+    let _join = runtime.spawn(async move {
         if let Err(err) = run_sftp(
             tab_id.clone(),
             session,
@@ -182,7 +182,7 @@ pub fn spawn_sftp(
             });
         }
     });
-    SftpHandle::new(cmd_tx, Some(join))
+    SftpHandle::new(cmd_tx)
 }
 
 async fn run_sftp(

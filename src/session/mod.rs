@@ -1,11 +1,11 @@
-pub mod config;
-pub mod connection_archive;
-pub mod connection_catalog;
-pub mod connection_import;
-pub mod quick_commands;
-pub mod ssh_config;
-pub mod ssh_keys;
-pub mod store;
+pub(crate) mod config;
+pub(crate) mod connection_archive;
+pub(crate) mod connection_catalog;
+pub(crate) mod connection_import;
+pub(crate) mod quick_commands;
+pub(crate) mod ssh_config;
+pub(crate) mod ssh_keys;
+pub(crate) mod store;
 
 mod terminal_preferences;
 

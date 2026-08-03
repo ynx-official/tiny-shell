@@ -1,2 +1,2 @@
-pub mod local;
-pub mod ssh;
+pub(crate) mod local;
+pub(crate) mod ssh;

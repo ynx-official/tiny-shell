@@ -9,14 +9,14 @@ use russh::{
 
 use crate::session::config::Session;
 
-pub const DEFAULT_KEY_NAMES: &[&str] = &["id_ed25519", "id_rsa", "id_ecdsa", "id_dsa"];
+pub(crate) const DEFAULT_KEY_NAMES: &[&str] = &["id_ed25519", "id_rsa", "id_ecdsa", "id_dsa"];
 
-pub fn session_has_explicit_key(session: &Session) -> bool {
+pub(crate) fn session_has_explicit_key(session: &Session) -> bool {
     !session.private_key_path.trim().is_empty()
         || !normalize_inline_private_key(&session.private_key_inline).is_empty()
 }
 
-pub fn normalize_inline_private_key(value: &str) -> String {
+pub(crate) fn normalize_inline_private_key(value: &str) -> String {
     let mut normalized = value
         .trim()
         .replace("\\r\\n", "\n")
@@ -33,14 +33,14 @@ pub fn normalize_inline_private_key(value: &str) -> String {
 
 /// Decode a private key from inline content, optionally with a passphrase.
 /// Returns the parsed `PrivateKey` on success.
-pub fn decode_key(content: &str, passphrase: Option<&str>) -> Result<PrivateKey> {
+pub(crate) fn decode_key(content: &str, passphrase: Option<&str>) -> Result<PrivateKey> {
     let normalized = normalize_inline_private_key(content);
     Ok(russh::keys::decode_secret_key(&normalized, passphrase)?)
 }
 
 /// Detect the key type string from parsed key content.
 /// Returns one of: "ed25519", "rsa", "ecdsa", "dsa", or "unknown".
-pub fn detect_key_type(key: &PrivateKey) -> String {
+pub(crate) fn detect_key_type(key: &PrivateKey) -> String {
     let alg = key.algorithm();
     let s = alg.as_str();
     if s.contains("ed25519") {
@@ -57,18 +57,21 @@ pub fn detect_key_type(key: &PrivateKey) -> String {
 }
 
 /// Compute the SHA256 fingerprint string (e.g. "SHA256:xxxx...") for a key.
-pub fn compute_fingerprint(key: &PrivateKey) -> String {
+pub(crate) fn compute_fingerprint(key: &PrivateKey) -> String {
     key.fingerprint(HashAlg::Sha256).to_string()
 }
 
 /// Validate, detect type, and compute fingerprint for raw key content.
 /// Returns `(key_type, fingerprint)` on success.
-pub fn validate_and_inspect(content: &str, passphrase: Option<&str>) -> Result<(String, String)> {
+pub(crate) fn validate_and_inspect(
+    content: &str,
+    passphrase: Option<&str>,
+) -> Result<(String, String)> {
     let key = decode_key(content, passphrase)?;
     Ok((detect_key_type(&key), compute_fingerprint(&key)))
 }
 
-pub fn private_keys_with_algs(keypair: PrivateKey) -> Result<Vec<PrivateKeyWithHashAlg>> {
+pub(crate) fn private_keys_with_algs(keypair: PrivateKey) -> Result<Vec<PrivateKeyWithHashAlg>> {
     let mut algs = Vec::new();
     let key_arc = Arc::new(keypair);
 
@@ -95,7 +98,7 @@ pub fn private_keys_with_algs(keypair: PrivateKey) -> Result<Vec<PrivateKeyWithH
     Ok(algs)
 }
 
-pub async fn authenticate_with_default_keys<H>(
+pub(crate) async fn authenticate_with_default_keys<H>(
     handle: &mut client::Handle<H>,
     user: &str,
     passphrase: Option<&str>,

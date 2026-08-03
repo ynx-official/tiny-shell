@@ -9,7 +9,7 @@ use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 
 use crate::terminal::{BackendCommand, BackendEvent, BackendEventSender, BackendTx};
 
-pub fn spawn_local_terminal(
+pub(crate) fn spawn_local_terminal(
     tab_id: String,
     cols: u16,
     rows: u16,

@@ -38,7 +38,7 @@ gpui::actions!(
     ]
 );
 
-pub struct KeybindingsPage;
+pub(crate) struct KeybindingsPage;
 
 #[derive(Clone, Copy)]
 pub(crate) struct WorkspaceAction {

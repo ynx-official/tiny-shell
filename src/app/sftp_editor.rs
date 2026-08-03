@@ -210,7 +210,7 @@ impl EditorTabDrag {
     }
 }
 
-pub struct SftpEditor {
+pub(crate) struct SftpEditor {
     session_id: String,
     sftp: SftpHandle,
     tabs: Vec<EditorTab>,

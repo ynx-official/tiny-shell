@@ -8,33 +8,33 @@ use gpui::{
 
 mod panel;
 mod resize_handle;
-pub use panel::*;
+pub(crate) use panel::*;
 pub(crate) use resize_handle::*;
 
 pub(crate) const PANEL_MIN_SIZE: Pixels = px(100.);
 
-pub enum ResizablePanelEvent {
+pub(crate) enum ResizablePanelEvent {
     Resized,
 }
 
 /// Create a [`ResizablePanelGroup`] with horizontal resizing
-pub fn h_resizable(id: impl Into<ElementId>) -> ResizablePanelGroup {
+pub(crate) fn h_resizable(id: impl Into<ElementId>) -> ResizablePanelGroup {
     ResizablePanelGroup::new(id).axis(Axis::Horizontal)
 }
 
 /// Create a [`ResizablePanelGroup`] with vertical resizing
-pub fn v_resizable(id: impl Into<ElementId>) -> ResizablePanelGroup {
+pub(crate) fn v_resizable(id: impl Into<ElementId>) -> ResizablePanelGroup {
     ResizablePanelGroup::new(id).axis(Axis::Vertical)
 }
 
 /// Create a [`ResizablePanel`].
-pub fn resizable_panel() -> ResizablePanel {
+pub(crate) fn resizable_panel() -> ResizablePanel {
     ResizablePanel::new()
 }
 
 /// State for a [`ResizablePanel`]
 #[derive(Debug, Clone)]
-pub struct ResizableState {
+pub(crate) struct ResizableState {
     /// The `axis` will sync to actual axis of the ResizablePanelGroup in use.
     axis: Axis,
     pub(crate) panels: Vec<ResizablePanelState>,

@@ -17,21 +17,21 @@ fn is_real_filesystem(fs: &OsStr) -> bool {
 }
 
 #[derive(Debug, Clone, Default)]
-pub struct DiskSample {
+pub(crate) struct DiskSample {
     pub mount: String,
     pub available_bytes: u64,
     pub total_bytes: u64,
 }
 
 #[derive(Debug, Clone, Default)]
-pub struct ProcessSample {
+pub(crate) struct ProcessSample {
     pub memory_bytes: u64,
     pub cpu_percent: f32,
     pub command: String,
 }
 
 #[derive(Debug, Clone, Default)]
-pub struct NetworkSample {
+pub(crate) struct NetworkSample {
     pub name: String,
     pub received_bytes: u64,
     pub transmitted_bytes: u64,
@@ -40,13 +40,13 @@ pub struct NetworkSample {
 }
 
 #[derive(Debug, Clone, Default)]
-pub struct IpAddressSample {
+pub(crate) struct IpAddressSample {
     pub interface: String,
     pub address: String,
 }
 
 #[derive(Debug, Clone, Default)]
-pub struct SystemSnapshot {
+pub(crate) struct SystemSnapshot {
     pub os_name: String,
     pub kernel_name: String,
     pub kernel_version: String,
@@ -81,7 +81,7 @@ pub struct SystemSnapshot {
     pub total_swap: u64,
 }
 
-pub struct SystemSampler {
+pub(crate) struct SystemSampler {
     sys: System,
     nets: Networks,
     disks: Disks,
@@ -254,7 +254,7 @@ impl SystemSampler {
 /// only trigger the expensive sampling work once; subsequent callers
 /// receive the cached snapshot. This avoids N× redundant reads of
 /// `/proc` (and equivalents) when N windows are open.
-pub struct SharedSystemSampler {
+pub(crate) struct SharedSystemSampler {
     sampler: SystemSampler,
     last_snapshot: SystemSnapshot,
     last_sample_instant: Instant,
@@ -292,7 +292,7 @@ fn ratio(used: u64, total: u64) -> f32 {
     }
 }
 
-pub fn format_bytes(bytes: u64) -> String {
+pub(crate) fn format_bytes(bytes: u64) -> String {
     const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
     let mut value = bytes as f64;
     let mut unit = 0;
@@ -307,7 +307,7 @@ pub fn format_bytes(bytes: u64) -> String {
     }
 }
 
-pub fn remote_snapshot_from_kv(raw: &str) -> Result<SystemSnapshot> {
+pub(crate) fn remote_snapshot_from_kv(raw: &str) -> Result<SystemSnapshot> {
     let mut kv = BTreeMap::new();
     let mut disks = Vec::new();
     let mut filesystems = Vec::new();

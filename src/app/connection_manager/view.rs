@@ -25,14 +25,14 @@ use super::{
 use crate::{app::TinyShell, session::config::Session};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ConnectionContext {
+pub(crate) enum ConnectionContext {
     Session,
     Group,
     Empty,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ConnectionMenuItem {
+pub(crate) enum ConnectionMenuItem {
     Connect,
     Edit,
     Rename,
@@ -49,7 +49,7 @@ pub enum ConnectionMenuItem {
     Import,
 }
 
-pub fn context_for(node: Option<&ConnectionTreeNode>) -> ConnectionContext {
+pub(crate) fn context_for(node: Option<&ConnectionTreeNode>) -> ConnectionContext {
     match node {
         Some(ConnectionTreeNode::Session { .. } | ConnectionTreeNode::DeletedSession { .. }) => {
             ConnectionContext::Session
@@ -61,7 +61,7 @@ pub fn context_for(node: Option<&ConnectionTreeNode>) -> ConnectionContext {
     }
 }
 
-pub fn menu_items(context: ConnectionContext, deleted: bool) -> Vec<ConnectionMenuItem> {
+pub(crate) fn menu_items(context: ConnectionContext, deleted: bool) -> Vec<ConnectionMenuItem> {
     if deleted {
         return vec![ConnectionMenuItem::Restore];
     }
@@ -95,7 +95,7 @@ pub fn menu_items(context: ConnectionContext, deleted: bool) -> Vec<ConnectionMe
     }
 }
 
-pub fn action_for(
+pub(crate) fn action_for(
     item: ConnectionMenuItem,
     node: &ConnectionNodeId,
 ) -> Option<ConnectionManagerAction> {

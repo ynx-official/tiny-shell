@@ -8,7 +8,7 @@ use crate::session::{
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ConnectionManagerAction {
+pub(crate) enum ConnectionManagerAction {
     CopySession {
         id: String,
     },
@@ -53,13 +53,13 @@ pub enum ConnectionManagerAction {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ClipboardPayload {
+pub(crate) enum ClipboardPayload {
     Session { id: String, cut: bool },
     Group { name: String, cut: bool },
 }
 
 #[derive(Debug, Clone, Default)]
-pub struct ConnectionManagerActions {
+pub(crate) struct ConnectionManagerActions {
     pub clipboard: Option<ClipboardPayload>,
 }
 

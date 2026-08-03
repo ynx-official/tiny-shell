@@ -26,7 +26,7 @@ impl Render for DragPanel {
 
 /// A group of resizable panels.
 #[derive(IntoElement)]
-pub struct ResizablePanelGroup {
+pub(crate) struct ResizablePanelGroup {
     id: ElementId,
     state: Option<Entity<ResizableState>>,
     axis: Axis,
@@ -186,7 +186,7 @@ impl RenderOnce for ResizablePanelGroup {
 
 /// A resizable panel inside a [`ResizablePanelGroup`].
 #[derive(IntoElement)]
-pub struct ResizablePanel {
+pub(crate) struct ResizablePanel {
     axis: Axis,
     panel_ix: usize,
     state: Option<Entity<ResizableState>>,

@@ -282,7 +282,7 @@ fn highlight_http_codes(
     }
 }
 
-pub fn highlight_cells(cells: &[RenderCell], rows: usize) -> HashMap<(i32, i32), Hsla> {
+pub(crate) fn highlight_cells(cells: &[RenderCell], rows: usize) -> HashMap<(i32, i32), Hsla> {
     let colors = highlight_colors();
 
     let mut row_chars: Vec<Vec<(i32, char)>> = vec![Vec::with_capacity(128); rows];
@@ -942,13 +942,16 @@ fn find_port_len(text: &str) -> usize {
 }
 
 #[derive(Clone)]
-pub struct LogicalLine<'a> {
+pub(crate) struct LogicalLine<'a> {
     pub text: String,
     pub byte_to_cell: Vec<(usize, usize)>,
     pub row_cells: Vec<&'a RenderCell>,
 }
 
-pub fn build_logical_lines<'a>(cells: &'a [RenderCell], rows: usize) -> Vec<LogicalLine<'a>> {
+pub(crate) fn build_logical_lines<'a>(
+    cells: &'a [RenderCell],
+    rows: usize,
+) -> Vec<LogicalLine<'a>> {
     let mut row_chars: Vec<Vec<&RenderCell>> = vec![Vec::with_capacity(128); rows];
     for rc in cells {
         if rc.row < 0 || (rc.row as usize) >= rows {
@@ -1012,7 +1015,7 @@ pub fn build_logical_lines<'a>(cells: &'a [RenderCell], rows: usize) -> Vec<Logi
     logical_lines
 }
 
-pub fn find_url_at_cell(
+pub(crate) fn find_url_at_cell(
     cells: &[RenderCell],
     rows: usize,
     row: usize,

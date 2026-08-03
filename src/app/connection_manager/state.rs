@@ -8,7 +8,7 @@ use crate::session::{
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum ConnectionNodeId {
+pub(crate) enum ConnectionNodeId {
     Group(String),
     Session(String),
     DeletedGroup(String),
@@ -16,7 +16,7 @@ pub enum ConnectionNodeId {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ConnectionSort {
+pub(crate) enum ConnectionSort {
     Name,
     Host,
     User,
@@ -35,7 +35,7 @@ impl From<ConnectionSort> for ConnectionSortKey {
 }
 
 #[derive(Debug, Clone)]
-pub enum ConnectionTreeNode {
+pub(crate) enum ConnectionTreeNode {
     Group {
         id: ConnectionNodeId,
         name: String,
@@ -60,7 +60,7 @@ pub enum ConnectionTreeNode {
 }
 
 #[derive(Debug, Clone)]
-pub struct ConnectionManagerState {
+pub(crate) struct ConnectionManagerState {
     pub query: String,
     pub show_deleted: bool,
     pub sort: ConnectionSort,

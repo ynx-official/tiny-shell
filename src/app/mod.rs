@@ -1,32 +1,32 @@
 mod backend_events;
 pub(crate) mod config_persistence;
-pub mod config_sync;
-pub mod connection_archive_dialogs;
+pub(crate) mod config_sync;
+pub(crate) mod connection_archive_dialogs;
 pub(crate) mod connection_import_window;
-pub mod connection_manager;
-pub mod constants;
-pub mod dialogs;
-pub mod input_focus;
-pub mod keybinding_recorder;
+pub(crate) mod connection_manager;
+pub(crate) mod constants;
+pub(crate) mod dialogs;
+pub(crate) mod input_focus;
+pub(crate) mod keybinding_recorder;
 pub(crate) mod monitoring;
-pub mod resizable;
-pub mod runtime_state;
-pub mod search;
+pub(crate) mod resizable;
+pub(crate) mod runtime_state;
+pub(crate) mod search;
 pub(crate) mod session_actions;
-pub mod settings;
-pub mod settings_window;
-pub mod sftp_dialogs;
-pub mod sftp_editor;
-pub mod sftp_editor_window;
-pub mod ssh_key_import;
-pub mod startup;
-pub mod sync_dialogs;
-pub mod tab_drag;
-pub mod terminal_completion;
-pub mod theme;
-pub mod ui;
-pub mod updater;
-pub mod workspace_presentation;
+pub(crate) mod settings;
+pub(crate) mod settings_window;
+pub(crate) mod sftp_dialogs;
+pub(crate) mod sftp_editor;
+pub(crate) mod sftp_editor_window;
+pub(crate) mod ssh_key_import;
+pub(crate) mod startup;
+pub(crate) mod sync_dialogs;
+pub(crate) mod tab_drag;
+pub(crate) mod terminal_completion;
+pub(crate) mod theme;
+pub(crate) mod ui;
+pub(crate) mod updater;
+pub(crate) mod workspace_presentation;
 
 use std::{
     cell::{Cell, RefCell},
@@ -450,7 +450,6 @@ impl PaneLayout {
         }
     }
 
-    #[allow(dead_code)]
     pub fn total_panes(&self) -> usize {
         match self {
             PaneLayout::Single(_) => 1,

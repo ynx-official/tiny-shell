@@ -1,27 +1,23 @@
 use tokio::sync::mpsc::{self, Sender};
-use tokio::task::JoinHandle;
 
 use super::SftpCommand;
 use crate::sftp::text_file::RemoteTextSave;
 
 pub struct SftpHandle {
     commands: Sender<SftpCommand>,
-    #[allow(dead_code)]
-    join: Option<JoinHandle<()>>,
 }
 
 impl Clone for SftpHandle {
     fn clone(&self) -> Self {
         Self {
             commands: self.commands.clone(),
-            join: None,
         }
     }
 }
 
 impl SftpHandle {
-    pub(crate) fn new(commands: Sender<SftpCommand>, join: Option<JoinHandle<()>>) -> Self {
-        Self { commands, join }
+    pub(crate) fn new(commands: Sender<SftpCommand>) -> Self {
+        Self { commands }
     }
 
     pub(crate) fn send_command(&self, command: SftpCommand) -> bool {

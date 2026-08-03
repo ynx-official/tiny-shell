@@ -6,18 +6,18 @@ use uuid::Uuid;
 use super::config::Session;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ConnectionSortKey {
+pub(crate) enum ConnectionSortKey {
     Name,
     Host,
     User,
     LastUsed,
 }
 
-pub fn is_group_or_descendant(group: &str, ancestor: &str) -> bool {
+pub(crate) fn is_group_or_descendant(group: &str, ancestor: &str) -> bool {
     group == ancestor || group.starts_with(&format!("{ancestor}/"))
 }
 
-pub fn group_matches_query(group: &str, sessions: &[Session], query: &str) -> bool {
+pub(crate) fn group_matches_query(group: &str, sessions: &[Session], query: &str) -> bool {
     if query.is_empty() || group.to_lowercase().contains(query) {
         return true;
     }
@@ -31,7 +31,7 @@ pub fn group_matches_query(group: &str, sessions: &[Session], query: &str) -> bo
     })
 }
 
-pub fn sort_sessions(sessions: &mut [Session], key: ConnectionSortKey, descending: bool) {
+pub(crate) fn sort_sessions(sessions: &mut [Session], key: ConnectionSortKey, descending: bool) {
     sessions.sort_by(|left, right| {
         let ordering = match key {
             ConnectionSortKey::Name => left.name.to_lowercase().cmp(&right.name.to_lowercase()),
@@ -48,7 +48,7 @@ pub fn sort_sessions(sessions: &mut [Session], key: ConnectionSortKey, descendin
     });
 }
 
-pub fn copy_session(
+pub(crate) fn copy_session(
     config: &mut crate::session::config::ConfigStore,
     id: &str,
     destination_group: Option<&str>,
@@ -64,7 +64,7 @@ pub fn copy_session(
     Ok(copied.id)
 }
 
-pub fn move_session(
+pub(crate) fn move_session(
     config: &mut crate::session::config::ConfigStore,
     id: &str,
     destination_group: Option<&str>,
@@ -77,7 +77,7 @@ pub fn move_session(
     Ok(())
 }
 
-pub fn move_connection_group(
+pub(crate) fn move_connection_group(
     config: &mut crate::session::config::ConfigStore,
     source_group: &str,
     destination_parent: Option<&str>,
@@ -113,7 +113,7 @@ pub fn move_connection_group(
     Ok(destination)
 }
 
-pub fn copy_connection_group(
+pub(crate) fn copy_connection_group(
     config: &mut crate::session::config::ConfigStore,
     source_group: &str,
     destination_parent: Option<&str>,
@@ -181,11 +181,11 @@ pub fn copy_connection_group(
     Ok(destination)
 }
 
-pub fn session_address(session: &Session) -> String {
+pub(crate) fn session_address(session: &Session) -> String {
     format!("ssh://{}@{}:{}", session.user, session.host, session.port)
 }
 
-pub fn parse_session_address(address: &str) -> Result<Session> {
+pub(crate) fn parse_session_address(address: &str) -> Result<Session> {
     let value = address.strip_prefix("ssh://").unwrap_or(address);
     let Some((user, host_port)) = value.split_once('@') else {
         bail!("SSH address must contain a user");

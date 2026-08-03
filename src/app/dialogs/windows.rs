@@ -1,7 +1,6 @@
 use super::{Context, TinyShell, Window};
 
 impl TinyShell {
-    #[allow(dead_code)]
     pub(crate) fn show_quick_connection_manager_dialog(
         &mut self,
         window: &mut Window,

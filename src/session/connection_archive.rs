@@ -18,7 +18,7 @@ const ARCHIVE_VERSION: u32 = 1;
 const ARCHIVE_KIND: &str = "tiny-shell.connection-archive";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ConnectionArchive {
+pub(crate) struct ConnectionArchive {
     pub kind: String,
     pub version: u32,
     #[serde(default)]
@@ -40,7 +40,7 @@ struct EncryptedArchive {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ConnectionArchiveImportSummary {
+pub(crate) struct ConnectionArchiveImportSummary {
     pub imported_groups: usize,
     pub imported_sessions: usize,
 }
@@ -98,7 +98,7 @@ impl ConnectionArchive {
     }
 }
 
-pub fn import_json(json: &str, password: &str) -> Result<ConnectionArchive> {
+pub(crate) fn import_json(json: &str, password: &str) -> Result<ConnectionArchive> {
     if password.is_empty() {
         bail!("archive password cannot be empty");
     }
@@ -129,7 +129,7 @@ pub fn import_json(json: &str, password: &str) -> Result<ConnectionArchive> {
     Ok(archive)
 }
 
-pub fn apply_import(
+pub(crate) fn apply_import(
     config: &mut ConfigStore,
     archive: ConnectionArchive,
 ) -> ConnectionArchiveImportSummary {
