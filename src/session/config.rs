@@ -215,7 +215,12 @@ impl Session {
         match self.auth {
             AuthMethod::Password => self.password.is_empty(),
             AuthMethod::KeyPending => true,
-            AuthMethod::Key | AuthMethod::Config => false,
+            AuthMethod::Key => {
+                self.managed_key_id.is_none()
+                    && self.private_key_path.is_empty()
+                    && self.private_key_inline.is_empty()
+            }
+            AuthMethod::Config => false,
         }
     }
 
@@ -728,6 +733,9 @@ impl ConfigStore {
         if cache.sync_device_id.is_empty() {
             cache.sync_device_id = Uuid::new_v4().to_string();
         }
+        for session in &mut cache.sessions {
+            normalize_key_auth_state(session);
+        }
         Ok(Self { path, cache })
     }
 
@@ -1050,7 +1058,13 @@ impl ConfigStore {
     }
 
     pub fn replace_sessions(&mut self, sessions: Vec<Session>) {
-        self.cache.sessions = sessions;
+        self.cache.sessions = sessions
+            .into_iter()
+            .map(|mut session| {
+                normalize_key_auth_state(&mut session);
+                session
+            })
+            .collect();
     }
 
     pub fn replace_deleted_sessions(&mut self, sessions: Vec<DeletedSession>) {
@@ -1705,6 +1719,8 @@ impl ConfigStore {
     }
 
     pub fn upsert(&mut self, session: Session) {
+        let mut session = session;
+        normalize_key_auth_state(&mut session);
         if let Some(existing) = self.cache.sessions.iter_mut().find(|s| s.id == session.id) {
             *existing = session;
         } else {
@@ -1751,6 +1767,16 @@ impl ConfigStore {
         let hardware_uuid = get_hardware_uuid();
         let encrypted_bytes = encrypt_config(&self.cache, &hardware_uuid)?;
         write_config_atomically(&self.path, &encrypted_bytes)
+    }
+}
+
+fn normalize_key_auth_state(session: &mut Session) {
+    if session.auth == AuthMethod::Key
+        && session.managed_key_id.is_none()
+        && session.private_key_path.is_empty()
+        && session.private_key_inline.is_empty()
+    {
+        session.auth = AuthMethod::KeyPending;
     }
 }
 
@@ -2512,7 +2538,7 @@ mod tests {
             String::new(),
             String::new(),
         );
-        assert!(!default_key.requires_credential_prompt());
+        assert!(default_key.requires_credential_prompt());
 
         let mut pending_key = default_key;
         pending_key.auth = AuthMethod::KeyPending;

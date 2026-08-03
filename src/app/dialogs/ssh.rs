@@ -538,12 +538,15 @@ impl TinyShell {
         if self.active_dialog.is_some() {
             return;
         }
+        // The selector may be opened from a separate credential window; refresh
+        // the cached list from the canonical config before rendering its rows.
+        self.managed_keys = self.config.managed_keys().to_vec();
         self.active_dialog = Some(crate::app::DialogKind::ManagedKeySelector);
 
         let view = cx.entity();
         let rename_input = self.key_import_remark_input.clone();
         window.open_dialog(cx, move |dialog: Dialog, window, _cx| {
-            let dialog_width = px(760.).min(window.viewport_size().width - px(32.));
+            let dialog_width = px(760.).min(window.viewport_size().width - px(24.));
             dialog
                 .title(t!("select_private_key").to_string())
                 .w(dialog_width)
@@ -570,7 +573,7 @@ impl TinyShell {
                         let has_selection = selected.is_some();
 
                         let mut rows = v_flex()
-                            .h(px(220.))
+                            .h(px(190.))
                             .border_1()
                             .border_color(cx.theme().border)
                             .rounded_md()
@@ -584,14 +587,14 @@ impl TinyShell {
                                     .border_color(cx.theme().border)
                                     .child(
                                         div()
-                                            .w(px(220.))
+                                            .w(px(150.))
                                             .flex_shrink_0()
                                             .text_sm()
                                             .child(t!("name").to_string()),
                                     )
                                     .child(
                                         div()
-                                            .w(px(110.))
+                                            .w(px(80.))
                                             .flex_shrink_0()
                                             .text_sm()
                                             .child(t!("key_type").to_string()),
@@ -637,7 +640,7 @@ impl TinyShell {
                                         .hover(|row| row.bg(cx.theme().selection))
                                         .child(
                                             div()
-                                                .w(px(220.))
+                                                .w(px(150.))
                                                 .flex_shrink_0()
                                                 .min_w(px(0.))
                                                 .overflow_hidden()
@@ -646,7 +649,7 @@ impl TinyShell {
                                         )
                                         .child(
                                             div()
-                                                .w(px(110.))
+                                                .w(px(80.))
                                                 .flex_shrink_0()
                                                 .text_sm()
                                                 .child(key.key_type),

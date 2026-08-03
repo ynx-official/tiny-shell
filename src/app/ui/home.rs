@@ -1645,6 +1645,7 @@ impl TinyShell {
         groups.retain(|group| seen.insert(group.clone()));
         groups = Self::connection_group_tree_order(groups);
         let groups_for_rows = groups.clone();
+        let manager_state = self.connection_manager_state.read(cx).clone();
 
         let mut sessions: Vec<_> = all_sessions
             .iter()
@@ -1660,7 +1661,6 @@ impl TinyShell {
             .collect();
         sessions.sort_by(|left, right| right.last_used.cmp(&left.last_used));
         let has_sessions = !sessions.is_empty();
-        let connection_filter_epoch = selected_group.as_deref().map(animation_key).unwrap_or(0);
 
         v_flex()
             .size_full()
@@ -1729,11 +1729,15 @@ impl TinyShell {
                             .h_full()
                             .w(px(210.))
                             .flex_none()
+                            .min_h(px(0.))
+                            .id("connection-manager-groups")
+                            .track_scroll(&self.connection_scroll_handle)
                             .p_2()
                             .gap_1()
                             .border_r_1()
                             .border_color(cx.theme().border)
                             .bg(cx.theme().sidebar)
+                            .overflow_y_scrollbar()
                             .child(
                                 div()
                                     .id("connection-group-all")
@@ -1767,7 +1771,16 @@ impl TinyShell {
                                             ),
                                     ),
                             )
-                            .children(groups.into_iter().enumerate().map(|(ix, group)| {
+                            .children(
+                                groups
+                                    .into_iter()
+                                    .enumerate()
+                                    .filter(|(_, group)| {
+                                        group
+                                            .rsplit_once('/')
+                                            .is_none_or(|(parent, _)| manager_state.expanded.contains(parent))
+                                    })
+                                    .map(|(ix, group)| {
                                 let group_name = group.clone();
                                 let group_prefix = format!("{group}/");
                                 let count = all_sessions
@@ -1785,6 +1798,7 @@ impl TinyShell {
                                     .as_deref()
                                     == Some(group.as_str());
                                 let depth = group.matches('/').count();
+                                let expanded = manager_state.expanded.contains(&group);
                                 let group_label = group.rsplit('/').next().unwrap_or(&group).to_string();
                                 div()
                                     .id(("connection-group", ix))
@@ -1908,8 +1922,25 @@ impl TinyShell {
                                             .p_3()
                                             .pl(px(12. + depth as f32 * 14.))
                                             .child(
-                                                Icon::new(IconName::Folder).with_size(Size::Small),
+                                                div()
+                                                    .id(("connection-group-toggle", ix))
+                                                    .w(px(16.))
+                                                    .on_click(cx.listener({
+                                                        let group_name = group_name.clone();
+                                                        move |this, _, _, cx| {
+                                                            this.connection_manager_state.update(cx, |state, _| {
+                                                                state.toggle_group(&group_name);
+                                                            });
+                                                            cx.notify();
+                                                        }
+                                                    }))
+                                                    .child(if expanded {
+                                                        Icon::new(IconName::ChevronDown).with_size(Size::Small)
+                                                    } else {
+                                                        Icon::new(IconName::ChevronRight).with_size(Size::Small)
+                                                    }),
                                             )
+                                            .child(Icon::new(IconName::Folder).with_size(Size::Small))
                                             .child(div().flex_1().child(group_label))
                                             .child(
                                                 div()
@@ -1930,7 +1961,8 @@ impl TinyShell {
                                         )
                                     })
                                     .when(dragging, |this| this.opacity(0.55))
-                            })),
+                            }),
+                            ),
                     )
                     .child(
                         v_flex()
@@ -2195,14 +2227,6 @@ impl TinyShell {
                                     }),
                             ),
                     ),
-            )
-            .with_animation(
-                ElementId::NamedInteger(
-                    "connection-manager-filter".into(),
-                    connection_filter_epoch,
-                ),
-                Animation::new(Duration::from_millis(200)).with_easing(ease_out_quint()),
-                |this, delta| this.opacity(delta * delta),
             )
     }
 

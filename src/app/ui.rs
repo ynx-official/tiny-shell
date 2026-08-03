@@ -120,12 +120,6 @@ fn lerp_hsla(from: Hsla, to: Hsla, delta: f32) -> Hsla {
     }
 }
 
-fn animation_key(value: &str) -> u64 {
-    value.bytes().fold(0_u64, |key, byte| {
-        key.wrapping_mul(31).wrapping_add(byte as u64)
-    })
-}
-
 impl Render for TinyShell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if self

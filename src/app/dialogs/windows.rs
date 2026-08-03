@@ -20,10 +20,8 @@ impl TinyShell {
             return;
         }
 
-        let groups = self.config.connection_groups().to_vec();
         self.connection_manager_state.update(cx, move |state, _| {
             state.query.clear();
-            state.expanded = groups.into_iter().collect();
             state.show_deleted = false;
             state.selected = None;
         });

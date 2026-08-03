@@ -69,15 +69,15 @@ pub(crate) fn window_options(cx: &App) -> WindowOptions {
         is_movable: true,
         is_resizable: true,
         is_minimizable: true,
-        window_min_size: Some(size(px(760.), px(520.))),
+        window_min_size: Some(size(px(620.), px(420.))),
         ..Default::default()
     };
 
     if let Some(display) = cx.displays().first().cloned() {
         let display_bounds = display.bounds();
         let window_size = size(
-            px(920.).min(display_bounds.size.width * 0.9),
-            px(680.).min(display_bounds.size.height * 0.9),
+            px(700.).min(display_bounds.size.width * 0.82),
+            px(500.).min(display_bounds.size.height * 0.76),
         );
         let origin = point(
             display_bounds.origin.x + (display_bounds.size.width - window_size.width) / 2.,

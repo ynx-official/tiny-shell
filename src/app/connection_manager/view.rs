@@ -426,7 +426,6 @@ fn render_group(
         _ => return div().into_any_element(),
     };
     let selected = state.selected.as_ref() == Some(&id);
-    let toggle_id = group_name.clone();
     let node_id = id.clone();
     h_flex()
         .id(("connection-manager-group", index))
@@ -440,20 +439,18 @@ fn render_group(
         .hover(|this| this.bg(cx.theme().secondary.opacity(0.65)))
         .on_mouse_down(
             MouseButton::Left,
-            window.listener_for(view, move |this, event: &MouseDownEvent, _, cx| {
+            window.listener_for(view, move |this, _event: &MouseDownEvent, _, cx| {
                 this.connection_manager_state.update(cx, |state, _| {
                     state.select(node_id.clone());
-                    if event.click_count >= 2 {
-                        state.toggle_group(&toggle_id);
-                    }
                 });
                 cx.notify();
             }),
         )
         .context_menu({
             let view = view.clone();
+            let context_group_name = group_name.clone();
             move |mut menu, window, _| {
-                let group_name = group_name.clone();
+                let group_name = context_group_name.clone();
                 menu = menu
                     .item(
                         PopupMenuItem::new(t!("overview_new_connection").to_string()).on_click(
@@ -579,18 +576,46 @@ fn render_group(
                 menu
             }
         })
-        .child(if expanded {
-            Icon::new(IconName::ChevronDown).with_size(Size::Small)
-        } else {
-            Icon::new(IconName::ChevronRight).with_size(Size::Small)
-        })
-        .child(Icon::new(IconName::Folder).with_size(Size::Small))
         .child(
             div()
+                .id(("connection-manager-group-toggle", index))
+                .w(px(18.))
+                .h(px(22.))
+                .items_center()
+                .justify_center()
+                .cursor_pointer()
+                .on_mouse_down(
+                    MouseButton::Left,
+                    window.listener_for(view, {
+                        let group_name = group_name.clone();
+                        move |this, _, _, cx| {
+                            cx.stop_propagation();
+                            this.connection_manager_state.update(cx, |state, _| {
+                                state.toggle_group(&group_name);
+                            });
+                            cx.notify();
+                        }
+                    }),
+                )
+                .child(if expanded {
+                    Icon::new(IconName::ChevronDown).with_size(Size::Small)
+                } else {
+                    Icon::new(IconName::ChevronRight).with_size(Size::Small)
+                }),
+        )
+        .child(
+            h_flex()
                 .flex_1()
-                .text_size(rems(0.72))
-                .font_weight(FontWeight::SEMIBOLD)
-                .child(name),
+                .items_center()
+                .gap_2()
+                .child(Icon::new(IconName::Folder).with_size(Size::Small))
+                .child(
+                    div()
+                        .flex_1()
+                        .text_size(rems(0.7))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child(name),
+                ),
         )
         .child(
             div()
@@ -641,6 +666,7 @@ fn render_session_row(
     cx: &mut App,
 ) -> AnyElement {
     let session_id = session.id.clone();
+    let needs_prompt = session.requires_credential_prompt();
     let session_for_menu = session.clone();
     let node_id = id.clone();
     h_flex()
@@ -659,7 +685,11 @@ fn render_session_row(
                 if event.click_count >= 2 {
                     this.active_dialog = None;
                     this.connect_saved_session(session_id.clone(), window, cx);
-                    window.remove_window();
+                    if needs_prompt {
+                        window.defer(cx, |window, _| window.remove_window());
+                    } else {
+                        window.remove_window();
+                    }
                 } else {
                     this.connection_manager_state
                         .update(cx, |state, _| state.select(node_id.clone()));
@@ -713,6 +743,7 @@ fn session_menu(
     session: Session,
 ) -> impl Fn(PopupMenu, &mut Window, &mut gpui::Context<PopupMenu>) -> PopupMenu + 'static {
     let session_id = session.id.clone();
+    let needs_prompt = session.requires_credential_prompt();
     let session_for_edit = session.clone();
     let delete_id = session_id.clone();
     let view = view.clone();
@@ -727,7 +758,11 @@ fn session_menu(
                         move |this, _, window, cx| {
                             this.active_dialog = None;
                             this.connect_saved_session(id.clone(), window, cx);
-                            window.remove_window();
+                            if needs_prompt {
+                                window.defer(cx, |window, _| window.remove_window());
+                            } else {
+                                window.remove_window();
+                            }
                         }
                     },
                 )),
@@ -831,7 +866,7 @@ fn render_deleted_group(
     };
     h_flex()
         .id(("connection-manager-deleted-group", index))
-        .min_h(px(32.))
+        .min_h(px(28.))
         .pl(px(10. + depth as f32 * 16.))
         .pr_3()
         .items_center()

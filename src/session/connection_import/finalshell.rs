@@ -235,9 +235,19 @@ pub fn parse_finalshell_zip(path: &Path) -> Result<FinalShellImportPreview, Fina
     })
 }
 
-pub fn apply_finalshell_import(
+#[cfg(test)]
+fn apply_finalshell_import(
     config: &mut ConfigStore,
     preview: FinalShellImportPreview,
+) -> FinalShellImportSummary {
+    let selected = vec![true; preview.sessions.len()];
+    apply_finalshell_import_selected(config, preview, &selected)
+}
+
+pub fn apply_finalshell_import_selected(
+    config: &mut ConfigStore,
+    preview: FinalShellImportPreview,
+    selected: &[bool],
 ) -> FinalShellImportSummary {
     let existing_groups = config.connection_groups().to_vec();
     let mut imported_groups = 0;
@@ -249,19 +259,17 @@ pub fn apply_finalshell_import(
     }
 
     let mut imported_sessions = 0;
-    let mut skipped_sessions = preview.skipped_entries;
-    for imported in preview.sessions {
-        if config.sessions().iter().any(|existing| {
-            existing.group == imported.group
-                && existing.name == imported.name
-                && existing.host == imported.host
-                && existing.port == imported.port
-                && existing.user == imported.user
-                && equivalent_import_auth(existing.auth, imported.auth)
-        }) {
-            skipped_sessions += 1;
+    let skipped_sessions = preview.skipped_entries;
+    for (index, imported) in preview.sessions.into_iter().enumerate() {
+        if !selected.get(index).copied().unwrap_or(false) {
             continue;
         }
+
+        let existing = config
+            .sessions()
+            .iter()
+            .find(|existing| import_matches_existing(existing, &imported))
+            .cloned();
 
         let mut session = match imported.auth {
             AuthMethod::Password => Session::password(
@@ -283,7 +291,32 @@ pub fn apply_finalshell_import(
         if imported.auth == AuthMethod::KeyPending {
             session.auth = AuthMethod::KeyPending;
         }
-        session.name = unique_session_name(config, &imported.name, imported.group.as_deref());
+        session.name = if existing.is_some() {
+            imported.name.clone()
+        } else {
+            unique_session_name(config, &imported.name, imported.group.as_deref())
+        };
+        if let Some(existing) = existing {
+            let existing_has_key = existing.managed_key_id.is_some()
+                || !existing.private_key_path.is_empty()
+                || !existing.private_key_inline.is_empty();
+            session.id = existing.id;
+            session.password = existing.password;
+            session.private_key_path = existing.private_key_path;
+            session.private_key_inline = existing.private_key_inline;
+            session.passphrase = existing.passphrase;
+            session.managed_key_id = existing.managed_key_id;
+            session.proxy_type = existing.proxy_type;
+            session.proxy_host = existing.proxy_host;
+            session.proxy_port = existing.proxy_port;
+            session.proxy_user = existing.proxy_user;
+            session.proxy_password = existing.proxy_password;
+            session.auth = if existing.auth == AuthMethod::Key && !existing_has_key {
+                AuthMethod::KeyPending
+            } else {
+                existing.auth
+            };
+        }
         session.group = imported.group;
         session.last_used = imported.last_used;
         config.upsert(session);
@@ -295,6 +328,15 @@ pub fn apply_finalshell_import(
         skipped_sessions,
         imported_groups,
     }
+}
+
+pub fn import_matches_existing(existing: &Session, imported: &ImportedSession) -> bool {
+    existing.group == imported.group
+        && existing.name == imported.name
+        && existing.host == imported.host
+        && existing.port == imported.port
+        && existing.user == imported.user
+        && equivalent_import_auth(existing.auth, imported.auth)
 }
 
 fn unique_session_name(config: &ConfigStore, requested: &str, group: Option<&str>) -> String {
@@ -450,7 +492,7 @@ mod tests {
     }
 
     #[test]
-    fn reimport_skips_key_connection_after_credentials_are_selected() {
+    fn reimport_overwrites_key_connection_after_credentials_are_selected() {
         let mut config = ConfigStore::in_memory();
         let preview = FinalShellImportPreview {
             groups: vec!["prod".to_string()],
@@ -476,8 +518,13 @@ mod tests {
         config.upsert(completed);
 
         let second = apply_finalshell_import(&mut config, preview);
-        assert_eq!(second.imported_sessions, 0);
-        assert_eq!(second.skipped_sessions, 1);
+        assert_eq!(second.imported_sessions, 1);
+        assert_eq!(second.skipped_sessions, 0);
         assert_eq!(config.sessions().len(), 1);
+        assert_eq!(config.sessions()[0].id, id);
+        assert_eq!(
+            config.sessions()[0].managed_key_id.as_deref(),
+            Some("managed-key")
+        );
     }
 }

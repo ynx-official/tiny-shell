@@ -1,11 +1,15 @@
 use gpui::{
     App, AppContext as _, Context, Entity, FocusHandle, InteractiveElement as _, IntoElement,
-    ParentElement as _, PathPromptOptions, Render, Styled, Window, prelude::FluentBuilder as _,
+    ParentElement as _, PathPromptOptions, Render, ScrollHandle, StatefulInteractiveElement as _,
+    Styled, Window, div, prelude::FluentBuilder as _, px,
 };
 use gpui_component::{
     ActiveTheme as _, Root,
     button::{Button, ButtonVariants as _},
-    h_flex, v_flex,
+    checkbox::Checkbox,
+    h_flex,
+    scroll::{Scrollbar, ScrollbarAxis, ScrollbarShow},
+    v_flex,
 };
 use rust_i18n::t;
 
@@ -13,7 +17,7 @@ use crate::{
     TinyShell,
     session::connection_import::{
         FinalShellImportError, FinalShellImportErrorKind, FinalShellImportPreview,
-        apply_finalshell_import, parse_finalshell_zip,
+        apply_finalshell_import_selected, import_matches_existing, parse_finalshell_zip,
     },
 };
 
@@ -48,8 +52,10 @@ fn localized_import_error(error: &FinalShellImportError) -> String {
 pub(crate) struct FinalShellImportWindow {
     owner: Entity<TinyShell>,
     preview: Option<FinalShellImportPreview>,
+    selected: Vec<bool>,
     error: Option<String>,
     focus_handle: FocusHandle,
+    scroll_handle: ScrollHandle,
     _owner_subscription: gpui::Subscription,
 }
 
@@ -59,8 +65,10 @@ impl FinalShellImportWindow {
         Self {
             owner,
             preview: None,
+            selected: Vec::new(),
             error: None,
             focus_handle: cx.focus_handle(),
+            scroll_handle: ScrollHandle::new(),
             _owner_subscription: owner_subscription,
         }
     }
@@ -84,6 +92,7 @@ impl FinalShellImportWindow {
                         this.update(cx, |this, cx| {
                             match parsed {
                                 Ok(preview) => {
+                                    this.selected = vec![true; preview.sessions.len()];
                                     this.preview = Some(preview);
                                     this.error = None;
                                 }
@@ -118,9 +127,23 @@ impl FinalShellImportWindow {
         let Some(preview) = self.preview.clone() else {
             return;
         };
+        let selected = self.selected.clone();
         let result = self.owner.update(cx, |owner, cx| {
             let mut staged = owner.config.clone();
-            let summary = apply_finalshell_import(&mut staged, preview);
+            let summary = apply_finalshell_import_selected(&mut staged, preview.clone(), &selected);
+            let pending_credentials = preview
+                .sessions
+                .iter()
+                .enumerate()
+                .find(|(index, _)| selected.get(*index).copied().unwrap_or(false))
+                .and_then(|(_, imported)| {
+                    staged
+                        .sessions()
+                        .iter()
+                        .find(|session| import_matches_existing(session, imported))
+                        .filter(|session| session.requires_credential_prompt())
+                        .map(|session| session.id.clone())
+                });
             crate::app::config_persistence::save_full(&staged)?;
             owner.config = staged;
             owner.status = t!(
@@ -131,10 +154,28 @@ impl FinalShellImportWindow {
             .to_string()
             .into();
             cx.notify();
-            Ok::<(), anyhow::Error>(())
+            Ok::<Option<String>, anyhow::Error>(pending_credentials)
         });
         match result {
-            Ok(()) => window.remove_window(),
+            Ok(pending_credentials) => {
+                window.remove_window();
+                if let Some(session_id) = pending_credentials {
+                    let owner = self.owner.clone();
+                    window.defer(cx, move |window, cx| {
+                        if let Some(session) = owner.read(cx).config.get(&session_id).cloned() {
+                            crate::app::connection_manager::ssh_editor_window::open(
+                                owner,
+                                crate::app::connection_manager::ssh_editor_window::SshEditorRequest::Credentials {
+                                    session,
+                                },
+                                cx,
+                            );
+                        } else {
+                            window.activate_window();
+                        }
+                    });
+                }
+            }
             Err(error) => {
                 self.error = Some(error.to_string());
                 cx.notify();
@@ -152,10 +193,102 @@ impl Render for FinalShellImportWindow {
                 .filter(|session| session.auth == crate::session::config::AuthMethod::Password)
                 .count();
             let key_count = preview.sessions.len().saturating_sub(password_count);
+            let all_selected = !self.selected.is_empty() && self.selected.iter().all(|item| *item);
+            let selected_count = self.selected.iter().filter(|item| **item).count();
+            let sessions = preview.sessions.clone();
+            let selected = self.selected.clone();
+            let existing = self.owner.read(cx).config.clone();
+            let rows = v_flex()
+                .id("finalshell-import-list")
+                .relative()
+                .track_scroll(&self.scroll_handle)
+                .overflow_y_scroll()
+                .flex_1()
+                .min_h(px(0.))
+                .border_1()
+                .border_color(cx.theme().border)
+                .children(sessions.into_iter().enumerate().map(|(index, session)| {
+                    let checked = selected.get(index).copied().unwrap_or(false);
+                    let is_existing = existing
+                        .sessions()
+                        .iter()
+                        .any(|current| import_matches_existing(current, &session));
+                    let auth = match session.auth {
+                        crate::session::config::AuthMethod::Password => {
+                            t!("finalshell_import_auth_password").to_string()
+                        }
+                        _ => t!("finalshell_import_auth_key").to_string(),
+                    };
+                    let status = if is_existing {
+                        t!("finalshell_import_existing").to_string()
+                    } else {
+                        t!("finalshell_import_new").to_string()
+                    };
+                    h_flex()
+                        .id(("finalshell-import-row", index))
+                        .flex_none()
+                        .min_h(px(38.))
+                        .px_2()
+                        .gap_2()
+                        .items_center()
+                        .border_b_1()
+                        .border_color(cx.theme().border.opacity(0.5))
+                        .child(
+                            Checkbox::new(("finalshell-import-check", index))
+                                .checked(checked)
+                                .on_click(cx.listener(move |this, value: &bool, _, cx| {
+                                    if let Some(item) = this.selected.get_mut(index) {
+                                        *item = *value;
+                                    }
+                                    cx.notify();
+                                })),
+                        )
+                        .child(div().flex_1().min_w(px(0.)).child(format!(
+                            "{}  ({}:{})",
+                            session.name, session.host, session.port
+                        )))
+                        .child(div().w(px(130.)).child(session.group.unwrap_or_default()))
+                        .child(div().w(px(90.)).child(auth))
+                        .child(
+                            div()
+                                .w(px(70.))
+                                .text_color(if is_existing {
+                                    cx.theme().warning
+                                } else {
+                                    cx.theme().success
+                                })
+                                .child(status),
+                        )
+                        .into_any_element()
+                }))
+                .child(
+                    div().absolute().top_0().bottom_0().right_0().child(
+                        Scrollbar::new(&self.scroll_handle)
+                            .id("finalshell-import-scrollbar")
+                            .axis(ScrollbarAxis::Vertical)
+                            .scrollbar_show(ScrollbarShow::Scrolling),
+                    ),
+                );
             v_flex()
                 .size_full()
                 .gap_3()
-                .child(t!("finalshell_import_preview").to_string())
+                .child(
+                    h_flex()
+                        .items_center()
+                        .child(t!("finalshell_import_preview").to_string())
+                        .child(div().flex_1())
+                        .child(
+                            Checkbox::new("finalshell-import-select-all")
+                                .checked(all_selected)
+                                .label(t!("finalshell_import_select_all").to_string())
+                                .on_click(cx.listener(|this, value: &bool, _, cx| {
+                                    for item in &mut this.selected {
+                                        *item = *value;
+                                    }
+                                    cx.notify();
+                                })),
+                        ),
+                )
                 .child(
                     v_flex()
                         .gap_1()
@@ -176,6 +309,7 @@ impl Render for FinalShellImportWindow {
                         )
                         .child(t!("finalshell_import_key_auth", count = key_count).to_string())
                         .child(t!("finalshell_import_credentials_omitted").to_string())
+                        .child(t!("finalshell_import_selected", count = selected_count).to_string())
                         .when(preview.skipped_entries > 0, |this| {
                             this.child(
                                 t!("finalshell_import_skipped", count = preview.skipped_entries)
@@ -183,6 +317,32 @@ impl Render for FinalShellImportWindow {
                             )
                         }),
                 )
+                .child(
+                    h_flex()
+                        .flex_none()
+                        .h(px(30.))
+                        .px_2()
+                        .gap_2()
+                        .items_center()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(div().flex_1().child(t!("session").to_string()))
+                        .child(
+                            div()
+                                .w(px(130.))
+                                .child(t!("finalshell_import_folder").to_string()),
+                        )
+                        .child(
+                            div()
+                                .w(px(90.))
+                                .child(t!("ssh_editor_auth_method").to_string()),
+                        )
+                        .child(
+                            div()
+                                .w(px(70.))
+                                .child(t!("finalshell_import_state").to_string()),
+                        ),
+                )
+                .child(rows)
                 .child(
                     h_flex()
                         .mt_auto()

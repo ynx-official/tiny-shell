@@ -681,7 +681,7 @@ impl Render for SshEditorWindow {
             .overflow_y_scroll()
             .gap_3()
             .p_4()
-            .child(general_section)
+            .when(!self.connect_after_save, |this| this.child(general_section))
             .child(authentication_section);
 
         let proxy_page = v_flex()
@@ -834,20 +834,38 @@ impl Render for SshEditorWindow {
                 }
             })
             .bg(cx.theme().background)
-            .child(gpui::div().when(self.connect_after_save, |this| {
-                this.text_color(cx.theme().muted_foreground)
-                    .child(t!(if self.auth == AuthMethod::Password {
-                        "session_password_required"
-                    } else {
-                        "session_key_required"
-                    }))
-            }))
+            .when(self.connect_after_save, |this| {
+                this.child(
+                    v_flex()
+                        .flex_none()
+                        .gap_1()
+                        .px_4()
+                        .py_3()
+                        .bg(cx.theme().primary.opacity(0.08))
+                        .border_b_1()
+                        .border_color(cx.theme().border)
+                        .child(
+                            gpui::div()
+                                .font_weight(gpui::FontWeight::SEMIBOLD)
+                                .child(t!("session_credentials_required").to_string()),
+                        )
+                        .child(
+                            gpui::div()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(t!(if self.auth == AuthMethod::Password {
+                                    "session_password_required"
+                                } else {
+                                    "session_key_required"
+                                })),
+                        ),
+                )
+            })
             .child(
                 h_flex()
                     .flex_1()
                     .min_h(px(0.))
                     .items_stretch()
-                    .child(sidebar)
+                    .when(!self.connect_after_save, |this| this.child(sidebar))
                     .child(if self.page == SshEditorPage::Connection {
                         connection_page.into_any_element()
                     } else {
@@ -919,19 +937,24 @@ fn same_session_revision(left: &Session, right: &Session) -> bool {
         && left.proxy_password == right.proxy_password
 }
 
-fn window_options(cx: &App) -> WindowOptions {
+fn window_options(cx: &App, compact: bool) -> WindowOptions {
+    let (min_width, min_height, default_width, default_height) = if compact {
+        (px(540.), px(340.), px(560.), px(360.))
+    } else {
+        (px(680.), px(420.), px(620.), px(400.))
+    };
     let mut options = WindowOptions {
         is_movable: true,
         is_resizable: true,
         is_minimizable: true,
-        window_min_size: Some(size(px(680.), px(420.))),
+        window_min_size: Some(size(min_width, min_height)),
         ..Default::default()
     };
     if let Some(display) = cx.displays().first().cloned() {
         let display_bounds = display.bounds();
         let window_size = size(
-            px(620.).min(display_bounds.size.width * 0.9),
-            px(400.).min(display_bounds.size.height * 0.9),
+            default_width.min(display_bounds.size.width * 0.9),
+            default_height.min(display_bounds.size.height * 0.9),
         );
         let origin = point(
             display_bounds.origin.x + (display_bounds.size.width - window_size.width) / 2.,
@@ -964,7 +987,7 @@ pub(crate) fn open(owner: Entity<TinyShell>, request: SshEditorRequest, cx: &mut
     } else {
         t!("new_ssh_connection").to_string()
     };
-    let opened = cx.open_window(window_options(cx), move |window, cx| {
+    let opened = cx.open_window(window_options(cx, credentials_only), move |window, cx| {
         window.set_window_title(&title);
         let editor = cx.new(|cx| SshEditorWindow::new(owner, request, window, cx));
         let focus_input =
