@@ -1,6 +1,12 @@
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
+use std::sync::Arc;
+use std::time::Instant;
+
+use gpui::{Pixels, SharedString};
 
 use crate::app::settings::MonitoringPosition;
+use crate::app::{NetworkHistory, ProcessView};
+use crate::system::{SharedSystemSampler, SystemSnapshot};
 
 /// 监控领域的纯数据变换。
 ///
@@ -83,6 +89,27 @@ pub(super) fn format_network_axis(bytes_per_second: f32) -> String {
     } else {
         format!("{value:.1}{unit}")
     }
+}
+
+/// 系统和资源监控状态，从 TinyShell 中提取以降低结构体复杂度。
+pub(crate) struct MonitoringState {
+    pub(crate) system_sampler: Arc<std::sync::Mutex<SharedSystemSampler>>,
+    pub(crate) system: SystemSnapshot,
+    pub(crate) animated_cpu_percent: f32,
+    pub(crate) animated_mem_percent: f32,
+    pub(crate) animated_swap_percent: f32,
+    pub(crate) process_view: ProcessView,
+    pub(crate) remote_system_snapshots: HashMap<String, SystemSnapshot>,
+    pub(crate) cpu_history: VecDeque<f32>,
+    pub(crate) net_rx_history: VecDeque<f32>,
+    pub(crate) net_tx_history: VecDeque<f32>,
+    pub(crate) selected_network_interface: Option<String>,
+    pub(crate) network_interface_histories: HashMap<String, NetworkHistory>,
+    pub(crate) last_system_sample: Instant,
+    pub(crate) last_sftp_latency_sample: Instant,
+    pub(crate) system_status: Option<SharedString>,
+    pub(crate) remote_sample_in_flight: Option<String>,
+    pub(crate) prev_monitoring_size: Option<Pixels>,
 }
 
 #[cfg(test)]

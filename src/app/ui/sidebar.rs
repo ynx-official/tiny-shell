@@ -21,7 +21,7 @@ impl TinyShell {
         let connection_text = active_session
             .map(|session| format!("{}@{}:{}", session.user, session.host, session.port))
             .unwrap_or_else(|| t!("local_terminal").to_string());
-        let mut ip_address_entries = self.system.ip_address_entries.clone();
+        let mut ip_address_entries = self.monitoring.system.ip_address_entries.clone();
         if ip_address_entries.is_empty() && !host_text.is_empty() {
             ip_address_entries.push(crate::system::IpAddressSample {
                 interface: "-".to_string(),
@@ -33,6 +33,7 @@ impl TinyShell {
             .map(|entry| entry.address.clone())
             .unwrap_or_else(|| "-".to_string());
         let load_values = self
+            .monitoring
             .system
             .load_average
             .split(|character: char| character == ',' || character.is_whitespace())
@@ -350,7 +351,7 @@ impl TinyShell {
                                     .flex_1()
                                     .min_w(px(0.))
                                     .text_size(rems(0.75))
-                                    .child(format_uptime(self.system.uptime_seconds)),
+                                    .child(format_uptime(self.monitoring.system.uptime_seconds)),
                             ),
                     ),
             )

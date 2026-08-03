@@ -15,10 +15,10 @@ impl TinyShell {
         if !minimized {
             let sizes = state.read(cx).sizes();
             if sizes.len() > 1 {
-                self.prev_monitoring_size = Some(sizes[1]);
+                self.monitoring.prev_monitoring_size = Some(sizes[1]);
             }
         } else {
-            let prev_size = self.prev_monitoring_size.unwrap_or(px(328.));
+            let prev_size = self.monitoring.prev_monitoring_size.unwrap_or(px(328.));
 
             cx.on_next_frame(
                 window,

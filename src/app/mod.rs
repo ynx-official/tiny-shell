@@ -43,7 +43,7 @@ use std::{
 use crate::app::{
     backend_events::coalesce_backend_events,
     connection_manager::{actions::ConnectionManagerActions, state::ConnectionManagerState},
-    monitoring::{MonitoringVisibilityContext, metrics_visible, push_bounded},
+    monitoring::{MonitoringState, MonitoringVisibilityContext, metrics_visible, push_bounded},
     resizable::ResizableState,
     runtime_state::{
         AsyncRuntimeState, AuxiliaryWindowsState, ConfigPersistenceState, SearchState,
@@ -742,7 +742,6 @@ pub(crate) struct TinyShell {
     pub(crate) show_hidden_files: bool,
     pub(crate) transfers: Vec<crate::terminal::Transfer>,
     pub(crate) show_transfers_dialog: bool,
-    pub(crate) system_status: Option<SharedString>,
     pub(crate) pane_root: PaneLayout,
     pub(crate) focused_pane_path: Vec<usize>,
     pub(crate) terminal_panel_bounds: Option<Bounds<Pixels>>,
@@ -764,47 +763,26 @@ pub(crate) struct TinyShell {
     pub(crate) workspace_mode: WorkspaceMode,
     pub(crate) sidebar_collapsed: bool,
     pub(crate) collapsed_saved_scroll_handle: gpui::ScrollHandle,
-    pub(crate) prev_monitoring_size: Option<Pixels>,
     pub(crate) status: SharedString,
     pub(crate) config: ConfigStore,
     pub(crate) config_persistence: ConfigPersistenceState,
     pub(crate) active_title_bar_style: crate::session::config::TitleBarStyle,
     pub(crate) cursor_style: crate::session::config::CursorStyle,
-    pub(crate) system_sampler: Arc<std::sync::Mutex<SharedSystemSampler>>,
     pub(crate) recording_action: Option<String>,
     pub(crate) active_dialog: Option<DialogKind>,
     pub(crate) auxiliary_windows: AuxiliaryWindowsState,
     pub(crate) update_runtime: UpdateRuntimeState,
     /// Error message when a recorded keybinding conflicts with another
     pub(crate) keybind_error: Option<(String, String)>, // (action_id, error_message)
-    pub(crate) system: SystemSnapshot,
-    pub(crate) animated_cpu_percent: f32,
-    pub(crate) animated_mem_percent: f32,
-    pub(crate) animated_swap_percent: f32,
-    pub(crate) process_view: ProcessView,
-    /// Remote monitoring data is isolated per SSH terminal. It must never be
-    /// replaced with a snapshot from the machine running TinyShell.
-    pub(crate) remote_system_snapshots: HashMap<String, SystemSnapshot>,
-    pub(crate) cpu_history: VecDeque<f32>,
-    pub(crate) net_rx_history: VecDeque<f32>,
-    pub(crate) net_tx_history: VecDeque<f32>,
-    /// `None` represents the aggregate of all interfaces.
-    pub(crate) selected_network_interface: Option<String>,
-    pub(crate) network_interface_histories: HashMap<String, NetworkHistory>,
-    pub(crate) last_system_sample: Instant,
-    pub(crate) last_sftp_latency_sample: Instant,
-
-    pub(crate) search_input: Entity<InputState>,
+    pub(crate) monitoring: MonitoringState,
     pub(crate) connection_manager_state: Entity<ConnectionManagerState>,
     pub(crate) connection_manager_actions: ConnectionManagerActions,
     pub(crate) search: SearchState,
+    pub(crate) search_input: Entity<InputState>,
 
     pub(crate) system_tab_id: Option<String>,
     pub(crate) sftp_handles: std::collections::HashMap<String, crate::sftp::SftpHandle>,
 
-    /// Tab id currently being sampled remotely. Keeping the id prevents a
-    /// stale response from an old SSH tab from releasing a newer request.
-    pub(crate) remote_sample_in_flight: Option<String>,
     pub(crate) runtime: Arc<Runtime>,
     pub(crate) async_runtime: AsyncRuntimeState,
     pub(crate) last_window_size: Option<gpui::Size<Pixels>>,
@@ -1165,7 +1143,6 @@ impl TinyShell {
                 transfers
             },
             show_transfers_dialog: false,
-            system_status: None,
             terminal_bounds: HashMap::new(),
             tab_bar_bounds: None,
             tab_group_bounds: HashMap::new(),
@@ -1182,30 +1159,34 @@ impl TinyShell {
             workspace_mode: WorkspaceMode::default(),
             sidebar_collapsed: config.sidebar_collapsed(),
             collapsed_saved_scroll_handle: gpui::ScrollHandle::new(),
-            prev_monitoring_size: None,
             status: "ready".into(),
             active_title_bar_style: config.title_bar_style(),
             config,
             config_persistence: ConfigPersistenceState::default(),
-            system_sampler,
+            monitoring: MonitoringState {
+                system_sampler,
+                system: system.clone(),
+                animated_cpu_percent: system.cpu_percent,
+                animated_mem_percent: system.mem_percent,
+                animated_swap_percent: system.swap_percent,
+                process_view: ProcessView::default(),
+                remote_system_snapshots: HashMap::new(),
+                cpu_history: VecDeque::with_capacity(20),
+                net_rx_history: VecDeque::with_capacity(20),
+                net_tx_history: VecDeque::with_capacity(20),
+                selected_network_interface: None,
+                network_interface_histories: HashMap::new(),
+                last_system_sample: Instant::now(),
+                last_sftp_latency_sample: Instant::now(),
+                system_status: None,
+                remote_sample_in_flight: None,
+                prev_monitoring_size: None,
+            },
             recording_action: None,
             active_dialog: None,
             auxiliary_windows: AuxiliaryWindowsState::default(),
             update_runtime: UpdateRuntimeState::default(),
             keybind_error: None,
-            animated_cpu_percent: system.cpu_percent,
-            animated_mem_percent: system.mem_percent,
-            animated_swap_percent: system.swap_percent,
-            system,
-            process_view: ProcessView::default(),
-            remote_system_snapshots: HashMap::new(),
-            cpu_history: VecDeque::with_capacity(20),
-            net_rx_history: VecDeque::with_capacity(20),
-            net_tx_history: VecDeque::with_capacity(20),
-            selected_network_interface: None,
-            network_interface_histories: HashMap::new(),
-            last_system_sample: Instant::now(),
-            last_sftp_latency_sample: Instant::now(),
 
             search_input,
             connection_manager_state,
@@ -1215,7 +1196,6 @@ impl TinyShell {
             system_tab_id: None,
             sftp_handles: std::collections::HashMap::new(),
 
-            remote_sample_in_flight: None,
             runtime,
             async_runtime: AsyncRuntimeState::new(events_tx, events_rx),
             last_window_size: None,
@@ -1444,9 +1424,9 @@ impl TinyShell {
 
     fn animate_resource_metrics(&mut self) -> bool {
         if !self.monitoring_metrics_visible() {
-            self.animated_cpu_percent = self.system.cpu_percent;
-            self.animated_mem_percent = self.system.mem_percent;
-            self.animated_swap_percent = self.system.swap_percent;
+            self.monitoring.animated_cpu_percent = self.monitoring.system.cpu_percent;
+            self.monitoring.animated_mem_percent = self.monitoring.system.mem_percent;
+            self.monitoring.animated_swap_percent = self.monitoring.system.swap_percent;
             return false;
         }
 
@@ -1463,9 +1443,18 @@ impl TinyShell {
             true
         }
 
-        let mut changed = advance(&mut self.animated_cpu_percent, self.system.cpu_percent);
-        changed |= advance(&mut self.animated_mem_percent, self.system.mem_percent);
-        changed |= advance(&mut self.animated_swap_percent, self.system.swap_percent);
+        let mut changed = advance(
+            &mut self.monitoring.animated_cpu_percent,
+            self.monitoring.system.cpu_percent,
+        );
+        changed |= advance(
+            &mut self.monitoring.animated_mem_percent,
+            self.monitoring.system.mem_percent,
+        );
+        changed |= advance(
+            &mut self.monitoring.animated_swap_percent,
+            self.monitoring.system.swap_percent,
+        );
         changed
     }
 
@@ -1637,32 +1626,41 @@ impl TinyShell {
                 }
                 BackendEvent::RemoteSystem { tab_id, snapshot } => {
                     let snapshot = *snapshot;
-                    if self.remote_sample_in_flight.as_deref() == Some(tab_id.as_str()) {
-                        self.remote_sample_in_flight = None;
+                    if self.monitoring.remote_sample_in_flight.as_deref() == Some(tab_id.as_str()) {
+                        self.monitoring.remote_sample_in_flight = None;
                     }
-                    self.remote_system_snapshots
+                    self.monitoring
+                        .remote_system_snapshots
                         .insert(tab_id.clone(), snapshot.clone());
                     if self.system_tab_id.as_deref() == Some(tab_id.as_str()) {
                         self.record_network_interface_histories(&snapshot);
-                        self.system_status = None;
-                        self.system = snapshot.clone();
-                        push_bounded(&mut self.cpu_history, snapshot.cpu_percent, 20);
-                        push_bounded(&mut self.net_rx_history, snapshot.net_rx_rate as f32, 20);
-                        push_bounded(&mut self.net_tx_history, snapshot.net_tx_rate as f32, 20);
+                        self.monitoring.system_status = None;
+                        self.monitoring.system = snapshot.clone();
+                        push_bounded(&mut self.monitoring.cpu_history, snapshot.cpu_percent, 20);
+                        push_bounded(
+                            &mut self.monitoring.net_rx_history,
+                            snapshot.net_rx_rate as f32,
+                            20,
+                        );
+                        push_bounded(
+                            &mut self.monitoring.net_tx_history,
+                            snapshot.net_tx_rate as f32,
+                            20,
+                        );
                     }
                 }
                 BackendEvent::RemoteSystemUnavailable { tab_id, reason } => {
-                    if self.remote_sample_in_flight.as_deref() == Some(tab_id.as_str()) {
-                        self.remote_sample_in_flight = None;
+                    if self.monitoring.remote_sample_in_flight.as_deref() == Some(tab_id.as_str()) {
+                        self.monitoring.remote_sample_in_flight = None;
                     }
                     if self.system_tab_id.as_deref() == Some(tab_id.as_str()) {
-                        self.system_status = Some(reason.clone().into());
+                        self.monitoring.system_status = Some(reason.clone().into());
                         self.status = reason.into();
                     }
                 }
                 BackendEvent::Closed { tab_id, reason } => {
-                    if self.remote_sample_in_flight.as_deref() == Some(tab_id.as_str()) {
-                        self.remote_sample_in_flight = None;
+                    if self.monitoring.remote_sample_in_flight.as_deref() == Some(tab_id.as_str()) {
+                        self.monitoring.remote_sample_in_flight = None;
                     }
                     let is_stale = self
                         .tabs
@@ -1717,7 +1715,7 @@ impl TinyShell {
                         self.disconnect_epoch = self.disconnect_epoch.wrapping_add(1);
                     }
                     if self.system_tab_id.as_deref() == Some(tab_id.as_str()) {
-                        self.system_status = Some(reason.clone().into());
+                        self.monitoring.system_status = Some(reason.clone().into());
                     }
                     self.status = reason.into();
                 }
@@ -2164,8 +2162,8 @@ impl TinyShell {
         if !self.monitoring_metrics_visible() {
             return false;
         }
-        if self.last_system_sample.elapsed() >= SystemSampler::interval() {
-            self.last_system_sample = Instant::now();
+        if self.monitoring.last_system_sample.elapsed() >= SystemSampler::interval() {
+            self.monitoring.last_system_sample = Instant::now();
             // An SSH workspace must never fall back to sampling the local
             // machine, including while connecting, disconnected, or after a
             // transient remote probe failure.
@@ -2179,7 +2177,7 @@ impl TinyShell {
                     return false;
                 }
             }
-            let snapshot = match self.system_sampler.lock() {
+            let snapshot = match self.monitoring.system_sampler.lock() {
                 Ok(mut sampler) => sampler.sample().clone(),
                 Err(poisoned) => {
                     tracing::warn!("system sampler lock was poisoned; recovering its state");
@@ -2188,20 +2186,28 @@ impl TinyShell {
             };
             self.record_network_interface_histories(&snapshot);
             let cpu_usage = snapshot.cpu_percent;
-            push_bounded(&mut self.cpu_history, cpu_usage, 20);
-            push_bounded(&mut self.net_rx_history, snapshot.net_rx_rate as f32, 20);
-            push_bounded(&mut self.net_tx_history, snapshot.net_tx_rate as f32, 20);
-            self.system = snapshot;
+            push_bounded(&mut self.monitoring.cpu_history, cpu_usage, 20);
+            push_bounded(
+                &mut self.monitoring.net_rx_history,
+                snapshot.net_rx_rate as f32,
+                20,
+            );
+            push_bounded(
+                &mut self.monitoring.net_tx_history,
+                snapshot.net_tx_rate as f32,
+                20,
+            );
+            self.monitoring.system = snapshot;
             return true;
         }
         false
     }
 
     fn sample_sftp_latency_if_due(&mut self) {
-        if self.last_sftp_latency_sample.elapsed() < Duration::from_secs(5) {
+        if self.monitoring.last_sftp_latency_sample.elapsed() < Duration::from_secs(5) {
             return;
         }
-        self.last_sftp_latency_sample = Instant::now();
+        self.monitoring.last_sftp_latency_sample = Instant::now();
         if !self.config.sftp_footer_visibility().latency {
             return;
         }
@@ -2212,6 +2218,7 @@ impl TinyShell {
 
     fn record_network_interface_histories(&mut self, snapshot: &SystemSnapshot) {
         if self
+            .monitoring
             .selected_network_interface
             .as_ref()
             .is_some_and(|selected| {
@@ -2221,10 +2228,11 @@ impl TinyShell {
                     .any(|interface| &interface.name == selected)
             })
         {
-            self.selected_network_interface = None;
+            self.monitoring.selected_network_interface = None;
         }
         for interface in &snapshot.network_interfaces {
             let history = self
+                .monitoring
                 .network_interface_histories
                 .entry(interface.name.clone())
                 .or_default();
@@ -2253,10 +2261,10 @@ impl TinyShell {
         })() else {
             return;
         };
-        if self.remote_sample_in_flight.is_some() {
+        if self.monitoring.remote_sample_in_flight.is_some() {
             return;
         }
-        self.remote_sample_in_flight = Some(tab_id.clone());
+        self.monitoring.remote_sample_in_flight = Some(tab_id.clone());
         if let Ok(backend) = backend.lock() {
             backend.send(crate::terminal::BackendCommand::SampleMetrics);
         }
@@ -2545,7 +2553,7 @@ impl TinyShell {
                 .collect();
 
             if self.sftp_panel_minimized {
-                if let Some(prev) = self.prev_monitoring_size {
+                if let Some(prev) = self.monitoring.prev_monitoring_size {
                     if body_sizes.len() > 1 {
                         body_sizes[1] = prev.into();
                     }

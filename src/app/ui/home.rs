@@ -13,7 +13,7 @@ impl TinyShell {
             .and_then(|id| self.tabs.iter().find(|tab| &tab.id == id));
         let snapshot = source_tab_id
             .as_ref()
-            .and_then(|id| self.remote_system_snapshots.get(id))
+            .and_then(|id| self.monitoring.remote_system_snapshots.get(id))
             .cloned()
             .unwrap_or_default();
         let connection = source_tab

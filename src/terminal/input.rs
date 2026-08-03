@@ -777,13 +777,11 @@ impl TinyShell {
                             bytes.extend_from_slice(
                                 format!("\x1b[<{};{};{}M", button, col + 1, row + 1).as_bytes(),
                             );
-                        } else {
-                            if col < 223 && row < 223 {
-                                bytes.extend_from_slice(b"\x1b[M");
-                                bytes.push(button as u8 + 32);
-                                bytes.push(col as u8 + 33);
-                                bytes.push(row as u8 + 33);
-                            }
+                        } else if col < 223 && row < 223 {
+                            bytes.extend_from_slice(b"\x1b[M");
+                            bytes.push(button as u8 + 32);
+                            bytes.push(col as u8 + 33);
+                            bytes.push(row as u8 + 33);
                         }
                     }
                     if !bytes.is_empty() {

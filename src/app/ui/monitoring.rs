@@ -15,7 +15,7 @@ impl TinyShell {
         let border_color = cx.theme().border;
         let muted_fg = cx.theme().muted_foreground;
 
-        let cpu_pct = self.system.cpu_percent;
+        let cpu_pct = self.monitoring.system.cpu_percent;
         // Dynamic CPU line color: green <30%, amber 30-80%, red >80%
         // NOTE: Hsla.h is normalized 0..=1 (not degrees)
         let cpu_path_color = {
@@ -55,26 +55,31 @@ impl TinyShell {
                 ..net_color
             }
         };
-        let mem_pct = self.system.mem_percent;
-        let swap_pct = self.system.swap_percent;
-        let mem_detail = self.system.mem_detail.clone();
-        let swap_detail = self.system.swap_detail.clone();
-        let net_rx = self.system.net_rx.clone();
-        let net_tx = self.system.net_tx.clone();
+        let mem_pct = self.monitoring.system.mem_percent;
+        let swap_pct = self.monitoring.system.swap_percent;
+        let mem_detail = self.monitoring.system.mem_detail.clone();
+        let swap_detail = self.monitoring.system.swap_detail.clone();
+        let net_rx = self.monitoring.system.net_rx.clone();
+        let net_tx = self.monitoring.system.net_tx.clone();
 
-        let (disk_used, disk_total) = self.system.disks.iter().fold((0u64, 0u64), |(u, t), d| {
-            (u + (d.total_bytes - d.available_bytes), t + d.total_bytes)
-        });
+        let (disk_used, disk_total) = self
+            .monitoring
+            .system
+            .disks
+            .iter()
+            .fold((0u64, 0u64), |(u, t), d| {
+                (u + (d.total_bytes - d.available_bytes), t + d.total_bytes)
+            });
         let disk_pct = if disk_total > 0 {
             disk_used as f64 / disk_total as f64 * 100.0
         } else {
             0.0
         };
 
-        let cpu_spark_data = self.cpu_history.clone();
-        let net_rx_history = self.net_rx_history.clone();
-        let net_tx_history = self.net_tx_history.clone();
-        let disks = self.system.disks.clone();
+        let cpu_spark_data = self.monitoring.cpu_history.clone();
+        let net_rx_history = self.monitoring.net_rx_history.clone();
+        let net_tx_history = self.monitoring.net_tx_history.clone();
+        let disks = self.monitoring.system.disks.clone();
         let card_min_w = px(110.);
 
         let show_net_card = viewport_width > px(750.);
@@ -190,7 +195,7 @@ impl TinyShell {
                             .child(mem_detail),
                     ),
             )
-            .when(self.system.total_swap > 0, |this| {
+            .when(self.monitoring.system.total_swap > 0, |this| {
                 this.child(
                     h_flex()
                         .w_full()
@@ -439,15 +444,15 @@ impl TinyShell {
         &self,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let cpu_pct = self.system.cpu_percent.clamp(0.0, 1.0);
-        let mem_pct = self.system.mem_percent.clamp(0.0, 1.0);
-        let swap_pct = self.system.swap_percent.clamp(0.0, 1.0);
-        let cpu_progress_pct = self.animated_cpu_percent.clamp(0.0, 1.0);
-        let mem_progress_pct = self.animated_mem_percent.clamp(0.0, 1.0);
-        let swap_progress_pct = self.animated_swap_percent.clamp(0.0, 1.0);
-        let cpu_value_pct = self.system.cpu_percent.clamp(0.0, 1.0);
-        let mem_value_pct = self.system.mem_percent.clamp(0.0, 1.0);
-        let swap_value_pct = self.system.swap_percent.clamp(0.0, 1.0);
+        let cpu_pct = self.monitoring.system.cpu_percent.clamp(0.0, 1.0);
+        let mem_pct = self.monitoring.system.mem_percent.clamp(0.0, 1.0);
+        let swap_pct = self.monitoring.system.swap_percent.clamp(0.0, 1.0);
+        let cpu_progress_pct = self.monitoring.animated_cpu_percent.clamp(0.0, 1.0);
+        let mem_progress_pct = self.monitoring.animated_mem_percent.clamp(0.0, 1.0);
+        let swap_progress_pct = self.monitoring.animated_swap_percent.clamp(0.0, 1.0);
+        let cpu_value_pct = self.monitoring.system.cpu_percent.clamp(0.0, 1.0);
+        let mem_value_pct = self.monitoring.system.mem_percent.clamp(0.0, 1.0);
+        let swap_value_pct = self.monitoring.system.swap_percent.clamp(0.0, 1.0);
         let metric_color = |value: f32| {
             if value >= 0.75 {
                 Hsla::from(gpui::rgb(0xE5484D))
@@ -486,20 +491,24 @@ impl TinyShell {
         let cpu_color = metric_color(cpu_pct);
         let mem_color = metric_color(mem_pct);
         let swap_color = metric_color(swap_pct);
-        let mem_value_detail =
-            format!("{} · {:.0}%", self.system.mem_detail, mem_value_pct * 100.0);
+        let mem_value_detail = format!(
+            "{} · {:.0}%",
+            self.monitoring.system.mem_detail,
+            mem_value_pct * 100.0
+        );
         let swap_value_detail = format!(
             "{} · {:.0}%",
-            self.system.swap_detail,
+            self.monitoring.system.swap_detail,
             swap_value_pct * 100.0
         );
         let net_color = Hsla::from(gpui::rgb(0x1586F5));
         let net_tx_color = cx.theme().danger;
         let net_grid_color = cx.theme().border.opacity(0.18);
         let muted_fg = cx.theme().muted_foreground;
-        let selected_network_interface = self.selected_network_interface.clone();
+        let selected_network_interface = self.monitoring.selected_network_interface.clone();
         let selected_network = selected_network_interface.as_ref().and_then(|selected| {
-            self.system
+            self.monitoring
+                .system
                 .network_interfaces
                 .iter()
                 .find(|interface| &interface.name == selected)
@@ -509,20 +518,20 @@ impl TinyShell {
             .unwrap_or_else(|| t!("total").to_string());
         let selected_rx_rate = selected_network
             .map(|interface| interface.receive_rate)
-            .unwrap_or(self.system.net_rx_rate);
+            .unwrap_or(self.monitoring.system.net_rx_rate);
         let selected_tx_rate = selected_network
             .map(|interface| interface.transmit_rate)
-            .unwrap_or(self.system.net_tx_rate);
+            .unwrap_or(self.monitoring.system.net_tx_rate);
         let selected_rx_values = selected_network_interface
             .as_ref()
-            .and_then(|selected| self.network_interface_histories.get(selected))
+            .and_then(|selected| self.monitoring.network_interface_histories.get(selected))
             .map(|history| history.receive.iter().copied().collect::<Vec<_>>())
-            .unwrap_or_else(|| self.net_rx_history.iter().copied().collect());
+            .unwrap_or_else(|| self.monitoring.net_rx_history.iter().copied().collect());
         let selected_tx_values = selected_network_interface
             .as_ref()
-            .and_then(|selected| self.network_interface_histories.get(selected))
+            .and_then(|selected| self.monitoring.network_interface_histories.get(selected))
             .map(|history| history.transmit.iter().copied().collect::<Vec<_>>())
-            .unwrap_or_else(|| self.net_tx_history.iter().copied().collect());
+            .unwrap_or_else(|| self.monitoring.net_tx_history.iter().copied().collect());
         let selected_rx_history = smooth_monitoring_series(&selected_rx_values);
         let selected_tx_history = smooth_monitoring_series(&selected_tx_values);
         let network_chart_max = nice_network_scale(
@@ -538,14 +547,15 @@ impl TinyShell {
             format_network_axis(network_chart_max / 3.0),
         ];
         let network_interface_names = self
+            .monitoring
             .system
             .network_interfaces
             .iter()
             .map(|interface| interface.name.clone())
             .collect::<Vec<_>>();
-        let process_view = self.process_view;
+        let process_view = self.monitoring.process_view;
         let process_view_epoch = process_view as u64;
-        let mut displayed_processes = self.system.processes.clone();
+        let mut displayed_processes = self.monitoring.system.processes.clone();
         match process_view {
             ProcessView::Memory => {
                 displayed_processes.sort_by_key(|process| Reverse(process.memory_bytes))
@@ -733,7 +743,7 @@ impl TinyShell {
                                         FontWeight::MEDIUM
                                     })
                                     .on_click(cx.listener(|this, _, _, cx| {
-                                        this.process_view = ProcessView::Memory;
+                                        this.monitoring.process_view = ProcessView::Memory;
                                         cx.notify();
                                     }))
                                     .child(t!("process_memory"))
@@ -775,7 +785,7 @@ impl TinyShell {
                                         FontWeight::MEDIUM
                                     })
                                     .on_click(cx.listener(|this, _, _, cx| {
-                                        this.process_view = ProcessView::Cpu;
+                                        this.monitoring.process_view = ProcessView::Cpu;
                                         cx.notify();
                                     }))
                                     .child(t!("cpu"))
@@ -817,7 +827,7 @@ impl TinyShell {
                                         FontWeight::MEDIUM
                                     })
                                     .on_click(cx.listener(|this, _, _, cx| {
-                                        this.process_view = ProcessView::Activity;
+                                        this.monitoring.process_view = ProcessView::Activity;
                                         cx.notify();
                                     }))
                                     .child(t!("process_command"))
@@ -913,27 +923,27 @@ impl TinyShell {
                                         let view = cx.entity();
                                         move |mut menu, window, cx| {
                                             let selected =
-                                                view.read(cx).selected_network_interface.clone();
+                                                view.read(cx).monitoring.selected_network_interface.clone();
                                             menu = menu.item(
                                                 PopupMenuItem::new(t!("total").to_string())
                                                     .checked(selected.is_none())
                                                     .on_click(window.listener_for(
                                                         &view,
                                                         |this, _, _, cx| {
-                                                            this.selected_network_interface = None;
+                                                            this.monitoring.selected_network_interface = None;
                                                             cx.notify();
                                                         },
                                                     )),
                                             );
                                             for name in network_interface_names.clone() {
-                                                let selected_name = name.clone();
+                                                let selected_name: String = name.clone();
                                                 menu = menu.item(
                                                     PopupMenuItem::new(name.clone())
                                                         .checked(selected.as_ref() == Some(&name))
                                                         .on_click(window.listener_for(
                                                             &view,
                                                             move |this, _, _, cx| {
-                                                                this.selected_network_interface =
+                                                                this.monitoring.selected_network_interface =
                                                                     Some(selected_name.clone());
                                                                 cx.notify();
                                                             },
@@ -1187,7 +1197,7 @@ impl TinyShell {
                                     .overflow_y_scroll()
                                     .h_full()
                                     .min_h(px(0.))
-                                    .children(self.system.filesystems.iter().enumerate().map(
+                                    .children(self.monitoring.system.filesystems.iter().enumerate().map(
                                         |(index, disk)| {
                                             let mount = disk.mount.clone();
                                             let capacity = format!(

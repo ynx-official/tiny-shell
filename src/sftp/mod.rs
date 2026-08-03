@@ -1,9 +1,15 @@
 pub mod ops;
 pub mod text_file;
 
+pub(crate) mod handle;
+pub(crate) mod handler;
 mod transfer;
+pub(crate) mod utils;
 
+pub(crate) use handle::SftpHandle;
+pub(crate) use handler::SftpClientHandler;
 pub(crate) use transfer::TransferStateFlag;
+pub(crate) use utils::*;
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::{
@@ -14,13 +20,12 @@ use std::{
 };
 
 use anyhow::{Context, Result, anyhow};
-use async_trait::async_trait;
-use chrono::{DateTime, TimeZone, Utc};
+
 use directories::BaseDirs;
 use flate2::read::GzDecoder;
 use russh::{
     Disconnect,
-    client::{self, Handler},
+    client::{self},
     keys::{PrivateKey, decode_secret_key, load_secret_key},
 };
 use russh_sftp::{client::SftpSession, protocol::FileAttributes};
@@ -147,101 +152,6 @@ pub enum SftpCommand {
     Close,
 }
 
-pub struct SftpHandle {
-    commands: Sender<SftpCommand>,
-    #[allow(dead_code)]
-    join: Option<JoinHandle<()>>,
-}
-
-impl Clone for SftpHandle {
-    fn clone(&self) -> Self {
-        Self {
-            commands: self.commands.clone(),
-            join: None,
-        }
-    }
-}
-
-impl SftpHandle {
-    pub(crate) fn send_command(&self, command: SftpCommand) -> bool {
-        match self.commands.try_send(command) {
-            Ok(()) => true,
-            Err(mpsc::error::TrySendError::Full(_)) => {
-                tracing::warn!("sftp command queue is full; dropping command");
-                false
-            }
-            Err(mpsc::error::TrySendError::Closed(_)) => {
-                tracing::debug!("sftp command dropped because its receiver is closed");
-                false
-            }
-        }
-    }
-
-    pub fn list_dir(&self, path: String) {
-        self.send_command(SftpCommand::ListDir(path));
-    }
-
-    pub fn list_directory_tree(&self, path: String) {
-        self.send_command(SftpCommand::ListDirectoryTree(path));
-    }
-
-    pub fn measure_latency(&self) {
-        self.send_command(SftpCommand::MeasureLatency);
-    }
-
-    #[allow(dead_code)]
-    pub fn preview(&self, path: String) {
-        self.send_command(SftpCommand::Preview(path));
-    }
-
-    pub fn download(&self, remote: String, local_dir: String) {
-        self.send_command(SftpCommand::Download { remote, local_dir });
-    }
-
-    pub fn upload_paths(&self, locals: Vec<String>, remote_dir: String) {
-        self.send_command(SftpCommand::UploadPaths { locals, remote_dir });
-    }
-
-    pub fn edit_file(&self, remote_path: String) {
-        self.send_command(SftpCommand::EditFile {
-            remote_path,
-            editor: None,
-        });
-    }
-
-    pub fn edit_file_with(&self, remote_path: String, editor: String) {
-        self.send_command(SftpCommand::EditFile {
-            remote_path,
-            editor: Some(editor),
-        });
-    }
-
-    /// 下载文件内容到内存,供内置编辑器使用。
-    pub fn download_file_content(&self, remote_path: String) {
-        self.send_command(SftpCommand::DownloadFileContent { remote_path });
-    }
-
-    pub fn save_file_content(&self, save: RemoteTextSave) {
-        self.send_command(SftpCommand::SaveFileContent(save));
-    }
-
-    pub fn close(&self) {
-        self.send_command(SftpCommand::Close);
-    }
-
-    pub fn pause_transfer(&self, id: String) {
-        self.send_command(SftpCommand::PauseTransfer(id));
-    }
-
-    pub fn resume_transfer(&self, id: String) {
-        self.send_command(SftpCommand::ResumeTransfer(id));
-    }
-
-    pub fn cancel_transfer(&self, id: String) {
-        self.send_command(SftpCommand::CancelTransfer(id));
-    }
-}
-
 pub fn spawn_sftp(
     runtime: &tokio::runtime::Handle,
     tab_id: String,
@@ -272,10 +182,7 @@ pub fn spawn_sftp(
             });
         }
     });
-    SftpHandle {
-        commands: cmd_tx,
-        join: Some(join),
-    }
+    SftpHandle::new(cmd_tx, Some(join))
 }
 
 async fn run_sftp(
@@ -1545,69 +1452,6 @@ fn expand_key_path(value: &str) -> Option<PathBuf> {
     Some(Path::new(value).to_path_buf())
 }
 
-fn base_name(path: &str) -> String {
-    let sep = |c: char| c == '/' || c == '\\';
-    path.trim_end_matches(sep)
-        .rsplit(sep)
-        .next()
-        .unwrap_or(path)
-        .to_string()
-}
-
-pub(crate) fn parent_dir(path: &str) -> Option<String> {
-    if path == "/" || path.is_empty() {
-        return None;
-    }
-    let trimmed = path.trim_end_matches('/');
-    if let Some(idx) = trimmed.rfind('/') {
-        if idx == 0 {
-            Some("/".to_string())
-        } else {
-            Some(trimmed[..idx].to_string())
-        }
-    } else {
-        Some("/".to_string())
-    }
-}
-
-pub(crate) fn join_remote(parent: &str, child: &str) -> String {
-    if parent == "/" {
-        format!("/{child}")
-    } else {
-        format!("{}/{}", parent.trim_end_matches('/'), child)
-    }
-}
-
-#[allow(dead_code)]
-fn strip_archive_suffix(name: &str) -> &str {
-    for suffix in [".tar.gz", ".tgz", ".zip", ".tar"] {
-        if let Some(stripped) = name.strip_suffix(suffix) {
-            return stripped;
-        }
-    }
-    name
-}
-
-fn format_bytes(bytes: u64) -> String {
-    if bytes < 1024 {
-        format!("{bytes} B")
-    } else if bytes < 1024 * 1024 {
-        format!("{:.1} KB", bytes as f64 / 1024.0)
-    } else if bytes < 1024 * 1024 * 1024 {
-        format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
-    } else {
-        format!("{:.2} GB", bytes as f64 / (1024.0 * 1024.0 * 1024.0))
-    }
-}
-
-pub fn format_mtime(ts: u32) -> String {
-    let dt: DateTime<Utc> = Utc
-        .timestamp_opt(ts as i64, 0)
-        .single()
-        .unwrap_or_else(Utc::now);
-    dt.format("%Y-%m-%d %H:%M").to_string()
-}
-
 async fn list_dir_impl(sftp: &SftpSession, path: &str) -> Result<Vec<RemoteEntry>> {
     let raw = sftp
         .read_dir(path)
@@ -2540,36 +2384,6 @@ async fn exec_remote_command(
     }
 }
 
-fn remote_parent(path: &str) -> String {
-    if path == "/" {
-        "/".to_string()
-    } else {
-        path.rsplit_once('/')
-            .map(|(parent, _)| {
-                if parent.is_empty() {
-                    "/".to_string()
-                } else {
-                    parent.to_string()
-                }
-            })
-            .unwrap_or_else(|| "/".to_string())
-    }
-}
-
-fn resolve_remote_path(path: &str, home: &str) -> String {
-    if path == "~" {
-        home.to_string()
-    } else if let Some(rest) = path.strip_prefix("~/") {
-        join_remote(home, rest)
-    } else {
-        path.to_string()
-    }
-}
-
-fn shell_quote(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "'\"'\"'"))
-}
-
 #[allow(dead_code)]
 async fn maybe_extract_archive(path: &Path) -> Result<Option<PathBuf>> {
     let Some(file_name) = path
@@ -2696,21 +2510,6 @@ async fn extract_archive_to(path: &Path, target_dir: &Path) -> Result<()> {
     .context("extract archive task join failure")??;
 
     Ok(())
-}
-
-#[derive(Clone)]
-struct SftpClientHandler;
-
-#[async_trait]
-impl Handler for SftpClientHandler {
-    type Error = anyhow::Error;
-
-    async fn check_server_key(
-        &mut self,
-        _server_public_key: &russh::keys::ssh_key::PublicKey,
-    ) -> Result<bool, Self::Error> {
-        Ok(true)
-    }
 }
 
 #[cfg(test)]

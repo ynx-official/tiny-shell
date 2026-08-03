@@ -1,8 +1,8 @@
 use std::collections::{HashMap, HashSet};
 
 use gpui::{
-    AnyWindowHandle, App, Context, Entity, KeyDownEvent, MouseButton,
-    MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, Window, px,
+    AnyWindowHandle, App, Context, Entity, KeyDownEvent, MouseButton, MouseDownEvent,
+    MouseMoveEvent, MouseUpEvent, Pixels, Point, Window, px,
 };
 use gpui_component::WindowExt;
 use rust_i18n::t;
@@ -498,7 +498,7 @@ impl TinyShell {
                 self.tabs[ix].send_backend(BackendCommand::Close);
                 self.tabs.remove(ix);
             }
-            self.remote_system_snapshots.remove(&id);
+            self.monitoring.remote_system_snapshots.remove(&id);
             return;
         };
 
@@ -558,7 +558,7 @@ impl TinyShell {
                     self.tabs[ix].send_backend(BackendCommand::Close);
                     self.tabs.retain(|t| t.id != *tab_id);
                 }
-                self.remote_system_snapshots.remove(tab_id);
+                self.monitoring.remote_system_snapshots.remove(tab_id);
             }
             if let Some(handle) = self.sftp_handles.remove(&group.id) {
                 handle.close();
@@ -573,7 +573,7 @@ impl TinyShell {
                 self.tabs[ix].send_backend(BackendCommand::Close);
                 self.tabs.retain(|t| t.id != id);
             }
-            self.remote_system_snapshots.remove(&id);
+            self.monitoring.remote_system_snapshots.remove(&id);
             if let Some(g) = self
                 .tab_groups
                 .iter_mut()
@@ -610,13 +610,13 @@ impl TinyShell {
             self.tab_groups.clear();
             self.tabs.clear();
             self.system_tab_id = None;
-            self.cpu_history.clear();
-            self.net_rx_history.clear();
-            self.net_tx_history.clear();
-            self.selected_network_interface = None;
-            self.network_interface_histories.clear();
-            self.system_status = None;
-            self.remote_system_snapshots.clear();
+            self.monitoring.cpu_history.clear();
+            self.monitoring.net_rx_history.clear();
+            self.monitoring.net_tx_history.clear();
+            self.monitoring.selected_network_interface = None;
+            self.monitoring.network_interface_histories.clear();
+            self.monitoring.system_status = None;
+            self.monitoring.remote_system_snapshots.clear();
             for (_, handle) in self.sftp_handles.drain() {
                 handle.close();
             }
@@ -1047,25 +1047,26 @@ impl TinyShell {
             let new_id = group_ssh_tabs.into_iter().next();
             if self.system_tab_id != new_id {
                 self.system_tab_id = new_id;
-                self.cpu_history.clear();
-                self.net_rx_history.clear();
-                self.net_tx_history.clear();
-                self.selected_network_interface = None;
-                self.network_interface_histories.clear();
-                self.remote_sample_in_flight = None;
+                self.monitoring.cpu_history.clear();
+                self.monitoring.net_rx_history.clear();
+                self.monitoring.net_tx_history.clear();
+                self.monitoring.selected_network_interface = None;
+                self.monitoring.network_interface_histories.clear();
+                self.monitoring.remote_sample_in_flight = None;
                 if self.system_tab_id.is_none() {
-                    self.system_status = Some("monitored session closed".to_string().into());
+                    self.monitoring.system_status =
+                        Some("monitored session closed".to_string().into());
                 } else {
-                    self.system_status = None;
-                    self.system = self
+                    self.monitoring.system_status = None;
+                    self.monitoring.system = self
                         .system_tab_id
                         .as_ref()
-                        .and_then(|tab_id| self.remote_system_snapshots.get(tab_id))
+                        .and_then(|tab_id| self.monitoring.remote_system_snapshots.get(tab_id))
                         .cloned()
                         .unwrap_or_default();
-                    self.animated_cpu_percent = self.system.cpu_percent;
-                    self.animated_mem_percent = self.system.mem_percent;
-                    self.animated_swap_percent = self.system.swap_percent;
+                    self.monitoring.animated_cpu_percent = self.monitoring.system.cpu_percent;
+                    self.monitoring.animated_mem_percent = self.monitoring.system.mem_percent;
+                    self.monitoring.animated_swap_percent = self.monitoring.system.swap_percent;
                 }
                 self.request_active_system_snapshot();
             }
