@@ -9,10 +9,12 @@ use gpui_component::Root;
 use rust_i18n::t;
 
 use crate::TinyShell;
-use crate::session::{
-    GroupTransfer,
-    config::{ConfigStore, Session},
-    store::{SessionStore, WindowOwnerId},
+use crate::{
+    app::session_actions::GroupTransfer,
+    session::{
+        config::{ConfigStore, Session},
+        store::{SessionStore, WindowOwnerId},
+    },
 };
 
 static STARTUP_UPDATE_CHECK_STARTED: AtomicBool = AtomicBool::new(false);

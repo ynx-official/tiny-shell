@@ -12,6 +12,7 @@ pub(crate) mod monitoring;
 pub mod resizable;
 pub mod runtime_state;
 pub mod search;
+pub(crate) mod session_actions;
 pub mod settings;
 pub mod settings_window;
 pub mod sftp_dialogs;
