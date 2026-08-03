@@ -27,7 +27,7 @@ use gpui::Keystroke;
 
 use crate::session::config::Session;
 use crate::sftp::{
-    PreviewData, RemoteEntry,
+    RemoteEntry,
     text_file::{RemoteFileRevision, RemoteTextFile},
 };
 use crate::system::SystemSnapshot;
@@ -71,10 +71,6 @@ pub(crate) enum BackendEvent {
         tab_id: String,
         path: String,
         entries: Vec<RemoteEntry>,
-    },
-    SftpPreview {
-        tab_id: String,
-        preview: PreviewData,
     },
     SftpStatus {
         tab_id: String,
@@ -305,7 +301,6 @@ pub(crate) struct SftpUiState {
     pub directory_entries: std::collections::HashMap<String, Vec<RemoteEntry>>,
     pub expanded_directories: std::collections::HashSet<String>,
     pub selected_path: Option<String>,
-    pub preview: Option<PreviewData>,
     pub selected_entries: std::collections::HashSet<String>,
     pub home_dir: String,
     pub follow_terminal_cwd: bool,

@@ -1037,25 +1037,6 @@ impl ConfigStore {
         }
     }
 
-    pub fn move_connection_group(&mut self, name: &str, new_parent: Option<&str>) {
-        let leaf = name.rsplit('/').next().unwrap_or(name);
-        let destination = new_parent
-            .filter(|parent| !parent.is_empty())
-            .map(|parent| format!("{parent}/{leaf}"))
-            .unwrap_or_else(|| leaf.to_string());
-        if destination == name
-            || destination.starts_with(&format!("{name}/"))
-            || self
-                .cache
-                .connection_groups
-                .iter()
-                .any(|group| group == &destination)
-        {
-            return;
-        }
-        self.rename_connection_group(name, destination);
-    }
-
     pub fn replace_sessions(&mut self, sessions: Vec<Session>) {
         self.cache.sessions = sessions
             .into_iter()

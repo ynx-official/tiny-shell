@@ -812,7 +812,6 @@ impl TinyShell {
                 directory_entries: std::collections::HashMap::new(),
                 expanded_directories: std::collections::HashSet::new(),
                 selected_path: None,
-                preview: None,
                 selected_entries: std::collections::HashSet::new(),
                 home_dir: String::new(),
                 follow_terminal_cwd: false,

@@ -547,8 +547,6 @@ pub(crate) enum DialogKind {
     ManagedKeySelector,
     ManagedKeyImport,
     ConnectionGroup,
-    ConnectionGroupMove,
-    SessionGroupMove,
     QuickCommandCategory,
     QuickCommand,
     /// 校验隐私密码后才允许启用敏感信息同步。
@@ -665,7 +663,6 @@ pub(crate) struct TinyShell {
     pub(crate) editing_connection_group: Option<String>,
     pub(crate) editing_quick_command_category: Option<String>,
     pub(crate) connection_group_parent: Option<String>,
-    pub(crate) moving_connection_group: Option<String>,
     pub(crate) session_group_selection: Option<String>,
     /// Managed SSH keys cache (mirrors ConfigStore for UI rendering).
     pub(crate) managed_keys: Vec<ManagedKey>,
@@ -724,7 +721,6 @@ pub(crate) struct TinyShell {
     pub(crate) quick_connection_scroll_handle: gpui::ScrollHandle,
     pub(crate) saved_scroll_handle: gpui::ScrollHandle,
     pub(crate) connection_scroll_handle: gpui::ScrollHandle,
-    pub(crate) group_picker_scroll_handle: gpui::ScrollHandle,
     pub(crate) pending_sftp_path_sync: Option<String>,
     pub(crate) pending_sftp_tree_scroll_path: Option<String>,
     pub(crate) sftp_context_menu: Option<SftpContextMenuState>,
@@ -1060,7 +1056,6 @@ impl TinyShell {
             editing_connection_group: None,
             editing_quick_command_category: None,
             connection_group_parent: None,
-            moving_connection_group: None,
             session_group_selection: None,
             managed_keys: config.managed_keys().to_vec(),
             managed_key_selected: None,
@@ -1116,7 +1111,6 @@ impl TinyShell {
             quick_connection_scroll_handle: gpui::ScrollHandle::new(),
             saved_scroll_handle: gpui::ScrollHandle::new(),
             connection_scroll_handle: gpui::ScrollHandle::new(),
-            group_picker_scroll_handle: gpui::ScrollHandle::new(),
             pending_sftp_path_sync: Some("/".into()),
             pending_sftp_tree_scroll_path: None,
             sftp_context_menu: None,
@@ -1564,14 +1558,6 @@ impl TinyShell {
                     if let Some(group) = self.tab_groups.iter_mut().find(|g| g.id == tab_id) {
                         if let Some(sftp) = group.sftp.as_mut() {
                             sftp.directory_entries.insert(path, entries);
-                        }
-                    }
-                }
-                BackendEvent::SftpPreview { tab_id, preview } => {
-                    if let Some(group) = self.tab_groups.iter_mut().find(|g| g.id == tab_id) {
-                        if let Some(sftp) = group.sftp.as_mut() {
-                            sftp.selected_path = Some(preview.path.clone());
-                            sftp.preview = Some(preview);
                         }
                     }
                 }

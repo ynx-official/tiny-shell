@@ -53,6 +53,7 @@ const INNO_UNINSTALL_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Uni
 const MACOS_PKG_IDENTIFIER: &str = "dev.tiny-shell.app";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
 pub(crate) enum InstallationKind {
     WindowsInstaller,
     Portable,

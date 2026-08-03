@@ -18,7 +18,9 @@ use crate::session::config::{ManagedKey, QuickCommandCategory, Session};
 use backend::for_credentials;
 use http::{http_client, send_with_retry};
 
-pub use merge::{MergeLocal, MergedConfig, merge_payload_with_deleted};
+pub use merge::{
+    MergeLocal, MergedConfig, merge_payload_with_deleted, merge_public_payload_with_deleted,
+};
 pub use model::{PrivacyPasswordStatus, SyncPayload};
 
 const SYNC_FILE_NAME: &str = "tiny-shell-sync.json";

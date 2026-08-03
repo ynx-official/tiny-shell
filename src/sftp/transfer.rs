@@ -13,6 +13,37 @@ use crate::terminal::{BackendEvent, BackendEventSender, TransferState};
 /// Cooperative transfer control shared by upload/download tasks and their UI.
 pub(crate) struct TransferStateFlag(pub(crate) Arc<AtomicU8>);
 
+/// Shared context passed through SFTP transfer operations.
+pub(crate) struct TransferContext<'a> {
+    pub(crate) flag: &'a TransferStateFlag,
+    pub(crate) events: &'a BackendEventSender,
+    pub(crate) tab_id: &'a str,
+    pub(crate) id: &'a str,
+}
+
+impl TransferContext<'_> {
+    pub(crate) async fn yield_if_paused(&self, transferred: u64, total: Option<u64>) -> Result<()> {
+        self.flag
+            .yield_if_paused(self.events, self.tab_id, self.id, transferred, total)
+            .await
+    }
+
+    pub(crate) fn report_progress(
+        &self,
+        transferred: u64,
+        total: Option<u64>,
+        state: TransferState,
+    ) {
+        let _ = self.events.send(BackendEvent::TransferProgress {
+            tab_id: self.tab_id.to_string(),
+            id: self.id.to_string(),
+            transferred,
+            total,
+            state,
+        });
+    }
+}
+
 impl TransferStateFlag {
     pub(crate) fn new() -> Self {
         Self(Arc::new(AtomicU8::new(0)))

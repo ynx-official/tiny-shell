@@ -37,6 +37,7 @@ pub struct MergeLocal<'a> {
     pub commands: &'a [QuickCommandCategory],
 }
 
+#[cfg(test)]
 pub fn merge_payload(
     local_sessions: &[Session],
     local_connection_groups: &[String],

@@ -234,6 +234,7 @@ pub struct SyncPayload {
 }
 
 impl SyncPayload {
+    #[cfg(test)]
     pub fn new(
         device_id: String,
         sessions: Vec<Session>,
