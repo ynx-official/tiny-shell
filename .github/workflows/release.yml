@@ -239,9 +239,29 @@ jobs:
           set -euo pipefail
           mkdir -p dist
           NOTES_FILE="dist/release-notes.md"
-          python scripts/release_notes.py \
-            --tag "${GITHUB_REF_NAME}" \
-            --output "${NOTES_FILE}"
+          VERSION_DOC="docs/upgrade/${GITHUB_REF_NAME}/README.md"
+
+          # 优先使用版本详情文档
+          if [[ -f "${VERSION_DOC}" ]]; then
+            echo "使用版本详情文档: ${VERSION_DOC}"
+            python scripts/release_notes.py \
+              --tag "${GITHUB_REF_NAME}" \
+              --output "${NOTES_FILE}"
+          else
+            echo "版本详情文档不存在，自动生成 release notes"
+            # 获取上一个标签
+            PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+            if [[ -n "${PREV_TAG}" ]]; then
+              echo "## 变更" > "${NOTES_FILE}"
+              echo "" >> "${NOTES_FILE}"
+              git log --pretty=format:"- %s" "${PREV_TAG}..HEAD" >> "${NOTES_FILE}"
+            else
+              echo "## 首次发布" > "${NOTES_FILE}"
+              echo "" >> "${NOTES_FILE}"
+              git log --pretty=format:"- %s" >> "${NOTES_FILE}"
+            fi
+            echo "" >> "${NOTES_FILE}"
+          fi
           echo "RELEASE_NOTES_PATH=${NOTES_FILE}" >> "${GITHUB_ENV}"
 
       - name: Download all workflow artifacts

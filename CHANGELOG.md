@@ -278,6 +278,7 @@
 
 - 首个正式版本，整合本地终端、SSH、SFTP、分屏、监控、主题和跨平台发布能力。
 
+[1.3.1]: docs/upgrade/v1.3.1/README.md
 [1.3.0]: docs/upgrade/v1.3.0/README.md
 [1.2.0]: docs/upgrade/v1.2.0/README.md
 [1.1.12]: docs/upgrade/v1.1.12/README.md
