@@ -27,8 +27,6 @@ use crate::{
 };
 
 impl TinyShell {
-    
-
     pub(crate) fn set_input_value(
         input: &Entity<InputState>,
         value: impl Into<SharedString>,
@@ -592,8 +590,6 @@ impl TinyShell {
         cx.notify();
     }
 
-    
-
     pub(crate) fn edit_saved_session(
         &mut self,
         session_id: String,
@@ -1050,7 +1046,3 @@ impl TinyShell {
         cx.notify();
     }
 }
-
-    
-
-    
