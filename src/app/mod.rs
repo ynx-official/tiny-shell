@@ -1654,7 +1654,13 @@ impl TinyShell {
         changed
     }
 
-    fn handle_terminal_output(&mut self, tab_id: String, bytes: Vec<u8>, _cx: &mut Context<Self>) {
+    #[allow(clippy::boxed_local, clippy::box_collection)]
+    fn handle_terminal_output(
+        &mut self,
+        tab_id: String,
+        bytes: Box<Vec<u8>>,
+        _cx: &mut Context<Self>,
+    ) {
         if let Some(tab) = self.tabs.iter_mut().find(|t| t.id == tab_id) {
             tab.backend_initialized = true;
             tab.feed(&bytes);
@@ -1765,18 +1771,20 @@ impl TinyShell {
         false
     }
 
+    #[allow(clippy::boxed_local, clippy::box_collection)]
     fn handle_sftp_entries(
         &mut self,
         tab_id: String,
         path: String,
-        entries: Vec<crate::sftp::RemoteEntry>,
+        entries: Box<Vec<crate::sftp::RemoteEntry>>,
         _cx: &mut Context<Self>,
     ) {
         if let Some(group) = self.tab_groups.iter_mut().find(|g| g.id == tab_id) {
             if let Some(sftp) = group.sftp.as_mut() {
-                sftp.directory_entries.insert(path.clone(), entries.clone());
+                sftp.directory_entries
+                    .insert(path.clone(), (*entries).clone());
                 if sftp.current_path == path {
-                    sftp.entries = entries;
+                    sftp.entries = *entries;
                     if self.active_group.as_deref() == Some(tab_id.as_str()) {
                         self.pending_sftp_path_sync = Some(path);
                     }
@@ -1785,16 +1793,17 @@ impl TinyShell {
         }
     }
 
+    #[allow(clippy::boxed_local, clippy::box_collection)]
     fn handle_sftp_directory_entries(
         &mut self,
         tab_id: String,
         path: String,
-        entries: Vec<crate::sftp::RemoteEntry>,
+        entries: Box<Vec<crate::sftp::RemoteEntry>>,
         _cx: &mut Context<Self>,
     ) {
         if let Some(group) = self.tab_groups.iter_mut().find(|g| g.id == tab_id) {
             if let Some(sftp) = group.sftp.as_mut() {
-                sftp.directory_entries.insert(path, entries);
+                sftp.directory_entries.insert(path, *entries);
             }
         }
     }
@@ -1845,15 +1854,16 @@ impl TinyShell {
         }
     }
 
+    #[allow(clippy::boxed_local)]
     fn handle_sftp_file_content(
         &mut self,
         tab_id: String,
         remote_path: String,
-        file: crate::sftp::text_file::RemoteTextFile,
+        file: Box<crate::sftp::text_file::RemoteTextFile>,
         cx: &mut Context<Self>,
     ) {
         if let Some(handle) = self.sftp_handles.get(&tab_id).cloned() {
-            sftp_editor_window::open_or_focus(tab_id, remote_path, file, handle, cx);
+            sftp_editor_window::open_or_focus(tab_id, remote_path, *file, handle, cx);
         }
     }
 
@@ -1867,14 +1877,15 @@ impl TinyShell {
         sftp_editor_window::mark_uploaded(&tab_id, &remote_path, revision, cx);
     }
 
+    #[allow(clippy::boxed_local)]
     fn handle_sftp_content_conflict(
         &mut self,
         tab_id: String,
         remote_path: String,
-        remote_file: crate::sftp::text_file::RemoteTextFile,
+        remote_file: Box<crate::sftp::text_file::RemoteTextFile>,
         cx: &mut Context<Self>,
     ) {
-        sftp_editor_window::mark_conflict(&tab_id, &remote_path, remote_file, cx);
+        sftp_editor_window::mark_conflict(&tab_id, &remote_path, *remote_file, cx);
     }
 
     fn handle_sftp_content_upload_failed(
@@ -1933,10 +1944,11 @@ impl TinyShell {
         }
     }
 
+    #[allow(clippy::boxed_local)]
     fn handle_transfer_started(
         &mut self,
         tab_id: String,
-        info: crate::terminal::TransferInfo,
+        info: Box<crate::terminal::TransferInfo>,
         _cx: &mut Context<Self>,
     ) -> bool {
         let tab_title = self.transfer_source_title(&tab_id);
@@ -1945,7 +1957,7 @@ impl TinyShell {
             crate::terminal::Transfer {
                 tab_id,
                 tab_title,
-                info,
+                info: *info,
                 transferred: 0,
                 total: None,
                 state: crate::terminal::TransferState::Running,

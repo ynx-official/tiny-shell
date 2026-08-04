@@ -90,17 +90,17 @@ pub(crate) fn installation_kind() -> InstallationKind {
 
     #[cfg(target_os = "linux")]
     {
-        return if std::env::current_exe()
+        if std::env::current_exe()
             .ok()
             .is_some_and(|path| path.starts_with("/usr/bin") || path.starts_with("/opt"))
         {
             InstallationKind::LinuxPackage
         } else {
             InstallationKind::Portable
-        };
+        }
     }
 
-    #[allow(unreachable_code)]
+    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
     InstallationKind::Portable
 }
 

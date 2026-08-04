@@ -48,12 +48,12 @@ pub(crate) enum BackendCommand {
     Close,
 }
 
-#[allow(clippy::large_enum_variant)]
+#[allow(clippy::box_collection)]
 #[derive(Debug, Clone)]
 pub(crate) enum BackendEvent {
     Output {
         tab_id: String,
-        bytes: Vec<u8>,
+        bytes: Box<Vec<u8>>,
     },
     Status {
         tab_id: String,
@@ -65,12 +65,12 @@ pub(crate) enum BackendEvent {
     SftpEntries {
         tab_id: String,
         path: String,
-        entries: Vec<RemoteEntry>,
+        entries: Box<Vec<RemoteEntry>>,
     },
     SftpDirectoryEntries {
         tab_id: String,
         path: String,
-        entries: Vec<RemoteEntry>,
+        entries: Box<Vec<RemoteEntry>>,
     },
     SftpStatus {
         tab_id: String,
@@ -84,7 +84,7 @@ pub(crate) enum BackendEvent {
     SftpFileContent {
         tab_id: String,
         remote_path: String,
-        file: RemoteTextFile,
+        file: Box<RemoteTextFile>,
     },
     /// 文件已通过版本校验并原子替换完成。
     SftpContentUploaded {
@@ -96,7 +96,7 @@ pub(crate) enum BackendEvent {
     SftpContentConflict {
         tab_id: String,
         remote_path: String,
-        remote_file: RemoteTextFile,
+        remote_file: Box<RemoteTextFile>,
     },
     /// 内存中的文件内容上传失败。
     SftpContentUploadFailed {
@@ -125,7 +125,7 @@ pub(crate) enum BackendEvent {
     },
     TransferStarted {
         tab_id: String,
-        info: TransferInfo,
+        info: Box<TransferInfo>,
     },
     Closed {
         tab_id: String,
@@ -136,7 +136,7 @@ pub(crate) enum BackendEvent {
         title: String,
     },
     SyncFinished {
-        result: crate::sync::SyncResult,
+        result: Box<crate::sync::SyncResult>,
         task_id: u64,
     },
 }

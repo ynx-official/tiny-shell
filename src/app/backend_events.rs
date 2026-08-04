@@ -35,7 +35,7 @@ pub(super) fn coalesce_backend_events(events: Vec<BackendEvent>) -> Vec<BackendE
                         bytes: existing, ..
                     })) = coalesced.get_mut(position)
                 {
-                    existing.extend(bytes);
+                    existing.extend(bytes.iter().copied());
                 } else {
                     let position = coalesced.len();
                     output_positions.insert(tab_id.clone(), position);
@@ -90,12 +90,12 @@ mod tests {
         assert!(matches!(
             &result[0],
             BackendEvent::Output { tab_id, bytes }
-                if tab_id == "a" && bytes == b"onethree"
+                if tab_id == "a" && **bytes == b"onethree"
         ));
         assert!(matches!(
             &result[3],
             BackendEvent::Output { tab_id, bytes }
-                if tab_id == "a" && bytes == b"four"
+                if tab_id == "a" && **bytes == b"four"
         ));
     }
 
@@ -115,7 +115,7 @@ mod tests {
     fn output(tab_id: &str, bytes: &[u8]) -> BackendEvent {
         BackendEvent::Output {
             tab_id: tab_id.into(),
-            bytes: bytes.to_vec(),
+            bytes: Box::new(bytes.to_vec()),
         }
     }
 

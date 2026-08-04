@@ -188,7 +188,7 @@ impl TinyShell {
             let result = operation.await;
             if !cancellation.is_cancelled() {
                 let _ = events.send(BackendEvent::SyncFinished {
-                    result,
+                    result: Box::new(result),
                     task_id: cancellation.id(),
                 });
             }

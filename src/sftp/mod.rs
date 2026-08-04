@@ -350,7 +350,7 @@ impl SftpRuntime<'_> {
                 let _ = self.events.send(BackendEvent::SftpDirectoryEntries {
                     tab_id: self.tab_id.to_string(),
                     path: actual_path,
-                    entries,
+                    entries: Box::new(entries),
                 });
             }
             Err(err) => {
@@ -379,7 +379,7 @@ impl SftpRuntime<'_> {
         };
         let _ = self.events.send(BackendEvent::TransferStarted {
             tab_id: self.tab_id.to_string(),
-            info,
+            info: Box::new(info),
         });
 
         let handle_clone = self.handle.clone();
@@ -503,7 +503,7 @@ impl SftpRuntime<'_> {
         };
         let _ = self.events.send(BackendEvent::TransferStarted {
             tab_id: self.tab_id.to_string(),
-            info,
+            info: Box::new(info),
         });
 
         let handle_clone = self.handle.clone();
@@ -778,7 +778,7 @@ impl SftpRuntime<'_> {
                     let _ = events_clone.send(BackendEvent::SftpFileContent {
                         tab_id: tab_id_clone,
                         remote_path,
-                        file,
+                        file: Box::new(file),
                     });
                 }
                 Err(err) => {
@@ -847,7 +847,7 @@ impl SftpRuntime<'_> {
                     let _ = events_clone.send(BackendEvent::SftpContentConflict {
                         tab_id: tab_id_clone.clone(),
                         remote_path,
-                        remote_file,
+                        remote_file: Box::new(remote_file),
                     });
                     let _ = events_clone.send(BackendEvent::SftpStatus {
                         tab_id: tab_id_clone,
@@ -1091,7 +1091,7 @@ impl SftpRuntime<'_> {
         };
         let _ = self.events.send(BackendEvent::TransferStarted {
             tab_id: self.tab_id.to_string(),
-            info,
+            info: Box::new(info),
         });
 
         let handle_clone = self.handle.clone();
@@ -1202,7 +1202,7 @@ async fn run_sftp(
         let _ = events.send(BackendEvent::SftpDirectoryEntries {
             tab_id: tab_id.clone(),
             path: "/".to_string(),
-            entries,
+            entries: Box::new(entries),
         });
     }
 
@@ -1217,7 +1217,7 @@ async fn run_sftp(
             let _ = events.send(BackendEvent::SftpDirectoryEntries {
                 tab_id: tab_id.clone(),
                 path: ancestor.clone(),
-                entries,
+                entries: Box::new(entries),
             });
         }
     }
@@ -1358,7 +1358,7 @@ async fn emit_entries(
     let _ = events.send(BackendEvent::SftpEntries {
         tab_id: tab_id.to_string(),
         path: path.to_string(),
-        entries,
+        entries: Box::new(entries),
     });
     Ok(())
 }
