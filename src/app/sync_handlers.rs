@@ -15,6 +15,20 @@ use crate::{
     },
 };
 
+/// Configuration payload extracted from a successful sync download.
+///
+/// Bundling these fields removes the long argument lists that previously
+/// required `#[allow(clippy::too_many_arguments)]`.
+pub(crate) struct SyncDownloadedConfig {
+    pub(crate) sessions: Vec<Session>,
+    pub(crate) deleted_sessions: Vec<DeletedSession>,
+    pub(crate) connection_groups: Vec<String>,
+    pub(crate) deleted_connection_groups: Vec<DeletedConnectionGroup>,
+    pub(crate) managed_keys: Vec<ManagedKey>,
+    pub(crate) quick_command_categories: Vec<QuickCommandCategory>,
+    pub(crate) etag: Option<String>,
+}
+
 impl TinyShell {
     pub(crate) fn handle_sync_finished(
         &mut self,
@@ -72,13 +86,15 @@ impl TinyShell {
                 self.handle_sync_downloaded(
                     credentials,
                     password_status,
-                    sessions,
-                    deleted_sessions,
-                    connection_groups,
-                    deleted_connection_groups,
-                    managed_keys,
-                    quick_command_categories,
-                    etag,
+                    SyncDownloadedConfig {
+                        sessions,
+                        deleted_sessions,
+                        connection_groups,
+                        deleted_connection_groups,
+                        managed_keys,
+                        quick_command_categories,
+                        etag,
+                    },
                     decrypted_count,
                     unavailable_secret_count,
                     cx,
@@ -203,38 +219,24 @@ impl TinyShell {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn handle_sync_downloaded(
         &mut self,
         credentials: SyncCredentials,
         password_status: PrivacyPasswordStatus,
-        sessions: Vec<Session>,
-        deleted_sessions: Vec<DeletedSession>,
-        connection_groups: Vec<String>,
-        deleted_connection_groups: Vec<DeletedConnectionGroup>,
-        managed_keys: Vec<ManagedKey>,
-        quick_command_categories: Vec<QuickCommandCategory>,
-        etag: Option<String>,
+        config: SyncDownloadedConfig,
         decrypted_count: u32,
         unavailable_secret_count: u32,
         cx: &mut Context<Self>,
     ) {
-        let session_count = sessions.len();
-        let group_count = connection_groups.len();
-        let key_count = managed_keys.len();
-        let command_count = quick_command_categories
+        let session_count = config.sessions.len();
+        let group_count = config.connection_groups.len();
+        let key_count = config.managed_keys.len();
+        let command_count = config
+            .quick_command_categories
             .iter()
             .map(|category| category.commands.len())
             .sum::<usize>();
-        let (previous_config, previous_managed_keys) = self.apply_sync_downloaded_config(
-            sessions,
-            deleted_sessions,
-            connection_groups,
-            deleted_connection_groups,
-            managed_keys,
-            quick_command_categories,
-            etag,
-        );
+        let (previous_config, previous_managed_keys) = self.apply_sync_downloaded_config(config);
         match config_persistence::save_full(&self.config) {
             Ok(()) => {
                 let summary = t!(
@@ -290,29 +292,24 @@ impl TinyShell {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn apply_sync_downloaded_config(
         &mut self,
-        sessions: Vec<Session>,
-        deleted_sessions: Vec<DeletedSession>,
-        connection_groups: Vec<String>,
-        deleted_connection_groups: Vec<DeletedConnectionGroup>,
-        managed_keys: Vec<ManagedKey>,
-        quick_command_categories: Vec<QuickCommandCategory>,
-        etag: Option<String>,
+        config: SyncDownloadedConfig,
     ) -> (ConfigStore, Vec<ManagedKey>) {
         let previous_config = self.config.clone();
         let previous_managed_keys = self.managed_keys.clone();
-        self.config.replace_sessions(sessions);
-        self.config.replace_deleted_sessions(deleted_sessions);
-        self.config.replace_connection_groups(connection_groups);
+        self.config.replace_sessions(config.sessions);
         self.config
-            .replace_deleted_connection_groups(deleted_connection_groups);
-        self.config.replace_managed_keys(managed_keys);
+            .replace_deleted_sessions(config.deleted_sessions);
+        self.config
+            .replace_connection_groups(config.connection_groups);
+        self.config
+            .replace_deleted_connection_groups(config.deleted_connection_groups);
+        self.config.replace_managed_keys(config.managed_keys);
         self.managed_keys = self.config.managed_keys().to_vec();
         self.config
-            .set_quick_command_categories(quick_command_categories);
-        self.config.set_sync_etag(etag);
+            .set_quick_command_categories(config.quick_command_categories);
+        self.config.set_sync_etag(config.etag);
         self.config
             .set_sync_last_synced_at(chrono::Utc::now().timestamp());
         (previous_config, previous_managed_keys)

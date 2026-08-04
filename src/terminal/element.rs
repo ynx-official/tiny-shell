@@ -143,6 +143,19 @@ struct CursorLayout {
     color: Hsla,
 }
 
+pub(crate) struct TerminalElementProps {
+    pub(crate) view: Entity<TinyShell>,
+    pub(crate) focus_handle: FocusHandle,
+    pub(crate) snapshot: RenderSnapshot,
+    pub(crate) marked_text: Option<String>,
+    pub(crate) font_family: SharedString,
+    pub(crate) font_size: Pixels,
+    pub(crate) line_height: Pixels,
+    pub(crate) cell_width: Pixels,
+    pub(crate) tab_id: String,
+    pub(crate) search_highlights: Option<std::collections::HashMap<(i32, i32), Hsla>>,
+}
+
 pub(crate) struct TerminalElement {
     view: Entity<TinyShell>,
     focus_handle: FocusHandle,
@@ -284,30 +297,18 @@ impl InputHandler for TerminalInputHandler {
 }
 
 impl TerminalElement {
-    #[allow(clippy::too_many_arguments)]
-    pub fn new(
-        view: Entity<TinyShell>,
-        focus_handle: FocusHandle,
-        snapshot: RenderSnapshot,
-        marked_text: Option<String>,
-        font_family: SharedString,
-        font_size: Pixels,
-        line_height: Pixels,
-        cell_width: Pixels,
-        tab_id: String,
-        search_highlights: Option<std::collections::HashMap<(i32, i32), Hsla>>,
-    ) -> Self {
+    pub fn new(props: TerminalElementProps) -> Self {
         Self {
-            view,
-            focus_handle,
-            snapshot,
-            marked_text,
-            font_family,
-            font_size,
-            line_height,
-            cell_width,
-            tab_id,
-            search_highlights,
+            view: props.view,
+            focus_handle: props.focus_handle,
+            snapshot: props.snapshot,
+            marked_text: props.marked_text,
+            font_family: props.font_family,
+            font_size: props.font_size,
+            line_height: props.line_height,
+            cell_width: props.cell_width,
+            tab_id: props.tab_id,
+            search_highlights: props.search_highlights,
         }
     }
 

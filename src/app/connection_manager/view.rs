@@ -24,6 +24,15 @@ use super::{
 };
 use crate::{app::TinyShell, session::config::Session};
 
+/// Shared rendering context passed to connection-manager row renderers.
+struct RenderNodeContext<'a> {
+    view: &'a Entity<TinyShell>,
+    window: &'a mut Window,
+    cx: &'a mut App,
+    index: usize,
+    depth: usize,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ConnectionContext {
     Session,
@@ -387,40 +396,46 @@ fn render_rows(
     nodes
         .into_iter()
         .enumerate()
-        .map(|(index, node)| match node {
-            ConnectionTreeNode::Group {
-                id,
-                name,
-                depth,
-                expanded,
-            } => render_group(view, state, id, name, depth, expanded, index, window, cx),
-            ConnectionTreeNode::Session {
-                id,
-                session_id,
-                depth,
-            } => render_session(view, state, id, session_id, depth, index, window, cx),
-            ConnectionTreeNode::DeletedGroup { id, name, depth } => {
-                render_deleted_group(view, id, name, depth, index, cx)
-            }
-            ConnectionTreeNode::DeletedSession { id, session, depth } => {
-                render_deleted_session(view, id, *session, depth, index, cx)
+        .map(|(index, node)| {
+            let ctx = RenderNodeContext {
+                view,
+                window,
+                cx,
+                index,
+                depth: node.depth(),
+            };
+            match node {
+                ConnectionTreeNode::Group {
+                    id, name, expanded, ..
+                } => render_group(ctx, state, id, name, expanded),
+                ConnectionTreeNode::Session { id, session_id, .. } => {
+                    render_session(ctx, state, id, session_id)
+                }
+                ConnectionTreeNode::DeletedGroup { id, name, depth } => {
+                    render_deleted_group(view, id, name, depth, index, cx)
+                }
+                ConnectionTreeNode::DeletedSession { id, session, depth } => {
+                    render_deleted_session(view, id, *session, depth, index, cx)
+                }
             }
         })
         .collect()
 }
 
-#[allow(clippy::too_many_arguments)]
 fn render_group(
-    view: &Entity<TinyShell>,
+    ctx: RenderNodeContext<'_>,
     state: &ConnectionManagerState,
     id: ConnectionNodeId,
     name: String,
-    depth: usize,
     expanded: bool,
-    index: usize,
-    window: &mut Window,
-    cx: &mut App,
 ) -> AnyElement {
+    let RenderNodeContext {
+        view,
+        window,
+        cx,
+        index,
+        depth,
+    } = ctx;
     let group_name = match &id {
         ConnectionNodeId::Group(name) => name.clone(),
         _ => return div().into_any_element(),
@@ -633,45 +648,34 @@ fn group_context_menu(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn render_session(
-    view: &Entity<TinyShell>,
+    ctx: RenderNodeContext<'_>,
     state: &ConnectionManagerState,
     id: ConnectionNodeId,
     session_id: String,
-    depth: usize,
-    index: usize,
-    window: &mut Window,
-    cx: &mut App,
 ) -> AnyElement {
+    let RenderNodeContext { view, cx, .. } = &ctx;
     let Some(session) = view.read(cx).config.get(&session_id).cloned() else {
         return div().into_any_element();
     };
     let selected = state.selected.as_ref() == Some(&id);
     let session_for_menu = session.clone();
-    render_session_row(
-        view,
-        id,
-        session_for_menu,
-        depth,
-        index,
-        selected,
-        window,
-        cx,
-    )
+    render_session_row(ctx, id, session_for_menu, selected)
 }
 
-#[allow(clippy::too_many_arguments)]
 fn render_session_row(
-    view: &Entity<TinyShell>,
+    ctx: RenderNodeContext<'_>,
     id: ConnectionNodeId,
     session: Session,
-    depth: usize,
-    index: usize,
     selected: bool,
-    window: &mut Window,
-    cx: &mut App,
 ) -> AnyElement {
+    let RenderNodeContext {
+        view,
+        window,
+        cx,
+        index,
+        depth,
+    } = ctx;
     let session_id = session.id.clone();
     let needs_prompt = session.requires_credential_prompt();
     let session_for_menu = session.clone();

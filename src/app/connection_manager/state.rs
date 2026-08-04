@@ -59,6 +59,17 @@ pub(crate) enum ConnectionTreeNode {
     },
 }
 
+impl ConnectionTreeNode {
+    pub(crate) fn depth(&self) -> usize {
+        match self {
+            Self::Group { depth, .. }
+            | Self::Session { depth, .. }
+            | Self::DeletedGroup { depth, .. }
+            | Self::DeletedSession { depth, .. } => *depth,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct ConnectionManagerState {
     pub query: String,

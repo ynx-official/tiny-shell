@@ -1283,20 +1283,22 @@ impl TinyShell {
                         }),
                     )
                     .child(terminal::element::TerminalElement::new(
-                        cx.entity(),
-                        focus_handle,
-                        snapshot,
-                        marked_text,
-                        font_family,
-                        font_size,
-                        line_height,
-                        cell_width,
-                        tab_id.to_string(),
-                        this.search_highlight_map(
-                            tab_id,
-                            cx.theme().danger.opacity(0.35),
-                            cx.theme().danger.opacity(0.70),
-                        ),
+                        terminal::element::TerminalElementProps {
+                            view: cx.entity(),
+                            focus_handle,
+                            snapshot,
+                            marked_text,
+                            font_family,
+                            font_size,
+                            line_height,
+                            cell_width,
+                            tab_id: tab_id.to_string(),
+                            search_highlights: this.search_highlight_map(
+                                tab_id,
+                                cx.theme().danger.opacity(0.35),
+                                cx.theme().danger.opacity(0.70),
+                            ),
+                        },
                     ));
                 let scrollbar = this.terminal_scrollbars.entry(tab_id.clone()).or_default();
                 el = el.vertical_scrollbar(scrollbar);
