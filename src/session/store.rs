@@ -1,21 +1,11 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::mpsc::Receiver;
 
-use crate::{
-    sftp::SftpHandle,
-    terminal::{
-        BackendCommand, BackendEvent, BackendEventSender, TerminalTab, backend_event_channel,
-    },
-};
+use crate::terminal::{BackendEvent, BackendEventSender, backend_event_channel};
 
-pub(crate) type SessionId = String;
 pub(crate) type WindowOwnerId = u64;
 
-#[allow(dead_code)]
 pub(crate) struct SessionStore {
-    sessions: HashMap<SessionId, TerminalTab>,
-    sftp_handles: HashMap<SessionId, SftpHandle>,
-    references: HashMap<SessionId, HashSet<WindowOwnerId>>,
     event_routes: HashMap<String, WindowOwnerId>,
     pending_events: HashMap<WindowOwnerId, VecDeque<BackendEvent>>,
     unrouted_events: HashMap<String, VecDeque<BackendEvent>>,
@@ -23,14 +13,10 @@ pub(crate) struct SessionStore {
     events_rx: Receiver<BackendEvent>,
 }
 
-#[allow(dead_code)]
 impl SessionStore {
     pub(crate) fn new() -> Self {
         let (events_tx, events_rx) = backend_event_channel();
         Self {
-            sessions: HashMap::new(),
-            sftp_handles: HashMap::new(),
-            references: HashMap::new(),
             event_routes: HashMap::new(),
             pending_events: HashMap::new(),
             unrouted_events: HashMap::new(),
@@ -41,61 +27,6 @@ impl SessionStore {
 
     pub(crate) fn events_sender(&self) -> BackendEventSender {
         self.events_tx.clone()
-    }
-
-    pub(crate) fn insert_session(&mut self, tab: TerminalTab) -> SessionId {
-        let session_id = tab.id.clone();
-        self.sessions.insert(session_id.clone(), tab);
-        session_id
-    }
-
-    pub(crate) fn insert_sftp(&mut self, session_id: SessionId, handle: SftpHandle) {
-        self.sftp_handles.insert(session_id, handle);
-    }
-
-    pub(crate) fn attach(&mut self, session_id: &str, owner_id: WindowOwnerId) -> bool {
-        if !self.sessions.contains_key(session_id) {
-            return false;
-        }
-        self.references
-            .entry(session_id.to_string())
-            .or_default()
-            .insert(owner_id)
-    }
-
-    pub(crate) fn move_reference(
-        &mut self,
-        session_id: &str,
-        source_id: WindowOwnerId,
-        target_id: WindowOwnerId,
-    ) -> bool {
-        let Some(owners) = self.references.get_mut(session_id) else {
-            return false;
-        };
-        if !owners.remove(&source_id) {
-            return false;
-        }
-        owners.insert(target_id);
-        true
-    }
-
-    pub(crate) fn release(&mut self, session_id: &str, owner_id: WindowOwnerId) -> bool {
-        let should_close = self.references.get_mut(session_id).is_some_and(|owners| {
-            owners.remove(&owner_id);
-            owners.is_empty()
-        });
-        if !should_close {
-            return false;
-        }
-
-        self.references.remove(session_id);
-        if let Some(tab) = self.sessions.remove(session_id) {
-            tab.send_backend(BackendCommand::Close);
-        }
-        if let Some(handle) = self.sftp_handles.remove(session_id) {
-            handle.close();
-        }
-        true
     }
 
     pub(crate) fn register_event_route(&mut self, route_id: String, owner_id: WindowOwnerId) {
@@ -148,15 +79,6 @@ impl SessionStore {
         true
     }
 
-    pub(crate) fn remove_event_routes(&mut self, route_ids: &[String], owner_id: WindowOwnerId) {
-        for route_id in route_ids {
-            if self.event_routes.get(route_id).copied() == Some(owner_id) {
-                self.event_routes.remove(route_id);
-                self.unrouted_events.remove(route_id);
-            }
-        }
-    }
-
     pub(crate) fn drain_events_for(
         &mut self,
         owner_id: WindowOwnerId,
@@ -186,11 +108,6 @@ impl SessionStore {
         }
         drained
     }
-
-    #[cfg(test)]
-    fn owners(&self, session_id: &str) -> usize {
-        self.references.get(session_id).map_or(0, HashSet::len)
-    }
 }
 
 fn event_route_id(event: &BackendEvent) -> Option<&str> {
@@ -219,22 +136,8 @@ fn event_route_id(event: &BackendEvent) -> Option<&str> {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashSet;
-
     use super::SessionStore;
     use crate::terminal::BackendEvent;
-
-    #[test]
-    fn moving_reference_preserves_single_owner() {
-        let mut store = SessionStore::new();
-        store
-            .references
-            .insert("session-a".to_string(), HashSet::from([1]));
-
-        assert!(store.move_reference("session-a", 1, 2));
-        assert_eq!(store.owners("session-a"), 1);
-        assert_eq!(store.references["session-a"], HashSet::from([2]));
-    }
 
     #[test]
     fn queued_event_follows_moved_route() {
@@ -288,14 +191,11 @@ mod tests {
     }
 
     #[test]
-    fn failed_move_keeps_existing_owner() {
+    fn failed_move_keeps_existing_route() {
         let mut store = SessionStore::new();
-        store
-            .references
-            .insert("session-a".to_string(), HashSet::from([1]));
+        store.register_event_route("session-a".to_string(), 1);
 
-        assert!(!store.move_reference("session-a", 3, 2));
-        assert_eq!(store.owners("session-a"), 1);
-        assert_eq!(store.references["session-a"], HashSet::from([1]));
+        assert!(!store.move_event_routes(&["session-a".to_string()], 3, 2));
+        assert_eq!(store.drain_events_for(2, usize::MAX).len(), 0);
     }
 }

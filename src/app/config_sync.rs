@@ -632,31 +632,32 @@ impl TinyShell {
     ) {
         let remote_exists = merged.is_some();
         let payload = match merged.as_ref() {
-            Some(merged) => SyncPayload::new_with_deleted(
-                self.config.sync_device_id().to_string(),
-                merged.sessions.clone(),
-                merged.deleted_sessions.clone(),
-                merged.connection_groups.clone(),
-                merged.deleted_connection_groups.clone(),
-                merged.managed_keys.clone(),
-                merged.quick_command_categories.clone(),
+            Some(merged) => SyncPayload::new_with_deleted(crate::sync::SyncPayloadInput {
+                device_id: self.config.sync_device_id().to_string(),
+                sessions: merged.sessions.clone(),
+                deleted_sessions: merged.deleted_sessions.clone(),
+                connection_groups: merged.connection_groups.clone(),
+                deleted_connection_groups: merged.deleted_connection_groups.clone(),
+                managed_keys: merged.managed_keys.clone(),
+                quick_command_categories: merged.quick_command_categories.clone(),
                 include_secrets,
-                &privacy_password,
-            ),
-            None => SyncPayload::new_with_deleted(
-                self.config.sync_device_id().to_string(),
-                self.config.sessions().to_vec(),
-                self.config.deleted_sessions().to_vec(),
-                self.config.connection_groups().to_vec(),
-                self.config.deleted_connection_groups().to_vec(),
-                self.config.managed_keys().to_vec(),
-                self.config
+                privacy_password: privacy_password.clone(),
+            }),
+            None => SyncPayload::new_with_deleted(crate::sync::SyncPayloadInput {
+                device_id: self.config.sync_device_id().to_string(),
+                sessions: self.config.sessions().to_vec(),
+                deleted_sessions: self.config.deleted_sessions().to_vec(),
+                connection_groups: self.config.connection_groups().to_vec(),
+                deleted_connection_groups: self.config.deleted_connection_groups().to_vec(),
+                managed_keys: self.config.managed_keys().to_vec(),
+                quick_command_categories: self
+                    .config
                     .quick_command_categories()
                     .unwrap_or_default()
                     .to_vec(),
                 include_secrets,
-                &privacy_password,
-            ),
+                privacy_password: privacy_password.clone(),
+            }),
         };
         let payload = match payload {
             Ok(payload) => payload,
@@ -810,20 +811,21 @@ impl TinyShell {
             return;
         }
 
-        let payload = match SyncPayload::new_with_deleted(
-            self.config.sync_device_id().to_string(),
-            self.config.sessions().to_vec(),
-            self.config.deleted_sessions().to_vec(),
-            self.config.connection_groups().to_vec(),
-            self.config.deleted_connection_groups().to_vec(),
-            self.config.managed_keys().to_vec(),
-            self.config
+        let payload = match SyncPayload::new_with_deleted(crate::sync::SyncPayloadInput {
+            device_id: self.config.sync_device_id().to_string(),
+            sessions: self.config.sessions().to_vec(),
+            deleted_sessions: self.config.deleted_sessions().to_vec(),
+            connection_groups: self.config.connection_groups().to_vec(),
+            deleted_connection_groups: self.config.deleted_connection_groups().to_vec(),
+            managed_keys: self.config.managed_keys().to_vec(),
+            quick_command_categories: self
+                .config
                 .quick_command_categories()
                 .unwrap_or_default()
                 .to_vec(),
-            true,
-            &new_password,
-        ) {
+            include_secrets: true,
+            privacy_password: new_password.clone(),
+        }) {
             Ok(payload) => payload,
             Err(err) => {
                 self.sync_runtime.in_progress = false;

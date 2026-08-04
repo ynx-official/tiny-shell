@@ -689,7 +689,7 @@ impl TinyShell {
                             row,
                             col,
                         ) {
-                            let _ = open::that(&url);
+                            let _ = crate::app::platform::open_url(&url);
                             return;
                         }
                     }

@@ -446,136 +446,7 @@ fn render_group(
                 cx.notify();
             }),
         )
-        .context_menu({
-            let view = view.clone();
-            let context_group_name = group_name.clone();
-            move |mut menu, window, _| {
-                let group_name = context_group_name.clone();
-                menu = menu
-                    .item(
-                        PopupMenuItem::new(t!("overview_new_connection").to_string()).on_click(
-                            window.listener_for(&view, {
-                                let group_name = group_name.clone();
-                                move |this, _, window, cx| {
-                                    this.connection_group_parent = Some(group_name.clone());
-                                    dismiss_manager_dialog(this, window, cx);
-                                    this.open_new_ssh_dialog(window, cx);
-                                }
-                            }),
-                        ),
-                    )
-                    .item(
-                        PopupMenuItem::new(t!("connection_group_new_child").to_string()).on_click(
-                            window.listener_for(&view, {
-                                let group_name = group_name.clone();
-                                move |_this, _, window, cx| {
-                                    open_connection_operation(
-                                        crate::app::connection_manager::operation_window::ConnectionOperation::EditGroup {
-                                            original: None,
-                                            parent: Some(group_name.clone()),
-                                        },
-                                        window,
-                                        cx,
-                                    );
-                                }
-                            }),
-                        ),
-                    )
-                    .separator()
-                    .item(PopupMenuItem::new(t!("rename").to_string()).on_click(
-                        window.listener_for(&view, {
-                            let group_name = group_name.clone();
-                            move |_this, _, window, cx| {
-                                let parent = group_name
-                                    .rsplit_once('/')
-                                    .map(|(parent, _)| parent.to_string());
-                                open_connection_operation(
-                                    crate::app::connection_manager::operation_window::ConnectionOperation::EditGroup {
-                                        original: Some(group_name.clone()),
-                                        parent,
-                                    },
-                                    window,
-                                    cx,
-                                );
-                            }
-                        }),
-                    ))
-                    .separator()
-                    .item(
-                        PopupMenuItem::new(t!("connection_manager_copy").to_string()).on_click(
-                            window.listener_for(&view, {
-                                let group_name = group_name.clone();
-                                move |this, _, _, cx| {
-                                    run_manager_action(
-                                        this,
-                                        ConnectionManagerAction::CopyGroup {
-                                            name: group_name.clone(),
-                                        },
-                                        cx,
-                                    );
-                                }
-                            }),
-                        ),
-                    )
-                    .item(
-                        PopupMenuItem::new(t!("connection_manager_cut").to_string()).on_click(
-                            window.listener_for(&view, {
-                                let group_name = group_name.clone();
-                                move |this, _, _, cx| {
-                                    this.connection_manager_actions
-                                        .cut_group(group_name.clone());
-                                    cx.notify();
-                                }
-                            }),
-                        ),
-                    )
-                    .item(
-                        PopupMenuItem::new(t!("connection_manager_paste").to_string()).on_click(
-                            window.listener_for(&view, {
-                                let group_name = group_name.clone();
-                                move |this, _, _, cx| {
-                                    run_manager_action(
-                                        this,
-                                        ConnectionManagerAction::Paste {
-                                            group: Some(group_name.clone()),
-                                        },
-                                        cx,
-                                    );
-                                }
-                            }),
-                        ),
-                    )
-                    .item(
-                        PopupMenuItem::new(t!("connection_group_move_to").to_string()).on_click(
-                            window.listener_for(&view, {
-                                let group_name = group_name.clone();
-                                move |_this, _, window, cx| {
-                                    open_connection_operation(
-                                        crate::app::connection_manager::operation_window::ConnectionOperation::MoveGroup {
-                                            group: group_name.clone(),
-                                        },
-                                        window,
-                                        cx,
-                                    );
-                                }
-                            }),
-                        ),
-                    )
-                    .separator()
-                    .item(PopupMenuItem::new(t!("delete").to_string()).on_click(
-                        window.listener_for(&view, move |this, _, _, cx| {
-                            run_manager_action(
-                                this,
-                                ConnectionManagerAction::DeleteGroup {
-                                    name: group_name.clone(),
-                                },
-                                cx,
-                            );
-                        }),
-                    ));
-                menu
-            }
-        })
+        .context_menu(group_context_menu(view, &group_name))
         .child(
             div()
                 .id(("connection-manager-group-toggle", index))
@@ -624,6 +495,142 @@ fn render_group(
                 .child(if expanded { "−" } else { "+" }),
         )
         .into_any_element()
+}
+
+fn group_context_menu(
+    view: &Entity<TinyShell>,
+    group_name: &str,
+) -> impl Fn(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu + use<> {
+    let view = view.clone();
+    let group_name = group_name.to_string();
+    move |mut menu, window, _| {
+        menu = menu
+            .item(
+                PopupMenuItem::new(t!("overview_new_connection").to_string()).on_click(
+                    window.listener_for(&view, {
+                        let group_name = group_name.clone();
+                        move |this, _, window, cx| {
+                            this.connection_group_parent = Some(group_name.clone());
+                            dismiss_manager_dialog(this, window, cx);
+                            this.open_new_ssh_dialog(window, cx);
+                        }
+                    }),
+                ),
+            )
+            .item(
+                PopupMenuItem::new(t!("connection_group_new_child").to_string()).on_click(
+                    window.listener_for(&view, {
+                        let group_name = group_name.clone();
+                        move |_this, _, window, cx| {
+                            open_connection_operation(
+                                crate::app::connection_manager::operation_window::ConnectionOperation::EditGroup {
+                                    original: None,
+                                    parent: Some(group_name.clone()),
+                                },
+                                window,
+                                cx,
+                            );
+                        }
+                    }),
+                ),
+            )
+            .separator()
+            .item(PopupMenuItem::new(t!("rename").to_string()).on_click(
+                window.listener_for(&view, {
+                    let group_name = group_name.clone();
+                    move |_this, _, window, cx| {
+                        let parent = group_name
+                            .rsplit_once('/')
+                            .map(|(parent, _)| parent.to_string());
+                        open_connection_operation(
+                            crate::app::connection_manager::operation_window::ConnectionOperation::EditGroup {
+                                original: Some(group_name.clone()),
+                                parent,
+                            },
+                            window,
+                            cx,
+                        );
+                    }
+                }),
+            ))
+            .separator()
+            .item(
+                PopupMenuItem::new(t!("connection_manager_copy").to_string()).on_click(
+                    window.listener_for(&view, {
+                        let group_name = group_name.clone();
+                        move |this, _, _, cx| {
+                            run_manager_action(
+                                this,
+                                ConnectionManagerAction::CopyGroup {
+                                    name: group_name.clone(),
+                                },
+                                cx,
+                            );
+                        }
+                    }),
+                ),
+            )
+            .item(
+                PopupMenuItem::new(t!("connection_manager_cut").to_string()).on_click(
+                    window.listener_for(&view, {
+                        let group_name = group_name.clone();
+                        move |this, _, _, cx| {
+                            this.connection_manager_actions
+                                .cut_group(group_name.clone());
+                            cx.notify();
+                        }
+                    }),
+                ),
+            )
+            .item(
+                PopupMenuItem::new(t!("connection_manager_paste").to_string()).on_click(
+                    window.listener_for(&view, {
+                        let group_name = group_name.clone();
+                        move |this, _, _, cx| {
+                            run_manager_action(
+                                this,
+                                ConnectionManagerAction::Paste {
+                                    group: Some(group_name.clone()),
+                                },
+                                cx,
+                            );
+                        }
+                    }),
+                ),
+            )
+            .item(
+                PopupMenuItem::new(t!("connection_group_move_to").to_string()).on_click(
+                    window.listener_for(&view, {
+                        let group_name = group_name.clone();
+                        move |_this, _, window, cx| {
+                            open_connection_operation(
+                                crate::app::connection_manager::operation_window::ConnectionOperation::MoveGroup {
+                                    group: group_name.clone(),
+                                },
+                                window,
+                                cx,
+                            );
+                        }
+                    }),
+                ),
+            )
+            .separator()
+            .item(PopupMenuItem::new(t!("delete").to_string()).on_click(
+                window.listener_for(&view, {
+                    let group_name = group_name.clone();
+                    move |this, _, _, cx| {
+                        run_manager_action(
+                            this,
+                            ConnectionManagerAction::DeleteGroup {
+                                name: group_name.clone(),
+                            },
+                            cx,
+                        );
+                    }
+                }),
+            ));
+        menu
+    }
 }
 
 #[allow(clippy::too_many_arguments)]

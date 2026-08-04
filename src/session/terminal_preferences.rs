@@ -1,6 +1,6 @@
 use super::config::TerminalDisplayStyle;
 
-pub(super) fn terminal_cell_width_for(font_size: f32, style: TerminalDisplayStyle) -> f32 {
+pub(crate) fn terminal_cell_width_for(font_size: f32, style: TerminalDisplayStyle) -> f32 {
     let width_ratio = match style {
         TerminalDisplayStyle::Standard => 0.646,
         TerminalDisplayStyle::Compact => 0.58,
@@ -8,7 +8,7 @@ pub(super) fn terminal_cell_width_for(font_size: f32, style: TerminalDisplayStyl
     (font_size * width_ratio).max(6.0)
 }
 
-pub(super) fn terminal_line_height_for(font_size: f32, style: TerminalDisplayStyle) -> f32 {
+pub(crate) fn terminal_line_height_for(font_size: f32, style: TerminalDisplayStyle) -> f32 {
     match style {
         TerminalDisplayStyle::Standard => (font_size * 1.385).max(font_size + 2.0),
         TerminalDisplayStyle::Compact => (font_size * 1.2).max(font_size + 1.0),

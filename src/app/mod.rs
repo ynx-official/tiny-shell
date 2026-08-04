@@ -1,6 +1,7 @@
 mod backend_events;
 pub(crate) mod config_persistence;
 pub(crate) mod config_sync;
+pub(crate) mod connection_actions;
 pub(crate) mod connection_archive_dialogs;
 pub(crate) mod connection_import_window;
 pub(crate) mod connection_manager;
@@ -8,7 +9,9 @@ pub(crate) mod constants;
 pub(crate) mod dialogs;
 pub(crate) mod input_focus;
 pub(crate) mod keybinding_recorder;
+pub(crate) mod managed_keys;
 pub(crate) mod monitoring;
+pub(crate) mod platform;
 pub(crate) mod resizable;
 pub(crate) mod runtime_state;
 pub(crate) mod search;
@@ -21,8 +24,10 @@ pub(crate) mod sftp_editor_window;
 pub(crate) mod ssh_key_import;
 pub(crate) mod startup;
 pub(crate) mod sync_dialogs;
+pub(crate) mod sync_handlers;
 pub(crate) mod tab_drag;
 pub(crate) mod terminal_completion;
+pub(crate) mod terminal_settings;
 pub(crate) mod theme;
 pub(crate) mod ui;
 pub(crate) mod updater;
@@ -59,7 +64,7 @@ use gpui::{
     SharedString, Size, UniformListScrollHandle, Window, point, px, size,
 };
 use gpui_component::{
-    Theme, ThemeMode, ThemeRegistry, WindowExt,
+    Theme, ThemeMode, ThemeRegistry,
     input::{InputEvent, InputState},
     scroll::ScrollbarHandle,
 };
@@ -629,6 +634,100 @@ pub(crate) struct NetworkHistory {
     pub(crate) transmit: VecDeque<f32>,
 }
 
+/// Input fields shared by the SSH/quick-connection forms.
+///
+/// Grouping these together keeps `TinyShell::new` focused on wiring rather than
+/// repetitive `InputState` construction.
+pub(crate) struct ConnectionFormInputs {
+    pub(crate) host_input: Entity<InputState>,
+    pub(crate) session_name_input: Entity<InputState>,
+    pub(crate) connection_group_input: Entity<InputState>,
+    pub(crate) port_input: Entity<InputState>,
+    pub(crate) user_input: Entity<InputState>,
+    pub(crate) password_input: Entity<InputState>,
+    pub(crate) key_path_input: Entity<InputState>,
+    pub(crate) key_inline_input: Entity<InputState>,
+    pub(crate) passphrase_input: Entity<InputState>,
+    pub(crate) key_import_remark_input: Entity<InputState>,
+    pub(crate) key_import_passphrase_input: Entity<InputState>,
+    pub(crate) proxy_host_input: Entity<InputState>,
+    pub(crate) proxy_port_input: Entity<InputState>,
+    pub(crate) proxy_user_input: Entity<InputState>,
+    pub(crate) proxy_password_input: Entity<InputState>,
+}
+
+impl ConnectionFormInputs {
+    pub(crate) fn new(window: &mut Window, cx: &mut Context<TinyShell>) -> Self {
+        Self {
+            host_input: cx.new(|cx| InputState::new(window, cx).placeholder(t!("host"))),
+            session_name_input: cx
+                .new(|cx| InputState::new(window, cx).placeholder("name (optional)")),
+            connection_group_input: cx
+                .new(|cx| InputState::new(window, cx).placeholder(t!("connection_group_name"))),
+            port_input: cx.new(|cx| InputState::new(window, cx).default_value("22")),
+            user_input: cx.new(|cx| InputState::new(window, cx).default_value("root")),
+            password_input: cx.new(|cx| {
+                InputState::new(window, cx)
+                    .placeholder(t!("password"))
+                    .masked(true)
+            }),
+            key_path_input: cx
+                .new(|cx| InputState::new(window, cx).placeholder("~/.ssh/id_ed25519")),
+            key_inline_input: cx.new(|cx| {
+                InputState::new(window, cx)
+                    .multi_line(true)
+                    .rows(5)
+                    .placeholder("-----BEGIN OPENSSH PRIVATE KEY-----")
+            }),
+            passphrase_input: cx.new(|cx| {
+                InputState::new(window, cx)
+                    .placeholder("SSH private key passphrase (optional)")
+                    .masked(true)
+            }),
+            key_import_remark_input: cx.new(|cx| {
+                InputState::new(window, cx)
+                    .placeholder(t!("key_import_remark_placeholder").to_string())
+            }),
+            key_import_passphrase_input: cx.new(|cx| {
+                InputState::new(window, cx)
+                    .placeholder(t!("key_passphrase").to_string())
+                    .masked(true)
+            }),
+            proxy_host_input: cx
+                .new(|cx| InputState::new(window, cx).placeholder(t!("proxy_host").to_string())),
+            proxy_port_input: cx
+                .new(|cx| InputState::new(window, cx).placeholder(t!("proxy_port").to_string())),
+            proxy_user_input: cx
+                .new(|cx| InputState::new(window, cx).placeholder(t!("proxy_user").to_string())),
+            proxy_password_input: cx.new(|cx| {
+                InputState::new(window, cx)
+                    .placeholder(t!("proxy_password").to_string())
+                    .masked(true)
+            }),
+        }
+    }
+
+    pub(crate) fn all_inputs(&self) -> [&Entity<InputState>; 15] {
+        [
+            &self.host_input,
+            &self.session_name_input,
+            &self.connection_group_input,
+            &self.port_input,
+            &self.user_input,
+            &self.password_input,
+            &self.key_path_input,
+            &self.key_inline_input,
+            &self.passphrase_input,
+            &self.key_import_remark_input,
+            &self.key_import_passphrase_input,
+            &self.proxy_host_input,
+            &self.proxy_port_input,
+            &self.proxy_user_input,
+            &self.proxy_password_input,
+        ]
+    }
+}
+
 pub(crate) struct TinyShell {
     pub(crate) focus_handle: FocusHandle,
     pub(crate) selector_focus_handle: FocusHandle,
@@ -860,50 +959,7 @@ impl TinyShell {
         session_store: Entity<crate::session::store::SessionStore>,
         cx: &mut Context<Self>,
     ) -> Self {
-        let host_input = cx.new(|cx| InputState::new(window, cx).placeholder(t!("host")));
-        let session_name_input =
-            cx.new(|cx| InputState::new(window, cx).placeholder("name (optional)"));
-        let connection_group_input =
-            cx.new(|cx| InputState::new(window, cx).placeholder(t!("connection_group_name")));
-        let port_input = cx.new(|cx| InputState::new(window, cx).default_value("22"));
-        let user_input = cx.new(|cx| InputState::new(window, cx).default_value("root"));
-        let password_input = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder(t!("password"))
-                .masked(true)
-        });
-        let key_path_input =
-            cx.new(|cx| InputState::new(window, cx).placeholder("~/.ssh/id_ed25519"));
-        let key_inline_input = cx.new(|cx| {
-            InputState::new(window, cx)
-                .multi_line(true)
-                .rows(5)
-                .placeholder("-----BEGIN OPENSSH PRIVATE KEY-----")
-        });
-        let passphrase_input = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder("SSH private key passphrase (optional)")
-                .masked(true)
-        });
-        let key_import_remark_input = cx.new(|cx| {
-            InputState::new(window, cx).placeholder(t!("key_import_remark_placeholder").to_string())
-        });
-        let key_import_passphrase_input = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder(t!("key_passphrase").to_string())
-                .masked(true)
-        });
-        let proxy_host_input =
-            cx.new(|cx| InputState::new(window, cx).placeholder(t!("proxy_host").to_string()));
-        let proxy_port_input =
-            cx.new(|cx| InputState::new(window, cx).placeholder(t!("proxy_port").to_string()));
-        let proxy_user_input =
-            cx.new(|cx| InputState::new(window, cx).placeholder(t!("proxy_user").to_string()));
-        let proxy_password_input = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder(t!("proxy_password").to_string())
-                .masked(true)
-        });
+        let connection_inputs = ConnectionFormInputs::new(window, cx);
         let sftp_path_input = cx.new(|cx| InputState::new(window, cx).default_value("/"));
         let sftp_new_folder_input =
             cx.new(|cx| InputState::new(window, cx).placeholder(t!("new_folder").to_string()));
@@ -923,26 +979,16 @@ impl TinyShell {
             ConfigStore::in_memory()
         });
         let settings_inputs = SettingsInputs::new(&config, window, cx);
-        let mut _subscriptions = vec![
-            cx.subscribe_in(&host_input, window, Self::on_input_event),
-            cx.subscribe_in(&session_name_input, window, Self::on_input_event),
-            cx.subscribe_in(&connection_group_input, window, Self::on_input_event),
-            cx.subscribe_in(&port_input, window, Self::on_input_event),
-            cx.subscribe_in(&user_input, window, Self::on_input_event),
-            cx.subscribe_in(&password_input, window, Self::on_input_event),
-            cx.subscribe_in(&key_path_input, window, Self::on_input_event),
-            cx.subscribe_in(&key_inline_input, window, Self::on_input_event),
-            cx.subscribe_in(&passphrase_input, window, Self::on_input_event),
-            cx.subscribe_in(&key_import_remark_input, window, Self::on_input_event),
-            cx.subscribe_in(&key_import_passphrase_input, window, Self::on_input_event),
-            cx.subscribe_in(&proxy_host_input, window, Self::on_input_event),
-            cx.subscribe_in(&proxy_port_input, window, Self::on_input_event),
-            cx.subscribe_in(&proxy_user_input, window, Self::on_input_event),
-            cx.subscribe_in(&proxy_password_input, window, Self::on_input_event),
+        let mut _subscriptions = connection_inputs
+            .all_inputs()
+            .into_iter()
+            .map(|input| cx.subscribe_in(input, window, Self::on_input_event))
+            .collect::<Vec<_>>();
+        _subscriptions.extend([
             cx.subscribe_in(&sftp_path_input, window, Self::on_input_event),
             cx.subscribe_in(&sftp_new_folder_input, window, Self::on_input_event),
             cx.subscribe_in(&search_input, window, Self::on_input_event),
-        ];
+        ]);
         _subscriptions.extend(
             settings_inputs
                 .all_inputs()
@@ -1026,25 +1072,25 @@ impl TinyShell {
         let mut this = Self {
             focus_handle: cx.focus_handle(),
             selector_focus_handle: cx.focus_handle(),
-            host_input,
-            session_name_input,
-            connection_group_input,
-            port_input,
-            user_input,
-            password_input,
-            key_path_input,
-            key_inline_input,
-            passphrase_input,
-            key_import_remark_input,
-            key_import_passphrase_input,
+            host_input: connection_inputs.host_input,
+            session_name_input: connection_inputs.session_name_input,
+            connection_group_input: connection_inputs.connection_group_input,
+            port_input: connection_inputs.port_input,
+            user_input: connection_inputs.user_input,
+            password_input: connection_inputs.password_input,
+            key_path_input: connection_inputs.key_path_input,
+            key_inline_input: connection_inputs.key_inline_input,
+            passphrase_input: connection_inputs.passphrase_input,
+            key_import_remark_input: connection_inputs.key_import_remark_input,
+            key_import_passphrase_input: connection_inputs.key_import_passphrase_input,
             key_import: KeyImportState::default(),
             managed_key_dialog_selection: None,
             managed_key_editor_target: None,
             ssh_proxy_type: "none".to_string(),
-            proxy_host_input,
-            proxy_port_input,
-            proxy_user_input,
-            proxy_password_input,
+            proxy_host_input: connection_inputs.proxy_host_input,
+            proxy_port_input: connection_inputs.proxy_port_input,
+            proxy_user_input: connection_inputs.proxy_user_input,
+            proxy_password_input: connection_inputs.proxy_password_input,
             global_proxy_type: config.global_proxy_type().to_string(),
             settings_inputs,
             sync_runtime: SyncRuntimeState::new(t!("sync_not_run").into()),
@@ -1929,453 +1975,6 @@ impl TinyShell {
             true
         } else {
             false
-        }
-    }
-
-    fn handle_sync_finished(
-        &mut self,
-        result: crate::sync::SyncResult,
-        task_id: u64,
-        cx: &mut Context<Self>,
-    ) {
-        self.async_runtime
-            .supervisor
-            .finish("sync-operation", task_id);
-        self.sync_runtime.in_progress = false;
-        match result {
-            crate::sync::SyncResult::Uploaded {
-                etag,
-                privacy_password,
-                merged,
-            } => {
-                self.handle_sync_uploaded(etag, privacy_password, merged, cx);
-            }
-            crate::sync::SyncResult::UploadPreflightReady {
-                credentials,
-                privacy_password,
-                include_secrets,
-                merged,
-                etag,
-            } => {
-                self.handle_sync_upload_preflight_ready(
-                    credentials,
-                    privacy_password,
-                    include_secrets,
-                    merged,
-                    etag,
-                    cx,
-                );
-            }
-            crate::sync::SyncResult::UploadPreflightBlocked {
-                credentials,
-                reason,
-            } => {
-                self.handle_sync_upload_preflight_blocked(credentials, reason, cx);
-            }
-            crate::sync::SyncResult::Downloaded {
-                credentials,
-                password_status,
-                sessions,
-                deleted_sessions,
-                connection_groups,
-                deleted_connection_groups,
-                managed_keys,
-                quick_command_categories,
-                etag,
-                decrypted_count,
-                unavailable_secret_count,
-            } => {
-                self.handle_sync_downloaded(
-                    credentials,
-                    password_status,
-                    sessions,
-                    deleted_sessions,
-                    connection_groups,
-                    deleted_connection_groups,
-                    managed_keys,
-                    quick_command_categories,
-                    etag,
-                    decrypted_count,
-                    unavailable_secret_count,
-                    cx,
-                );
-            }
-            crate::sync::SyncResult::PrivacyPasswordReset { new_password, etag } => {
-                self.handle_sync_privacy_password_reset(new_password, etag, cx);
-            }
-            crate::sync::SyncResult::PrivacyPasswordInitializationReady {
-                credentials,
-                password,
-            } => {
-                self.handle_sync_privacy_password_initialization_ready(credentials, password, cx);
-            }
-            crate::sync::SyncResult::PrivacyPasswordChecked { password, status } => {
-                self.handle_sync_privacy_password_checked(password, status, cx);
-            }
-            crate::sync::SyncResult::ConnectionVerified => {
-                self.handle_sync_connection_verified(cx);
-            }
-            crate::sync::SyncResult::Failed(error) => {
-                self.handle_sync_failed(error, cx);
-            }
-        }
-    }
-
-    fn handle_sync_uploaded(
-        &mut self,
-        etag: Option<String>,
-        privacy_password: Option<String>,
-        merged: Option<crate::sync::MergedConfig>,
-        cx: &mut Context<Self>,
-    ) {
-        let previous_config = self.config.clone();
-        let previous_managed_keys = self.managed_keys.clone();
-        if let Some(merged) = merged {
-            self.config.replace_sessions(merged.sessions);
-            self.config
-                .replace_deleted_sessions(merged.deleted_sessions);
-            self.config
-                .replace_connection_groups(merged.connection_groups);
-            self.config
-                .replace_deleted_connection_groups(merged.deleted_connection_groups);
-            self.config.replace_managed_keys(merged.managed_keys);
-            self.managed_keys = self.config.managed_keys().to_vec();
-            self.config
-                .set_quick_command_categories(merged.quick_command_categories);
-        }
-        self.config.set_sync_etag(etag);
-        self.config
-            .set_sync_last_synced_at(chrono::Utc::now().timestamp());
-        let password_result = privacy_password.map_or(Ok(()), |password| {
-            crate::app::config_sync::seal_privacy_password(&password).map(|(sealed, hash)| {
-                self.config.set_sync_secrets_password_sealed(sealed);
-                self.config.set_sync_secrets_password_hash(hash);
-            })
-        });
-        match password_result.and_then(|()| crate::app::config_persistence::save_full(&self.config))
-        {
-            Ok(()) => {
-                self.sync_runtime.status = t!("sync_upload_complete").into();
-                self.schedule_automatic_sync(false, cx);
-            }
-            Err(err) => {
-                self.config = previous_config;
-                self.managed_keys = previous_managed_keys;
-                self.sync_runtime.status = format!("{}: {err:#}", t!("sync_failed")).into();
-            }
-        }
-    }
-
-    fn handle_sync_upload_preflight_ready(
-        &mut self,
-        credentials: crate::sync::SyncCredentials,
-        privacy_password: String,
-        include_secrets: bool,
-        merged: Option<crate::sync::MergedConfig>,
-        etag: Option<String>,
-        cx: &mut Context<Self>,
-    ) {
-        self.continue_sync_upload(
-            credentials,
-            privacy_password,
-            include_secrets,
-            merged,
-            etag,
-            cx,
-        );
-    }
-
-    fn handle_sync_upload_preflight_blocked(
-        &mut self,
-        credentials: crate::sync::SyncCredentials,
-        reason: crate::sync::UploadBlockReason,
-        cx: &mut Context<Self>,
-    ) {
-        self.sync_runtime.status = match &reason {
-            crate::sync::UploadBlockReason::PasswordRequired => {
-                t!("sync_upload_password_required").into()
-            }
-            crate::sync::UploadBlockReason::PasswordMismatch => {
-                t!("sync_privacy_password_incorrect").into()
-            }
-            crate::sync::UploadBlockReason::UnavailableSecrets {
-                session_secret_count,
-                managed_key_secret_count,
-            } => t!(
-                "sync_upload_secrets_blocked",
-                sessions = *session_secret_count,
-                keys = *managed_key_secret_count
-            )
-            .into(),
-        };
-        if let Some(handle) = self.auxiliary_windows.settings.handle {
-            let owner = cx.entity();
-            let form = crate::app::config_sync::SyncFormSnapshot::from_credentials(credentials);
-            let _ = handle.update(cx, move |_, window, cx| {
-                owner.update(cx, |this, cx| {
-                    this.show_sync_upload_secrets_blocked_dialog(
-                        form.clone(),
-                        reason.clone(),
-                        window,
-                        cx,
-                    );
-                });
-            });
-        }
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn handle_sync_downloaded(
-        &mut self,
-        credentials: crate::sync::SyncCredentials,
-        password_status: crate::sync::PrivacyPasswordStatus,
-        sessions: Vec<crate::session::config::Session>,
-        deleted_sessions: Vec<crate::session::config::DeletedSession>,
-        connection_groups: Vec<String>,
-        deleted_connection_groups: Vec<crate::session::config::DeletedConnectionGroup>,
-        managed_keys: Vec<crate::session::config::ManagedKey>,
-        quick_command_categories: Vec<crate::session::config::QuickCommandCategory>,
-        etag: Option<String>,
-        decrypted_count: u32,
-        unavailable_secret_count: u32,
-        cx: &mut Context<Self>,
-    ) {
-        let session_count = sessions.len();
-        let group_count = connection_groups.len();
-        let key_count = managed_keys.len();
-        let command_count = quick_command_categories
-            .iter()
-            .map(|category| category.commands.len())
-            .sum::<usize>();
-        let (previous_config, previous_managed_keys) = self.apply_sync_downloaded_config(
-            sessions,
-            deleted_sessions,
-            connection_groups,
-            deleted_connection_groups,
-            managed_keys,
-            quick_command_categories,
-            etag,
-        );
-        match crate::app::config_persistence::save_full(&self.config) {
-            Ok(()) => {
-                let summary = t!(
-                    "sync_download_summary",
-                    sessions = session_count,
-                    groups = group_count,
-                    keys = key_count,
-                    commands = command_count
-                )
-                .to_string();
-                self.sync_runtime.status = match password_status {
-                    crate::sync::PrivacyPasswordStatus::Mismatch => {
-                        format!("{summary}; {}", t!("sync_privacy_password_incorrect")).into()
-                    }
-                    crate::sync::PrivacyPasswordStatus::Missing => {
-                        format!("{summary}; {}", t!("sync_privacy_password_missing")).into()
-                    }
-                    _ if unavailable_secret_count > 0 => format!(
-                        "{summary}; {}",
-                        t!("sync_secrets_unavailable", count = unavailable_secret_count)
-                    )
-                    .into(),
-                    _ if decrypted_count > 0 => format!(
-                        "{summary}; {}",
-                        t!("sync_secrets_decrypted", count = decrypted_count)
-                    )
-                    .into(),
-                    _ => summary.into(),
-                };
-                if password_status == crate::sync::PrivacyPasswordStatus::Mismatch
-                    && let Some(handle) = self.auxiliary_windows.settings.handle
-                {
-                    let owner = cx.entity();
-                    let form =
-                        crate::app::config_sync::SyncFormSnapshot::from_credentials(credentials);
-                    let _ = handle.update(cx, move |_, window, cx| {
-                        owner.update(cx, |this, cx| {
-                            this.show_sync_upload_secrets_blocked_dialog(
-                                form.clone(),
-                                crate::sync::UploadBlockReason::PasswordMismatch,
-                                window,
-                                cx,
-                            );
-                        });
-                    });
-                }
-                self.schedule_automatic_sync(false, cx);
-            }
-            Err(err) => {
-                self.config = previous_config;
-                self.managed_keys = previous_managed_keys;
-                self.sync_runtime.status = format!("{}: {err:#}", t!("sync_failed")).into()
-            }
-        }
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn apply_sync_downloaded_config(
-        &mut self,
-        sessions: Vec<crate::session::config::Session>,
-        deleted_sessions: Vec<crate::session::config::DeletedSession>,
-        connection_groups: Vec<String>,
-        deleted_connection_groups: Vec<crate::session::config::DeletedConnectionGroup>,
-        managed_keys: Vec<crate::session::config::ManagedKey>,
-        quick_command_categories: Vec<crate::session::config::QuickCommandCategory>,
-        etag: Option<String>,
-    ) -> (ConfigStore, Vec<ManagedKey>) {
-        let previous_config = self.config.clone();
-        let previous_managed_keys = self.managed_keys.clone();
-        self.config.replace_sessions(sessions);
-        self.config.replace_deleted_sessions(deleted_sessions);
-        self.config.replace_connection_groups(connection_groups);
-        self.config
-            .replace_deleted_connection_groups(deleted_connection_groups);
-        self.config.replace_managed_keys(managed_keys);
-        self.managed_keys = self.config.managed_keys().to_vec();
-        self.config
-            .set_quick_command_categories(quick_command_categories);
-        self.config.set_sync_etag(etag);
-        self.config
-            .set_sync_last_synced_at(chrono::Utc::now().timestamp());
-        (previous_config, previous_managed_keys)
-    }
-
-    fn handle_sync_privacy_password_reset(
-        &mut self,
-        new_password: String,
-        etag: Option<String>,
-        cx: &mut Context<Self>,
-    ) {
-        match crate::app::config_sync::seal_privacy_password(&new_password) {
-            Ok((sealed, hash)) => {
-                self.config.set_sync_secrets_password_sealed(sealed);
-                self.config.set_sync_secrets_password_hash(hash);
-                self.config.set_sync_etag(etag);
-                let previous_synced_at = self.config.sync_last_synced_at();
-                self.config
-                    .set_sync_last_synced_at(chrono::Utc::now().timestamp());
-                match crate::app::config_persistence::save_full(&self.config) {
-                    Ok(()) => {
-                        self.sync_runtime.status = t!("sync_reset_complete").into();
-                        self.schedule_automatic_sync(false, cx);
-                    }
-                    Err(err) => {
-                        self.config.set_sync_last_synced_at(previous_synced_at);
-                        self.sync_runtime.status = format!(
-                            "{}: {err:#}; {}",
-                            t!("sync_failed"),
-                            t!("sync_reset_local_save_failed")
-                        )
-                        .into();
-                    }
-                }
-            }
-            Err(err) => {
-                self.sync_runtime.status = format!("{}: {err:#}", t!("sync_failed")).into();
-            }
-        }
-    }
-
-    fn handle_sync_privacy_password_initialization_ready(
-        &mut self,
-        credentials: crate::sync::SyncCredentials,
-        password: String,
-        cx: &mut Context<Self>,
-    ) {
-        if self.set_sync_include_secrets(true, cx) {
-            if let Some(dialog) = self.sync_runtime.secrets_password_dialog.take() {
-                self.active_dialog = None;
-                let input = dialog.settings_password_input;
-                let input_password = password.clone();
-                let _ = dialog.window.update(cx, move |_, window, cx| {
-                    input.update(cx, |input, cx| {
-                        input.set_value(input_password.clone(), window, cx);
-                    });
-                    window.close_dialog(cx);
-                });
-            }
-            let form = crate::app::config_sync::SyncFormSnapshot::with_privacy_password(
-                credentials,
-                password,
-            );
-            self.upload_sync_config(form, cx);
-        } else {
-            let message = self.sync_runtime.status.clone();
-            if let Some(dialog) = self.sync_runtime.secrets_password_dialog.as_mut() {
-                dialog.status = crate::app::SyncSecretsPasswordDialogStatus::Failed;
-                dialog.message = Some(message);
-            }
-        }
-    }
-
-    fn handle_sync_privacy_password_checked(
-        &mut self,
-        password: String,
-        status: crate::sync::PrivacyPasswordStatus,
-        cx: &mut Context<Self>,
-    ) {
-        match status {
-            crate::sync::PrivacyPasswordStatus::Verified => {
-                if self.set_sync_include_secrets(true, cx) {
-                    if let Some(dialog) = self.sync_runtime.secrets_password_dialog.take() {
-                        self.active_dialog = None;
-                        let input = dialog.settings_password_input;
-                        let _ = dialog.window.update(cx, move |_, window, cx| {
-                            input.update(cx, |input, cx| {
-                                input.set_value(password.clone(), window, cx);
-                            });
-                            window.close_dialog(cx);
-                        });
-                    }
-                } else {
-                    let message = self.sync_runtime.status.clone();
-                    if let Some(dialog) = self.sync_runtime.secrets_password_dialog.as_mut() {
-                        dialog.status = crate::app::SyncSecretsPasswordDialogStatus::Failed;
-                        dialog.message = Some(message);
-                    }
-                }
-            }
-            crate::sync::PrivacyPasswordStatus::Mismatch => {
-                if let Some(dialog) = self.sync_runtime.secrets_password_dialog.as_mut() {
-                    dialog.status = crate::app::SyncSecretsPasswordDialogStatus::PasswordMismatch;
-                    dialog.message = Some(t!("sync_secret_toggle_password_incorrect").into());
-                }
-            }
-            crate::sync::PrivacyPasswordStatus::Missing => {
-                if let Some(dialog) = self.sync_runtime.secrets_password_dialog.as_mut() {
-                    dialog.status = crate::app::SyncSecretsPasswordDialogStatus::PasswordRequired;
-                    dialog.message = Some(t!("sync_secret_toggle_password_required").into());
-                }
-            }
-            crate::sync::PrivacyPasswordStatus::NotConfigured => {
-                if let Some(dialog) = self.sync_runtime.secrets_password_dialog.as_mut() {
-                    dialog.status =
-                        crate::app::SyncSecretsPasswordDialogStatus::RemotePasswordNotConfigured;
-                    dialog.message = Some(t!("sync_secret_toggle_remote_password_missing").into());
-                }
-            }
-        }
-    }
-
-    fn handle_sync_connection_verified(&mut self, _cx: &mut Context<Self>) {
-        self.sync_runtime.status = t!("sync_connection_verified").into();
-    }
-
-    fn handle_sync_failed(&mut self, error: crate::sync::SyncFailure, _cx: &mut Context<Self>) {
-        self.sync_runtime.status = crate::app::config_sync::sync_failure_status(&error).into();
-        if self
-            .sync_runtime
-            .secrets_password_dialog
-            .as_ref()
-            .is_some_and(|dialog| {
-                dialog.status == crate::app::SyncSecretsPasswordDialogStatus::Verifying
-            })
-        {
-            let message = self.sync_runtime.status.clone();
-            if let Some(dialog) = self.sync_runtime.secrets_password_dialog.as_mut() {
-                dialog.status = crate::app::SyncSecretsPasswordDialogStatus::Failed;
-                dialog.message = Some(message);
-            }
         }
     }
 

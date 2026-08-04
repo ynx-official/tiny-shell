@@ -21,7 +21,7 @@ use http::{http_client, send_with_retry};
 pub use merge::{
     MergeLocal, MergedConfig, merge_payload_with_deleted, merge_public_payload_with_deleted,
 };
-pub use model::{PrivacyPasswordStatus, SyncPayload};
+pub use model::{PrivacyPasswordStatus, SyncPayload, SyncPayloadInput};
 
 const SYNC_FILE_NAME: &str = "tiny-shell-sync.json";
 const MAX_SYNC_PAYLOAD_BYTES: usize = 16 * 1024 * 1024;

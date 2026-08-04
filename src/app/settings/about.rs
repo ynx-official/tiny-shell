@@ -78,7 +78,9 @@ pub(crate) fn page() -> SettingPage {
                             .icon(IconName::Github)
                             .label(t!("about_view_project").to_string())
                             .on_click(|_, _, _| {
-                                let _ = open::that("https://github.com/ynx-official/tiny-shell");
+                                let _ = crate::app::platform::open_url(
+                                    "https://github.com/ynx-official/tiny-shell",
+                                );
                             }),
                     )
             })),
@@ -126,8 +128,9 @@ pub(crate) fn page() -> SettingPage {
                             .label(t!("about_open_feedback").to_string())
                             .secondary()
                             .on_click(|_, _, _| {
-                                let _ =
-                                    open::that("https://github.com/ynx-official/tiny-shell/issues");
+                                let _ = crate::app::platform::open_url(
+                                    "https://github.com/ynx-official/tiny-shell/issues",
+                                );
                             }),
                     )
             })),

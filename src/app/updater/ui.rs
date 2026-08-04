@@ -689,7 +689,7 @@ impl TinyShell {
                                                 .ghost()
                                                 .label(t!("update_release_page").to_string())
                                                 .on_click(|_, _, _| {
-                                                    let _ = open::that(
+                                                    let _ = crate::app::platform::open_url(
                                                         "https://github.com/ynx-official/tiny-shell/releases/latest",
                                                     );
                                                 }),

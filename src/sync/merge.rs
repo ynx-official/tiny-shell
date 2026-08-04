@@ -861,25 +861,25 @@ mod tests {
         let local_session = session("session-1", "Local", "local-password");
         let mut deleted_group_session = session("session-2", "Grouped", "group-password");
         deleted_group_session.group = Some("prod/eu".into());
-        let payload = SyncPayload::new_with_deleted(
-            "device-1".into(),
-            vec![],
-            vec![DeletedSession {
+        let payload = SyncPayload::new_with_deleted(crate::sync::SyncPayloadInput {
+            device_id: "device-1".into(),
+            sessions: vec![],
+            deleted_sessions: vec![DeletedSession {
                 session: local_session.clone(),
                 deleted_at: 20,
             }],
-            vec!["prod".into(), "prod/eu".into()],
-            vec![DeletedConnectionGroup {
+            connection_groups: vec!["prod".into(), "prod/eu".into()],
+            deleted_connection_groups: vec![DeletedConnectionGroup {
                 name: "prod".into(),
                 groups: vec!["prod".into(), "prod/eu".into()],
                 sessions: vec![deleted_group_session],
                 deleted_at: 30,
             }],
-            vec![],
-            vec![],
-            false,
-            "",
-        )
+            managed_keys: vec![],
+            quick_command_categories: vec![],
+            include_secrets: false,
+            privacy_password: "".into(),
+        })
         .unwrap();
 
         let merged = merge_payload_with_deleted(
@@ -1055,10 +1055,10 @@ mod tests {
     #[test]
     fn duplicate_remote_tombstones_collapse_to_one_latest_entry() {
         let target = session("session-1", "Target", "password");
-        let payload = SyncPayload::new_with_deleted(
-            "device-1".into(),
-            Vec::new(),
-            vec![
+        let payload = SyncPayload::new_with_deleted(crate::sync::SyncPayloadInput {
+            device_id: "device-1".into(),
+            sessions: Vec::new(),
+            deleted_sessions: vec![
                 DeletedSession {
                     session: target.clone(),
                     deleted_at: 10,
@@ -1071,13 +1071,13 @@ mod tests {
                     deleted_at: 20,
                 },
             ],
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            false,
-            "",
-        )
+            connection_groups: Vec::new(),
+            deleted_connection_groups: Vec::new(),
+            managed_keys: Vec::new(),
+            quick_command_categories: Vec::new(),
+            include_secrets: false,
+            privacy_password: "".into(),
+        })
         .unwrap();
 
         let merged = merge_payload_with_deleted(

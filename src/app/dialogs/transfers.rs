@@ -247,9 +247,7 @@ impl TinyShell {
                                         .on_click({
                                             let target = t.info.target.clone();
                                             move |_, _, _| {
-                                                let _ = std::process::Command::new("open")
-                                                    .arg(&target)
-                                                    .spawn();
+                                                let _ = crate::app::platform::open_path(&target);
                                             }
                                         });
                                         actions = actions.child(btn_folder);

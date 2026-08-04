@@ -748,18 +748,7 @@ impl TinyShell {
                                     .icon(IconName::Folder)
                                     .label(t!("documentation").to_string())
                                     .on_click(|_, _, _| {
-                                        #[cfg(target_os = "windows")]
-                                        let _ = std::process::Command::new("explorer")
-                                            .arg("README.md")
-                                            .spawn();
-                                        #[cfg(target_os = "macos")]
-                                        let _ = std::process::Command::new("open")
-                                            .arg("README.md")
-                                            .spawn();
-                                        #[cfg(target_os = "linux")]
-                                        let _ = std::process::Command::new("xdg-open")
-                                            .arg("README.md")
-                                            .spawn();
+                                        let _ = crate::app::platform::open_documentation();
                                     }),
                             )
                             .child(

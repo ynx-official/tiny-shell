@@ -233,6 +233,45 @@ pub struct SyncPayload {
     pub quick_command_categories: Vec<QuickCommandCategory>,
 }
 
+/// Input bundle for constructing an encrypted sync payload.
+pub struct SyncPayloadInput {
+    pub device_id: String,
+    pub sessions: Vec<Session>,
+    pub deleted_sessions: Vec<DeletedSession>,
+    pub connection_groups: Vec<String>,
+    pub deleted_connection_groups: Vec<DeletedConnectionGroup>,
+    pub managed_keys: Vec<ManagedKey>,
+    pub quick_command_categories: Vec<QuickCommandCategory>,
+    pub include_secrets: bool,
+    pub privacy_password: String,
+}
+
+impl SyncPayloadInput {
+    /// Convenience constructor for payloads without deleted records.
+    #[cfg(test)]
+    pub fn no_deleted(
+        device_id: String,
+        sessions: Vec<Session>,
+        connection_groups: Vec<String>,
+        managed_keys: Vec<ManagedKey>,
+        quick_command_categories: Vec<QuickCommandCategory>,
+        include_secrets: bool,
+        privacy_password: String,
+    ) -> Self {
+        Self {
+            device_id,
+            sessions,
+            deleted_sessions: Vec::new(),
+            connection_groups,
+            deleted_connection_groups: Vec::new(),
+            managed_keys,
+            quick_command_categories,
+            include_secrets,
+            privacy_password,
+        }
+    }
+}
+
 impl SyncPayload {
     #[cfg(test)]
     pub fn new(
@@ -244,69 +283,69 @@ impl SyncPayload {
         include_secrets: bool,
         privacy_password: &str,
     ) -> Result<Self> {
-        Self::new_with_deleted(
+        Self::new_with_deleted(SyncPayloadInput::no_deleted(
             device_id,
             sessions,
-            Vec::new(),
             connection_groups,
-            Vec::new(),
             managed_keys,
             quick_command_categories,
             include_secrets,
-            privacy_password,
-        )
+            privacy_password.to_string(),
+        ))
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub fn new_with_deleted(
-        device_id: String,
-        sessions: Vec<Session>,
-        deleted_sessions: Vec<DeletedSession>,
-        connection_groups: Vec<String>,
-        deleted_connection_groups: Vec<DeletedConnectionGroup>,
-        managed_keys: Vec<ManagedKey>,
-        quick_command_categories: Vec<QuickCommandCategory>,
-        include_secrets: bool,
-        privacy_password: &str,
-    ) -> Result<Self> {
-        if include_secrets && privacy_password.chars().count() < 8 {
+    pub fn new_with_deleted(input: SyncPayloadInput) -> Result<Self> {
+        if input.include_secrets && input.privacy_password.chars().count() < 8 {
             return Err(anyhow!(
                 "privacy encryption password must be at least 8 characters"
             ));
         }
-        let privacy_password_verifier = include_secrets
-            .then(|| crypto::hash_privacy_password(privacy_password))
+        let privacy_password_verifier = input
+            .include_secrets
+            .then(|| crypto::hash_privacy_password(&input.privacy_password))
             .transpose()?;
-        let sessions = sessions
+        let sessions = input
+            .sessions
             .into_iter()
-            .map(|session| SyncSession::export(session, include_secrets, privacy_password))
-            .collect::<Result<Vec<_>>>()?;
-        let deleted_sessions = deleted_sessions
-            .into_iter()
-            .map(|session| SyncDeletedSession::export(session, include_secrets, privacy_password))
-            .collect::<Result<Vec<_>>>()?;
-        let deleted_connection_groups = deleted_connection_groups
-            .into_iter()
-            .map(|group| {
-                SyncDeletedConnectionGroup::export(group, include_secrets, privacy_password)
+            .map(|session| {
+                SyncSession::export(session, input.include_secrets, &input.privacy_password)
             })
             .collect::<Result<Vec<_>>>()?;
-        let managed_keys = managed_keys
+        let deleted_sessions = input
+            .deleted_sessions
             .into_iter()
-            .map(|key| SyncManagedKey::export(key, include_secrets, privacy_password))
+            .map(|session| {
+                SyncDeletedSession::export(session, input.include_secrets, &input.privacy_password)
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let deleted_connection_groups = input
+            .deleted_connection_groups
+            .into_iter()
+            .map(|group| {
+                SyncDeletedConnectionGroup::export(
+                    group,
+                    input.include_secrets,
+                    &input.privacy_password,
+                )
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let managed_keys = input
+            .managed_keys
+            .into_iter()
+            .map(|key| SyncManagedKey::export(key, input.include_secrets, &input.privacy_password))
             .collect::<Result<Vec<_>>>()?;
         Ok(Self {
             schema_version: FORMAT_VERSION,
             revision: Uuid::new_v4().to_string(),
             updated_at: chrono::Utc::now().to_rfc3339(),
-            device_id,
+            device_id: input.device_id,
             privacy_password_verifier,
-            connection_groups,
+            connection_groups: input.connection_groups,
             sessions,
             deleted_sessions,
             deleted_connection_groups,
             managed_keys,
-            quick_command_categories,
+            quick_command_categories: input.quick_command_categories,
         })
     }
 
