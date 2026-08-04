@@ -579,6 +579,14 @@ pub(crate) enum SftpPanelView {
     Commands,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct SftpPanelState {
+    pub(crate) view: SftpPanelView,
+    pub(crate) minimized: bool,
+    pub(crate) minimize_epoch: u64,
+    pub(crate) show_hidden_files: bool,
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) enum ProcessView {
     #[default]
@@ -731,26 +739,12 @@ impl ConnectionFormInputs {
 pub(crate) struct TinyShell {
     pub(crate) focus_handle: FocusHandle,
     pub(crate) selector_focus_handle: FocusHandle,
-    pub(crate) host_input: Entity<InputState>,
-    pub(crate) session_name_input: Entity<InputState>,
-    pub(crate) connection_group_input: Entity<InputState>,
-    pub(crate) port_input: Entity<InputState>,
-    pub(crate) user_input: Entity<InputState>,
-    pub(crate) password_input: Entity<InputState>,
-    pub(crate) key_path_input: Entity<InputState>,
-    pub(crate) key_inline_input: Entity<InputState>,
-    pub(crate) passphrase_input: Entity<InputState>,
-    pub(crate) key_import_remark_input: Entity<InputState>,
-    pub(crate) key_import_passphrase_input: Entity<InputState>,
+    pub(crate) connection_inputs: ConnectionFormInputs,
     pub(crate) key_import: KeyImportState,
     pub(crate) managed_key_dialog_selection: Option<String>,
     pub(crate) managed_key_editor_target:
         Option<Entity<connection_manager::ssh_editor_window::SshEditorWindow>>,
     pub(crate) ssh_proxy_type: String,
-    pub(crate) proxy_host_input: Entity<InputState>,
-    pub(crate) proxy_port_input: Entity<InputState>,
-    pub(crate) proxy_user_input: Entity<InputState>,
-    pub(crate) proxy_password_input: Entity<InputState>,
     pub(crate) global_proxy_type: String,
     pub(crate) settings_inputs: SettingsInputs,
     pub(crate) sync_runtime: SyncRuntimeState,
@@ -832,7 +826,7 @@ pub(crate) struct TinyShell {
     pub(crate) sftp_creating_folder: bool,
     pub(crate) sftp_new_folder_input: Entity<InputState>,
     pub(crate) sftp_delete_scroll_handle: gpui::ScrollHandle,
-    pub(crate) show_hidden_files: bool,
+    pub(crate) sftp_panel: SftpPanelState,
     pub(crate) transfers: Vec<crate::terminal::Transfer>,
     pub(crate) show_transfers_dialog: bool,
     pub(crate) pane_root: PaneLayout,
@@ -849,10 +843,7 @@ pub(crate) struct TinyShell {
     /// Source drag currently hovering over this window.
     pub(crate) incoming_tab_drag: Option<IncomingTabDrag>,
     pub(crate) terminal_marked_text: Option<String>,
-    pub(crate) sftp_panel_view: SftpPanelView,
     pub(crate) quick_command_category: usize,
-    pub(crate) sftp_panel_minimized: bool,
-    pub(crate) sftp_minimize_epoch: u64,
     pub(crate) workspace_mode: WorkspaceMode,
     pub(crate) sidebar_collapsed: bool,
     pub(crate) collapsed_saved_scroll_handle: gpui::ScrollHandle,
@@ -1072,25 +1063,11 @@ impl TinyShell {
         let mut this = Self {
             focus_handle: cx.focus_handle(),
             selector_focus_handle: cx.focus_handle(),
-            host_input: connection_inputs.host_input,
-            session_name_input: connection_inputs.session_name_input,
-            connection_group_input: connection_inputs.connection_group_input,
-            port_input: connection_inputs.port_input,
-            user_input: connection_inputs.user_input,
-            password_input: connection_inputs.password_input,
-            key_path_input: connection_inputs.key_path_input,
-            key_inline_input: connection_inputs.key_inline_input,
-            passphrase_input: connection_inputs.passphrase_input,
-            key_import_remark_input: connection_inputs.key_import_remark_input,
-            key_import_passphrase_input: connection_inputs.key_import_passphrase_input,
+            connection_inputs,
             key_import: KeyImportState::default(),
             managed_key_dialog_selection: None,
             managed_key_editor_target: None,
             ssh_proxy_type: "none".to_string(),
-            proxy_host_input: connection_inputs.proxy_host_input,
-            proxy_port_input: connection_inputs.proxy_port_input,
-            proxy_user_input: connection_inputs.proxy_user_input,
-            proxy_password_input: connection_inputs.proxy_password_input,
             global_proxy_type: config.global_proxy_type().to_string(),
             settings_inputs,
             sync_runtime: SyncRuntimeState::new(t!("sync_not_run").into()),
@@ -1165,7 +1142,12 @@ impl TinyShell {
             sftp_creating_folder: false,
             sftp_new_folder_input,
             sftp_delete_scroll_handle: gpui::ScrollHandle::new(),
-            show_hidden_files: config.show_hidden_files(),
+            sftp_panel: SftpPanelState {
+                view: sftp_panel_view,
+                minimized: config.sftp_panel_minimized(),
+                minimize_epoch: 0,
+                show_hidden_files: config.show_hidden_files(),
+            },
             transfers: {
                 let mut transfers = config.transfers();
                 for t in transfers.iter_mut() {
@@ -1190,10 +1172,7 @@ impl TinyShell {
             drag_split_origin: None,
             tab_drag: tab_drag::TabDragState::default(),
             incoming_tab_drag: None,
-            sftp_panel_view,
             quick_command_category: 0,
-            sftp_panel_minimized: config.sftp_panel_minimized(),
-            sftp_minimize_epoch: 0,
             workspace_mode: WorkspaceMode::default(),
             sidebar_collapsed: config.sidebar_collapsed(),
             collapsed_saved_scroll_handle: gpui::ScrollHandle::new(),
@@ -1257,8 +1236,9 @@ impl TinyShell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if input == &self.key_import_passphrase_input {
+        if input == &self.connection_inputs.key_import_passphrase_input {
             let passphrase = self
+                .connection_inputs
                 .key_import_passphrase_input
                 .read(cx)
                 .value()
@@ -1357,7 +1337,7 @@ impl TinyShell {
                 window.prevent_default();
                 cx.stop_propagation();
             }
-        } else if input == &self.connection_group_input {
+        } else if input == &self.connection_inputs.connection_group_input {
             if matches!(event, InputEvent::PressEnter { .. })
                 && self.active_dialog == Some(DialogKind::ConnectionGroup)
             {
@@ -1365,18 +1345,24 @@ impl TinyShell {
                 window.prevent_default();
                 cx.stop_propagation();
             }
-        } else if input == &self.key_inline_input {
+        } else if input == &self.connection_inputs.key_inline_input {
             if matches!(event, InputEvent::PressEnter { .. })
                 && let Some(key_id) = self.editing_managed_key_id.clone()
             {
-                let name = self.key_inline_input.read(cx).value().trim().to_string();
+                let name = self
+                    .connection_inputs
+                    .key_inline_input
+                    .read(cx)
+                    .value()
+                    .trim()
+                    .to_string();
                 if !name.is_empty() {
                     self.rename_managed_key(key_id, name, cx);
                 }
                 window.prevent_default();
                 cx.stop_propagation();
             }
-        } else if input == &self.key_import_remark_input {
+        } else if input == &self.connection_inputs.key_import_remark_input {
             if matches!(event, InputEvent::PressEnter { .. })
                 && self.editing_managed_key_id.is_some()
             {
@@ -1386,13 +1372,13 @@ impl TinyShell {
             }
         } else if matches!(event, InputEvent::PressEnter { .. })
             && self.active_dialog == Some(DialogKind::NewSsh)
-            && (input == &self.session_name_input
-                || input == &self.host_input
-                || input == &self.port_input
-                || input == &self.user_input
-                || input == &self.password_input
-                || input == &self.key_path_input
-                || input == &self.passphrase_input)
+            && (input == &self.connection_inputs.session_name_input
+                || input == &self.connection_inputs.host_input
+                || input == &self.connection_inputs.port_input
+                || input == &self.connection_inputs.user_input
+                || input == &self.connection_inputs.password_input
+                || input == &self.connection_inputs.key_path_input
+                || input == &self.connection_inputs.passphrase_input)
         {
             self.connect_ssh(window, cx);
             window.prevent_default();
@@ -2371,7 +2357,7 @@ impl TinyShell {
                 .map(|s| s.into())
                 .collect();
 
-            if self.sftp_panel_minimized {
+            if self.sftp_panel.minimized {
                 if let Some(prev) = self.monitoring.prev_monitoring_size {
                     if body_sizes.len() > 1 {
                         body_sizes[1] = prev.into();
@@ -2381,8 +2367,8 @@ impl TinyShell {
 
             config.set_layout_state(Some(saved_bounds), Some(workspace_sizes), Some(body_sizes));
             config.set_sidebar_collapsed(self.sidebar_collapsed);
-            config.set_sftp_panel_minimized(self.sftp_panel_minimized);
-            config.set_show_hidden_files(self.show_hidden_files);
+            config.set_sftp_panel_minimized(self.sftp_panel.minimized);
+            config.set_show_hidden_files(self.sftp_panel.show_hidden_files);
             if let Err(error) = crate::app::config_persistence::save_full(&config) {
                 tracing::warn!("failed to persist layout state: {error:#}");
             }

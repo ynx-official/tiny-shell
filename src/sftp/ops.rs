@@ -191,7 +191,7 @@ impl TinyShell {
         let Some(sftp) = self.active_sftp() else {
             return;
         };
-        let Some(index) = sftp_tree_rows(sftp, self.show_hidden_files)
+        let Some(index) = sftp_tree_rows(sftp, self.sftp_panel.show_hidden_files)
             .iter()
             .position(|row| row.path == path)
         else {

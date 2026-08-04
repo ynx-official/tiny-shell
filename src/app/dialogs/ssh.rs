@@ -8,19 +8,19 @@ impl TinyShell {
         self.active_dialog = Some(crate::app::DialogKind::NewSsh);
 
         let view = cx.entity();
-        let session_name_input = self.session_name_input.clone();
-        let host_input = self.host_input.clone();
+        let session_name_input = self.connection_inputs.session_name_input.clone();
+        let host_input = self.connection_inputs.host_input.clone();
         let focus_host_input = host_input.clone();
-        let port_input = self.port_input.clone();
-        let user_input = self.user_input.clone();
-        let password_input = self.password_input.clone();
-        let key_path_input = self.key_path_input.clone();
-        let key_inline_input = self.key_inline_input.clone();
-        let passphrase_input = self.passphrase_input.clone();
-        let proxy_host_input = self.proxy_host_input.clone();
-        let proxy_port_input = self.proxy_port_input.clone();
-        let proxy_user_input = self.proxy_user_input.clone();
-        let proxy_password_input = self.proxy_password_input.clone();
+        let port_input = self.connection_inputs.port_input.clone();
+        let user_input = self.connection_inputs.user_input.clone();
+        let password_input = self.connection_inputs.password_input.clone();
+        let key_path_input = self.connection_inputs.key_path_input.clone();
+        let key_inline_input = self.connection_inputs.key_inline_input.clone();
+        let passphrase_input = self.connection_inputs.passphrase_input.clone();
+        let proxy_host_input = self.connection_inputs.proxy_host_input.clone();
+        let proxy_port_input = self.connection_inputs.proxy_port_input.clone();
+        let proxy_user_input = self.connection_inputs.proxy_user_input.clone();
+        let proxy_password_input = self.connection_inputs.proxy_password_input.clone();
 
         window.open_dialog(cx, move |dialog: Dialog, _window, _cx| {
             dialog
@@ -319,7 +319,7 @@ impl TinyShell {
                                                             &view,
                                                             |this, _, window, cx| {
                                                                 Self::set_input_value(
-                                                                    &this.key_path_input,
+                                                    &this.connection_inputs.key_path_input,
                                                                     "",
                                                                     window,
                                                                     cx,
@@ -544,7 +544,7 @@ impl TinyShell {
         self.active_dialog = Some(crate::app::DialogKind::ManagedKeySelector);
 
         let view = cx.entity();
-        let rename_input = self.key_import_remark_input.clone();
+        let rename_input = self.connection_inputs.key_import_remark_input.clone();
         window.open_dialog(cx, move |dialog: Dialog, window, _cx| {
             let dialog_width = px(760.).min(window.viewport_size().width - px(24.));
             dialog
@@ -798,8 +798,8 @@ impl TinyShell {
         self.active_dialog = Some(crate::app::DialogKind::ManagedKeyImport);
 
         let view = cx.entity();
-        let remark_input = self.key_import_remark_input.clone();
-        let passphrase_input = self.key_import_passphrase_input.clone();
+        let remark_input = self.connection_inputs.key_import_remark_input.clone();
+        let passphrase_input = self.connection_inputs.key_import_passphrase_input.clone();
         let focus_remark_input = remark_input.clone();
         window.open_dialog(cx, move |dialog: Dialog, _window, _cx| {
             dialog

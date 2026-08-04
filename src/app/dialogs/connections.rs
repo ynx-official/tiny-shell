@@ -7,6 +7,7 @@ impl TinyShell {
         cx: &mut Context<Self>,
     ) {
         let name = self
+            .connection_inputs
             .connection_group_input
             .read(cx)
             .value()

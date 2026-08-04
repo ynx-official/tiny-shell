@@ -89,13 +89,23 @@ impl TinyShell {
         self.ssh_config_selected = Some(index);
         if let Some(entry) = self.ssh_config_entries.get(index) {
             Self::set_input_value(
-                &self.session_name_input,
+                &self.connection_inputs.session_name_input,
                 entry.host_alias.clone(),
                 window,
                 cx,
             );
-            Self::set_input_value(&self.host_input, entry.hostname.clone(), window, cx);
-            Self::set_input_value(&self.port_input, entry.port.to_string(), window, cx);
+            Self::set_input_value(
+                &self.connection_inputs.host_input,
+                entry.hostname.clone(),
+                window,
+                cx,
+            );
+            Self::set_input_value(
+                &self.connection_inputs.port_input,
+                entry.port.to_string(),
+                window,
+                cx,
+            );
             // If no user specified in config, use current system user
             let user = if entry.user.is_empty() {
                 std::env::var("USER")
@@ -104,16 +114,31 @@ impl TinyShell {
             } else {
                 entry.user.clone()
             };
-            Self::set_input_value(&self.user_input, user, window, cx);
+            Self::set_input_value(&self.connection_inputs.user_input, user, window, cx);
             Self::set_input_value(
-                &self.key_path_input,
+                &self.connection_inputs.key_path_input,
                 entry.identity_files.first().cloned().unwrap_or_default(),
                 window,
                 cx,
             );
-            Self::set_input_value(&self.password_input, String::new(), window, cx);
-            Self::set_input_value(&self.key_inline_input, String::new(), window, cx);
-            Self::set_input_value(&self.passphrase_input, String::new(), window, cx);
+            Self::set_input_value(
+                &self.connection_inputs.password_input,
+                String::new(),
+                window,
+                cx,
+            );
+            Self::set_input_value(
+                &self.connection_inputs.key_inline_input,
+                String::new(),
+                window,
+                cx,
+            );
+            Self::set_input_value(
+                &self.connection_inputs.passphrase_input,
+                String::new(),
+                window,
+                cx,
+            );
             // Auto-connect on selection
             self.connect_ssh(window, cx);
         }

@@ -164,7 +164,7 @@ impl Render for TinyShell {
         // out of the home workspace avoids showing an empty "remote files" area on
         // Overview and Key Manager pages.
         let main_view_key = self.main_view_key();
-        let presentation = self.workspace_mode.presentation(self.sftp_panel_minimized);
+        let presentation = self.workspace_mode.presentation(self.sftp_panel.minimized);
         let main_content_raw = if self.active_system_info_tab.is_some() {
             self.render_system_info_page(cx).into_any_element()
         } else if self.active_tab.is_some() && !self.home_page_open {

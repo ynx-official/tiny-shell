@@ -2252,7 +2252,7 @@ impl TinyShell {
         let keys = self.managed_keys.clone();
         let sessions = self.config.sessions().to_vec();
         let has_keys = !keys.is_empty();
-        let rename_input = self.key_inline_input.clone();
+        let rename_input = self.connection_inputs.key_inline_input.clone();
 
         v_flex()
             .size_full()
@@ -2464,13 +2464,13 @@ impl TinyShell {
                                                             this.editing_managed_key_id =
                                                                 Some(key_id.clone());
                                                             Self::set_input_value(
-                                                                &this.key_inline_input,
+                                                                &this.connection_inputs.key_inline_input,
                                                                 key_name.clone(),
                                                                 window,
                                                                 cx,
                                                             );
                                                             crate::app::input_focus::defer_focus_input_at_end(
-                                                                this.key_inline_input.clone(),
+                                                                this.connection_inputs.key_inline_input.clone(),
                                                                 window,
                                                                 cx,
                                                             );

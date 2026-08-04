@@ -37,7 +37,7 @@ impl TinyShell {
                 let _ = gpui::AsyncWindowContext::update(cx, |window, cx| {
                     let _ = this.update(cx, |this, cx| {
                         Self::set_input_value(
-                            &this.key_path_input,
+                            &this.connection_inputs.key_path_input,
                             file.path().to_string_lossy().to_string(),
                             window,
                             cx,
@@ -98,8 +98,17 @@ impl TinyShell {
             return;
         };
         self.editing_managed_key_id = Some(key_id);
-        Self::set_input_value(&self.key_import_remark_input, key.name.clone(), window, cx);
-        input_focus::defer_focus_input_at_end(self.key_import_remark_input.clone(), window, cx);
+        Self::set_input_value(
+            &self.connection_inputs.key_import_remark_input,
+            key.name.clone(),
+            window,
+            cx,
+        );
+        input_focus::defer_focus_input_at_end(
+            self.connection_inputs.key_import_remark_input.clone(),
+            window,
+            cx,
+        );
         cx.notify();
     }
 
@@ -108,6 +117,7 @@ impl TinyShell {
             return;
         };
         let name = self
+            .connection_inputs
             .key_import_remark_input
             .read(cx)
             .value()
@@ -169,8 +179,18 @@ impl TinyShell {
     pub(crate) fn open_key_import(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.editing_managed_key_id = None;
         self.key_import.open();
-        Self::set_input_value(&self.key_import_remark_input, "", window, cx);
-        Self::set_input_value(&self.key_import_passphrase_input, "", window, cx);
+        Self::set_input_value(
+            &self.connection_inputs.key_import_remark_input,
+            "",
+            window,
+            cx,
+        );
+        Self::set_input_value(
+            &self.connection_inputs.key_import_passphrase_input,
+            "",
+            window,
+            cx,
+        );
         self.active_dialog = None;
         window.close_dialog(cx);
         let view = cx.entity();
@@ -183,8 +203,18 @@ impl TinyShell {
 
     pub(crate) fn close_key_import(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.key_import.close();
-        Self::set_input_value(&self.key_import_remark_input, "", window, cx);
-        Self::set_input_value(&self.key_import_passphrase_input, "", window, cx);
+        Self::set_input_value(
+            &self.connection_inputs.key_import_remark_input,
+            "",
+            window,
+            cx,
+        );
+        Self::set_input_value(
+            &self.connection_inputs.key_import_passphrase_input,
+            "",
+            window,
+            cx,
+        );
         self.active_dialog = None;
         window.close_dialog(cx);
         let view = cx.entity();
@@ -247,6 +277,7 @@ impl TinyShell {
                             return;
                         }
                         if this
+                            .connection_inputs
                             .key_import_remark_input
                             .read(cx)
                             .value()
@@ -254,7 +285,7 @@ impl TinyShell {
                             .is_empty()
                         {
                             Self::set_input_value(
-                                &this.key_import_remark_input,
+                                &this.connection_inputs.key_import_remark_input,
                                 default_name,
                                 window,
                                 cx,
@@ -263,6 +294,7 @@ impl TinyShell {
                         match read_result {
                             Ok(content) => {
                                 let passphrase = this
+                                    .connection_inputs
                                     .key_import_passphrase_input
                                     .read(cx)
                                     .value()
@@ -305,6 +337,7 @@ impl TinyShell {
             .and_then(|value| value.to_str())
             .unwrap_or("imported-key");
         let remark = self
+            .connection_inputs
             .key_import_remark_input
             .read(cx)
             .value()
@@ -316,6 +349,7 @@ impl TinyShell {
             remark
         };
         let passphrase = self
+            .connection_inputs
             .key_import_passphrase_input
             .read(cx)
             .value()
@@ -386,7 +420,12 @@ impl TinyShell {
         default_name: String,
         cx: &mut Context<Self>,
     ) {
-        let passphrase = self.passphrase_input.read(cx).value().to_string();
+        let passphrase = self
+            .connection_inputs
+            .passphrase_input
+            .read(cx)
+            .value()
+            .to_string();
         let pass_opt = (!passphrase.is_empty()).then_some(passphrase.as_str());
 
         match crate::session::ssh_keys::validate_and_inspect(&content, pass_opt) {

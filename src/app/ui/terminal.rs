@@ -636,13 +636,13 @@ impl TinyShell {
                     .child(
                         Button::new("tab-bar-clean-mode")
                             .secondary()
-                            .when(self.workspace_mode.presentation(self.sftp_panel_minimized).clean, |button| {
+                            .when(self.workspace_mode.presentation(self.sftp_panel.minimized).clean, |button| {
                                 button.primary()
                             })
                             .small()
                             .rounded(px(999.))
                             .icon(IconName::SquareTerminal)
-                            .tooltip(if self.workspace_mode.presentation(self.sftp_panel_minimized).clean {
+                            .tooltip(if self.workspace_mode.presentation(self.sftp_panel.minimized).clean {
                                 t!("workspace_exit_clean_mode").to_string()
                             } else {
                                 t!("workspace_enter_clean_mode").to_string()
@@ -675,7 +675,7 @@ impl TinyShell {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let view = cx.entity();
-        let presentation = self.workspace_mode.presentation(self.sftp_panel_minimized);
+        let presentation = self.workspace_mode.presentation(self.sftp_panel.minimized);
         let has_selection = self.active_terminal_selection_text().is_some();
         let has_clipboard_text = cx
             .read_from_clipboard()
@@ -819,7 +819,7 @@ impl TinyShell {
         let bounds_view = view.clone();
         let menu_view = view.clone();
 
-        let presentation = self.workspace_mode.presentation(self.sftp_panel_minimized);
+        let presentation = self.workspace_mode.presentation(self.sftp_panel.minimized);
 
         v_flex()
             .size_full()

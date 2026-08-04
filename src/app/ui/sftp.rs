@@ -8,9 +8,9 @@ impl TinyShell {
 
     pub(crate) fn toggle_sftp_minimized(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let state = self.body_panels.clone();
-        let presentation = self.workspace_mode.presentation(self.sftp_panel_minimized);
+        let presentation = self.workspace_mode.presentation(self.sftp_panel.minimized);
         let minimized = presentation.sftp_minimized;
-        self.sftp_minimize_epoch = self.sftp_minimize_epoch.wrapping_add(1);
+        self.sftp_panel.minimize_epoch = self.sftp_panel.minimize_epoch.wrapping_add(1);
 
         if !minimized {
             let sizes = state.read(cx).sizes();
@@ -50,9 +50,9 @@ impl TinyShell {
         if presentation.clean {
             self.workspace_mode.toggle_clean_sftp();
         } else {
-            self.sftp_panel_minimized = !minimized;
+            self.sftp_panel.minimized = !minimized;
             self.config
-                .set_sftp_panel_minimized(self.sftp_panel_minimized);
+                .set_sftp_panel_minimized(self.sftp_panel.minimized);
             self.mark_config_preferences_dirty();
         }
         cx.notify();
@@ -164,7 +164,7 @@ impl TinyShell {
         sftp: &terminal::SftpUiState,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let rows = crate::sftp::ops::sftp_tree_rows(sftp, self.show_hidden_files)
+        let rows = crate::sftp::ops::sftp_tree_rows(sftp, self.sftp_panel.show_hidden_files)
             .into_iter()
             .map(|row| self.render_sftp_tree_row(row, &sftp.current_path, cx))
             .collect::<Vec<_>>();
@@ -237,10 +237,10 @@ impl TinyShell {
     }
 
     pub(super) fn set_sftp_panel_view(&mut self, view: SftpPanelView, cx: &mut Context<Self>) {
-        if self.sftp_panel_view == view {
+        if self.sftp_panel.view == view {
             return;
         }
-        self.sftp_panel_view = view;
+        self.sftp_panel.view = view;
         self.selected_quick_command = None;
         self.config.set_sftp_panel_view(match view {
             SftpPanelView::Files => "files",
@@ -820,11 +820,11 @@ impl TinyShell {
         let active_sftp = self.active_sftp();
         // 目录内容更新不应触发整个面板淡入，否则每次进入子目录都会闪烁。
         // 动画只由面板视图和最小化状态变化触发。
-        let sftp_content_epoch = (match self.sftp_panel_view {
+        let sftp_content_epoch = (match self.sftp_panel.view {
             SftpPanelView::Files => 0,
             SftpPanelView::Commands => 1,
         } as u64)
-            .wrapping_add(self.sftp_minimize_epoch);
+            .wrapping_add(self.sftp_panel.minimize_epoch);
         let toolbar_visibility = self.config.sftp_toolbar_visibility();
         let view = cx.entity();
 
@@ -841,7 +841,7 @@ impl TinyShell {
                 Button::new("sftp-view-files")
                     .ghost()
                     .small()
-                    .selected(self.sftp_panel_view == SftpPanelView::Files)
+                    .selected(self.sftp_panel.view == SftpPanelView::Files)
                     .icon(IconName::FolderOpen)
                     .label(t!("remote_files").to_string())
                     .on_click(cx.listener(|this, _, _, cx| {
@@ -852,7 +852,7 @@ impl TinyShell {
                 Button::new("sftp-view-commands")
                     .ghost()
                     .small()
-                    .selected(self.sftp_panel_view == SftpPanelView::Commands)
+                    .selected(self.sftp_panel.view == SftpPanelView::Commands)
                     .icon(IconName::SquareTerminal)
                     .label(t!("quick_commands").to_string())
                     .on_click(cx.listener(|this, _, _, cx| {
@@ -861,7 +861,7 @@ impl TinyShell {
             )
             .child(div().flex_1())
             .when_some(
-                (self.sftp_panel_view == SftpPanelView::Files)
+                (self.sftp_panel.view == SftpPanelView::Files)
                     .then_some(active_sftp)
                     .flatten(),
                 |this, sftp| {
@@ -889,13 +889,13 @@ impl TinyShell {
                             Checkbox::new("sftp-show-hidden")
                                 .small()
                                 .label(t!("hidden").to_string())
-                                .checked(self.show_hidden_files)
+                                .checked(self.sftp_panel.show_hidden_files)
                                 .tab_stop(false)
                                 .on_click(cx.listener(|this, checked, _, cx| {
-                                    if this.show_hidden_files == *checked {
+                                    if this.sftp_panel.show_hidden_files == *checked {
                                         return;
                                     }
-                                    this.show_hidden_files = *checked;
+                                    this.sftp_panel.show_hidden_files = *checked;
                                     this.config.set_show_hidden_files(*checked);
                                     this.mark_config_preferences_dirty();
                                     cx.notify();
@@ -1017,7 +1017,7 @@ impl TinyShell {
                     v_flex()
                         .flex_1()
                         .min_h(px(0.))
-                        .when(self.sftp_panel_minimized, |this| this.hidden())
+                        .when(self.sftp_panel.minimized, |this| this.hidden())
                         .child(header)
                         .child(
                             v_flex()
@@ -1042,7 +1042,7 @@ impl TinyShell {
                 .into_any_element();
         };
 
-        if self.sftp_panel_view == SftpPanelView::Commands {
+        if self.sftp_panel.view == SftpPanelView::Commands {
             return v_flex()
                 .gap_0()
                 .border_color(cx.theme().border)
@@ -1055,7 +1055,7 @@ impl TinyShell {
                     v_flex()
                         .flex_1()
                         .min_h(px(0.))
-                        .when(self.sftp_panel_minimized, |this| this.hidden())
+                        .when(self.sftp_panel.minimized, |this| this.hidden())
                         .child(header)
                         .child(self.render_quick_commands(window, cx)),
                 )
@@ -1072,7 +1072,7 @@ impl TinyShell {
             .entries
             .clone()
             .into_iter()
-            .filter(|entry| self.show_hidden_files || !entry.name.starts_with('.'))
+            .filter(|entry| self.sftp_panel.show_hidden_files || !entry.name.starts_with('.'))
             .collect::<Vec<_>>();
         let selected_entries = sftp.selected_entries.clone();
         let all_selected = !entries.is_empty()
@@ -1108,7 +1108,7 @@ impl TinyShell {
             v_flex()
                 .flex_1()
                 .min_h(px(0.))
-                .when(self.sftp_panel_minimized, |this| this.hidden())
+                .when(self.sftp_panel.minimized, |this| this.hidden())
                 .child(header)
                 .child(
                     h_flex()

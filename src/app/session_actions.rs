@@ -146,20 +146,60 @@ impl TinyShell {
     }
 
     fn prepare_ssh_session(&mut self, cx: &mut Context<Self>) -> Option<(Session, ConfigStore)> {
-        let session_name = self.session_name_input.read(cx).value().trim().to_string();
-        let host = self.host_input.read(cx).value().trim().to_string();
+        let session_name = self
+            .connection_inputs
+            .session_name_input
+            .read(cx)
+            .value()
+            .trim()
+            .to_string();
+        let host = self
+            .connection_inputs
+            .host_input
+            .read(cx)
+            .value()
+            .trim()
+            .to_string();
         let port = self
+            .connection_inputs
             .port_input
             .read(cx)
             .value()
             .trim()
             .parse::<u16>()
             .unwrap_or(22);
-        let user = self.user_input.read(cx).value().trim().to_string();
-        let password = self.password_input.read(cx).value().to_string();
-        let key_path = self.key_path_input.read(cx).value().trim().to_string();
-        let key_inline = self.key_inline_input.read(cx).value().to_string();
-        let passphrase = self.passphrase_input.read(cx).value().to_string();
+        let user = self
+            .connection_inputs
+            .user_input
+            .read(cx)
+            .value()
+            .trim()
+            .to_string();
+        let password = self
+            .connection_inputs
+            .password_input
+            .read(cx)
+            .value()
+            .to_string();
+        let key_path = self
+            .connection_inputs
+            .key_path_input
+            .read(cx)
+            .value()
+            .trim()
+            .to_string();
+        let key_inline = self
+            .connection_inputs
+            .key_inline_input
+            .read(cx)
+            .value()
+            .to_string();
+        let passphrase = self
+            .connection_inputs
+            .passphrase_input
+            .read(cx)
+            .value()
+            .to_string();
 
         if host.is_empty() || user.is_empty() {
             self.status = t!("host_and_user_required").into();
@@ -168,8 +208,20 @@ impl TinyShell {
         }
 
         if self.ssh_proxy_type != "none" {
-            let proxy_host = self.proxy_host_input.read(cx).value().trim().to_string();
-            let proxy_port_str = self.proxy_port_input.read(cx).value().trim().to_string();
+            let proxy_host = self
+                .connection_inputs
+                .proxy_host_input
+                .read(cx)
+                .value()
+                .trim()
+                .to_string();
+            let proxy_port_str = self
+                .connection_inputs
+                .proxy_port_input
+                .read(cx)
+                .value()
+                .trim()
+                .to_string();
             let proxy_port = proxy_port_str.parse::<u16>().ok();
             if proxy_host.is_empty() || proxy_port.is_none() {
                 self.status = t!("ssh_editor_proxy_required").into();
@@ -229,16 +281,34 @@ impl TinyShell {
         session.last_used = existing_last_used;
         session.group = self.session_group_selection.clone().or(existing_group);
         session.proxy_type = self.ssh_proxy_type.clone();
-        session.proxy_host = self.proxy_host_input.read(cx).value().trim().to_string();
+        session.proxy_host = self
+            .connection_inputs
+            .proxy_host_input
+            .read(cx)
+            .value()
+            .trim()
+            .to_string();
         session.proxy_port = self
+            .connection_inputs
             .proxy_port_input
             .read(cx)
             .value()
             .trim()
             .parse::<u16>()
             .ok();
-        session.proxy_user = self.proxy_user_input.read(cx).value().trim().to_string();
-        session.proxy_password = self.proxy_password_input.read(cx).value().to_string();
+        session.proxy_user = self
+            .connection_inputs
+            .proxy_user_input
+            .read(cx)
+            .value()
+            .trim()
+            .to_string();
+        session.proxy_password = self
+            .connection_inputs
+            .proxy_password_input
+            .read(cx)
+            .value()
+            .to_string();
 
         Some((session, self.config.clone()))
     }
