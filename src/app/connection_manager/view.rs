@@ -275,7 +275,7 @@ fn render_header(cx: &App) -> impl IntoElement {
         .font_weight(FontWeight::SEMIBOLD)
         .text_color(cx.theme().muted_foreground)
         .child(div().flex_1().child(t!("name").to_string()))
-        .child(div().w(px(190.)).child(t!("host").to_string()))
+        .child(div().w(px(140.)).child(t!("host").to_string()))
         .child(div().w(px(64.)).text_center().child(t!("port").to_string()))
         .child(div().w(px(100.)).child(t!("user").to_string()))
 }
@@ -637,7 +637,7 @@ fn render_session_row(
         )
         .child(
             div()
-                .w(px(190.))
+                .w(px(140.))
                 .overflow_hidden()
                 .whitespace_nowrap()
                 .text_ellipsis()
@@ -868,7 +868,7 @@ fn render_deleted_session(
         })
         .child(Icon::new(IconName::Delete).with_size(Size::Small))
         .child(div().flex_1().child(session.name))
-        .child(div().w(px(190.)).child(session.host))
+        .child(div().w(px(140.)).child(session.host))
         .child(
             div()
                 .w(px(64.))
