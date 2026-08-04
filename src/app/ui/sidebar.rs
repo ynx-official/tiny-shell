@@ -13,7 +13,7 @@ impl TinyShell {
         let active_tab = self
             .active_tab
             .as_ref()
-            .and_then(|active_id| self.tabs.iter().find(|tab| &tab.id == active_id));
+            .and_then(|active_id| self.terminal_tab(active_id));
         let active_session = active_tab.and_then(|tab| tab.session.as_ref());
         let host_text = active_session
             .map(|session| session.host.clone())

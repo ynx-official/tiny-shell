@@ -486,7 +486,7 @@ impl TinyShell {
     }
 
     pub(crate) fn disconnect_tab_group(&mut self, group_id: &str, cx: &mut Context<Self>) {
-        let Some(group) = self.tab_groups.iter().find(|group| group.id == group_id) else {
+        let Some(group) = self.tab_group(group_id) else {
             return;
         };
         let tab_ids: Vec<String> = group
@@ -1083,13 +1083,22 @@ impl TinyShell {
             }
         }
         // Load new group state
-        if let Some(group) = self.tab_groups.iter().find(|g| g.id == group_id) {
-            self.pane_root = group.pane_root.clone();
+        if let Some((pane_root, ids)) = self.tab_group(&group_id).map(|group| {
+            (
+                group.pane_root.clone(),
+                group
+                    .pane_root
+                    .tab_ids()
+                    .into_iter()
+                    .map(str::to_owned)
+                    .collect::<Vec<_>>(),
+            )
+        }) {
+            self.pane_root = pane_root;
             self.active_group = Some(group_id);
-            let ids = group.pane_root.tab_ids();
-            if let Some(&first_id) = ids.first() {
-                self.active_tab = Some(first_id.to_string());
-                self.focus_pane_with_id(first_id.to_string());
+            if let Some(first_id) = ids.first() {
+                self.active_tab = Some(first_id.clone());
+                self.focus_pane_with_id(first_id.clone());
             }
             self.focus_handle.focus(window, cx);
         }
@@ -1108,7 +1117,7 @@ impl TinyShell {
     pub(crate) fn sync_system_tab_to_active_group(&mut self) {
         let mut group_ssh_tabs = vec![];
         if let Some(group_id) = &self.active_group {
-            if let Some(group) = self.tab_groups.iter().find(|g| g.id == *group_id) {
+            if let Some(group) = self.tab_group(group_id) {
                 let ids = group.pane_root.tab_ids();
                 for id in ids {
                     if let Some(tab) = self.tabs.iter().find(|t| t.id == *id) {

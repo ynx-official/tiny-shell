@@ -173,8 +173,8 @@ impl TinyShell {
         sftp.selected_path = None;
         sftp.selected_entries.clear();
         if self.active_group.as_deref() == Some(group_id) {
-            self.pending_sftp_path_sync = Some(path.clone());
-            self.pending_sftp_tree_scroll_path = Some(path.clone());
+            self.sftp_workspace.pending_path_sync = Some(path.clone());
+            self.sftp_workspace.pending_tree_scroll_path = Some(path.clone());
         }
 
         for directory in missing_ancestors {
@@ -185,7 +185,7 @@ impl TinyShell {
     }
 
     pub(crate) fn sync_sftp_tree_scroll(&mut self) {
-        let Some(path) = self.pending_sftp_tree_scroll_path.clone() else {
+        let Some(path) = self.sftp_workspace.pending_tree_scroll_path.clone() else {
             return;
         };
         let Some(sftp) = self.active_sftp() else {
@@ -197,8 +197,8 @@ impl TinyShell {
         else {
             return;
         };
-        self.sftp_tree_scroll_handle.scroll_to_item(index);
-        self.pending_sftp_tree_scroll_path = None;
+        self.sftp_workspace.tree_scroll_handle.scroll_to_item(index);
+        self.sftp_workspace.pending_tree_scroll_path = None;
     }
 
     pub(crate) fn toggle_sftp_tree_directory(&mut self, path: String, cx: &mut Context<Self>) {
@@ -300,10 +300,10 @@ impl TinyShell {
     }
 
     pub(crate) fn sync_sftp_path_input(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(path) = self.pending_sftp_path_sync.take() else {
+        let Some(path) = self.sftp_workspace.pending_path_sync.take() else {
             return;
         };
-        self.sftp_path_input.update(cx, |state, cx| {
+        self.sftp_workspace.path_input.update(cx, |state, cx| {
             state.set_value(path, window, cx);
         });
     }
@@ -317,7 +317,7 @@ impl TinyShell {
         cx: &mut Context<Self>,
     ) {
         self.context_menu_epoch = self.context_menu_epoch.wrapping_add(1);
-        self.sftp_context_menu = Some(SftpContextMenuState {
+        self.sftp_workspace.context_menu = Some(SftpContextMenuState {
             remote_path,
             is_dir,
             permissions,
@@ -327,7 +327,7 @@ impl TinyShell {
     }
 
     pub(crate) fn dismiss_sftp_context_menu(&mut self, cx: &mut Context<Self>) {
-        if self.sftp_context_menu.take().is_some() {
+        if self.sftp_workspace.context_menu.take().is_some() {
             cx.notify();
         }
     }
@@ -337,7 +337,7 @@ impl TinyShell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(menu) = self.sftp_context_menu.take() else {
+        let Some(menu) = self.sftp_workspace.context_menu.take() else {
             return;
         };
         let Some(remote_path) = menu.remote_path else {
@@ -348,7 +348,7 @@ impl TinyShell {
     }
 
     pub(crate) fn trigger_sftp_context_open(&mut self, cx: &mut Context<Self>) {
-        let Some(menu) = self.sftp_context_menu.take() else {
+        let Some(menu) = self.sftp_workspace.context_menu.take() else {
             return;
         };
         let Some(remote_path) = menu.remote_path else {
@@ -365,7 +365,7 @@ impl TinyShell {
     }
 
     pub(crate) fn trigger_sftp_context_internal_editor(&mut self, cx: &mut Context<Self>) {
-        let Some(menu) = self.sftp_context_menu.take() else {
+        let Some(menu) = self.sftp_workspace.context_menu.take() else {
             return;
         };
         if let Some(remote_path) = menu.remote_path {
@@ -374,7 +374,7 @@ impl TinyShell {
     }
 
     pub(crate) fn trigger_sftp_context_system_open(&mut self, cx: &mut Context<Self>) {
-        let Some(menu) = self.sftp_context_menu.take() else {
+        let Some(menu) = self.sftp_workspace.context_menu.take() else {
             return;
         };
         if let Some(remote_path) = menu.remote_path
@@ -386,7 +386,7 @@ impl TinyShell {
     }
 
     pub(crate) fn trigger_sftp_context_external_editor(&mut self, cx: &mut Context<Self>) {
-        let Some(menu) = self.sftp_context_menu.take() else {
+        let Some(menu) = self.sftp_workspace.context_menu.take() else {
             return;
         };
         let editor = self.config.sftp_external_editor().to_string();
@@ -408,7 +408,7 @@ impl TinyShell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.sftp_context_menu = None;
+        self.sftp_workspace.context_menu = None;
         let prompt = cx.prompt_for_paths(PathPromptOptions {
             files: true,
             directories: false,
@@ -436,7 +436,7 @@ impl TinyShell {
     }
 
     pub(crate) fn trigger_sftp_context_copy_path(&mut self, cx: &mut Context<Self>) {
-        let Some(menu) = self.sftp_context_menu.take() else {
+        let Some(menu) = self.sftp_workspace.context_menu.take() else {
             return;
         };
         if let Some(remote_path) = menu.remote_path {
@@ -451,7 +451,8 @@ impl TinyShell {
         cx: &mut Context<Self>,
     ) {
         let remote_dir = self
-            .sftp_context_menu
+            .sftp_workspace
+            .context_menu
             .take()
             .and_then(|menu| menu.is_dir.then_some(menu.remote_path).flatten())
             .or_else(|| self.active_sftp().map(|sftp| sftp.current_path.clone()))
@@ -647,7 +648,7 @@ impl TinyShell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(menu) = self.sftp_context_menu.take() else {
+        let Some(menu) = self.sftp_workspace.context_menu.take() else {
             return;
         };
         let remote_paths = self.sftp_context_paths(&menu);
@@ -685,7 +686,7 @@ impl TinyShell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.sftp_context_menu = None;
+        self.sftp_workspace.context_menu = None;
         self.show_sftp_create_dialog(false, window, cx);
     }
 
@@ -694,7 +695,7 @@ impl TinyShell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.sftp_context_menu = None;
+        self.sftp_workspace.context_menu = None;
         self.show_sftp_create_dialog(true, window, cx);
     }
 
@@ -703,7 +704,7 @@ impl TinyShell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(menu) = self.sftp_context_menu.take() else {
+        let Some(menu) = self.sftp_workspace.context_menu.take() else {
             return;
         };
         if let Some(remote_path) = menu.remote_path {
@@ -717,7 +718,7 @@ impl TinyShell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(menu) = self.sftp_context_menu.take() else {
+        let Some(menu) = self.sftp_workspace.context_menu.take() else {
             return;
         };
         let paths = self.sftp_context_paths(&menu);
@@ -731,7 +732,7 @@ impl TinyShell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(menu) = self.sftp_context_menu.take() else {
+        let Some(menu) = self.sftp_workspace.context_menu.take() else {
             return;
         };
         if let Some(remote_path) = menu.remote_path {

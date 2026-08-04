@@ -182,7 +182,8 @@ impl TinyShell {
                 .content({
                     let view = view.clone();
                     move |content, _window, cx| {
-                        let scroll_handle = view.read(cx).sftp_delete_scroll_handle.clone();
+                        let scroll_handle =
+                            view.read(cx).sftp_workspace.delete_scroll_handle.clone();
                         let selected_paths: Vec<String> = view
                             .read(cx)
                             .active_sftp()

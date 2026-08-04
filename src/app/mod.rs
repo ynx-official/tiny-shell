@@ -587,6 +587,18 @@ pub(crate) struct SftpPanelState {
     pub(crate) show_hidden_files: bool,
 }
 
+pub(crate) struct SftpWorkspaceState {
+    pub(crate) path_input: Entity<InputState>,
+    pub(crate) new_folder_input: Entity<InputState>,
+    pub(crate) remote_files_scroll_handle: UniformListScrollHandle,
+    pub(crate) tree_scroll_handle: gpui::ScrollHandle,
+    pub(crate) delete_scroll_handle: gpui::ScrollHandle,
+    pub(crate) pending_path_sync: Option<String>,
+    pub(crate) pending_tree_scroll_path: Option<String>,
+    pub(crate) context_menu: Option<SftpContextMenuState>,
+    pub(crate) creating_folder: bool,
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) enum ProcessView {
     #[default]
@@ -748,7 +760,6 @@ pub(crate) struct TinyShell {
     pub(crate) global_proxy_type: String,
     pub(crate) settings_inputs: SettingsInputs,
     pub(crate) sync_runtime: SyncRuntimeState,
-    pub(crate) sftp_path_input: Entity<InputState>,
     pub(crate) ssh_auth_method: AuthMethod,
     pub(crate) ssh_config_entries: Vec<SshConfigEntry>,
     pub(crate) ssh_config_selected: Option<usize>,
@@ -805,27 +816,20 @@ pub(crate) struct TinyShell {
     pub(crate) body_panels: Entity<ResizableState>,
     pub(crate) is_layout_reset: bool,
     pub(crate) terminal_scrollbars: HashMap<String, TerminalScrollbarHandle>,
-    pub(crate) remote_files_scroll_handle: UniformListScrollHandle,
     pub(crate) command_manager_scroll_handle: gpui::ScrollHandle,
-    pub(crate) sftp_tree_scroll_handle: gpui::ScrollHandle,
     pub(crate) disk_scroll_handle: gpui::ScrollHandle,
     pub(crate) tabs_scroll_handle: gpui::ScrollHandle,
     pub(crate) selector_scroll_handle: gpui::ScrollHandle,
     pub(crate) quick_connection_scroll_handle: gpui::ScrollHandle,
     pub(crate) saved_scroll_handle: gpui::ScrollHandle,
     pub(crate) connection_scroll_handle: gpui::ScrollHandle,
-    pub(crate) pending_sftp_path_sync: Option<String>,
-    pub(crate) pending_sftp_tree_scroll_path: Option<String>,
-    pub(crate) sftp_context_menu: Option<SftpContextMenuState>,
     /// Increments each time a context menu is opened, used as an animation
     /// epoch so the menu fade-in restarts on every open.
     pub(crate) context_menu_epoch: u64,
     /// Increments each time a tab becomes disconnected, used as an animation
     /// epoch so the reconnect bar fade-in restarts on every disconnect.
     pub(crate) disconnect_epoch: u64,
-    pub(crate) sftp_creating_folder: bool,
-    pub(crate) sftp_new_folder_input: Entity<InputState>,
-    pub(crate) sftp_delete_scroll_handle: gpui::ScrollHandle,
+    pub(crate) sftp_workspace: SftpWorkspaceState,
     pub(crate) sftp_panel: SftpPanelState,
     pub(crate) transfers: Vec<crate::terminal::Transfer>,
     pub(crate) show_transfers_dialog: bool,
@@ -914,6 +918,39 @@ pub(crate) struct SftpContextMenuState {
 }
 
 impl TinyShell {
+    pub(crate) fn terminal_tab(&self, tab_id: &str) -> Option<&TerminalTab> {
+        self.tabs.iter().find(|tab| tab.id == tab_id)
+    }
+
+    pub(crate) fn terminal_tab_mut(&mut self, tab_id: &str) -> Option<&mut TerminalTab> {
+        self.tabs.iter_mut().find(|tab| tab.id == tab_id)
+    }
+
+    pub(crate) fn tab_group(&self, group_id: &str) -> Option<&TabGroup> {
+        self.tab_groups.iter().find(|group| group.id == group_id)
+    }
+
+    pub(crate) fn tab_group_mut(&mut self, group_id: &str) -> Option<&mut TabGroup> {
+        self.tab_groups
+            .iter_mut()
+            .find(|group| group.id == group_id)
+    }
+
+    pub(crate) fn preferred_terminal_tab_id(&self) -> Option<String> {
+        if let Some(active_id) = self.active_tab.as_deref()
+            && self.terminal_tab(active_id).is_some()
+        {
+            return Some(active_id.to_owned());
+        }
+
+        self.active_group
+            .as_deref()
+            .and_then(|group_id| self.tab_group(group_id))
+            .and_then(|group| group.pane_root.tab_ids().into_iter().next())
+            .map(str::to_owned)
+            .or_else(|| self.tabs.first().map(|tab| tab.id.clone()))
+    }
+
     pub(crate) fn backend_events_sender(&self, cx: &mut Context<Self>) -> BackendEventSender {
         self.session_store.read(cx).events_sender()
     }
@@ -1071,7 +1108,6 @@ impl TinyShell {
             global_proxy_type: config.global_proxy_type().to_string(),
             settings_inputs,
             sync_runtime: SyncRuntimeState::new(t!("sync_not_run").into()),
-            sftp_path_input,
             ssh_auth_method: AuthMethod::Password,
             ssh_config_entries: crate::session::ssh_config::parse_ssh_config().unwrap_or_default(),
             ssh_config_selected: None,
@@ -1125,23 +1161,26 @@ impl TinyShell {
             body_panels,
             is_layout_reset: false,
             terminal_scrollbars: HashMap::new(),
-            remote_files_scroll_handle: UniformListScrollHandle::new(),
             command_manager_scroll_handle: gpui::ScrollHandle::new(),
-            sftp_tree_scroll_handle: gpui::ScrollHandle::new(),
             disk_scroll_handle: gpui::ScrollHandle::new(),
             tabs_scroll_handle: gpui::ScrollHandle::new(),
             selector_scroll_handle: gpui::ScrollHandle::new(),
             quick_connection_scroll_handle: gpui::ScrollHandle::new(),
             saved_scroll_handle: gpui::ScrollHandle::new(),
             connection_scroll_handle: gpui::ScrollHandle::new(),
-            pending_sftp_path_sync: Some("/".into()),
-            pending_sftp_tree_scroll_path: None,
-            sftp_context_menu: None,
             context_menu_epoch: 0,
             disconnect_epoch: 0,
-            sftp_creating_folder: false,
-            sftp_new_folder_input,
-            sftp_delete_scroll_handle: gpui::ScrollHandle::new(),
+            sftp_workspace: SftpWorkspaceState {
+                path_input: sftp_path_input,
+                new_folder_input: sftp_new_folder_input,
+                remote_files_scroll_handle: UniformListScrollHandle::new(),
+                tree_scroll_handle: gpui::ScrollHandle::new(),
+                delete_scroll_handle: gpui::ScrollHandle::new(),
+                pending_path_sync: Some("/".into()),
+                pending_tree_scroll_path: None,
+                context_menu: None,
+                creating_folder: false,
+            },
             sftp_panel: SftpPanelState {
                 view: sftp_panel_view,
                 minimized: config.sftp_panel_minimized(),
@@ -1292,10 +1331,11 @@ impl TinyShell {
                 }
                 _ => {}
             }
-        } else if input == &self.sftp_path_input {
+        } else if input == &self.sftp_workspace.path_input {
             if let InputEvent::PressEnter { .. } = event {
                 let path = self
-                    .sftp_path_input
+                    .sftp_workspace
+                    .path_input
                     .read(cx)
                     .text()
                     .to_string()
@@ -1305,23 +1345,28 @@ impl TinyShell {
                 window.prevent_default();
                 cx.stop_propagation();
             }
-        } else if input == &self.sftp_new_folder_input {
+        } else if input == &self.sftp_workspace.new_folder_input {
             match event {
                 InputEvent::PressEnter { .. } => {
-                    let name = self.sftp_new_folder_input.read(cx).text().to_string();
+                    let name = self
+                        .sftp_workspace
+                        .new_folder_input
+                        .read(cx)
+                        .text()
+                        .to_string();
                     if !name.is_empty() {
-                        let base_path = self.sftp_path_input.read(cx).text().to_string();
+                        let base_path = self.sftp_workspace.path_input.read(cx).text().to_string();
                         let path = crate::sftp::join_remote(&base_path, &name);
                         if let Some(handle) = self.active_sftp_handle() {
                             handle.send_command(crate::sftp::SftpCommand::CreateDir(path));
                         }
                     }
-                    self.sftp_creating_folder = false;
+                    self.sftp_workspace.creating_folder = false;
                     window.prevent_default();
                     cx.stop_propagation();
                 }
                 InputEvent::Blur => {
-                    self.sftp_creating_folder = false;
+                    self.sftp_workspace.creating_folder = false;
                 }
                 _ => {}
             }
@@ -1641,14 +1686,14 @@ impl TinyShell {
     }
 
     fn handle_terminal_output(&mut self, tab_id: String, bytes: Vec<u8>, _cx: &mut Context<Self>) {
-        if let Some(tab) = self.tabs.iter_mut().find(|t| t.id == tab_id) {
+        if let Some(tab) = self.terminal_tab_mut(&tab_id) {
             tab.backend_initialized = true;
             tab.feed(&bytes);
         }
     }
 
     fn handle_terminal_status(&mut self, tab_id: String, text: String, _cx: &mut Context<Self>) {
-        if let Some(tab) = self.tabs.iter_mut().find(|t| t.id == tab_id) {
+        if let Some(tab) = self.terminal_tab_mut(&tab_id) {
             tab.backend_initialized = true;
             tab.status = text.clone();
         }
@@ -1656,7 +1701,7 @@ impl TinyShell {
     }
 
     fn handle_terminal_connected(&mut self, tab_id: String, _cx: &mut Context<Self>) {
-        if let Some(tab) = self.tabs.iter_mut().find(|t| t.id == tab_id) {
+        if let Some(tab) = self.terminal_tab_mut(&tab_id) {
             tab.backend_initialized = true;
             tab.feed_status_line(&t!("connection_succeeded"));
             tab.connected = true;
@@ -1672,7 +1717,7 @@ impl TinyShell {
         title: String,
         _cx: &mut Context<Self>,
     ) {
-        if let Some(tab) = self.tabs.iter_mut().find(|t| t.id == tab_id) {
+        if let Some(tab) = self.terminal_tab_mut(&tab_id) {
             tab.dynamic_title = title;
         }
         if self.active_tab.as_deref() == Some(tab_id.as_str()) {
@@ -1730,9 +1775,7 @@ impl TinyShell {
             self.status = reason.into();
             return true;
         }
-        if !was_manually_disconnected
-            && let Some(tab) = self.tabs.iter_mut().find(|t| t.id == tab_id)
-        {
+        if !was_manually_disconnected && let Some(tab) = self.terminal_tab_mut(&tab_id) {
             let terminal_message = if tab.connected {
                 t!("session_disconnected", "reason" = reason.clone()).to_string()
             } else {
@@ -1758,13 +1801,13 @@ impl TinyShell {
         entries: Vec<crate::sftp::RemoteEntry>,
         _cx: &mut Context<Self>,
     ) {
-        if let Some(group) = self.tab_groups.iter_mut().find(|g| g.id == tab_id) {
+        if let Some(group) = self.tab_group_mut(&tab_id) {
             if let Some(sftp) = group.sftp.as_mut() {
                 sftp.directory_entries.insert(path.clone(), entries.clone());
                 if sftp.current_path == path {
                     sftp.entries = entries;
                     if self.active_group.as_deref() == Some(tab_id.as_str()) {
-                        self.pending_sftp_path_sync = Some(path);
+                        self.sftp_workspace.pending_path_sync = Some(path);
                     }
                 }
             }
@@ -1778,7 +1821,7 @@ impl TinyShell {
         entries: Vec<crate::sftp::RemoteEntry>,
         _cx: &mut Context<Self>,
     ) {
-        if let Some(group) = self.tab_groups.iter_mut().find(|g| g.id == tab_id) {
+        if let Some(group) = self.tab_group_mut(&tab_id) {
             if let Some(sftp) = group.sftp.as_mut() {
                 sftp.directory_entries.insert(path, entries);
             }
@@ -1786,7 +1829,7 @@ impl TinyShell {
     }
 
     fn handle_sftp_status(&mut self, tab_id: String, text: String, _cx: &mut Context<Self>) {
-        if let Some(group) = self.tab_groups.iter_mut().find(|g| g.id == tab_id) {
+        if let Some(group) = self.tab_group_mut(&tab_id) {
             if let Some(sftp) = group.sftp.as_mut() {
                 sftp.status = text.clone();
             }
@@ -1802,7 +1845,7 @@ impl TinyShell {
         latency_ms: Option<u64>,
         _cx: &mut Context<Self>,
     ) {
-        if let Some(group) = self.tab_groups.iter_mut().find(|group| group.id == tab_id)
+        if let Some(group) = self.tab_group_mut(&tab_id)
             && let Some(sftp) = group.sftp.as_mut()
         {
             sftp.latency_ms = latency_ms;
@@ -1810,15 +1853,15 @@ impl TinyShell {
     }
 
     fn handle_sftp_home(&mut self, tab_id: String, home: String, _cx: &mut Context<Self>) {
-        if let Some(group) = self.tab_groups.iter_mut().find(|g| g.id == tab_id) {
+        if let Some(group) = self.tab_group_mut(&tab_id) {
             if let Some(sftp) = group.sftp.as_mut() {
                 sftp.home_dir = home.clone();
                 sftp.current_path = home.clone();
                 sftp.entries.clear();
                 Self::expand_sftp_tree_to_path(sftp, &home);
                 if self.active_group.as_deref() == Some(tab_id.as_str()) {
-                    self.pending_sftp_path_sync = Some(home.clone());
-                    self.pending_sftp_tree_scroll_path = Some(home);
+                    self.sftp_workspace.pending_path_sync = Some(home.clone());
+                    self.sftp_workspace.pending_tree_scroll_path = Some(home);
                 }
             }
         }
@@ -1973,7 +2016,7 @@ impl TinyShell {
             // machine, including while connecting, disconnected, or after a
             // transient remote probe failure.
             if let Some(ref tab_id) = self.system_tab_id.clone() {
-                if let Some(tab) = self.tabs.iter().find(|tab| tab.id == *tab_id)
+                if let Some(tab) = self.terminal_tab(tab_id)
                     && tab.kind == TabKind::Ssh
                 {
                     if tab.connected {
@@ -2058,7 +2101,7 @@ impl TinyShell {
             return;
         };
         let Some(backend) = (|| {
-            let tab = self.tabs.iter().find(|t| t.id == *tab_id)?;
+            let tab = self.terminal_tab(tab_id)?;
             if !tab.connected {
                 return None;
             }
@@ -2158,7 +2201,7 @@ impl TinyShell {
         tab_id: &str,
         require_follow_enabled: bool,
     ) -> bool {
-        let Some(tab) = self.tabs.iter().find(|tab| tab.id == tab_id) else {
+        let Some(tab) = self.terminal_tab(tab_id) else {
             return false;
         };
         if tab.kind != TabKind::Ssh {
@@ -2189,7 +2232,7 @@ impl TinyShell {
     }
 
     pub(crate) fn sync_initial_sftp_to_terminal_tab(&mut self, tab_id: &str) -> bool {
-        let Some(tab) = self.tabs.iter().find(|tab| tab.id == tab_id) else {
+        let Some(tab) = self.terminal_tab(tab_id) else {
             return false;
         };
         if tab.kind != TabKind::Ssh {

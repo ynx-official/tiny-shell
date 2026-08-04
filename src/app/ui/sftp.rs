@@ -198,7 +198,7 @@ impl TinyShell {
                         v_flex()
                             .id("sftp-directory-tree")
                             .size_full()
-                            .track_scroll(&self.sftp_tree_scroll_handle)
+                            .track_scroll(&self.sftp_workspace.tree_scroll_handle)
                             .overflow_y_scroll()
                             .p_1()
                             .gap(px(1.))
@@ -228,7 +228,7 @@ impl TinyShell {
                             .bottom_0()
                             .w(px(8.))
                             .child(
-                                Scrollbar::vertical(&self.sftp_tree_scroll_handle)
+                                Scrollbar::vertical(&self.sftp_workspace.tree_scroll_handle)
                                     .scrollbar_show(ScrollbarShow::Scrolling),
                             ),
                     ),
@@ -920,12 +920,14 @@ impl TinyShell {
                                 .icon(IconName::Folder)
                                 .label(t!("new_folder").to_string())
                                 .on_click(cx.listener(|this, _, window, cx| {
-                                    this.sftp_creating_folder = true;
-                                    this.sftp_new_folder_input.update(cx, |input, cx| {
-                                        input.set_value("", window, cx);
-                                    });
+                                    this.sftp_workspace.creating_folder = true;
+                                    this.sftp_workspace
+                                        .new_folder_input
+                                        .update(cx, |input, cx| {
+                                            input.set_value("", window, cx);
+                                        });
                                     crate::app::input_focus::defer_focus_input_at_end(
-                                        this.sftp_new_folder_input.clone(),
+                                        this.sftp_workspace.new_folder_input.clone(),
                                         window,
                                         cx,
                                     );
@@ -1128,7 +1130,11 @@ impl TinyShell {
                                     this.navigate_sftp(parent_path.clone(), cx);
                                 })),
                         )
-                        .child(Input::new(&self.sftp_path_input).flex_1().tab_index(0))
+                        .child(
+                            Input::new(&self.sftp_workspace.path_input)
+                                .flex_1()
+                                .tab_index(0),
+                        )
                         .child(div().flex_none()),
                 )
                 .child(
@@ -1209,10 +1215,13 @@ impl TinyShell {
                                         .on_mouse_down(
                                             MouseButton::Right,
                                             cx.listener(|this, event: &MouseDownEvent, _, cx| {
-                                                let target_was_set_by_row =
-                                                    this.sftp_context_menu.as_ref().is_some_and(
-                                                        |menu| menu.position == event.position,
-                                                    );
+                                                let target_was_set_by_row = this
+                                                    .sftp_workspace
+                                                    .context_menu
+                                                    .as_ref()
+                                                    .is_some_and(|menu| {
+                                                        menu.position == event.position
+                                                    });
                                                 if !target_was_set_by_row {
                                                     this.open_sftp_context_menu(
                                                         None,
@@ -1408,7 +1417,9 @@ impl TinyShell {
                                                 },
                                             )
                                             .size_full()
-                                            .track_scroll(&self.remote_files_scroll_handle)
+                                            .track_scroll(
+                                                &self.sftp_workspace.remote_files_scroll_handle,
+                                            )
                                         })
                                         .child(
                                             div()
@@ -1419,7 +1430,9 @@ impl TinyShell {
                                                 .w(px(16.))
                                                 .child(
                                                     Scrollbar::vertical(
-                                                        &self.remote_files_scroll_handle,
+                                                        &self
+                                                            .sftp_workspace
+                                                            .remote_files_scroll_handle,
                                                     )
                                                     .scrollbar_show(ScrollbarShow::Always),
                                                 ),

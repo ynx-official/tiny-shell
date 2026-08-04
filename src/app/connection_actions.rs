@@ -289,7 +289,7 @@ impl TinyShell {
         );
         self.sftp_handles.insert(group_id.clone(), sftp_handle);
         self.active_tab = Some(id.clone());
-        self.pending_sftp_path_sync = Some("/".into());
+        self.sftp_workspace.pending_path_sync = Some("/".into());
         self.status = t!("ssh_tab_opened").into();
         cx.notify();
     }

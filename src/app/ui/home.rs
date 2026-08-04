@@ -8,9 +8,7 @@ impl TinyShell {
                 .find(|tab| &tab.id == info_id)
                 .map(|tab| tab.source_tab_id.clone())
         });
-        let source_tab = source_tab_id
-            .as_ref()
-            .and_then(|id| self.tabs.iter().find(|tab| &tab.id == id));
+        let source_tab = source_tab_id.as_ref().and_then(|id| self.terminal_tab(id));
         let snapshot = source_tab_id
             .as_ref()
             .and_then(|id| self.monitoring.remote_system_snapshots.get(id))

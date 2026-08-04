@@ -1675,7 +1675,7 @@ impl TinyShell {
         window: &mut Window,
         cx: &mut Context<PopupMenu>,
     ) -> PopupMenu {
-        let target = view.read(cx).sftp_context_menu.clone();
+        let target = view.read(cx).sftp_workspace.context_menu.clone();
         let has_target = target
             .as_ref()
             .is_some_and(|target| target.remote_path.is_some());
@@ -1693,7 +1693,7 @@ impl TinyShell {
                 PopupMenuItem::new(t!("refresh").to_string()).on_click(window.listener_for(
                     &view,
                     |this, _, _, cx| {
-                        this.sftp_context_menu = None;
+                        this.sftp_workspace.context_menu = None;
                         this.refresh_sftp(cx);
                     },
                 )),

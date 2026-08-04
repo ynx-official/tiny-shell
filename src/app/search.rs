@@ -65,26 +65,10 @@ impl TinyShell {
             return;
         }
 
-        // Find the active tab — try active_tab first, then fall back to the
-        // first tab in the active group, then any tab.
         let tab = self
-            .active_tab
-            .as_ref()
-            .and_then(|id| self.tabs.iter().find(|t| &t.id == id));
-
-        let tab = tab.or_else(|| {
-            let first_id = self
-                .active_group
-                .as_ref()
-                .and_then(|gid| self.tab_groups.iter().find(|g| &g.id == gid))
-                .and_then(|g| g.pane_root.tab_ids().into_iter().next())
-                .map(|s| s.to_string());
-            first_id
-                .as_deref()
-                .and_then(|id| self.tabs.iter().find(|t| t.id == id))
-        });
-
-        let tab = tab.or_else(|| self.tabs.first());
+            .preferred_terminal_tab_id()
+            .as_deref()
+            .and_then(|id| self.terminal_tab(id));
 
         let Some(tab) = tab else {
             self.status = t!("no_results").into();
@@ -98,7 +82,7 @@ impl TinyShell {
         // tab borrow does not overlap the state update.
         let tab_id = tab.id.clone();
         self.search_target_tab = Some(tab_id.clone());
-        let Some(tab) = self.tabs.iter().find(|candidate| candidate.id == tab_id) else {
+        let Some(tab) = self.terminal_tab(&tab_id) else {
             return;
         };
 
@@ -200,16 +184,10 @@ impl TinyShell {
         };
 
         // Find the tab ID first (immutable borrow), then look up mutably.
-        let tab_id = self.active_tab.clone().or_else(|| {
-            self.active_group
-                .as_ref()
-                .and_then(|gid| self.tab_groups.iter().find(|g| &g.id == gid))
-                .and_then(|g| g.pane_root.tab_ids().into_iter().next())
-                .map(|s| s.to_string())
-        });
+        let tab_id = self.preferred_terminal_tab_id();
 
         let tab = if let Some(id) = tab_id.as_deref() {
-            self.tabs.iter_mut().find(|t| t.id == id)
+            self.terminal_tab_mut(id)
         } else {
             self.tabs.first_mut()
         };
@@ -254,25 +232,9 @@ impl TinyShell {
 
         // Get current display_offset to convert grid line → viewport row.
         let tab = self
-            .active_tab
-            .as_ref()
-            .and_then(|id| self.tabs.iter().find(|t| &t.id == id));
-
-        let tab = tab.or_else(|| {
-            let first_id = self
-                .active_group
-                .as_ref()
-                .and_then(|gid| self.tab_groups.iter().find(|g| &g.id == gid))
-                .and_then(|g| g.pane_root.tab_ids().into_iter().next())
-                .map(|s| s.to_string());
-            first_id
-                .as_deref()
-                .and_then(|id| self.tabs.iter().find(|t| t.id == id))
-        });
-
-        let tab = tab.or_else(|| self.tabs.first());
-
-        let tab = tab?;
+            .preferred_terminal_tab_id()
+            .as_deref()
+            .and_then(|id| self.terminal_tab(id))?;
         let snapshot = tab.render_snapshot(false);
         let display_offset = snapshot.display_offset as i32;
         let rows = snapshot.rows as i32;
