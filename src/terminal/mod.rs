@@ -8,7 +8,7 @@ use std::{
     sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
-        mpsc::{self, Receiver, Sender},
+        mpsc::{self, Receiver, Sender, SyncSender},
     },
 };
 
@@ -142,7 +142,7 @@ pub(crate) enum BackendEvent {
 
 #[derive(Clone)]
 pub(crate) struct BackendEventSender {
-    events: Sender<BackendEvent>,
+    events: SyncSender<BackendEvent>,
     wake_generation: Arc<AtomicU64>,
     wake: tokio::sync::watch::Sender<u64>,
 }
@@ -164,7 +164,10 @@ impl BackendEventSender {
 }
 
 pub(crate) fn backend_event_channel() -> (BackendEventSender, Receiver<BackendEvent>) {
-    let (events, receiver) = mpsc::channel();
+    // Bound producer memory while still allowing normal terminal bursts to be
+    // absorbed without stalling the UI on every individual event.
+    const EVENT_QUEUE_CAPACITY: usize = 16_384;
+    let (events, receiver) = mpsc::sync_channel(EVENT_QUEUE_CAPACITY);
     let (wake, _) = tokio::sync::watch::channel(0);
     (
         BackendEventSender {

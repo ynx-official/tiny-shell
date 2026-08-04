@@ -65,11 +65,11 @@ pub(crate) enum InstallationKind {
 pub(crate) fn installation_kind() -> InstallationKind {
     #[cfg(target_os = "windows")]
     {
-        return if windows_installer_matches_current_exe() {
+        if windows_installer_matches_current_exe() {
             InstallationKind::WindowsInstaller
         } else {
             InstallationKind::Portable
-        };
+        }
     }
 
     #[cfg(target_os = "macos")]

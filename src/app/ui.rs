@@ -132,22 +132,6 @@ impl Render for TinyShell {
         self.sync_sftp_path_input(window, cx);
         self.sync_sftp_tree_scroll();
 
-        // Refresh this window's screen-space bounds in the cross-window
-        // registry so other windows can hit-test against it during a
-        // cross-window tab drag.
-        {
-            let handle = window.window_handle();
-            let screen_bounds = match window.window_bounds() {
-                gpui::WindowBounds::Fullscreen(b)
-                | gpui::WindowBounds::Maximized(b)
-                | gpui::WindowBounds::Windowed(b) => b,
-            };
-            crate::app::update_window_bounds(handle, screen_bounds);
-            if window.is_window_active() {
-                crate::app::mark_window_active(handle);
-            }
-        }
-
         if self.show_transfers_dialog {
             self.show_transfers_dialog = false;
             self.show_transfers_dialog(window, cx);
@@ -610,6 +594,19 @@ impl Render for TinyShell {
             .on_prepaint({
                 let view = cx.entity().clone();
                 move |_, window, cx| {
+                    // Cross-window drag hit testing needs screen-space bounds
+                    // after layout has been computed, not during render.
+                    let handle = window.window_handle();
+                    let screen_bounds = match window.window_bounds() {
+                        gpui::WindowBounds::Fullscreen(b)
+                        | gpui::WindowBounds::Maximized(b)
+                        | gpui::WindowBounds::Windowed(b) => b,
+                    };
+                    crate::app::update_window_bounds(handle, screen_bounds);
+                    if window.is_window_active() {
+                        crate::app::mark_window_active(handle);
+                    }
+
                     view.update(cx, |this, cx| {
                         let current_win_size = window.viewport_size();
                         let size_changed = this.last_window_size != Some(current_win_size);

@@ -11,6 +11,7 @@ pub(crate) struct SessionStore {
     unrouted_events: HashMap<String, VecDeque<BackendEvent>>,
     events_tx: BackendEventSender,
     events_rx: Receiver<BackendEvent>,
+    deferred_event: Option<BackendEvent>,
 }
 
 impl SessionStore {
@@ -22,6 +23,7 @@ impl SessionStore {
             unrouted_events: HashMap::new(),
             events_tx,
             events_rx,
+            deferred_event: None,
         }
     }
 
@@ -84,20 +86,42 @@ impl SessionStore {
         owner_id: WindowOwnerId,
         limit: usize,
     ) -> Vec<BackendEvent> {
-        while let Ok(event) = self.events_rx.try_recv() {
+        // Keep routing work bounded as well as UI dispatch work. A busy SSH
+        // session must not monopolize the window that is currently draining
+        // events, especially when another window owns the next event batch.
+        const MAX_ROUTED_EVENTS_PER_TICK: usize = 2_048;
+        const MAX_PENDING_EVENTS_PER_OWNER: usize = 8_192;
+        let mut routed = 0;
+        while routed < MAX_ROUTED_EVENTS_PER_TICK {
+            let event = if let Some(event) = self.deferred_event.take() {
+                event
+            } else {
+                let Ok(event) = self.events_rx.try_recv() else {
+                    break;
+                };
+                event
+            };
+            routed += 1;
             let Some(route_id) = event_route_id(&event) else {
                 continue;
             };
             if let Some(owner_id) = self.event_routes.get(route_id).copied() {
-                self.pending_events
-                    .entry(owner_id)
-                    .or_default()
-                    .push_back(event);
+                let pending = self.pending_events.entry(owner_id).or_default();
+                if pending.len() >= MAX_PENDING_EVENTS_PER_OWNER {
+                    self.deferred_event = Some(event);
+                    break;
+                }
+                pending.push_back(event);
             } else {
-                self.unrouted_events
+                let pending = self
+                    .unrouted_events
                     .entry(route_id.to_string())
-                    .or_default()
-                    .push_back(event);
+                    .or_default();
+                if pending.len() >= MAX_PENDING_EVENTS_PER_OWNER {
+                    self.deferred_event = Some(event);
+                    break;
+                }
+                pending.push_back(event);
             }
         }
         let pending = self.pending_events.entry(owner_id).or_default();
@@ -197,5 +221,29 @@ mod tests {
 
         assert!(!store.move_event_routes(&["session-a".to_string()], 3, 2));
         assert_eq!(store.drain_events_for(2, usize::MAX).len(), 0);
+    }
+
+    #[test]
+    fn routing_work_is_bounded_per_tick() {
+        let mut store = SessionStore::new();
+        store.register_event_route("session-a".to_string(), 1);
+        store.register_event_route("session-b".to_string(), 2);
+        for index in 0..3_000 {
+            store
+                .events_sender()
+                .send(BackendEvent::Status {
+                    tab_id: if index == 0 {
+                        "session-a".to_string()
+                    } else {
+                        "session-b".to_string()
+                    },
+                    text: "queued".to_string(),
+                })
+                .unwrap();
+        }
+
+        assert_eq!(store.drain_events_for(1, usize::MAX).len(), 1);
+        assert_eq!(store.drain_events_for(2, 2_047).len(), 2_047);
+        assert_eq!(store.drain_events_for(2, usize::MAX).len(), 952);
     }
 }

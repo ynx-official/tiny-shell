@@ -174,7 +174,7 @@ impl TinyShell {
         if let Some(mut saved_session) = self.config.get(&session.id).cloned() {
             saved_session.last_used = Some(last_used);
             self.config.upsert(saved_session);
-            if let Err(err) = config_persistence::save_full(&self.config) {
+            if let Err(err) = config_persistence::save_full_async(&self.config) {
                 tracing::warn!("failed to save session recency: {err:#}");
             }
         }

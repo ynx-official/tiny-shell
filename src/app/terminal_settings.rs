@@ -75,7 +75,7 @@ impl TinyShell {
 
     pub(crate) fn reset_layout(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         self.config.set_layout_state(None, None, None);
-        if let Err(error) = config_persistence::save_full(&self.config) {
+        if let Err(error) = config_persistence::save_full_async(&self.config) {
             tracing::warn!("failed to persist reset layout: {error:#}");
         }
 

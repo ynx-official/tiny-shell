@@ -1381,7 +1381,7 @@ impl TinyShell {
         if let Some(before) = target {
             self.config
                 .reorder_connection_group(&source, before.as_deref());
-            if let Err(err) = crate::app::config_persistence::save_full(&self.config) {
+            if let Err(err) = crate::app::config_persistence::save_full_async(&self.config) {
                 tracing::warn!("failed to save connection group order: {err:#}");
             }
         }
