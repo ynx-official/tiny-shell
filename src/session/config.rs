@@ -280,14 +280,6 @@ impl ConfigStore {
         true
     }
 
-    pub fn purge_deleted_session(&mut self, id: &str) -> bool {
-        let before = self.cache.deleted_sessions.len();
-        self.cache
-            .deleted_sessions
-            .retain(|item| item.session.id != id);
-        before != self.cache.deleted_sessions.len()
-    }
-
     fn ensure_connection_group_path(&mut self, group: &str) {
         let mut path = String::new();
         for segment in group.split('/') {

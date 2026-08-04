@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use std::ops::Range;
 
 use gpui::{
@@ -92,41 +90,6 @@ impl ResizableState {
         self.done_resizing(cx);
     }
 
-    pub(crate) fn insert_panel(
-        &mut self,
-        size: Option<Pixels>,
-        ix: Option<usize>,
-        cx: &mut Context<Self>,
-    ) {
-        let panel_state = ResizablePanelState {
-            size,
-            ..Default::default()
-        };
-
-        let size = size.unwrap_or(PANEL_MIN_SIZE);
-
-        // We make sure that the size always sums up to the container size
-        // by reducing the size of all other panels first.
-        let container_size = self.container_size().max(px(1.));
-        let total_leftover_size = (container_size - size).max(px(1.));
-
-        for (i, panel) in self.panels.iter_mut().enumerate() {
-            let ratio = self.sizes[i] / container_size;
-            self.sizes[i] = total_leftover_size * ratio;
-            panel.size = Some(self.sizes[i]);
-        }
-
-        if let Some(ix) = ix {
-            self.panels.insert(ix, panel_state);
-            self.sizes.insert(ix, size);
-        } else {
-            self.panels.push(panel_state);
-            self.sizes.push(size);
-        };
-
-        cx.notify();
-    }
-
     pub(crate) fn sync_panels_count(
         &mut self,
         axis: Axis,
@@ -174,35 +137,6 @@ impl ResizableState {
         self.panels[panel_ix].bounds = bounds;
         self.panels[panel_ix].size_range = size_range;
         cx.notify();
-    }
-
-    pub(crate) fn remove_panel(&mut self, panel_ix: usize, cx: &mut Context<Self>) {
-        self.panels.remove(panel_ix);
-        self.sizes.remove(panel_ix);
-        if let Some(resizing_panel_ix) = self.resizing_panel_ix {
-            if resizing_panel_ix > panel_ix {
-                self.resizing_panel_ix = Some(resizing_panel_ix - 1);
-            }
-        }
-        self.adjust_to_container_size(cx);
-    }
-
-    pub(crate) fn replace_panel(
-        &mut self,
-        panel_ix: usize,
-        panel: ResizablePanelState,
-        cx: &mut Context<Self>,
-    ) {
-        let old_size = self.sizes[panel_ix];
-
-        self.panels[panel_ix] = panel;
-        self.sizes[panel_ix] = old_size;
-        self.adjust_to_container_size(cx);
-    }
-
-    pub(crate) fn clear(&mut self) {
-        self.panels.clear();
-        self.sizes.clear();
     }
 
     #[inline]
