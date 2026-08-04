@@ -32,7 +32,7 @@ pub(crate) struct SyncDownloadedConfig {
 impl TinyShell {
     pub(crate) fn handle_sync_finished(
         &mut self,
-        result: Box<SyncResult>,
+        result: SyncResult,
         task_id: u64,
         cx: &mut Context<Self>,
     ) {
@@ -40,7 +40,7 @@ impl TinyShell {
             .supervisor
             .finish("sync-operation", task_id);
         self.sync_runtime.in_progress = false;
-        match *result {
+        match result {
             SyncResult::Uploaded {
                 etag,
                 privacy_password,

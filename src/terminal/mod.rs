@@ -48,12 +48,11 @@ pub(crate) enum BackendCommand {
     Close,
 }
 
-#[allow(clippy::box_collection)]
 #[derive(Debug, Clone)]
 pub(crate) enum BackendEvent {
     Output {
         tab_id: String,
-        bytes: Box<Vec<u8>>,
+        bytes: Vec<u8>,
     },
     Status {
         tab_id: String,
@@ -65,12 +64,12 @@ pub(crate) enum BackendEvent {
     SftpEntries {
         tab_id: String,
         path: String,
-        entries: Box<Vec<RemoteEntry>>,
+        entries: Vec<RemoteEntry>,
     },
     SftpDirectoryEntries {
         tab_id: String,
         path: String,
-        entries: Box<Vec<RemoteEntry>>,
+        entries: Vec<RemoteEntry>,
     },
     SftpStatus {
         tab_id: String,

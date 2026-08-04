@@ -1601,7 +1601,7 @@ impl TinyShell {
                     remote_path,
                     file,
                 } => {
-                    self.handle_sftp_file_content(tab_id, remote_path, file, cx);
+                    self.handle_sftp_file_content(tab_id, remote_path, *file, cx);
                 }
                 BackendEvent::SftpContentUploaded {
                     tab_id,
@@ -1615,7 +1615,7 @@ impl TinyShell {
                     remote_path,
                     remote_file,
                 } => {
-                    self.handle_sftp_content_conflict(tab_id, remote_path, remote_file, cx);
+                    self.handle_sftp_content_conflict(tab_id, remote_path, *remote_file, cx);
                 }
                 BackendEvent::SftpContentUploadFailed {
                     tab_id,
@@ -1625,13 +1625,13 @@ impl TinyShell {
                     self.handle_sftp_content_upload_failed(tab_id, remote_path, error, cx);
                 }
                 BackendEvent::RemoteSystem { tab_id, snapshot } => {
-                    self.handle_remote_system(tab_id, snapshot, cx);
+                    self.handle_remote_system(tab_id, *snapshot, cx);
                 }
                 BackendEvent::RemoteSystemUnavailable { tab_id, reason } => {
                     self.handle_remote_system_unavailable(tab_id, reason, cx);
                 }
                 BackendEvent::TransferStarted { tab_id, info } => {
-                    transfers_changed |= self.handle_transfer_started(tab_id, info, cx);
+                    transfers_changed |= self.handle_transfer_started(tab_id, *info, cx);
                 }
                 BackendEvent::TransferProgress {
                     tab_id,
@@ -1644,7 +1644,7 @@ impl TinyShell {
                         self.handle_transfer_progress(tab_id, id, transferred, total, state, cx);
                 }
                 BackendEvent::SyncFinished { result, task_id } => {
-                    self.handle_sync_finished(result, task_id, cx);
+                    self.handle_sync_finished(*result, task_id, cx);
                 }
             }
         }
@@ -1654,13 +1654,7 @@ impl TinyShell {
         changed
     }
 
-    #[allow(clippy::boxed_local, clippy::box_collection)]
-    fn handle_terminal_output(
-        &mut self,
-        tab_id: String,
-        bytes: Box<Vec<u8>>,
-        _cx: &mut Context<Self>,
-    ) {
+    fn handle_terminal_output(&mut self, tab_id: String, bytes: Vec<u8>, _cx: &mut Context<Self>) {
         if let Some(tab) = self.tabs.iter_mut().find(|t| t.id == tab_id) {
             tab.backend_initialized = true;
             tab.feed(&bytes);
@@ -1771,20 +1765,18 @@ impl TinyShell {
         false
     }
 
-    #[allow(clippy::boxed_local, clippy::box_collection)]
     fn handle_sftp_entries(
         &mut self,
         tab_id: String,
         path: String,
-        entries: Box<Vec<crate::sftp::RemoteEntry>>,
+        entries: Vec<crate::sftp::RemoteEntry>,
         _cx: &mut Context<Self>,
     ) {
         if let Some(group) = self.tab_groups.iter_mut().find(|g| g.id == tab_id) {
             if let Some(sftp) = group.sftp.as_mut() {
-                sftp.directory_entries
-                    .insert(path.clone(), (*entries).clone());
+                sftp.directory_entries.insert(path.clone(), entries.clone());
                 if sftp.current_path == path {
-                    sftp.entries = *entries;
+                    sftp.entries = entries;
                     if self.active_group.as_deref() == Some(tab_id.as_str()) {
                         self.pending_sftp_path_sync = Some(path);
                     }
@@ -1793,17 +1785,16 @@ impl TinyShell {
         }
     }
 
-    #[allow(clippy::boxed_local, clippy::box_collection)]
     fn handle_sftp_directory_entries(
         &mut self,
         tab_id: String,
         path: String,
-        entries: Box<Vec<crate::sftp::RemoteEntry>>,
+        entries: Vec<crate::sftp::RemoteEntry>,
         _cx: &mut Context<Self>,
     ) {
         if let Some(group) = self.tab_groups.iter_mut().find(|g| g.id == tab_id) {
             if let Some(sftp) = group.sftp.as_mut() {
-                sftp.directory_entries.insert(path, *entries);
+                sftp.directory_entries.insert(path, entries);
             }
         }
     }
@@ -1854,16 +1845,15 @@ impl TinyShell {
         }
     }
 
-    #[allow(clippy::boxed_local)]
     fn handle_sftp_file_content(
         &mut self,
         tab_id: String,
         remote_path: String,
-        file: Box<crate::sftp::text_file::RemoteTextFile>,
+        file: crate::sftp::text_file::RemoteTextFile,
         cx: &mut Context<Self>,
     ) {
         if let Some(handle) = self.sftp_handles.get(&tab_id).cloned() {
-            sftp_editor_window::open_or_focus(tab_id, remote_path, *file, handle, cx);
+            sftp_editor_window::open_or_focus(tab_id, remote_path, file, handle, cx);
         }
     }
 
@@ -1877,15 +1867,14 @@ impl TinyShell {
         sftp_editor_window::mark_uploaded(&tab_id, &remote_path, revision, cx);
     }
 
-    #[allow(clippy::boxed_local)]
     fn handle_sftp_content_conflict(
         &mut self,
         tab_id: String,
         remote_path: String,
-        remote_file: Box<crate::sftp::text_file::RemoteTextFile>,
+        remote_file: crate::sftp::text_file::RemoteTextFile,
         cx: &mut Context<Self>,
     ) {
-        sftp_editor_window::mark_conflict(&tab_id, &remote_path, *remote_file, cx);
+        sftp_editor_window::mark_conflict(&tab_id, &remote_path, remote_file, cx);
     }
 
     fn handle_sftp_content_upload_failed(
@@ -1901,10 +1890,9 @@ impl TinyShell {
     fn handle_remote_system(
         &mut self,
         tab_id: String,
-        snapshot: Box<SystemSnapshot>,
+        snapshot: SystemSnapshot,
         _cx: &mut Context<Self>,
     ) {
-        let snapshot = *snapshot;
         if self.monitoring.remote_sample_in_flight.as_deref() == Some(tab_id.as_str()) {
             self.monitoring.remote_sample_in_flight = None;
         }
@@ -1944,11 +1932,10 @@ impl TinyShell {
         }
     }
 
-    #[allow(clippy::boxed_local)]
     fn handle_transfer_started(
         &mut self,
         tab_id: String,
-        info: Box<crate::terminal::TransferInfo>,
+        info: crate::terminal::TransferInfo,
         _cx: &mut Context<Self>,
     ) -> bool {
         let tab_title = self.transfer_source_title(&tab_id);
@@ -1957,7 +1944,7 @@ impl TinyShell {
             crate::terminal::Transfer {
                 tab_id,
                 tab_title,
-                info: *info,
+                info,
                 transferred: 0,
                 total: None,
                 state: crate::terminal::TransferState::Running,

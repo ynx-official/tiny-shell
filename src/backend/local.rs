@@ -73,7 +73,7 @@ pub(crate) fn spawn_local_terminal(
                 Ok(n) => {
                     let _ = read_events.send(BackendEvent::Output {
                         tab_id: read_tab.clone(),
-                        bytes: Box::new(buf[..n].to_vec()),
+                        bytes: buf[..n].to_vec(),
                     });
                 }
                 Err(err) => {

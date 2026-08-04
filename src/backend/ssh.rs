@@ -185,7 +185,7 @@ async fn run_ssh(
                     Some(ChannelMsg::Data { data }) | Some(ChannelMsg::ExtendedData { data, ext: _ }) => {
                         let _ = events.send(BackendEvent::Output {
                             tab_id: tab_id.clone(),
-                            bytes: Box::new(data.to_vec()),
+                            bytes: data.to_vec(),
                         });
                     }
                     Some(ChannelMsg::ExitStatus { exit_status: _ }) | Some(ChannelMsg::Eof) => {
