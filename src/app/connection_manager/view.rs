@@ -336,10 +336,11 @@ fn render_group(
     };
     let selected = state.selected.as_ref() == Some(&id);
     let node_id = id.clone();
+    let double_click_group = group_name.clone();
     h_flex()
         .id(("connection-manager-group", index))
         .min_h(px(32.))
-        .pl(px(10. + depth as f32 * 16.))
+        .pl(px(14. + depth as f32 * 16.))
         .pr_3()
         .items_center()
         .gap_2()
@@ -348,9 +349,12 @@ fn render_group(
         .hover(|this| this.bg(cx.theme().secondary.opacity(0.65)))
         .on_mouse_down(
             MouseButton::Left,
-            window.listener_for(view, move |this, _event: &MouseDownEvent, _, cx| {
+            window.listener_for(view, move |this, event: &MouseDownEvent, _, cx| {
                 this.connection_manager_state.update(cx, |state, _| {
                     state.select(node_id.clone());
+                    if event.click_count >= 2 {
+                        state.toggle_group(&double_click_group);
+                    }
                 });
                 cx.notify();
             }),
@@ -359,8 +363,9 @@ fn render_group(
         .child(
             div()
                 .id(("connection-manager-group-toggle", index))
-                .w(px(18.))
-                .h(px(22.))
+                .w(px(16.))
+                .h(px(18.))
+                .flex_none()
                 .items_center()
                 .justify_center()
                 .cursor_pointer()
@@ -388,7 +393,22 @@ fn render_group(
                 .flex_1()
                 .items_center()
                 .gap_2()
-                .child(Icon::new(IconName::Folder).with_size(Size::Small))
+                .child(
+                    div()
+                        .w(px(16.))
+                        .h(px(18.))
+                        .flex_none()
+                        .items_center()
+                        .justify_center()
+                        .child(
+                            Icon::new(if expanded {
+                                IconName::FolderOpen
+                            } else {
+                                IconName::Folder
+                            })
+                            .with_size(Size::Small),
+                        ),
+                )
                 .child(
                     div()
                         .flex_1()
