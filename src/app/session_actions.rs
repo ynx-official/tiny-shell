@@ -1283,7 +1283,7 @@ impl TinyShell {
                 }
                 Err((message, transfer)) => {
                     tracing::warn!(group_id, %message, "[tab-drag] detached window failed");
-                    this.restore_group_transfer(transfer, cx);
+                    this.restore_group_transfer(*transfer, cx);
                     this.status = format!("failed to detach tab group: {message}").into();
                 }
             }
@@ -1658,7 +1658,6 @@ impl TinyShell {
         cx.notify();
     }
 
-    #[allow(clippy::result_large_err)]
     fn commit_group_merge(
         &mut self,
         group_id: String,
@@ -1684,7 +1683,7 @@ impl TinyShell {
                         true
                     }
                     Err((message, transfer)) => {
-                        self.restore_group_transfer(transfer, cx);
+                        self.restore_group_transfer(*transfer, cx);
                         self.status = format!("failed to move tab group: {message}").into();
                         false
                     }
@@ -1886,13 +1885,12 @@ impl TinyShell {
     /// Receive an intact group from another window without recreating any
     /// terminal or SFTP backend. The group remains a separate top-level tab
     /// because `TabGroup` owns a single SFTP UI state.
-    #[allow(clippy::result_large_err)]
     pub(crate) fn receive_group_transfer(
         &mut self,
         transfer: GroupTransfer,
         source_owner_id: crate::session::store::WindowOwnerId,
         cx: &mut Context<Self>,
-    ) -> Result<(), (String, GroupTransfer)> {
+    ) -> Result<(), (String, Box<GroupTransfer>)> {
         let tab_ids = transfer
             .tabs
             .iter()
@@ -1908,7 +1906,7 @@ impl TinyShell {
         {
             return Err((
                 "transfer payload does not match the group layout".to_string(),
-                transfer,
+                Box::new(transfer),
             ));
         }
         if self
@@ -1916,7 +1914,10 @@ impl TinyShell {
             .iter()
             .any(|group| group.id == transfer.group.id)
         {
-            return Err(("target already contains this group".to_string(), transfer));
+            return Err((
+                "target already contains this group".to_string(),
+                Box::new(transfer),
+            ));
         }
         if self
             .tabs
@@ -1925,7 +1926,7 @@ impl TinyShell {
         {
             return Err((
                 "target already contains one of the transferred terminals".to_string(),
-                transfer,
+                Box::new(transfer),
             ));
         }
         if transfer
@@ -1935,7 +1936,7 @@ impl TinyShell {
         {
             return Err((
                 "target already contains one of the transferred SFTP handles".to_string(),
-                transfer,
+                Box::new(transfer),
             ));
         }
 
@@ -1946,7 +1947,7 @@ impl TinyShell {
         if !routes_moved {
             return Err((
                 "backend event routes changed before the move could commit".to_string(),
-                transfer,
+                Box::new(transfer),
             ));
         }
 

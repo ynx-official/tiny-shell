@@ -370,19 +370,18 @@ fn open_window_with_options(
     }
 }
 
-#[allow(clippy::result_large_err)]
 pub(crate) fn open_new_window_with_group(
     transfer: GroupTransfer,
     source_owner_id: WindowOwnerId,
     session_store: Entity<SessionStore>,
     cx: &mut App,
-) -> Result<(), (String, GroupTransfer)> {
+) -> Result<(), (String, Box<GroupTransfer>)> {
     let config = ConfigStore::load().unwrap_or_else(|_| ConfigStore::in_memory());
     let window_options = build_window_options(&config, cx, Some((px(40.), px(40.))));
     let (target_window, target) =
         match open_window_with_initializer(window_options, session_store, |_view, _cx| false, cx) {
             Ok(opened) => opened,
-            Err(message) => return Err((message, transfer)),
+            Err(message) => return Err((message, Box::new(transfer))),
         };
 
     // GPUI performs the first Windows draw inside open_window before returning.
