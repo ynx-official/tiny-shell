@@ -11,7 +11,7 @@ use uuid::Uuid;
 use crate::{
     PaneLayout, SelectorEntry, TabGroup, TinyShell,
     app::{
-        IncomingTabDrag, SystemInfoTab,
+        IncomingTabDrag, PaneDirection, SystemInfoTab,
         constants::{DEFAULT_COLS, DEFAULT_ROWS},
         tab_drag::{
             DropIntent, cursor_inside_viewport, reorder_index_at_x, should_close_empty_source,
@@ -470,15 +470,15 @@ impl TinyShell {
             .filter(|group| self.sftp_handles.contains_key(&group.id))
             .map(|group| group.id.clone());
 
-        if let Some(session_id) = closing_sftp_group
-            && !crate::app::sftp_editor_window::request_session_close(
+        if let Some(session_id) = closing_sftp_group {
+            if !crate::app::sftp_editor_window::request_session_close(
                 &session_id,
                 id.clone(),
                 cx.entity(),
                 cx,
-            )
-        {
-            return;
+            ) {
+                return;
+            }
         }
 
         self.handle_tab_close(id);
@@ -550,7 +550,7 @@ impl TinyShell {
         self.close_tab_at(group_index, tab_index);
 
         if self.tabs.is_empty() || self.tab_groups.is_empty() {
-            self.pane_root = PaneLayout::Single(String::new());
+            self.pane_root = PaneLayout::Empty;
             self.focused_pane_path = vec![];
             self.active_tab = None;
             self.active_group = None;
@@ -668,8 +668,9 @@ impl TinyShell {
             self.sync_pane_root_to_group();
         }
 
+        let tab_ids: HashSet<String> = self.tabs.iter().map(|tab| tab.id.clone()).collect();
         self.system_info_tabs
-            .retain(|info| self.tabs.iter().any(|tab| tab.id == info.source_tab_id));
+            .retain(|info| tab_ids.contains(&info.source_tab_id));
         if self
             .active_system_info_tab
             .as_ref()
@@ -701,13 +702,14 @@ impl TinyShell {
             });
             if let Some(new_id) = new_id {
                 self.active_tab = Some(new_id.clone());
-                if let Some(g) = self
+                let next_group = self
                     .tab_groups
                     .iter()
                     .find(|g| g.pane_root.contains(&new_id))
-                {
-                    self.active_group = Some(g.id.clone());
-                    self.pane_root = g.pane_root.clone();
+                    .map(|g| (g.id.clone(), g.pane_root.clone()));
+                if let Some((group_id, pane_root)) = next_group {
+                    self.active_group = Some(group_id);
+                    self.pane_root = pane_root;
                 }
                 self.focus_pane_with_id(new_id);
             }
@@ -794,9 +796,9 @@ impl TinyShell {
 
     // ── 面板分割 ──
 
-    pub(crate) fn split_current_pane(&mut self, direction: &str, cx: &mut Context<Self>) {
+    pub(crate) fn split_current_pane(&mut self, direction: PaneDirection, cx: &mut Context<Self>) {
         tracing::info!(
-            "[split] direction={} pane_root={:?} focused_path={:?} active_tab={:?} tabs={}",
+            "[split] direction={:?} pane_root={:?} focused_path={:?} active_tab={:?} tabs={}",
             direction,
             self.pane_root,
             self.focused_pane_path,
@@ -824,7 +826,7 @@ impl TinyShell {
         path: &[usize],
         tab_id: String,
         _title: String,
-        direction: &str,
+        direction: PaneDirection,
         cx: &mut Context<Self>,
     ) {
         let (current_kind, current_session) = match self.tabs.iter().find(|t| t.id == tab_id) {
@@ -891,28 +893,29 @@ impl TinyShell {
         let new_pane = PaneLayout::Single(new_id.clone());
 
         let split_layout = match direction {
-            "left" | "right" => {
+            PaneDirection::Left | PaneDirection::Right => {
                 let children = match direction {
-                    "left" => vec![new_pane, current_pane],
-                    _ => vec![current_pane, new_pane],
+                    PaneDirection::Left => vec![new_pane, current_pane],
+                    PaneDirection::Right => vec![current_pane, new_pane],
+                    _ => unreachable!("vertical direction matched horizontal split"),
                 };
                 PaneLayout::Vertical(children, 0.5)
             }
-            "up" | "down" => {
+            PaneDirection::Up | PaneDirection::Down => {
                 let children = match direction {
-                    "up" => vec![new_pane, current_pane],
-                    _ => vec![current_pane, new_pane],
+                    PaneDirection::Up => vec![new_pane, current_pane],
+                    PaneDirection::Down => vec![current_pane, new_pane],
+                    _ => unreachable!("horizontal direction matched vertical split"),
                 };
                 PaneLayout::Horizontal(children, 0.5)
             }
-            _ => return,
         };
 
         self.pane_root.replace_at(path, split_layout);
         self.sync_pane_root_to_group();
         // Update focused_pane_path: the new pane is at the indicated child index
         let mut new_full_path = path.to_vec();
-        if direction == "right" || direction == "down" {
+        if matches!(direction, PaneDirection::Right | PaneDirection::Down) {
             new_full_path.push(1);
         } else {
             new_full_path.push(0);
@@ -930,7 +933,7 @@ impl TinyShell {
         cx.notify();
     }
 
-    pub(crate) fn focus_adjacent_pane(&mut self, direction: &str) {
+    pub(crate) fn focus_adjacent_pane(&mut self, direction: PaneDirection) {
         if self.focused_pane_path.is_empty() {
             return;
         }
@@ -954,6 +957,7 @@ impl TinyShell {
 
     fn first_leaf_path(layout: &PaneLayout) -> Vec<usize> {
         match layout {
+            PaneLayout::Empty => vec![],
             PaneLayout::Single(_) => vec![],
             PaneLayout::Horizontal(children, _) | PaneLayout::Vertical(children, _) => {
                 let mut path = vec![0];
@@ -965,6 +969,7 @@ impl TinyShell {
 
     fn leaf_at_index(layout: &PaneLayout, index: usize) -> Vec<usize> {
         match layout {
+            PaneLayout::Empty => vec![],
             PaneLayout::Single(_) => vec![],
             PaneLayout::Horizontal(children, _) | PaneLayout::Vertical(children, _) => {
                 if children.is_empty() {
@@ -981,7 +986,7 @@ impl TinyShell {
     fn find_adjacent_pane(
         layout: &PaneLayout,
         path: &[usize],
-        direction: &str,
+        direction: PaneDirection,
     ) -> Option<Vec<usize>> {
         if path.is_empty() {
             return None;
@@ -992,17 +997,18 @@ impl TinyShell {
     fn adjacent_pane_in_layout(
         layout: &PaneLayout,
         path: &[usize],
-        direction: &str,
+        direction: PaneDirection,
     ) -> Option<Vec<usize>> {
         match layout {
+            PaneLayout::Empty => None,
             PaneLayout::Single(_) => None,
             PaneLayout::Horizontal(children, _) | PaneLayout::Vertical(children, _) => {
                 let is_horizontal = matches!(layout, PaneLayout::Horizontal(_, _));
                 let idx = path[0];
 
                 // Does this split level match the movement direction?
-                let vert = direction == "up" || direction == "down";
-                let horiz = direction == "left" || direction == "right";
+                let vert = matches!(direction, PaneDirection::Up | PaneDirection::Down);
+                let horiz = matches!(direction, PaneDirection::Left | PaneDirection::Right);
                 // PaneLayout::Horizontal renders as v_flex (vertical stack),
                 // PaneLayout::Vertical renders as h_flex (horizontal row).
                 // So for a Vertical (h_flex), h/l moves between children;
@@ -1012,11 +1018,12 @@ impl TinyShell {
                 if path.len() == 1 {
                     // Direct child level
                     if moves_in_this_split {
-                        let delta: i32 = if direction == "up" || direction == "left" {
-                            -1
-                        } else {
-                            1
-                        };
+                        let delta: i32 =
+                            if matches!(direction, PaneDirection::Up | PaneDirection::Left) {
+                                -1
+                            } else {
+                                1
+                            };
                         let new_idx = idx as i32 + delta;
                         if new_idx >= 0 && (new_idx as usize) < children.len() {
                             let mut path = vec![new_idx as usize];
@@ -1037,11 +1044,12 @@ impl TinyShell {
                         Some(child_path)
                     } else if moves_in_this_split {
                         // Try sibling at this level
-                        let delta: i32 = if direction == "up" || direction == "left" {
-                            -1
-                        } else {
-                            1
-                        };
+                        let delta: i32 =
+                            if matches!(direction, PaneDirection::Up | PaneDirection::Left) {
+                                -1
+                            } else {
+                                1
+                            };
                         let new_idx = idx as i32 + delta;
                         if new_idx >= 0 && (new_idx as usize) < children.len() {
                             let inner_idx = *path.get(1).unwrap_or(&0);
@@ -1074,12 +1082,13 @@ impl TinyShell {
         self.active_system_info_tab = None;
         // Save current group state
         if let Some(current_group_id) = self.active_group.clone() {
+            let pane_root = self.pane_root.clone();
             if let Some(group) = self
                 .tab_groups
                 .iter_mut()
                 .find(|g| g.id == current_group_id)
             {
-                group.pane_root = self.pane_root.clone();
+                group.pane_root = pane_root;
             }
         }
         // Load new group state
@@ -1108,8 +1117,9 @@ impl TinyShell {
 
     pub(crate) fn sync_pane_root_to_group(&mut self) {
         if let Some(group_id) = self.active_group.clone() {
+            let pane_root = self.pane_root.clone();
             if let Some(group) = self.tab_groups.iter_mut().find(|g| g.id == group_id) {
-                group.pane_root = self.pane_root.clone();
+                group.pane_root = pane_root;
             }
         }
     }
@@ -1251,6 +1261,7 @@ impl TinyShell {
         fn find_path(layout: &PaneLayout, target: &str, path: &mut Vec<usize>) -> bool {
             match layout {
                 PaneLayout::Single(id) => id == target,
+                PaneLayout::Empty => false,
                 PaneLayout::Horizontal(children, _) | PaneLayout::Vertical(children, _) => {
                     for (i, child) in children.iter().enumerate() {
                         path.push(i);
@@ -1898,7 +1909,7 @@ impl TinyShell {
 
     fn activate_after_group_extraction(&mut self, removed_index: usize) {
         if self.tab_groups.is_empty() {
-            self.pane_root = PaneLayout::Single(String::new());
+            self.pane_root = PaneLayout::Empty;
             self.focused_pane_path.clear();
             self.active_tab = None;
             self.active_group = None;
@@ -1938,7 +1949,8 @@ impl TinyShell {
         self.tab_groups.insert(group_index, transfer.group);
         transfer.tabs.sort_by_key(|(index, _)| *index);
         for (index, tab) in transfer.tabs {
-            self.tabs.insert(index.min(self.tabs.len()), tab);
+            let insert_at = index.min(self.tabs.len());
+            self.tabs.insert(insert_at, tab);
         }
         self.sftp_handles.extend(transfer.sftp_handles);
 

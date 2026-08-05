@@ -122,43 +122,7 @@ fn lerp_hsla(from: Hsla, to: Hsla, delta: f32) -> Hsla {
 
 impl Render for TinyShell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        if self
-            .active_tab
-            .as_ref()
-            .is_some_and(|active_id| !self.tabs.iter().any(|tab| &tab.id == active_id))
-        {
-            self.active_tab = self.tabs.first().map(|tab| tab.id.clone());
-        }
-        self.sync_sftp_path_input(window, cx);
-        self.sync_sftp_tree_scroll();
-
-        if self.show_transfers_dialog {
-            self.show_transfers_dialog = false;
-            self.show_transfers_dialog(window, cx);
-        }
-        if let Some(active_id) = self.active_tab.clone() {
-            if let Some(scrollbar) = self.terminal_scrollbars.get(&active_id) {
-                if let Some(new_display_offset) = scrollbar.future_display_offset.take() {
-                    if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == active_id) {
-                        let current = tab.display_offset();
-                        match new_display_offset.cmp(&current) {
-                            std::cmp::Ordering::Greater => {
-                                tab.scroll_up_by(new_display_offset - current)
-                            }
-                            std::cmp::Ordering::Less => {
-                                tab.scroll_down_by(current - new_display_offset)
-                            }
-                            std::cmp::Ordering::Equal => {}
-                        }
-                    }
-                }
-            }
-            if let Some(snapshot) = self.active_snapshot().as_ref() {
-                if let Some(scrollbar) = self.terminal_scrollbars.get(&active_id) {
-                    scrollbar.update(snapshot, px(self.terminal_line_height()));
-                }
-            }
-        }
+        // Rendering only derives elements; state synchronization runs in prepaint.
 
         // The file-transfer panel belongs to an active terminal session. Keeping it
         // out of the home workspace avoids showing an empty "remote files" area on
@@ -465,35 +429,29 @@ impl Render for TinyShell {
             .on_action(cx.listener(|this, _: &crate::ToggleSftpZoom, window, cx| {
                 this.toggle_sftp_minimized(window, cx);
             }))
-            .on_action(
-                cx.listener(|this, _: &crate::FocusPaneLeft, _, _| {
-                    this.focus_adjacent_pane("left")
-                }),
-            )
-            .on_action(cx.listener(|this, _: &crate::FocusPaneRight, _, _| {
-                this.focus_adjacent_pane("right")
+            .on_action(cx.listener(|this, _: &crate::FocusPaneLeft, _, _| {
+                this.focus_adjacent_pane(crate::app::PaneDirection::Left)
             }))
-            .on_action(
-                cx.listener(|this, _: &crate::FocusPaneUp, _, _| this.focus_adjacent_pane("up")),
-            )
-            .on_action(
-                cx.listener(|this, _: &crate::FocusPaneDown, _, _| {
-                    this.focus_adjacent_pane("down")
-                }),
-            )
+            .on_action(cx.listener(|this, _: &crate::FocusPaneRight, _, _| {
+                this.focus_adjacent_pane(crate::app::PaneDirection::Right)
+            }))
+            .on_action(cx.listener(|this, _: &crate::FocusPaneUp, _, _| {
+                this.focus_adjacent_pane(crate::app::PaneDirection::Up)
+            }))
+            .on_action(cx.listener(|this, _: &crate::FocusPaneDown, _, _| {
+                this.focus_adjacent_pane(crate::app::PaneDirection::Down)
+            }))
             .on_action(cx.listener(|this, _: &crate::SplitPaneLeft, _, cx| {
-                this.split_current_pane("left", cx)
+                this.split_current_pane(crate::app::PaneDirection::Left, cx)
             }))
             .on_action(cx.listener(|this, _: &crate::SplitPaneRight, _, cx| {
-                this.split_current_pane("right", cx)
+                this.split_current_pane(crate::app::PaneDirection::Right, cx)
             }))
-            .on_action(
-                cx.listener(|this, _: &crate::SplitPaneUp, _, cx| {
-                    this.split_current_pane("up", cx)
-                }),
-            )
+            .on_action(cx.listener(|this, _: &crate::SplitPaneUp, _, cx| {
+                this.split_current_pane(crate::app::PaneDirection::Up, cx)
+            }))
             .on_action(cx.listener(|this, _: &crate::SplitPaneDown, _, cx| {
-                this.split_current_pane("down", cx)
+                this.split_current_pane(crate::app::PaneDirection::Down, cx)
             }))
             .on_action(cx.listener(|this, _: &crate::ClosePane, _, cx| {
                 if let Some(active_id) = this.active_tab.clone() {
@@ -504,8 +462,9 @@ impl Render for TinyShell {
                 if window.focused(cx) == Some(this.focus_handle.clone()) {
                     if let Some(text) = this.active_terminal_selection_text() {
                         cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
-                        if let Some(active_id) = &this.active_tab {
-                            if let Some(tab) = this.tabs.iter_mut().find(|tab| &tab.id == active_id)
+                        let active_id = this.active_tab.clone();
+                        if let Some(active_id) = active_id {
+                            if let Some(tab) = this.tabs.iter_mut().find(|tab| tab.id == active_id)
                             {
                                 tab.clear_selection();
                             }
@@ -608,6 +567,43 @@ impl Render for TinyShell {
                     }
 
                     view.update(cx, |this, cx| {
+                        if matches!(
+                            this.pending_dialog.take(),
+                            Some(crate::app::DialogKind::Transfers)
+                        ) {
+                            this.show_transfers_dialog(window, cx);
+                        }
+                        this.sync_sftp_path_input(window, cx);
+                        this.sync_sftp_tree_scroll();
+
+                        if let Some(active_id) = this.active_tab.clone() {
+                            if let Some(scrollbar) = this.terminal_scrollbars.get(&active_id) {
+                                if let Some(new_display_offset) =
+                                    scrollbar.future_display_offset.take()
+                                {
+                                    if let Some(tab) =
+                                        this.tabs.iter_mut().find(|tab| tab.id == active_id)
+                                    {
+                                        let current = tab.display_offset();
+                                        match new_display_offset.cmp(&current) {
+                                            std::cmp::Ordering::Greater => {
+                                                tab.scroll_up_by(new_display_offset - current)
+                                            }
+                                            std::cmp::Ordering::Less => {
+                                                tab.scroll_down_by(current - new_display_offset)
+                                            }
+                                            std::cmp::Ordering::Equal => {}
+                                        }
+                                    }
+                                }
+                            }
+                            if let Some(snapshot) = this.active_snapshot().as_ref() {
+                                if let Some(scrollbar) = this.terminal_scrollbars.get(&active_id) {
+                                    scrollbar.update(snapshot, px(this.terminal_line_height()));
+                                }
+                            }
+                        }
+
                         let current_win_size = window.viewport_size();
                         let size_changed = this.last_window_size != Some(current_win_size);
                         this.last_window_size = Some(current_win_size);

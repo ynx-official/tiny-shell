@@ -6,7 +6,7 @@ use std::{
     },
 };
 
-use gpui::{AnyWindowHandle, Bounds, Pixels, SharedString};
+use gpui::{AnyWindowHandle, SharedString};
 
 use crate::app::{SyncSecretsPasswordDialogState, updater};
 use crate::terminal::{BackendEvent, BackendEventSender};
@@ -123,17 +123,6 @@ pub(crate) struct ManagedWindowState {
 pub(crate) struct AuxiliaryWindowsState {
     pub(crate) settings: ManagedWindowState,
     pub(crate) connection_manager: ManagedWindowState,
-}
-
-#[derive(Default)]
-pub(crate) struct SearchState {
-    pub(crate) search_active: bool,
-    pub(crate) search_epoch: u64,
-    pub(crate) search_query: String,
-    pub(crate) search_matches: Vec<(i32, i32)>,
-    pub(crate) search_current: usize,
-    pub(crate) search_target_tab: Option<String>,
-    pub(crate) search_bar_bounds: Option<Bounds<Pixels>>,
 }
 
 #[derive(Default)]

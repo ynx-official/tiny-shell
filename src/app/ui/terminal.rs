@@ -740,13 +740,19 @@ impl TinyShell {
                                 .item(
                                     PopupMenuItem::new(t!("workspace_split_right").to_string())
                                         .on_click(window.listener_for(&view, |this, _, _, cx| {
-                                            this.split_current_pane("right", cx);
+                                            this.split_current_pane(
+                                                crate::app::PaneDirection::Right,
+                                                cx,
+                                            );
                                         })),
                                 )
                                 .item(
                                     PopupMenuItem::new(t!("workspace_split_down").to_string())
                                         .on_click(window.listener_for(&view, |this, _, _, cx| {
-                                            this.split_current_pane("down", cx);
+                                            this.split_current_pane(
+                                                crate::app::PaneDirection::Down,
+                                                cx,
+                                            );
                                         })),
                                 )
                         }
@@ -762,9 +768,10 @@ impl TinyShell {
                     .on_click(cx.listener(|this, _, window, cx| {
                         if let Some(text) = this.active_terminal_selection_text() {
                             cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
-                            if let Some(active_id) = &this.active_tab
+                            let active_id = this.active_tab.clone();
+                            if let Some(active_id) = active_id
                                 && let Some(tab) =
-                                    this.tabs.iter_mut().find(|tab| &tab.id == active_id)
+                                    this.tabs.iter_mut().find(|tab| tab.id == active_id)
                             {
                                 tab.clear_selection();
                             }
@@ -1241,10 +1248,8 @@ impl TinyShell {
         cx: &mut Context<TinyShell>,
     ) -> impl IntoElement {
         match layout {
+            PaneLayout::Empty => this.render_home_page(cx).into_any_element(),
             PaneLayout::Single(tab_id) => {
-                if tab_id.is_empty() {
-                    return this.render_home_page(cx).into_any_element();
-                }
                 let is_focused = path == this.focused_pane_path.as_slice();
                 let keyword_highlight = this.config.keyword_highlight();
                 let snapshot = this

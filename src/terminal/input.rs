@@ -60,10 +60,10 @@ impl TinyShell {
             && !event.keystroke.modifiers.platform
         {
             match event.keystroke.key.to_ascii_lowercase().as_str() {
-                "h" => self.focus_adjacent_pane("left"),
-                "j" => self.focus_adjacent_pane("down"),
-                "k" => self.focus_adjacent_pane("up"),
-                "l" => self.focus_adjacent_pane("right"),
+                "h" => self.focus_adjacent_pane(crate::app::PaneDirection::Left),
+                "j" => self.focus_adjacent_pane(crate::app::PaneDirection::Down),
+                "k" => self.focus_adjacent_pane(crate::app::PaneDirection::Up),
+                "l" => self.focus_adjacent_pane(crate::app::PaneDirection::Right),
                 "q" => {
                     if let Some(active_id) = self.active_tab.clone() {
                         self.close_tab(active_id, cx);
@@ -84,10 +84,10 @@ impl TinyShell {
             && !event.keystroke.modifiers.platform
         {
             let direction = match event.keystroke.key.to_ascii_lowercase().as_str() {
-                "h" => Some("left"),
-                "j" => Some("down"),
-                "k" => Some("up"),
-                "l" => Some("right"),
+                "h" => Some(crate::app::PaneDirection::Left),
+                "j" => Some(crate::app::PaneDirection::Down),
+                "k" => Some(crate::app::PaneDirection::Up),
+                "l" => Some(crate::app::PaneDirection::Right),
                 _ => None,
             };
             if let Some(dir) = direction {
@@ -204,7 +204,7 @@ impl TinyShell {
         self.tabs
             .iter()
             .find(|tab| {
-                &tab.id == active_id
+                tab.id == *active_id
                     && tab.kind == crate::terminal::TabKind::Ssh
                     && !tab.is_alternate_screen()
             })
@@ -212,15 +212,15 @@ impl TinyShell {
     }
 
     fn clear_completion_in_alternate_screen(&mut self) -> bool {
-        let Some(active_id) = self.active_tab.as_ref() else {
+        let Some(active_id) = self.active_tab.clone() else {
             return false;
         };
         let is_alternate_ssh = self.tabs.iter().any(|tab| {
-            &tab.id == active_id
+            tab.id == active_id
                 && tab.kind == crate::terminal::TabKind::Ssh
                 && tab.is_alternate_screen()
         });
-        is_alternate_ssh && self.terminal_completions.remove(active_id).is_some()
+        is_alternate_ssh && self.terminal_completions.remove(&active_id).is_some()
     }
 
     fn quick_command_categories_for_completion(
@@ -492,26 +492,28 @@ impl TinyShell {
         let Some(active_id) = self.active_tab.clone() else {
             return;
         };
-        let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == active_id) else {
-            return;
-        };
+        {
+            let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == active_id) else {
+                return;
+            };
 
-        if tab.display_offset() > 0 {
-            tab.scroll_to_bottom();
+            if tab.display_offset() > 0 {
+                tab.scroll_to_bottom();
+            }
+            tab.clear_selection();
+            tab.send_backend(BackendCommand::Input(text.as_bytes().to_vec()));
         }
-        tab.clear_selection();
         self.terminal_marked_text = None;
-        tab.send_backend(BackendCommand::Input(text.as_bytes().to_vec()));
         self.track_terminal_completion_text(text);
         window.invalidate_character_coordinates();
         cx.notify();
     }
 
     pub(crate) fn clear_active_terminal(&mut self, cx: &mut Context<Self>) {
-        let Some(active_id) = self.active_tab.as_ref() else {
+        let Some(active_id) = self.active_tab.clone() else {
             return;
         };
-        if let Some(tab) = self.tabs.iter_mut().find(|tab| &tab.id == active_id) {
+        if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == active_id) {
             tab.clear_contents();
             cx.notify();
         }

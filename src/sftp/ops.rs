@@ -468,6 +468,7 @@ impl TinyShell {
     ) {
         if let Some(directory) = self.config.download_directory() {
             self.start_sftp_download(request, directory, cx);
+            self.show_transfers_dialog(window, cx);
             return;
         }
 
@@ -639,7 +640,6 @@ impl TinyShell {
                 });
             }
         }
-        self.show_transfers_dialog = true;
         cx.notify();
     }
 
@@ -812,7 +812,7 @@ impl TinyShell {
                         );
                         handle.upload_paths(vec![local_path], remote_dir);
                         this.update(cx, |this, cx| {
-                            this.show_transfers_dialog = true;
+                            this.pending_dialog = Some(crate::app::DialogKind::Transfers);
                             cx.notify();
                         })?;
                     }
@@ -856,7 +856,7 @@ impl TinyShell {
                         );
                         handle.upload_paths(vec![local_path], remote_dir);
                         this.update(cx, |this, cx| {
-                            this.show_transfers_dialog = true;
+                            this.pending_dialog = Some(crate::app::DialogKind::Transfers);
                             cx.notify();
                         })?;
                     }
@@ -946,7 +946,7 @@ impl TinyShell {
                     locals: paths,
                     remote_dir: sftp.current_path.clone(),
                 });
-                self.show_transfers_dialog = true;
+                self.pending_dialog = Some(crate::app::DialogKind::Transfers);
                 cx.notify();
             }
         }

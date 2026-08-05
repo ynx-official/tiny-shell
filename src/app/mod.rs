@@ -28,6 +28,7 @@ pub(crate) mod sync_handlers;
 pub(crate) mod tab_drag;
 pub(crate) mod terminal_completion;
 pub(crate) mod terminal_settings;
+pub(crate) mod terminal_workspace;
 pub(crate) mod theme;
 pub(crate) mod ui;
 pub(crate) mod updater;
@@ -51,11 +52,12 @@ use crate::app::{
     monitoring::{MonitoringState, MonitoringVisibilityContext, metrics_visible, push_bounded},
     resizable::ResizableState,
     runtime_state::{
-        AsyncRuntimeState, AuxiliaryWindowsState, ConfigPersistenceState, SearchState,
-        SyncRuntimeState, UpdateRuntimeState,
+        AsyncRuntimeState, AuxiliaryWindowsState, ConfigPersistenceState, SyncRuntimeState,
+        UpdateRuntimeState,
     },
     settings::form::SettingsInputs,
     ssh_key_import::KeyImportState,
+    terminal_workspace::WindowState,
     workspace_presentation::WorkspaceMode,
 };
 use futures::{FutureExt as _, pin_mut, select_biased};
@@ -362,8 +364,17 @@ pub(crate) fn clear_all_incoming_tab_drags(cx: &mut App) {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PaneDirection {
+    Left,
+    Right,
+    Up,
+    Down,
+}
+
 #[derive(Clone, Debug)]
 pub(crate) enum PaneLayout {
+    Empty,
     Single(String),
     Horizontal(Vec<PaneLayout>, f32), // children, split_ratio (0.0-1.0)
     Vertical(Vec<PaneLayout>, f32),   // children, split_ratio (0.0-1.0)
@@ -389,6 +400,7 @@ pub(crate) struct SystemInfoTab {
 impl PaneLayout {
     pub fn tab_ids(&self) -> Vec<&str> {
         match self {
+            PaneLayout::Empty => Vec::new(),
             PaneLayout::Single(id) => vec![id.as_str()],
             PaneLayout::Horizontal(children, _) | PaneLayout::Vertical(children, _) => {
                 children.iter().flat_map(|c| c.tab_ids()).collect()
@@ -398,6 +410,7 @@ impl PaneLayout {
 
     pub fn contains(&self, tab_id: &str) -> bool {
         match self {
+            PaneLayout::Empty => false,
             PaneLayout::Single(id) => id == tab_id,
             PaneLayout::Horizontal(children, _) | PaneLayout::Vertical(children, _) => {
                 children.iter().any(|c| c.contains(tab_id))
@@ -407,6 +420,7 @@ impl PaneLayout {
 
     pub fn focused_tab_id(&self, path: &[usize]) -> Option<&str> {
         match self {
+            PaneLayout::Empty => None,
             PaneLayout::Single(id) if path.is_empty() => Some(id.as_str()),
             PaneLayout::Horizontal(children, _) | PaneLayout::Vertical(children, _) => {
                 let (&first, rest) = path.split_first()?;
@@ -418,7 +432,9 @@ impl PaneLayout {
 
     pub fn replace_at(&mut self, path: &[usize], replacement: PaneLayout) {
         match (self, path) {
-            (this @ PaneLayout::Single(_), []) => *this = replacement,
+            (this @ PaneLayout::Empty, []) | (this @ PaneLayout::Single(_), []) => {
+                *this = replacement
+            }
             (
                 PaneLayout::Horizontal(children, _) | PaneLayout::Vertical(children, _),
                 [first, rest @ ..],
@@ -433,30 +449,35 @@ impl PaneLayout {
 
     pub fn remove_tab(&mut self, tab_id: &str) -> bool {
         match self {
+            PaneLayout::Empty => false,
             PaneLayout::Single(id) if id == tab_id => {
-                *self = PaneLayout::Single(String::new());
+                *self = PaneLayout::Empty;
                 true
             }
             PaneLayout::Single(_) => false,
             PaneLayout::Horizontal(children, _) | PaneLayout::Vertical(children, _) => {
+                let mut changed = false;
                 for child in children.iter_mut() {
-                    child.remove_tab(tab_id);
+                    changed |= child.remove_tab(tab_id);
                 }
-                children.retain(|c| !matches!(c, PaneLayout::Single(id) if id.is_empty()));
-                if children.is_empty() {
-                    *self = PaneLayout::Single(String::new());
-                } else if children.len() == 1 {
-                    if let Some(replacement) = children.pop() {
-                        *self = replacement;
+                children.retain(|child| !matches!(child, PaneLayout::Empty));
+                match children.len() {
+                    0 => *self = PaneLayout::Empty,
+                    1 => {
+                        if let Some(replacement) = children.pop() {
+                            *self = replacement;
+                        }
                     }
+                    _ => {}
                 }
-                true
+                changed
             }
         }
     }
 
     pub fn total_panes(&self) -> usize {
         match self {
+            PaneLayout::Empty => 0,
             PaneLayout::Single(_) => 1,
             PaneLayout::Horizontal(children, _) | PaneLayout::Vertical(children, _) => {
                 children.iter().map(|c| c.total_panes()).sum()
@@ -680,8 +701,9 @@ impl ConnectionFormInputs {
     pub(crate) fn new(window: &mut Window, cx: &mut Context<TinyShell>) -> Self {
         Self {
             host_input: cx.new(|cx| InputState::new(window, cx).placeholder(t!("host"))),
-            session_name_input: cx
-                .new(|cx| InputState::new(window, cx).placeholder("name (optional)")),
+            session_name_input: cx.new(|cx| {
+                InputState::new(window, cx).placeholder(t!("session_name_placeholder").to_string())
+            }),
             connection_group_input: cx
                 .new(|cx| InputState::new(window, cx).placeholder(t!("connection_group_name"))),
             port_input: cx.new(|cx| InputState::new(window, cx).default_value("22")),
@@ -691,17 +713,19 @@ impl ConnectionFormInputs {
                     .placeholder(t!("password"))
                     .masked(true)
             }),
-            key_path_input: cx
-                .new(|cx| InputState::new(window, cx).placeholder("~/.ssh/id_ed25519")),
+            key_path_input: cx.new(|cx| {
+                InputState::new(window, cx)
+                    .placeholder(t!("private_key_path_placeholder").to_string())
+            }),
             key_inline_input: cx.new(|cx| {
                 InputState::new(window, cx)
                     .multi_line(true)
                     .rows(5)
-                    .placeholder("-----BEGIN OPENSSH PRIVATE KEY-----")
+                    .placeholder(t!("private_key_data_placeholder").to_string())
             }),
             passphrase_input: cx.new(|cx| {
                 InputState::new(window, cx)
-                    .placeholder("SSH private key passphrase (optional)")
+                    .placeholder(t!("ssh_passphrase_placeholder").to_string())
                     .masked(true)
             }),
             key_import_remark_input: cx.new(|cx| {
@@ -788,14 +812,7 @@ pub(crate) struct TinyShell {
     pub(crate) terminal_font_family: SharedString,
     pub(crate) session_store: Entity<crate::session::store::SessionStore>,
     pub(crate) session_owner_id: crate::session::store::WindowOwnerId,
-    pub(crate) tabs: Vec<TerminalTab>,
-    pub(crate) active_tab: Option<String>,
-    pub(crate) tab_groups: Vec<TabGroup>,
-    pub(crate) next_tab_group_ordinal: u64,
-    pub(crate) active_group: Option<String>,
-    /// Read-only system information pages bound to their originating SSH tab.
-    pub(crate) system_info_tabs: Vec<SystemInfoTab>,
-    pub(crate) active_system_info_tab: Option<String>,
+    pub(crate) window_state: WindowState,
     /// The Home workspace is a first-class tab alongside terminal groups.
     pub(crate) home_page_open: bool,
     pub(crate) home_page: HomePage,
@@ -832,9 +849,6 @@ pub(crate) struct TinyShell {
     pub(crate) sftp_workspace: SftpWorkspaceState,
     pub(crate) sftp_panel: SftpPanelState,
     pub(crate) transfers: Vec<crate::terminal::Transfer>,
-    pub(crate) show_transfers_dialog: bool,
-    pub(crate) pane_root: PaneLayout,
-    pub(crate) focused_pane_path: Vec<usize>,
     pub(crate) terminal_panel_bounds: Option<Bounds<Pixels>>,
     pub(crate) terminal_bounds: HashMap<String, Bounds<Pixels>>,
     pub(crate) tab_bar_bounds: Option<Bounds<Pixels>>,
@@ -865,7 +879,6 @@ pub(crate) struct TinyShell {
     pub(crate) monitoring: MonitoringState,
     pub(crate) connection_manager_state: Entity<ConnectionManagerState>,
     pub(crate) connection_manager_actions: ConnectionManagerActions,
-    pub(crate) search: SearchState,
     pub(crate) search_input: Entity<InputState>,
 
     pub(crate) system_tab_id: Option<String>,
@@ -882,16 +895,16 @@ pub(crate) struct TinyShell {
 }
 
 impl Deref for TinyShell {
-    type Target = SearchState;
+    type Target = WindowState;
 
     fn deref(&self) -> &Self::Target {
-        &self.search
+        &self.window_state
     }
 }
 
 impl DerefMut for TinyShell {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.search
+        &mut self.window_state
     }
 }
 
@@ -919,36 +932,23 @@ pub(crate) struct SftpContextMenuState {
 
 impl TinyShell {
     pub(crate) fn terminal_tab(&self, tab_id: &str) -> Option<&TerminalTab> {
-        self.tabs.iter().find(|tab| tab.id == tab_id)
+        self.window_state.workspace.terminal_tab(tab_id)
     }
 
     pub(crate) fn terminal_tab_mut(&mut self, tab_id: &str) -> Option<&mut TerminalTab> {
-        self.tabs.iter_mut().find(|tab| tab.id == tab_id)
+        self.window_state.workspace.terminal_tab_mut(tab_id)
     }
 
     pub(crate) fn tab_group(&self, group_id: &str) -> Option<&TabGroup> {
-        self.tab_groups.iter().find(|group| group.id == group_id)
+        self.window_state.workspace.tab_group(group_id)
     }
 
     pub(crate) fn tab_group_mut(&mut self, group_id: &str) -> Option<&mut TabGroup> {
-        self.tab_groups
-            .iter_mut()
-            .find(|group| group.id == group_id)
+        self.window_state.workspace.tab_group_mut(group_id)
     }
 
     pub(crate) fn preferred_terminal_tab_id(&self) -> Option<String> {
-        if let Some(active_id) = self.active_tab.as_deref()
-            && self.terminal_tab(active_id).is_some()
-        {
-            return Some(active_id.to_owned());
-        }
-
-        self.active_group
-            .as_deref()
-            .and_then(|group_id| self.tab_group(group_id))
-            .and_then(|group| group.pane_root.tab_ids().into_iter().next())
-            .map(str::to_owned)
-            .or_else(|| self.tabs.first().map(|tab| tab.id.clone()))
+        self.window_state.workspace.preferred_terminal_tab_id()
     }
 
     pub(crate) fn backend_events_sender(&self, cx: &mut Context<Self>) -> BackendEventSender {
@@ -1133,13 +1133,7 @@ impl TinyShell {
             terminal_font_family,
             session_store,
             session_owner_id: SESSION_OWNER_SEQ.fetch_add(1, Ordering::Relaxed),
-            tabs: Vec::new(),
-            active_tab: None,
-            tab_groups: Vec::new(),
-            next_tab_group_ordinal: 1,
-            active_group: None,
-            system_info_tabs: Vec::new(),
-            active_system_info_tab: None,
+            window_state: WindowState::new(),
             home_page_open: true,
             home_page: HomePage::default(),
             prev_home_page: HomePage::default(),
@@ -1153,8 +1147,6 @@ impl TinyShell {
             pending_connection_group_drag: None,
             dragging_connection_group: None,
             connection_group_drop_before: None,
-            pane_root: PaneLayout::Single(String::new()),
-            focused_pane_path: Vec::new(),
             terminal_panel_bounds: None,
             selector_selection: 0,
             workspace_panels,
@@ -1201,7 +1193,6 @@ impl TinyShell {
                 }
                 transfers
             },
-            show_transfers_dialog: false,
             terminal_bounds: HashMap::new(),
             tab_bar_bounds: None,
             tab_group_bounds: HashMap::new(),
@@ -1247,7 +1238,6 @@ impl TinyShell {
             search_input,
             connection_manager_state,
             connection_manager_actions: ConnectionManagerActions::default(),
-            search: SearchState::default(),
 
             system_tab_id: None,
             sftp_handles: std::collections::HashMap::new(),
@@ -2426,8 +2416,7 @@ impl TinyShell {
 
 #[cfg(test)]
 mod tests {
-    use super::{TinyShell, push_bounded};
-    use std::collections::VecDeque;
+    use super::{PaneLayout, TinyShell};
 
     #[test]
     fn parses_absolute_terminal_path() {
@@ -2454,13 +2443,41 @@ mod tests {
     }
 
     #[test]
-    fn bounded_history_keeps_latest_samples_without_shifting_a_vec() {
-        let mut history = VecDeque::new();
-        for value in 0..40 {
-            push_bounded(&mut history, value as f32, 20);
-        }
-        assert_eq!(history.len(), 20);
-        assert_eq!(history.front(), Some(&20.0));
-        assert_eq!(history.back(), Some(&39.0));
+    fn removing_missing_tab_reports_no_change() {
+        let mut layout = PaneLayout::Single("a".into());
+
+        assert!(!layout.remove_tab("missing"));
+        assert_eq!(layout.tab_ids(), vec!["a"]);
+    }
+
+    #[test]
+    fn removing_last_tab_uses_empty_layout_without_empty_id() {
+        let mut layout = PaneLayout::Single("a".into());
+
+        assert!(layout.remove_tab("a"));
+        assert!(matches!(layout, PaneLayout::Empty));
+        assert!(layout.tab_ids().is_empty());
+        assert_eq!(layout.total_panes(), 0);
+    }
+
+    #[test]
+    fn removing_nested_tab_collapses_single_child_and_preserves_order() {
+        let mut layout = PaneLayout::Horizontal(
+            vec![
+                PaneLayout::Single("a".into()),
+                PaneLayout::Vertical(
+                    vec![
+                        PaneLayout::Single("b".into()),
+                        PaneLayout::Single("c".into()),
+                    ],
+                    0.5,
+                ),
+            ],
+            0.5,
+        );
+
+        assert!(layout.remove_tab("b"));
+        assert_eq!(layout.tab_ids(), vec!["a", "c"]);
+        assert_eq!(layout.total_panes(), 2);
     }
 }
