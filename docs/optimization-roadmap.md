@@ -107,6 +107,143 @@
 - `src/app/terminal_workspace.rs` 新增删除不存在标签、删除最后叶子、嵌套折叠及无空 ID 测试。
 - 全量测试结果为 221 passed、0 failed、1 ignored。
 
+## 新识别待办
+
+### [ ] APP-106 移除工作区状态的可变透传，集中维护状态不变量
+
+**优先级：P0**
+
+**现状证据**
+
+- `src/app/terminal_workspace.rs` 中 `TerminalWorkspaceState` 的集合、活动 ID 和 `pane_root` 字段仍全部为 `pub(crate)`。
+- `WindowState` 对 `TerminalWorkspaceState` 实现 `DerefMut`，`TinyShell` 又对 `WindowState` 实现 `DerefMut`，调用方可以从应用对象直接修改工作区内部字段。
+- `src/app/connection_actions.rs`、`src/app/session_actions.rs` 等模块仍直接执行 `tabs.push`、`tab_groups.push`、`pane_root = ...`、`active_tab = ...`，一次操作需要由调用方手工维护多个字段的一致性。
+
+**风险**
+
+新增标签关闭、跨窗口移动或窗格操作时，容易遗漏活动标签、活动组、窗格根和焦点路径中的任一同步步骤；状态对象虽然已提取，但尚未真正形成约束边界。
+
+**建议范围**
+
+- 移除 `WindowState` 和 `TinyShell` 面向工作区的 `DerefMut` 兼容层，保留显式只读访问或命名访问器。
+- 为新增标签组、激活标签、关闭标签、替换窗格根、同步当前组布局等操作提供 `TerminalWorkspaceState` 方法。
+- 方法返回状态变化结果或领域事件，由 `TinyShell` 在外层执行后端注册、持久化和 `cx.notify()`，不把 GPUI/I/O 引入工作区模块。
+
+**验收条件**
+
+- `src/app/` 中除 `terminal_workspace.rs` 外，不再直接修改 `tabs`、`tab_groups`、`pane_root`、`active_tab`、`active_group` 和 `focused_pane_path`。
+- 关闭活动标签、删除最后一个标签、切换标签组、分割窗格和跨窗口移动均通过命名状态转换完成。
+- 单元测试覆盖每项转换后的活动 ID、布局和焦点路径不变量。
+- 格式检查、Clippy 和全部测试通过，用户可见行为不变。
+
+### [ ] APP-107 统一对话框生命周期和串行切换入口
+
+**优先级：P1**
+
+**现状证据**
+
+- `TinyShell` 同时持有 `active_dialog: Option<DialogKind>`，`WindowState` 另持有 `pending_dialog: Option<DialogKind>`，同一领域存在“已打开”和“待打开”两套状态源。
+- `src/app/dialogs/quick_commands.rs`、`src/app/managed_keys.rs`、`src/app/sync_dialogs.rs`、`src/app/updater/ui.rs` 等模块分别手工设置或清除 `active_dialog`。
+- 对话框切换需要调用方自行组合 `active_dialog = None`、`window.close_dialog(cx)` 和 `window.defer(...)`；连接管理器、托管密钥选择器等路径已有多处重复序列。
+
+**风险**
+
+关闭回调、延迟打开和异步结果交错时，状态可能先于窗口实际生命周期变化，导致重复打开、请求被静默丢弃，或 `active_dialog` 与 GPUI 当前对话框不一致。
+
+**建议范围**
+
+- 引入单一 `DialogCoordinator`/`DialogState`，明确 `Idle`、`Opening`、`Open`、`Switching` 等必要状态，或采用当前对话框加单槽待处理请求的等价模型。
+- 集中提供 `request`、`opened`、`closed`、`replace` 接口，对话框模块只提交请求和内容构建函数。
+- 明确并测试“已有对话框时拒绝、替换或排队”的策略，不引入无界对话框队列。
+
+**验收条件**
+
+- `TinyShell` 不再同时维护独立的 `active_dialog` 与 `pending_dialog` 字段。
+- 业务模块不再直接拼接清状态、关闭窗口和 `defer` 打开下一个对话框的生命周期序列。
+- 测试覆盖重复请求、关闭后切换、异步完成时原对话框已关闭，以及传输对话框的延迟打开。
+- 任意时刻状态模型与实际打开的应用级对话框一致。
+
+### [ ] APP-108 为后台事件管道补充拥塞策略和可观测性
+
+**优先级：P1**
+
+**现状证据**
+
+- `src/terminal/mod.rs::backend_event_channel` 使用容量为 16,384 的 `sync_channel`，`BackendEventSender::send` 在队列满时会阻塞生产线程。
+- `src/session/store.rs::drain_events_for` 每轮最多路由 2,048 个事件，每个 owner 或未路由 ID 最多缓存 8,192 个事件；达到上限后仅保存一个 `deferred_event` 并停止继续路由。
+- `src/app/mod.rs::drain_backend_events` 每轮最多消费 2,048 个事件，事件只有取出后才进入 `coalesce_backend_events`；当前没有队列深度、延迟、阻塞次数或丢弃/合并数量的观测数据。
+
+**风险**
+
+大量终端输出或未及时注册的 route 会形成队头阻塞，连带延迟连接状态、关闭事件和其他窗口事件；现有上限控制了部分内存，却无法判断何时持续拥塞，也无法验证合并是否真正降低压力。
+
+**建议范围**
+
+- 为事件类别定义明确策略：终端输出保持顺序，状态/指标允许覆盖，控制事件不得被静默丢弃。
+- 在不破坏顺序屏障的前提下评估将可替换事件提前合并，或为不同类别建立有界缓冲。
+- 增加低成本统计：当前/峰值积压、每轮路由与消费量、合并量、生产者阻塞或发送失败次数；默认只记录异常阈值，避免高频日志。
+
+**验收条件**
+
+- 压力测试覆盖单窗口高频输出、多窗口竞争、route 注册前积压和队列达到容量的场景。
+- 控制事件在持续输出压力下仍能在有界轮次内被处理；输出字节顺序保持不变。
+- 所有队列均有明确容量和满载策略，代码中不存在无说明的静默丢弃。
+- 可以通过测试断言或诊断统计确认事件发生过合并、积压或背压。
+
+### [ ] APP-109 将配置持久化仓库改为可管理、可刷新和可测试的生命周期组件
+
+**优先级：P1**
+
+**现状证据**
+
+- `src/app/config_persistence.rs` 使用全局 `OnceLock<Arc<ConfigRepository>>`，首次异步保存时创建后台线程和标准库 mpsc 通道。
+- 工作线程没有显式关闭、join 或 flush 接口；`save_full_async` 返回成功只表示请求已入队，后台实际保存失败仅写入日志。
+- 全局 repository 跨测试和窗口共享，现有测试主要验证 sequence 与配置合并，没有验证防抖保存、异步失败传播、退出前落盘或线程终止。
+
+**风险**
+
+应用退出或测试结束时，最后一批异步偏好可能仍在 100ms 防抖窗口内；调用方无法区分“已排队”和“已落盘”，全局线程也使故障注入及测试隔离困难。
+
+**建议范围**
+
+- 将 repository 作为应用级依赖注入到窗口/启动编排层，保存路径或存储实现通过窄接口注入。
+- 为后台 worker 定义 `flush`、`shutdown` 和完成确认语义；明确正常退出、发送端断开和 worker 启动失败时的行为。
+- 保留偏好合并与完整保存的先后规则，但把防抖批处理提取为可测试的纯决策逻辑。
+
+**验收条件**
+
+- 应用正常退出前可以等待已接受的保存请求完成，并有超时或失败结果。
+- 异步完整保存能够向需要确认的调用方返回最终落盘结果，而不只返回入队结果。
+- 测试不依赖全局单例，覆盖防抖合并、完整保存覆盖旧偏好、I/O 失败、flush 和 shutdown。
+- 多窗口共享同一配置写入顺序，且不会为每个窗口创建独立保存线程。
+
+### [ ] APP-110 清理剩余用户可见硬编码状态和系统文件选择提示
+
+**优先级：P2**
+
+**现状证据**
+
+- `src/sftp/ops.rs` 仍包含 `Select File to Upload`、`Select Folder to Upload`、`upload picker failed` 和 `failed to save external editor` 等用户可见英文文本。
+- `src/app/session_actions.rs` 使用 `pane split`、`new window opened` 状态文本。
+- `src/app/terminal_settings.rs` 与 `src/app/theme.rs` 仍直接拼接终端字号、主题模式和主题不存在等英文状态。
+
+**风险**
+
+中文界面会混入英文提示；相同错误在不同模块使用不同格式，后续难以统一用户提示与技术日志的边界。
+
+**建议范围**
+
+- 将用户可见状态、错误前缀和系统文件选择提示迁移到 `locales/zh-CN.yml`、`locales/en.yml`。
+- 原始错误详情作为插值参数保留；仅供开发排查的信息继续使用 `tracing`，不直接展示内部上下文。
+- 示例 URL、端口、区域、权限值等输入数据不作为自然语言文案处理。
+
+**验收条件**
+
+- 上述文件中的用户可见自然语言均通过 `t!` 或统一的本地化状态构造函数生成。
+- 中英文资源键同时存在，插值参数名称一致。
+- 中文和英文 locale 下分别验证文件/文件夹选择、选择器失败、主题切换、字号调整和窗口/窗格操作提示。
+- 保留的硬编码 placeholder 仅为协议、路径、数字或格式示例，并在代码审查中逐项确认。
+
 ## 已完成
 
 ### [x] APP-001 合并高频后台事件并保留顺序屏障

@@ -423,7 +423,11 @@ impl TinyShell {
                     this.config
                         .set_sftp_external_editor(path.to_string_lossy().to_string());
                     if let Err(err) = crate::app::config_persistence::save_full(&this.config) {
-                        this.status = format!("failed to save external editor: {err:#}").into();
+                        this.status = t!(
+                            "sftp_external_editor_save_failed",
+                            error = format!("{err:#}")
+                        )
+                        .into();
                     } else {
                         this.status = t!("sftp_external_editor_saved").into();
                     }
@@ -798,7 +802,7 @@ impl TinyShell {
             files: true,
             directories: false,
             multiple: false,
-            prompt: Some("Select File to Upload".into()),
+            prompt: Some(t!("sftp_select_file_to_upload").into()),
         });
         cx.spawn_in(window, async move |this, cx| {
             match path_prompt.await {
@@ -812,14 +816,15 @@ impl TinyShell {
                         );
                         handle.upload_paths(vec![local_path], remote_dir);
                         this.update(cx, |this, cx| {
-                            this.pending_dialog = Some(crate::app::DialogKind::Transfers);
+                            this.request_dialog(crate::app::DialogKind::Transfers);
                             cx.notify();
                         })?;
                     }
                 }
                 Ok(Err(err)) => {
                     this.update(cx, |this, cx| {
-                        this.status = format!("upload picker failed: {err}").into();
+                        this.status =
+                            t!("sftp_upload_picker_failed", error = err.to_string()).into();
                         cx.notify();
                     })?;
                 }
@@ -842,7 +847,7 @@ impl TinyShell {
             files: false,
             directories: true,
             multiple: false,
-            prompt: Some("Select Folder to Upload".into()),
+            prompt: Some(t!("sftp_select_folder_to_upload").into()),
         });
         cx.spawn_in(window, async move |this, cx| {
             match path_prompt.await {
@@ -856,14 +861,15 @@ impl TinyShell {
                         );
                         handle.upload_paths(vec![local_path], remote_dir);
                         this.update(cx, |this, cx| {
-                            this.pending_dialog = Some(crate::app::DialogKind::Transfers);
+                            this.request_dialog(crate::app::DialogKind::Transfers);
                             cx.notify();
                         })?;
                     }
                 }
                 Ok(Err(err)) => {
                     this.update(cx, |this, cx| {
-                        this.status = format!("upload picker failed: {err}").into();
+                        this.status =
+                            t!("sftp_upload_picker_failed", error = err.to_string()).into();
                         cx.notify();
                     })?;
                 }

@@ -57,6 +57,40 @@ impl TerminalWorkspaceState {
             .find(|group| group.id == group_id)
     }
 
+    pub(crate) fn allocate_tab_group_ordinal(&mut self) -> u64 {
+        let ordinal = self.next_tab_group_ordinal;
+        self.next_tab_group_ordinal = self.next_tab_group_ordinal.saturating_add(1);
+        ordinal
+    }
+
+    pub(crate) fn activate_terminal_tab(&mut self, tab_id: &str) -> bool {
+        if self.terminal_tab(tab_id).is_none() {
+            return false;
+        }
+        self.active_tab = Some(tab_id.to_owned());
+        self.active_group = self
+            .tab_groups
+            .iter()
+            .find(|group| group.pane_root.contains(tab_id))
+            .map(|group| group.id.clone());
+        true
+    }
+
+    pub(crate) fn set_system_info_tab(&mut self, tab_id: Option<String>) {
+        self.active_system_info_tab = tab_id;
+    }
+
+    pub(crate) fn install_terminal_tab(&mut self, tab: TerminalTab, group: TabGroup) {
+        let tab_id = tab.id.clone();
+        let group_id = group.id.clone();
+        self.tabs.push(tab);
+        self.tab_groups.push(group);
+        self.active_tab = Some(tab_id.clone());
+        self.active_group = Some(group_id);
+        self.pane_root = PaneLayout::Single(tab_id);
+        self.focused_pane_path.clear();
+    }
+
     pub(crate) fn preferred_terminal_tab_id(&self) -> Option<String> {
         if let Some(active_id) = self.active_tab.as_deref()
             && self.terminal_tab(active_id).is_some()
@@ -84,6 +118,7 @@ pub(crate) struct WindowState {
     pub(crate) search_target_tab: Option<String>,
     pub(crate) search_bar_bounds: Option<gpui::Bounds<gpui::Pixels>>,
     pub(crate) pending_dialog: Option<crate::app::DialogKind>,
+    pub(crate) active_dialog: Option<crate::app::DialogKind>,
 }
 
 impl WindowState {
@@ -92,6 +127,25 @@ impl WindowState {
             workspace: TerminalWorkspaceState::new(),
             ..Self::default()
         }
+    }
+
+    pub(crate) fn request_dialog(&mut self, kind: crate::app::DialogKind) {
+        if self.active_dialog.is_none() {
+            self.pending_dialog = Some(kind);
+        }
+    }
+
+    pub(crate) fn take_pending_dialog(&mut self) -> Option<crate::app::DialogKind> {
+        self.pending_dialog.take()
+    }
+
+    pub(crate) fn mark_dialog_open(&mut self, kind: crate::app::DialogKind) {
+        self.pending_dialog = None;
+        self.active_dialog = Some(kind);
+    }
+
+    pub(crate) fn mark_dialog_closed(&mut self) {
+        self.active_dialog = None;
     }
 }
 
@@ -148,7 +202,6 @@ mod tests {
         assert!(matches!(layout, PaneLayout::Empty));
         assert!(layout.tab_ids().is_empty());
     }
-
     #[test]
     fn workspace_state_starts_with_empty_pane_root() {
         let state = TerminalWorkspaceState::new();

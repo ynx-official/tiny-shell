@@ -105,20 +105,18 @@ impl TinyShell {
                 };
                 let mut tab = TerminalTab::new_local(id.clone(), title.clone(), backend, events);
                 tab.resize(DEFAULT_COLS, DEFAULT_ROWS);
-                self.tabs.push(tab);
-                self.register_backend_route(id.clone(), cx);
-                self.active_tab = Some(id.clone());
-                self.pane_root = PaneLayout::Single(id.clone());
-                self.focused_pane_path = vec![];
                 let group_id = Uuid::new_v4().to_string();
-                self.tab_groups.push(TabGroup {
-                    id: group_id.clone(),
-                    ordinal,
-                    title,
-                    pane_root: PaneLayout::Single(id),
-                    sftp: None,
-                });
-                self.active_group = Some(group_id);
+                self.install_terminal_tab(
+                    tab,
+                    TabGroup {
+                        id: group_id.clone(),
+                        ordinal,
+                        title,
+                        pane_root: PaneLayout::Single(id.clone()),
+                        sftp: None,
+                    },
+                );
+                self.register_backend_route(id.clone(), cx);
                 self.tabs_scroll_handle.scroll_to_item(self.tabs.len() - 1);
                 self.status = t!("local_terminal_opened").into();
             }
@@ -922,7 +920,7 @@ impl TinyShell {
         }
         self.focused_pane_path = new_full_path;
         self.active_tab = Some(new_id);
-        self.status = "pane split".into();
+        self.status = t!("pane_split_done").into();
         tracing::info!(
             "[split] DONE: pane_root={:?} focused_path={:?} active_tab={:?} tabs={}",
             self.pane_root,
@@ -1298,7 +1296,7 @@ impl TinyShell {
     /// Open a new blank window.
     pub(crate) fn open_new_window(&mut self, cx: &mut Context<Self>) {
         crate::app::startup::open_new_window(None, Some(self.session_store.clone()), cx);
-        self.status = "new window opened".into();
+        self.status = t!("new_window_opened").into();
         cx.notify();
     }
 
@@ -1317,7 +1315,7 @@ impl TinyShell {
                     .map(|group| group.id.clone())
             });
         let Some(group_id) = group_id else {
-            self.status = "cannot detach: active tab group is missing".into();
+            self.status = t!("cannot_detach_tab_group").into();
             cx.notify();
             return;
         };
@@ -1369,7 +1367,7 @@ impl TinyShell {
             match result {
                 Ok(()) => {
                     tracing::info!(group_id, "[tab-drag] detached window opened");
-                    this.status = "tab group detached to new window".into();
+                    this.status = t!("tab_group_detached").into();
                 }
                 Err((message, transfer)) => {
                     tracing::warn!(group_id, %message, "[tab-drag] detached window failed");
@@ -1769,7 +1767,7 @@ impl TinyShell {
                     Ok(()) => {
                         let focus_handle = target.read(cx).focus_handle.clone();
                         crate::app::activate_window_with_retry(target_window, focus_handle, cx);
-                        self.status = "tab group moved into another window".into();
+                        self.status = t!("tab_group_moved").into();
                         true
                     }
                     Err((message, transfer)) => {
@@ -1800,7 +1798,7 @@ impl TinyShell {
             .iter()
             .position(|group| group.id == group_id)
         else {
-            self.status = "cannot reorder: source group no longer exists".into();
+            self.status = t!("cannot_reorder_tab_group").into();
             cx.notify();
             return;
         };
@@ -1812,7 +1810,7 @@ impl TinyShell {
         self.tab_groups.insert(target_index, group);
         self.activate_group(group_id, window, cx);
         self.tabs_scroll_handle.scroll_to_item(target_index);
-        self.status = "tab group reordered".into();
+        self.status = t!("tab_group_reordered").into();
         window.activate_window();
         self.focus_handle.focus(window, cx);
         cx.notify();
@@ -2107,7 +2105,7 @@ impl TinyShell {
             self.focus_pane_with_id(tab_id);
         }
         self.sync_system_tab_to_active_group();
-        self.status = "tab group moved from another window".into();
+        self.status = t!("tab_group_received").into();
         cx.notify();
     }
 }

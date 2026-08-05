@@ -19,6 +19,7 @@ struct ConfigRepository {
 enum SaveRequest {
     Preferences(ConfigStore),
     Full(ConfigStore),
+    Flush(mpsc::Sender<anyhow::Result<()>>),
 }
 
 static REPOSITORY: OnceLock<Arc<ConfigRepository>> = OnceLock::new();
@@ -55,61 +56,70 @@ impl ConfigRepository {
                         while let Ok((sequence, request)) = receiver.recv() {
                             let (mut latest_full, mut latest_preferences) = match request {
                                 SaveRequest::Full(config) => (Some((sequence, config)), None),
-                                SaveRequest::Preferences(config) => (None, Some((sequence, config))),
+                                SaveRequest::Preferences(config) => {
+                                    (None, Some((sequence, config)))
+                                }
+                                SaveRequest::Flush(reply) => {
+                                    let _ = reply.send(Ok(()));
+                                    continue;
+                                }
                             };
                             let mut latest_sequence = sequence;
+                            let mut barrier = None;
+
                             while let Ok((next_sequence, next_source)) =
                                 receiver.recv_timeout(Duration::from_millis(100))
                             {
-                                latest_sequence = next_sequence;
                                 match next_source {
                                     SaveRequest::Full(config) => {
+                                        latest_sequence = next_sequence;
                                         latest_full = Some((next_sequence, config));
                                     }
                                     SaveRequest::Preferences(config) => {
+                                        latest_sequence = next_sequence;
                                         latest_preferences = Some((next_sequence, config));
+                                    }
+                                    SaveRequest::Flush(reply) => {
+                                        barrier = Some(reply);
+                                        break;
                                     }
                                 }
                             }
 
-                            let Ok(_guard) = repository.save_lock.lock() else {
-                                tracing::warn!(
-                                    "config repository lock is poisoned; skipping background save"
-                                );
-                                continue;
-                            };
-                            if !repository.is_current(sequence) {
-                                continue;
-                            }
-
-                            if !repository.is_current(latest_sequence) {
-                                continue;
-                            }
-                            let result = match (latest_full, latest_preferences) {
-                                (Some((full_sequence, mut config)), Some((preference_sequence, source)))
-                                    if preference_sequence > full_sequence =>
-                                {
-                                    config.merge_interactive_preferences_from(&source);
-                                    config.save()
-                                }
-                                (Some((_, config)), _) => config.save(),
-                                (None, Some((_, source))) => {
-                                    let mut config = match ConfigStore::load() {
-                                        Ok(config) => config,
-                                        Err(error) => {
-                                            tracing::warn!(
-                                                "failed to load config before background preference save: {error:#}"
-                                            );
-                                            continue;
+                            let result = if !repository.is_current(sequence)
+                                || !repository.is_current(latest_sequence)
+                            {
+                                Ok(())
+                            } else {
+                                match repository.save_lock.lock() {
+                                    Ok(_guard) => match (latest_full, latest_preferences) {
+                                        (
+                                            Some((full_sequence, mut config)),
+                                            Some((preference_sequence, source)),
+                                        ) if preference_sequence > full_sequence => {
+                                            config.merge_interactive_preferences_from(&source);
+                                            config.save()
                                         }
-                                    };
-                                    config.merge_interactive_preferences_from(&source);
-                                    config.save()
+                                        (Some((_, config)), _) => config.save(),
+                                        (None, Some((_, source))) => {
+                                            ConfigStore::load().and_then(|mut config| {
+                                                config.merge_interactive_preferences_from(&source);
+                                                config.save()
+                                            })
+                                        }
+                                        (None, None) => Ok(()),
+                                    },
+                                    Err(_) => {
+                                        Err(anyhow::anyhow!("config repository lock is poisoned"))
+                                    }
                                 }
-                                (None, None) => continue,
                             };
-                            if let Err(error) = result {
+
+                            if let Err(error) = &result {
                                 tracing::warn!("failed to save config in background: {error:#}");
+                            }
+                            if let Some(reply) = barrier {
+                                let _ = reply.send(result);
                             }
                         }
                     });
@@ -136,6 +146,19 @@ impl ConfigRepository {
         self.save_sender()
             .send((sequence, SaveRequest::Full(config)))
             .map_err(|_| anyhow::anyhow!("config save worker is unavailable"))
+    }
+
+    fn flush(self: &Arc<Self>) -> anyhow::Result<()> {
+        let (reply_tx, reply_rx) = mpsc::channel();
+        self.save_sender()
+            .send((
+                self.save_sequence.load(Ordering::SeqCst),
+                SaveRequest::Flush(reply_tx),
+            ))
+            .map_err(|_| anyhow::anyhow!("config save worker is unavailable"))?;
+        reply_rx
+            .recv()
+            .map_err(|_| anyhow::anyhow!("config save worker stopped"))?
     }
 
     fn persist_sync(&self, source: &ConfigStore) -> anyhow::Result<()> {
@@ -175,9 +198,13 @@ pub(crate) fn save_full_async(config: &ConfigStore) -> anyhow::Result<()> {
     repository().save_full_async(config.clone())
 }
 
+pub(crate) fn flush() -> anyhow::Result<()> {
+    repository().flush()
+}
+
 #[cfg(test)]
 mod tests {
-    use std::sync::{Arc, atomic::AtomicU64, mpsc};
+    use std::sync::{Arc, atomic::AtomicU64};
 
     use super::ConfigRepository;
     use crate::session::config::ConfigStore;
@@ -193,7 +220,7 @@ mod tests {
     #[test]
     fn save_sequence_is_monotonic_across_concurrent_writers() {
         let repository = test_repository();
-        let (tx, rx) = mpsc::channel();
+        let (tx, rx) = std::sync::mpsc::channel();
         std::thread::scope(|scope| {
             for _ in 0..8 {
                 let repository = Arc::clone(&repository);

@@ -5,7 +5,7 @@ impl TinyShell {
         if self.active_dialog.is_some() {
             return;
         }
-        self.active_dialog = Some(crate::app::DialogKind::Transfers);
+        self.mark_dialog_open(crate::app::DialogKind::Transfers);
 
         let view = cx.entity();
         window.open_dialog(cx, move |dialog: Dialog, _window, _| {
@@ -16,7 +16,7 @@ impl TinyShell {
                     let view = view.clone();
                     move |_, _, cx| {
                         view.update(cx, |this, cx| {
-                            this.active_dialog = None;
+                            this.mark_dialog_closed();
                             cx.notify();
                         });
                     }
@@ -85,7 +85,7 @@ impl TinyShell {
                                         .on_click(window.listener_for(
                                             &view,
                                             |this, _, window, cx| {
-                                                this.active_dialog = None;
+                                                this.mark_dialog_closed();
                                                 window.close_dialog(cx);
                                                 cx.notify();
                                             },

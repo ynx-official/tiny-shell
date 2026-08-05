@@ -1,6 +1,7 @@
 use anyhow::{Context as _, Result};
 use gpui::{App, Context, SharedString, Window, px};
 use gpui_component::{ActiveTheme as _, Theme, ThemeMode, ThemeRegistry};
+use rust_i18n::t;
 
 use crate::TinyShell;
 
@@ -103,7 +104,7 @@ impl TinyShell {
         self.theme_mode = mode;
         self.share_theme_preferences(cx);
         self.apply_theme_preferences(window, cx);
-        self.status = format!("theme mode: {}", cx.theme().mode.name()).into();
+        self.status = t!("theme_mode_changed", mode = cx.theme().mode.name()).into();
         self.persist_theme_preferences();
         cx.notify();
     }
@@ -115,7 +116,7 @@ impl TinyShell {
         cx: &mut Context<Self>,
     ) {
         let Some(theme_config) = ThemeRegistry::global(cx).themes().get(&name).cloned() else {
-            self.status = format!("theme not found: {name}").into();
+            self.status = t!("theme_not_found", name = name.to_string()).into();
             cx.notify();
             return;
         };
@@ -127,7 +128,7 @@ impl TinyShell {
         }
         self.share_theme_preferences(cx);
         self.apply_theme_preferences(window, cx);
-        self.status = format!("theme: {name}").into();
+        self.status = t!("theme_changed", name = name.to_string()).into();
         self.persist_theme_preferences();
         window.refresh();
         cx.notify();
@@ -142,9 +143,9 @@ impl TinyShell {
         self.follow_system_theme = follow;
         self.share_theme_preferences(cx);
         if follow {
-            self.status = "theme mode: system".into();
+            self.status = t!("theme_mode_changed", mode = "system").into();
         } else {
-            self.status = format!("theme mode: {}", cx.theme().mode.name()).into();
+            self.status = t!("theme_mode_changed", mode = cx.theme().mode.name()).into();
         }
         self.apply_theme_preferences(window, cx);
         self.persist_theme_preferences();

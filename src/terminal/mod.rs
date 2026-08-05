@@ -8,7 +8,7 @@ use std::{
     sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
-        mpsc::{self, Receiver, Sender, SyncSender},
+        mpsc::{self, Receiver, Sender, SyncSender, TrySendError},
     },
 };
 
@@ -144,7 +144,15 @@ pub(crate) enum BackendEvent {
 pub(crate) struct BackendEventSender {
     events: SyncSender<BackendEvent>,
     wake_generation: Arc<AtomicU64>,
+    sent_events: Arc<AtomicU64>,
+    rejected_events: Arc<AtomicU64>,
     wake: tokio::sync::watch::Sender<u64>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct BackendEventSendStats {
+    pub(crate) sent: u64,
+    pub(crate) rejected: u64,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -152,10 +160,32 @@ pub(crate) struct BackendEventSendError;
 
 impl BackendEventSender {
     pub fn send(&self, event: BackendEvent) -> Result<(), BackendEventSendError> {
-        self.events.send(event).map_err(|_| BackendEventSendError)?;
-        let generation = self.wake_generation.fetch_add(1, Ordering::AcqRel) + 1;
-        self.wake.send_replace(generation);
-        Ok(())
+        match self.events.try_send(event) {
+            Ok(()) => {
+                self.sent_events.fetch_add(1, Ordering::Relaxed);
+                let generation = self.wake_generation.fetch_add(1, Ordering::AcqRel) + 1;
+                self.wake.send_replace(generation);
+                Ok(())
+            }
+            Err(TrySendError::Full(_event)) => {
+                // Producers must never block on terminal output. The bounded
+                // queue is the backpressure boundary; higher-level coalescing
+                // remains responsible for preserving control-event semantics.
+                self.rejected_events.fetch_add(1, Ordering::Relaxed);
+                Err(BackendEventSendError)
+            }
+            Err(TrySendError::Disconnected(_event)) => {
+                self.rejected_events.fetch_add(1, Ordering::Relaxed);
+                Err(BackendEventSendError)
+            }
+        }
+    }
+
+    pub(crate) fn stats(&self) -> BackendEventSendStats {
+        BackendEventSendStats {
+            sent: self.sent_events.load(Ordering::Relaxed),
+            rejected: self.rejected_events.load(Ordering::Relaxed),
+        }
     }
 
     pub(crate) fn subscribe(&self) -> tokio::sync::watch::Receiver<u64> {
@@ -173,6 +203,8 @@ pub(crate) fn backend_event_channel() -> (BackendEventSender, Receiver<BackendEv
         BackendEventSender {
             events,
             wake_generation: Arc::new(AtomicU64::new(0)),
+            sent_events: Arc::new(AtomicU64::new(0)),
+            rejected_events: Arc::new(AtomicU64::new(0)),
             wake,
         },
         receiver,

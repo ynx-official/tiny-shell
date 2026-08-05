@@ -871,7 +871,6 @@ pub(crate) struct TinyShell {
     pub(crate) active_title_bar_style: crate::session::config::TitleBarStyle,
     pub(crate) cursor_style: crate::session::config::CursorStyle,
     pub(crate) recording_action: Option<String>,
-    pub(crate) active_dialog: Option<DialogKind>,
     pub(crate) auxiliary_windows: AuxiliaryWindowsState,
     pub(crate) update_runtime: UpdateRuntimeState,
     /// Error message when a recorded keybinding conflicts with another
@@ -1230,7 +1229,6 @@ impl TinyShell {
                 prev_monitoring_size: None,
             },
             recording_action: None,
-            active_dialog: None,
             auxiliary_windows: AuxiliaryWindowsState::default(),
             update_runtime: UpdateRuntimeState::default(),
             keybind_error: None,
@@ -1570,10 +1568,22 @@ impl TinyShell {
         }
         let owner_id = self.session_owner_id;
         let remaining = MAX_EVENTS_PER_TICK.saturating_sub(events.len());
-        events.extend(
-            self.session_store
-                .update(cx, |store, _| store.drain_events_for(owner_id, remaining)),
-        );
+        let routed_events = self.session_store.update(cx, |store, _| {
+            let events = store.drain_events_for(owner_id, remaining);
+            let stats = store.queue_stats();
+            if stats.deferred > 0 || stats.rejected > 0 {
+                tracing::debug!(
+                    routed = stats.routed,
+                    deferred = stats.deferred,
+                    peak_pending = stats.peak_pending,
+                    sent = stats.sent,
+                    rejected = stats.rejected,
+                    "backend event queue is under pressure"
+                );
+            }
+            events
+        });
+        events.extend(routed_events);
         for event in coalesce_backend_events(events) {
             changed = true;
             match event {
@@ -2136,6 +2146,9 @@ impl TinyShell {
     /// Clean up all SSH sessions and SFTP handles when the window is closing.
     pub(crate) fn cleanup_on_window_close(&mut self) {
         self.async_runtime.supervisor.cancel_all();
+        if let Err(error) = crate::app::config_persistence::flush() {
+            tracing::warn!("failed to flush config before window close: {error:#}");
+        }
         tracing::info!(
             "[ui] cleaning up {} tabs and {} sftp handles on window close",
             self.tabs.len(),

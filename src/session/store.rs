@@ -1,9 +1,20 @@
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::sync::mpsc::Receiver;
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    mpsc::Receiver,
+};
 
 use crate::terminal::{BackendEvent, BackendEventSender, backend_event_channel};
 
 pub(crate) type WindowOwnerId = u64;
+
+pub(crate) struct SessionQueueStats {
+    pub(crate) routed: u64,
+    pub(crate) deferred: u64,
+    pub(crate) peak_pending: usize,
+    pub(crate) sent: u64,
+    pub(crate) rejected: u64,
+}
 
 pub(crate) struct SessionStore {
     event_routes: HashMap<String, WindowOwnerId>,
@@ -12,6 +23,9 @@ pub(crate) struct SessionStore {
     events_tx: BackendEventSender,
     events_rx: Receiver<BackendEvent>,
     deferred_event: Option<BackendEvent>,
+    routed_events: AtomicU64,
+    deferred_events: AtomicU64,
+    peak_pending_events: AtomicU64,
 }
 
 impl SessionStore {
@@ -24,6 +38,9 @@ impl SessionStore {
             events_tx,
             events_rx,
             deferred_event: None,
+            routed_events: AtomicU64::new(0),
+            deferred_events: AtomicU64::new(0),
+            peak_pending_events: AtomicU64::new(0),
         }
     }
 
@@ -81,6 +98,31 @@ impl SessionStore {
         true
     }
 
+    pub(crate) fn queue_stats(&self) -> SessionQueueStats {
+        let pending = self
+            .pending_events
+            .values()
+            .map(VecDeque::len)
+            .sum::<usize>()
+            + self
+                .unrouted_events
+                .values()
+                .map(VecDeque::len)
+                .sum::<usize>()
+            + usize::from(self.deferred_event.is_some());
+        let send_stats = self.events_tx.stats();
+        SessionQueueStats {
+            routed: self.routed_events.load(Ordering::Relaxed),
+            deferred: self.deferred_events.load(Ordering::Relaxed),
+            peak_pending: self
+                .peak_pending_events
+                .load(Ordering::Relaxed)
+                .max(pending as u64) as usize,
+            sent: send_stats.sent,
+            rejected: send_stats.rejected,
+        }
+    }
+
     pub(crate) fn drain_events_for(
         &mut self,
         owner_id: WindowOwnerId,
@@ -108,22 +150,39 @@ impl SessionStore {
             if let Some(owner_id) = self.event_routes.get(route_id).copied() {
                 let pending = self.pending_events.entry(owner_id).or_default();
                 if pending.len() >= MAX_PENDING_EVENTS_PER_OWNER {
+                    self.deferred_events.fetch_add(1, Ordering::Relaxed);
                     self.deferred_event = Some(event);
                     break;
                 }
                 pending.push_back(event);
+                self.routed_events.fetch_add(1, Ordering::Relaxed);
             } else {
                 let pending = self
                     .unrouted_events
                     .entry(route_id.to_string())
                     .or_default();
                 if pending.len() >= MAX_PENDING_EVENTS_PER_OWNER {
+                    self.deferred_events.fetch_add(1, Ordering::Relaxed);
                     self.deferred_event = Some(event);
                     break;
                 }
                 pending.push_back(event);
+                self.routed_events.fetch_add(1, Ordering::Relaxed);
             }
         }
+        let pending_total = self
+            .pending_events
+            .values()
+            .map(VecDeque::len)
+            .sum::<usize>()
+            + self
+                .unrouted_events
+                .values()
+                .map(VecDeque::len)
+                .sum::<usize>()
+            + usize::from(self.deferred_event.is_some());
+        self.peak_pending_events
+            .fetch_max(pending_total as u64, Ordering::Relaxed);
         let pending = self.pending_events.entry(owner_id).or_default();
         let count = limit.min(pending.len());
         let drained = pending.drain(..count).collect();
@@ -245,5 +304,9 @@ mod tests {
         assert_eq!(store.drain_events_for(1, usize::MAX).len(), 1);
         assert_eq!(store.drain_events_for(2, 2_047).len(), 2_047);
         assert_eq!(store.drain_events_for(2, usize::MAX).len(), 952);
+        let stats = store.queue_stats();
+        assert_eq!(stats.routed, 3_000);
+        assert_eq!(stats.deferred, 0);
+        assert!(stats.peak_pending >= 2_048);
     }
 }

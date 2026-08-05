@@ -183,8 +183,7 @@ impl TinyShell {
     pub(crate) fn open_ssh_session(&mut self, mut session: Session, cx: &mut Context<Self>) {
         self.active_system_info_tab = None;
         self.home_page_open = false;
-        let ordinal = self.next_tab_group_ordinal;
-        self.next_tab_group_ordinal += 1;
+        let ordinal = self.allocate_tab_group_ordinal();
         tracing::info!(
             "[session] opening ssh tab for session '{}' ({}@{})",
             session.name,
@@ -234,20 +233,9 @@ impl TinyShell {
             crate::app::constants::DEFAULT_ROWS,
             events.clone(),
         );
-        self.tabs.push(TerminalTab::new_ssh(
-            id.clone(),
-            &session,
-            backend,
-            events.clone(),
-        ));
-        if let Some(tab) = self.tabs.last_mut() {
-            tab.feed_status_line(&rust_i18n::t!("starting_connection"));
-        }
-        self.active_tab = Some(id.clone());
-        self.pane_root = PaneLayout::Single(id.clone());
-        self.focused_pane_path = vec![];
+        let tab = TerminalTab::new_ssh(id.clone(), &session, backend, events.clone());
         let group_id = Uuid::new_v4().to_string();
-        self.tab_groups.push(TabGroup {
+        let group = TabGroup {
             id: group_id.clone(),
             ordinal,
             title: session.name.clone(),
@@ -265,8 +253,12 @@ impl TinyShell {
                 initial_terminal_cwd_synced: false,
                 latency_ms: None,
             }),
-        });
-        self.active_group = Some(group_id.clone());
+        };
+        self.window_state.workspace.install_terminal_tab(tab, group);
+        if let Some(tab) = self.terminal_tab_mut(&id) {
+            tab.feed_status_line(&rust_i18n::t!("starting_connection"));
+        }
+        self.sftp_workspace.pending_path_sync = Some("/".into());
         self.tabs_scroll_handle.scroll_to_item(self.tabs.len() - 1);
         if let Some(session_id) = self.active_session_id() {
             if let Some(index) = self
@@ -288,8 +280,6 @@ impl TinyShell {
             events,
         );
         self.sftp_handles.insert(group_id.clone(), sftp_handle);
-        self.active_tab = Some(id.clone());
-        self.sftp_workspace.pending_path_sync = Some("/".into());
         self.status = t!("ssh_tab_opened").into();
         cx.notify();
     }

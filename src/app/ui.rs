@@ -568,7 +568,7 @@ impl Render for TinyShell {
 
                     view.update(cx, |this, cx| {
                         if matches!(
-                            this.pending_dialog.take(),
+                            this.take_pending_dialog(),
                             Some(crate::app::DialogKind::Transfers)
                         ) {
                             this.show_transfers_dialog(window, cx);

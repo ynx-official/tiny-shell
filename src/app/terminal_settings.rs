@@ -1,5 +1,6 @@
 use gpui::{AppContext as _, Context, Window, px};
 use gpui_component::Theme;
+use rust_i18n::t;
 
 use crate::{
     TinyShell,
@@ -32,7 +33,11 @@ impl TinyShell {
         self.terminal_font_size = (self.terminal_font_size + delta).clamp(10.0, 24.0);
         self.config.set_terminal_font_size(self.terminal_font_size);
         self.mark_config_preferences_dirty();
-        self.status = format!("terminal font size: {:.0}px", self.terminal_font_size).into();
+        self.status = t!(
+            "terminal_font_size_changed",
+            size = format!("{:.0}", self.terminal_font_size)
+        )
+        .into();
         cx.notify();
     }
 
@@ -41,7 +46,11 @@ impl TinyShell {
         self.config.set_ui_font_size(self.ui_font_size);
         self.mark_config_preferences_dirty();
         Theme::global_mut(cx).font_size = px(self.ui_font_size);
-        self.status = format!("UI font size: {:.0}px", self.ui_font_size).into();
+        self.status = t!(
+            "ui_font_size_changed",
+            size = format!("{:.0}", self.ui_font_size)
+        )
+        .into();
         cx.notify();
     }
 

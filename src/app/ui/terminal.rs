@@ -592,9 +592,11 @@ impl TinyShell {
                                             if let Some(group_id) = click_group_id.clone() {
                                                 this.activate_group(group_id, window, cx);
                                             }
-                                            this.active_tab = Some(click_source_id.clone());
+                                            this.window_state.workspace.activate_terminal_tab(&click_source_id);
                                             this.system_tab_id = Some(click_source_id.clone());
-                                            this.active_system_info_tab = Some(click_info_id.clone());
+                                            this.window_state
+                                                .workspace
+                                                .set_system_info_tab(Some(click_info_id.clone()));
                                             this.home_page_open = false;
                                             this.request_active_system_snapshot();
                                             cx.notify();
