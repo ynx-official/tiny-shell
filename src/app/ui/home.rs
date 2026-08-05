@@ -2587,10 +2587,14 @@ impl TinyShell {
     }
 
     pub(super) fn render_overview_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let has_update = matches!(
+        let show_update_pulse = matches!(
             self.update_runtime.status,
             Some(crate::app::updater::UpdateStatus::UpdateAvailable(_))
-                | Some(crate::app::updater::UpdateStatus::DownloadCancelled(_))
+                | Some(crate::app::updater::UpdateStatus::ReadyToRestart(_, _))
+        );
+        let show_update_error_badge = matches!(
+            self.update_runtime.status,
+            Some(crate::app::updater::UpdateStatus::DownloadCancelled(_))
                 | Some(crate::app::updater::UpdateStatus::DownloadFailed(_, _))
         );
         v_flex()
@@ -2631,7 +2635,7 @@ impl TinyShell {
                             .font_weight(FontWeight::MEDIUM)
                             .text_color(cx.theme().muted_foreground)
                             .child(format!("v{}", env!("CARGO_PKG_VERSION")))
-                            .when(has_update, |this| {
+                            .when(show_update_error_badge, |this| {
                                 this.child(
                                     div()
                                         .absolute()
@@ -2642,7 +2646,13 @@ impl TinyShell {
                                         .bg(cx.theme().danger),
                                 )
                             }),
-                    ),
+                    )
+                    .when(show_update_pulse, |this| {
+                        this.child(crate::app::updater::pulse_icon(
+                            "overview-update-pulse",
+                            cx.theme().primary,
+                        ))
+                    }),
             )
             .child(
                 v_flex()
