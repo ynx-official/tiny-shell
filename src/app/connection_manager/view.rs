@@ -389,37 +389,28 @@ fn render_group(
         .child(
             h_flex()
                 .flex_1()
+                .min_w(px(0.))
+                .h(px(18.))
                 .items_center()
                 .gap_2()
                 .child(
-                    div()
-                        .w(px(16.))
-                        .h(px(18.))
-                        .flex_none()
-                        .items_center()
-                        .justify_center()
-                        .child(
-                            Icon::new(if expanded {
-                                IconName::FolderOpen
-                            } else {
-                                IconName::Folder
-                            })
-                            .with_size(Size::Small),
-                        ),
+                    Icon::new(if expanded {
+                        IconName::FolderOpen
+                    } else {
+                        IconName::Folder
+                    })
+                    .with_size(Size::Small),
                 )
                 .child(
-                    div()
+                    h_flex()
                         .flex_1()
+                        .min_w(px(0.))
+                        .h_full()
+                        .items_center()
                         .text_size(rems(0.7))
                         .font_weight(FontWeight::SEMIBOLD)
                         .child(name),
                 ),
-        )
-        .child(
-            div()
-                .text_size(rems(0.68))
-                .text_color(cx.theme().muted_foreground)
-                .child(if expanded { "−" } else { "+" }),
         )
         .into_any_element()
 }

@@ -535,8 +535,8 @@ impl TinyShell {
 
         let view = cx.entity();
         let rename_input = self.connection_inputs.key_import_remark_input.clone();
-        self.open_dialog(
-            crate::app::DialogKind::NewSsh,
+        self.replace_dialog(
+            crate::app::DialogKind::ManagedKeySelector,
             window,
             cx,
             move |dialog: Dialog, _token, window, _cx| {
@@ -791,8 +791,8 @@ impl TinyShell {
         let remark_input = self.connection_inputs.key_import_remark_input.clone();
         let passphrase_input = self.connection_inputs.key_import_passphrase_input.clone();
         let focus_remark_input = remark_input.clone();
-        self.open_dialog(
-            crate::app::DialogKind::NewSsh,
+        self.replace_dialog(
+            crate::app::DialogKind::ManagedKeyImport,
             window,
             cx,
             move |dialog: Dialog, _token, _window, _cx| {
