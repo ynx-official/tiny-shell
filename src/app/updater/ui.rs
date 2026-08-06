@@ -442,6 +442,10 @@ impl TinyShell {
                     move |content, window, cx| {
                         let current_version = env!("CARGO_PKG_VERSION");
                         let status = view.read(cx).update_runtime.status.clone();
+                        let show_update_pulse = matches!(
+                            &status,
+                            Some(crate::app::updater::UpdateStatus::UpdateAvailable(_))
+                        );
                         let can_restart = matches!(
                             &status,
                             Some(crate::app::updater::UpdateStatus::ReadyToRestart(_, _))
@@ -591,18 +595,26 @@ impl TinyShell {
                                         .p_3()
                                         .rounded_lg()
                                         .bg(cx.theme().muted.opacity(0.45))
-                                        .child(
-                                            div()
-                                                .size(px(10.))
-                                                .rounded_full()
-                                                .bg(if is_error {
-                                                    cx.theme().danger
-                                                } else if has_update {
-                                                    cx.theme().primary
-                                                } else {
-                                                    cx.theme().success
-                                                }),
-                                        )
+                                        .when(show_update_pulse, |this| {
+                                            this.child(crate::app::updater::compact_pulse_icon(
+                                                "update-dialog-pulse",
+                                                cx.theme().primary,
+                                            ))
+                                        })
+                                        .when(!show_update_pulse, |this| {
+                                            this.child(
+                                                div()
+                                                    .size(px(10.))
+                                                    .rounded_full()
+                                                    .bg(if is_error {
+                                                        cx.theme().danger
+                                                    } else if has_update {
+                                                        cx.theme().primary
+                                                    } else {
+                                                        cx.theme().success
+                                                    }),
+                                            )
+                                        })
                                         .child(
                                             v_flex()
                                                 .min_w(px(0.))

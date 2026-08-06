@@ -12,7 +12,7 @@ use semver::Version;
 mod indicator;
 mod release_source;
 
-pub(crate) use indicator::pulse_icon;
+pub(crate) use indicator::{compact_pulse_icon, pulse_icon};
 
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
