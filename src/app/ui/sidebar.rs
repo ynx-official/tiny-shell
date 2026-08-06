@@ -15,8 +15,8 @@ impl TinyShell {
                 | Some(crate::app::updater::UpdateStatus::DownloadFailed(_, _))
         );
         let active_tab = self
-            .active_tab
-            .as_ref()
+            .workspace()
+            .active_tab_id()
             .and_then(|active_id| self.terminal_tab(active_id));
         let active_session = active_tab.and_then(|tab| tab.session.as_ref());
         let host_text = active_session

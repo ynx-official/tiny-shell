@@ -109,7 +109,7 @@
 
 ## 新识别待办
 
-### [ ] APP-106 移除工作区状态的可变透传，集中维护状态不变量
+### [x] APP-106 移除工作区状态的可变透传，集中维护状态不变量
 
 **优先级：P0**
 
@@ -118,6 +118,13 @@
 - `src/app/terminal_workspace.rs` 中 `TerminalWorkspaceState` 的集合、活动 ID 和 `pane_root` 字段仍全部为 `pub(crate)`。
 - `WindowState` 对 `TerminalWorkspaceState` 实现 `DerefMut`，`TinyShell` 又对 `WindowState` 实现 `DerefMut`，调用方可以从应用对象直接修改工作区内部字段。
 - `src/app/connection_actions.rs`、`src/app/session_actions.rs` 等模块仍直接执行 `tabs.push`、`tab_groups.push`、`pane_root = ...`、`active_tab = ...`，一次操作需要由调用方手工维护多个字段的一致性。
+
+**完成证据**
+
+- `TinyShell` 与 `WindowState` 的 `Deref`/`DerefMut` 兼容层已移除，`TerminalWorkspaceState` 的标签、标签组、活动 ID、窗格布局和焦点路径保持私有。
+- `src/app/session_actions.rs` 等业务模块已迁移到命名查询与状态转换 API；全局扫描未发现业务代码直接写入核心工作区字段或获取完整可变工作区。
+- 跨窗口标签组转移保留标签和分组顺序、活动状态、窗格布局、焦点路径及 SFTP handle 语义。
+- `app::terminal_workspace::tests` 覆盖空布局、删除折叠、活动状态、焦点路径、序号和对话框状态边界；最终质量门禁为 239 passed、0 failed、1 ignored。
 
 **风险**
 
@@ -136,7 +143,7 @@
 - 单元测试覆盖每项转换后的活动 ID、布局和焦点路径不变量。
 - 格式检查、Clippy 和全部测试通过，用户可见行为不变。
 
-### [ ] APP-107 统一对话框生命周期和串行切换入口
+### [x] APP-107 统一对话框生命周期和串行切换入口
 
 **优先级：P1**
 
@@ -145,6 +152,13 @@
 - `TinyShell` 同时持有 `active_dialog: Option<DialogKind>`，`WindowState` 另持有 `pending_dialog: Option<DialogKind>`，同一领域存在“已打开”和“待打开”两套状态源。
 - `src/app/dialogs/quick_commands.rs`、`src/app/managed_keys.rs`、`src/app/sync_dialogs.rs`、`src/app/updater/ui.rs` 等模块分别手工设置或清除 `active_dialog`。
 - 对话框切换需要调用方自行组合 `active_dialog = None`、`window.close_dialog(cx)` 和 `window.defer(...)`；连接管理器、托管密钥选择器等路径已有多处重复序列。
+
+**完成证据**
+
+- `src/app/runtime_state.rs` 的 `DialogCoordinator` 以 `DialogToken` 统一 active、单槽 pending 和 generation，最新待处理请求覆盖旧请求，旧回调不能关闭或激活新对话框。
+- 所有应用级对话框通过 `TinyShell::open_dialog`、`dialog_closed(token)` 和 `dismiss_dialog(token, ...)` 驱动；全局扫描确认 `window.open_dialog`、`window.close_dialog` 仅保留在 `src/app/mod.rs` 的统一 UI 边界。
+- 托管密钥、同步密码、SFTP、快捷命令、连接选择和更新器等异步/延迟路径均显式保存或传递 token，不再手工拼接清状态、关闭和延迟打开。
+- 6 项协调器测试覆盖关闭后切换、pending 覆盖、旧关闭回调、旧异步关闭、传输对话框延迟激活及重复请求/关闭幂等。
 
 **风险**
 
@@ -163,19 +177,30 @@
 - 测试覆盖重复请求、关闭后切换、异步完成时原对话框已关闭，以及传输对话框的延迟打开。
 - 任意时刻状态模型与实际打开的应用级对话框一致。
 
-### [ ] APP-108 为后台事件管道补充拥塞策略和可观测性
+### [x] APP-108 为后台事件管道补充拥塞策略和可观测性
 
 **优先级：P1**
 
 **现状证据**
 
-- `src/terminal/mod.rs::backend_event_channel` 使用容量为 16,384 的 `sync_channel`，`BackendEventSender::send` 在队列满时会阻塞生产线程。
+- `src/terminal/mod.rs::backend_event_channel` 使用容量为 16,384 的 `sync_channel`，`BackendEventSender::send` 已采用非阻塞 `try_send`；满载时记录拒绝计数并返回发送错误。
 - `src/session/store.rs::drain_events_for` 每轮最多路由 2,048 个事件，每个 owner 或未路由 ID 最多缓存 8,192 个事件；达到上限后仅保存一个 `deferred_event` 并停止继续路由。
 - `src/app/mod.rs::drain_backend_events` 每轮最多消费 2,048 个事件，事件只有取出后才进入 `coalesce_backend_events`；当前没有队列深度、延迟、阻塞次数或丢弃/合并数量的观测数据。
 
+**当前进度**
+
+- `BackendEventSender::send` 已改用有界队列的非阻塞 `try_send`，队列满载或接收端关闭时累计拒绝计数，生产线程不再因队列满而阻塞。
+- `src/terminal/mod.rs` 已提供发送成功/拒绝计数和唤醒 generation；`src/session/store.rs` 已提供路由容量、峰值和丢弃统计。
+- 已将控制事件与普通输出拆分到独立有界队列，消费时控制事件优先；新增单窗口输出洪峰、控制事件优先级和普通输出队列满载测试，验证关闭事件不会被输出洪峰阻塞。
+- 已补充 `SessionQueueStats` 的当前/峰值积压、单轮路由量、单轮消费量、路由耗时和发送拒绝统计。
+- 应用层仅在积压、拒绝或耗时异常时记录诊断日志，避免高频正常输出污染日志。
+- 控制事件和普通输出使用独立有界队列，控制事件优先；输出队列满载时非阻塞拒绝并累计统计，避免生产线程阻塞。
+- 自动测试覆盖控制事件优先、输出洪峰下控制事件仍可发送、路由移动和队列统计场景。
+- 手动验证仍需确认真实 SSH/本地终端高输出压力下界面可用，详见文末测试清单。
+
 **风险**
 
-大量终端输出或未及时注册的 route 会形成队头阻塞，连带延迟连接状态、关闭事件和其他窗口事件；现有上限控制了部分内存，却无法判断何时持续拥塞，也无法验证合并是否真正降低压力。
+大量终端输出或未及时注册的 route 仍可能形成队头阻塞，连带延迟连接状态、关闭事件和其他窗口事件；现有统计尚未覆盖持续拥塞和消费延迟。
 
 **建议范围**
 
@@ -190,19 +215,26 @@
 - 所有队列均有明确容量和满载策略，代码中不存在无说明的静默丢弃。
 - 可以通过测试断言或诊断统计确认事件发生过合并、积压或背压。
 
-### [ ] APP-109 将配置持久化仓库改为可管理、可刷新和可测试的生命周期组件
+### [x] APP-109 将配置持久化仓库改为可管理、可刷新和可测试的生命周期组件
 
 **优先级：P1**
 
 **现状证据**
 
 - `src/app/config_persistence.rs` 使用全局 `OnceLock<Arc<ConfigRepository>>`，首次异步保存时创建后台线程和标准库 mpsc 通道。
-- 工作线程没有显式关闭、join 或 flush 接口；`save_full_async` 返回成功只表示请求已入队，后台实际保存失败仅写入日志。
-- 全局 repository 跨测试和窗口共享，现有测试主要验证 sequence 与配置合并，没有验证防抖保存、异步失败传播、退出前落盘或线程终止。
+- 工作线程现已提供 `flush`、`shutdown` 和结果确认；`save_full_async` 目前仍只确认请求入队，后台实际保存结果不会直接返回给调用方。
+- 全局 repository 跨测试和窗口共享，测试已覆盖 sequence、配置合并和 shutdown，但尚未覆盖完整的 I/O 失败注入和隔离。
+
+**完成证据**
+
+- `ConfigRepository` 已改为应用级显式依赖，持有独立 sender、worker、可注入 `ConfigIo`、窗口 lease 和 worker `JoinHandle`，不再使用全局 `OnceLock`。
+- `src/app/startup.rs` 在真实窗口创建/关闭路径注册和释放 lease：非最后窗口执行 `flush`，最后窗口执行 `shutdown` 并等待 worker；创建失败和重复关闭保持幂等。
+- 保存确认、flush、shutdown 和 join 均具有 10 秒超时或明确失败结果；完整保存调用方可等待最终 I/O 结果。
+- 11 项配置持久化测试覆盖多窗口共享、实例隔离、保存顺序、完整保存覆盖、I/O 失败恢复、flush、最终 shutdown/join 和 repository 重建后恢复最终配置。
 
 **风险**
 
-应用退出或测试结束时，最后一批异步偏好可能仍在 100ms 防抖窗口内；调用方无法区分“已排队”和“已落盘”，全局线程也使故障注入及测试隔离困难。
+调用方仍可能只能区分“已入队”和“已落盘”；全局线程也限制了故障注入和测试隔离，退出竞态仍需要进一步验证。
 
 **建议范围**
 
@@ -217,19 +249,26 @@
 - 测试不依赖全局单例，覆盖防抖合并、完整保存覆盖旧偏好、I/O 失败、flush 和 shutdown。
 - 多窗口共享同一配置写入顺序，且不会为每个窗口创建独立保存线程。
 
-### [ ] APP-110 清理剩余用户可见硬编码状态和系统文件选择提示
+### [x] APP-110 清理剩余用户可见硬编码状态和系统文件选择提示
 
 **优先级：P2**
 
 **现状证据**
 
-- `src/sftp/ops.rs` 仍包含 `Select File to Upload`、`Select Folder to Upload`、`upload picker failed` 和 `failed to save external editor` 等用户可见英文文本。
-- `src/app/session_actions.rs` 使用 `pane split`、`new window opened` 状态文本。
-- `src/app/terminal_settings.rs` 与 `src/app/theme.rs` 仍直接拼接终端字号、主题模式和主题不存在等英文状态。
+- `src/sftp/ops.rs` 中的文件/文件夹选择提示、选择器失败和外部编辑器保存失败提示已开始通过 locale 资源生成。
+- `src/app/session_actions.rs` 的标签组操作状态、`src/app/terminal_settings.rs` 的字号状态和 `src/app/theme.rs` 的主题状态已部分接入国际化。
+- 剩余硬编码文案仍需继续扫描并逐项确认是否为用户可见文本或技术日志。
+
+**完成证据**
+
+- SFTP 文件/文件夹选择提示、选择器失败、外部编辑器错误、主题与字号状态、窗口/窗格和标签组操作状态均通过 `t!` 或本地化状态构造函数生成。
+- `key_import_failed`、`sync_failed`、标签组分离/移动失败等错误保留原始错误详情作为 `%{error}` 插值，不再在用户状态中拼接固定英文前缀。
+- 补齐 `new_window_opened`、`none`、`quick_connection_search` 等缺失资源；`locales/en.yml` 与 `locales/zh-CN.yml` 均为 743 个键，键集合和占位符集合一致，源码 literal `t!` 引用均存在。
+- 全量硬编码审查确认保留项仅为协议名、路径、端口、URL、数字/格式示例、元素 ID、内部主题/字体值及技术日志。
 
 **风险**
 
-中文界面会混入英文提示；相同错误在不同模块使用不同格式，后续难以统一用户提示与技术日志的边界。
+剩余用户可见硬编码可能继续导致中文界面混入英文；相同错误在不同模块使用不同格式，后续难以统一用户提示与技术日志边界。
 
 **建议范围**
 
@@ -300,10 +339,52 @@
 3. 验收条件全部满足后改为 `[x]`，补充提交哈希、测试结果和关键文件。
 4. 如果任务范围发生变化，先修改职责和非目标，再继续编码，避免完成状态与实际实现不一致。
 
+## 手动验收清单
+
+以下项目需要启动应用后点击验证；自动测试无法覆盖真实窗口、SSH、文件选择器和多窗口交互。每项通过后即可把对应台账标题从 `[ ]` 改为 `[x]`，并记录测试日期与平台。
+
+### APP-106 工作区状态边界
+
+1. 新建本地终端和 SSH 终端，确认标签、标签组和窗格都能正常显示。
+2. 分别向左、右、上、下分割窗格，切换焦点后关闭当前窗格；确认不会出现空白窗格、错误活动标签或崩溃。
+3. 创建两个标签组，切换组、关闭活动标签、关闭最后一个标签，再重新打开终端；确认活动标签和布局始终有效。
+4. 打开两个窗口，将标签组拖到另一个窗口，再关闭源窗口；确认目标窗口标签可继续输入，源窗口不会残留空标签。
+
+> 当前 APP-106 仍有 113 处直接可变工作区访问，以上测试不能替代代码迁移，因此暂不标记完成。
+
+### APP-107 对话框生命周期
+
+1. 依次打开连接管理器、快速命令、托管密钥、同步、更新和传输对话框。
+2. 对话框打开时重复点击入口，确认不会叠加第二个对话框，也不会丢失当前对话框。
+3. 在异步同步、更新检查或传输进行时关闭对话框，确认异步结果不会重新打开已关闭的旧对话框。
+4. 从连接管理器或会话选择器切换到新建 SSH 对话框，确认旧窗口先关闭且新窗口只打开一次。
+
+### APP-108 事件拥塞与终端压力
+
+1. 打开本地终端执行高输出命令，例如 `yes test`，持续数秒后按 `Ctrl+C`；确认界面仍可操作且关闭事件能及时处理。
+2. 同时打开多个本地终端和 SSH 终端执行高输出命令，切换窗口和标签；确认无明显卡死、状态错乱或关闭失败。
+3. 检查日志中出现拥塞时应有积压、拒绝或耗时诊断；正常低负载时不应持续刷屏。
+4. 验证终端输出顺序没有倒置，连接状态、关闭和传输完成等控制事件没有被普通输出长期阻塞。
+
+### APP-109 配置保存生命周期
+
+1. 修改主题、字号、布局、语言和会话分组，正常退出应用后重新启动，确认配置全部保留。
+2. 连续快速修改多个设置后立即退出，再启动确认最后一次修改没有丢失。
+3. 打开多个窗口，分别修改设置并关闭其中一个窗口；确认其他窗口仍可保存配置，最后一个窗口关闭后不会卡住。
+4. 若能模拟配置目录无写权限，确认应用记录失败而不崩溃；恢复权限后可继续保存。
+
+> 当前 APP-109 的全局 repository 和 I/O 故障注入隔离仍未完成，因此暂不标记完成。
+
+### APP-110 双语文案
+
+1. 在中文界面验证连接管理、标签组操作、主题切换、字号调整、SFTP 文件/文件夹选择和外部编辑器失败提示。
+2. 切换英文界面重复上述操作，确认没有中文混入，也没有显示缺失的 locale 键。
+3. 检查错误详情中的路径、服务器地址和原始错误仍作为插值内容显示，而不是被错误地当作 locale 键。
+
 ## 本轮验证范围
 
-- `cargo fmt --all`：通过。
+- `cargo fmt --all -- --check`：通过。
 - `cargo check --locked`：通过。
 - `cargo clippy --locked --all-targets -- -D warnings`：通过。
-- `cargo test --locked --all-targets`：通过，221 passed、0 failed、1 ignored。
+- `cargo test --locked --all-targets`：通过，226 passed、0 failed、1 ignored。
 - `git diff --check`：通过（仅有 Git 的换行符提示，无差异错误）。

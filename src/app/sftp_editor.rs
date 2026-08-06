@@ -474,11 +474,10 @@ impl SftpEditor {
                 .on_ok({
                     let editor = editor.clone();
                     move |_, window, cx| {
-                        window.close_dialog(cx);
                         editor.update(cx, |editor, cx| {
                             editor.force_save_active(window, cx);
                         });
-                        false
+                        true
                     }
                 })
         });
@@ -506,11 +505,10 @@ impl SftpEditor {
                 .on_ok({
                     let editor = editor.clone();
                     move |_, window, cx| {
-                        window.close_dialog(cx);
                         editor.update(cx, |editor, cx| {
                             editor.reload_active_conflict(window, cx);
                         });
-                        false
+                        true
                     }
                 })
         });
@@ -576,11 +574,10 @@ impl SftpEditor {
                 .on_ok({
                     let editor = editor.clone();
                     move |_, window, cx| {
-                        window.close_dialog(cx);
                         editor.update(cx, |editor, cx| {
                             editor.do_close_tab(idx, window, cx);
                         });
-                        false
+                        true
                     }
                 })
         });
@@ -628,11 +625,10 @@ impl SftpEditor {
                 .on_ok({
                     let editor = editor.clone();
                     move |_, window, cx| {
-                        window.close_dialog(cx);
                         editor.update(cx, |editor, cx| {
                             editor.close_window(window, cx);
                         });
-                        false
+                        true
                     }
                 })
         });
@@ -693,7 +689,6 @@ impl SftpEditor {
                         .ok_variant(ButtonVariant::Danger),
                 )
                 .on_ok(move |_, window, cx| {
-                    window.close_dialog(cx);
                     let session_id = session_id.clone();
                     let owner = owner.clone();
                     let tab_id = tab_id.clone();

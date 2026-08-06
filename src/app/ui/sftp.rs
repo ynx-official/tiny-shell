@@ -658,10 +658,7 @@ impl TinyShell {
         let ul_summary = self.sftp_transfer_summary(crate::terminal::TransferType::Upload);
         let has_transfers = dl_summary.is_some() || ul_summary.is_some();
         let webdav_enabled = self.config.sync_enabled() && self.config.sync_backend() == "webdav";
-        let sync_failed = self
-            .sync_runtime
-            .status
-            .starts_with(t!("sync_failed").as_ref());
+        let sync_failed = self.sync_runtime.failed;
         let latest_sync_status = self.sync_runtime.status.clone();
         let view = cx.entity();
         h_flex()
@@ -1096,13 +1093,13 @@ impl TinyShell {
             .relative()
             .overflow_hidden()
             .on_drop(
-                cx.listener(|this, paths: &gpui::ExternalPaths, _window, cx| {
+                cx.listener(|this, paths: &gpui::ExternalPaths, window, cx| {
                     let paths_to_upload: Vec<String> = paths
                         .0
                         .iter()
                         .map(|p| p.to_string_lossy().to_string())
                         .collect();
-                    this.upload_sftp_files_batch(paths_to_upload, cx);
+                    this.upload_sftp_files_batch(paths_to_upload, window, cx);
                 }),
             );
 

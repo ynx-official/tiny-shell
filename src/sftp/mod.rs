@@ -192,11 +192,11 @@ pub fn spawn_sftp(
         {
             let _ = events.send(BackendEvent::SftpStatus {
                 tab_id: tab_id.clone(),
-                text: format!("sftp error: {err:#}"),
+                text: t!("sftp_error", error = format!("{err:#}")).to_string(),
             });
             let _ = events.send(BackendEvent::Closed {
                 tab_id,
-                reason: format!("sftp error: {err:#}"),
+                reason: t!("sftp_error", error = format!("{err:#}")).to_string(),
             });
         }
     });
@@ -337,7 +337,7 @@ impl SftpRuntime<'_> {
         if let Err(err) = emit_entries(self.events, self.tab_id, self.sftp, &actual_path).await {
             let _ = self.events.send(BackendEvent::SftpStatus {
                 tab_id: self.tab_id.to_string(),
-                text: format!("list failed: {err:#}"),
+                text: t!("sftp_list_failed", error = format!("{err:#}")).to_string(),
             });
         }
         true
@@ -356,7 +356,7 @@ impl SftpRuntime<'_> {
             Err(err) => {
                 let _ = self.events.send(BackendEvent::SftpStatus {
                     tab_id: self.tab_id.to_string(),
-                    text: format!("list failed: {err:#}"),
+                    text: t!("sftp_list_failed", error = format!("{err:#}")).to_string(),
                 });
             }
         }
@@ -442,7 +442,7 @@ impl SftpRuntime<'_> {
                     let _ = events_clone.send(BackendEvent::SftpStatus {
                         tab_id: tab_id_clone.clone(),
                         text: if is_cancelled {
-                            "Transmission cancelled".to_string()
+                            t!("cancelled").to_string()
                         } else {
                             t!("download_failed", err = err_msg.clone()).to_string()
                         },
@@ -559,7 +559,7 @@ impl SftpRuntime<'_> {
                     let _ = events_clone.send(BackendEvent::SftpStatus {
                         tab_id: tab_id_clone.clone(),
                         text: if is_cancelled {
-                            "Transmission cancelled".to_string()
+                            t!("cancelled").to_string()
                         } else {
                             t!("upload_failed", err = err_msg.clone()).to_string()
                         },
@@ -585,7 +585,7 @@ impl SftpRuntime<'_> {
             Err(err) => {
                 let _ = self.events.send(BackendEvent::SftpStatus {
                     tab_id: self.tab_id.to_string(),
-                    text: format!("failed to load configuration: {err:#}"),
+                    text: t!("sftp_config_load_failed", error = format!("{err:#}")).to_string(),
                 });
                 return true;
             }
@@ -629,7 +629,7 @@ impl SftpRuntime<'_> {
             {
                 let _ = events_clone.send(BackendEvent::SftpStatus {
                     tab_id: tab_id_clone.clone(),
-                    text: format!("Edit download failed: {err:#}"),
+                    text: t!("sftp_edit_download_failed", error = format!("{err:#}")).to_string(),
                 });
                 return;
             }
@@ -642,7 +642,7 @@ impl SftpRuntime<'_> {
             if let Err(err) = open_result {
                 let _ = events_clone.send(BackendEvent::SftpStatus {
                     tab_id: tab_id_clone.clone(),
-                    text: format!("Failed to open editor: {err:#}"),
+                    text: t!("sftp_editor_open_failed", error = format!("{err:#}")).to_string(),
                 });
                 return;
             }
@@ -739,7 +739,7 @@ impl SftpRuntime<'_> {
                 Err(err) => {
                     let _ = events_clone.send(BackendEvent::SftpStatus {
                         tab_id: tab_id_clone.clone(),
-                        text: format!("Auto-upload failed: {err:#}"),
+                        text: t!("sftp_auto_upload_failed", error = format!("{err:#}")).to_string(),
                     });
                 }
             }
@@ -762,7 +762,7 @@ impl SftpRuntime<'_> {
             let Ok(channel) = handle_clone.channel_open_session().await else {
                 let _ = events_clone.send(BackendEvent::SftpStatus {
                     tab_id: tab_id_clone,
-                    text: "Failed to open SFTP channel".into(),
+                    text: t!("sftp_channel_open_failed").to_string(),
                 });
                 return;
             };
@@ -784,7 +784,7 @@ impl SftpRuntime<'_> {
                 Err(err) => {
                     let _ = events_clone.send(BackendEvent::SftpStatus {
                         tab_id: tab_id_clone,
-                        text: format!("Failed to read file: {err:#}"),
+                        text: t!("sftp_read_file_failed", error = format!("{err:#}")).to_string(),
                     });
                 }
             }

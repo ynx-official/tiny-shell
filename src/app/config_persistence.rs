@@ -1,270 +1,672 @@
 use std::{
-    sync::{
-        Arc, Mutex, OnceLock,
-        atomic::{AtomicU64, Ordering},
-        mpsc,
-    },
-    thread,
-    time::Duration,
+    collections::HashSet,
+    sync::{Arc, Mutex, mpsc},
+    thread::{self, JoinHandle},
+    time::{Duration, Instant},
 };
 
 use crate::session::config::ConfigStore;
 
-struct ConfigRepository {
-    save_sequence: AtomicU64,
-    save_lock: Mutex<()>,
-    save_tx: OnceLock<mpsc::Sender<(u64, SaveRequest)>>,
+/// Storage backend used by [`ConfigRepository`].
+///
+/// Keeping file-system access behind this boundary makes repository lifecycle
+/// and failure behavior testable without touching the user's configuration.
+pub(crate) trait ConfigIo: Send + Sync + 'static {
+    fn load(&self) -> anyhow::Result<ConfigStore>;
+    fn save(&self, config: &ConfigStore) -> anyhow::Result<()>;
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct ConfigStoreIo;
+
+impl ConfigIo for ConfigStoreIo {
+    fn load(&self) -> anyhow::Result<ConfigStore> {
+        ConfigStore::load()
+    }
+
+    fn save(&self, config: &ConfigStore) -> anyhow::Result<()> {
+        config.save()
+    }
+}
+
+type Io = Arc<dyn ConfigIo>;
+
+type Reply = mpsc::Sender<anyhow::Result<()>>;
+
+const OPERATION_TIMEOUT: Duration = Duration::from_secs(10);
+const WORKER_JOIN_POLL_INTERVAL: Duration = Duration::from_millis(10);
+
+fn receive_reply(reply: mpsc::Receiver<anyhow::Result<()>>) -> anyhow::Result<()> {
+    reply
+        .recv_timeout(OPERATION_TIMEOUT)
+        .map_err(|error| match error {
+            mpsc::RecvTimeoutError::Timeout => anyhow::anyhow!("config save operation timed out"),
+            mpsc::RecvTimeoutError::Disconnected => anyhow::anyhow!("config save worker stopped"),
+        })?
 }
 
 enum SaveRequest {
-    Preferences(ConfigStore),
-    Full(ConfigStore),
-    Flush(mpsc::Sender<anyhow::Result<()>>),
+    Preferences(ConfigStore, Reply),
+    Full(ConfigStore, Reply),
+    Flush(Reply),
+    Shutdown(Reply),
 }
 
-static REPOSITORY: OnceLock<Arc<ConfigRepository>> = OnceLock::new();
+pub(crate) struct SaveReceipt {
+    reply: mpsc::Receiver<anyhow::Result<()>>,
+}
 
-fn repository() -> Arc<ConfigRepository> {
-    REPOSITORY
-        .get_or_init(|| {
-            Arc::new(ConfigRepository {
-                save_sequence: AtomicU64::new(0),
-                save_lock: Mutex::new(()),
-                save_tx: OnceLock::new(),
-            })
-        })
-        .clone()
+impl SaveReceipt {
+    pub(crate) fn wait(self) -> anyhow::Result<()> {
+        receive_reply(self.reply)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RepositoryState {
+    Running,
+    ShuttingDown,
+    Stopped,
+}
+
+pub(crate) type WindowLeaseId = u64;
+
+pub(crate) struct ConfigRepository {
+    sender: mpsc::Sender<SaveRequest>,
+    state: Mutex<RepositoryState>,
+    worker: Mutex<Option<JoinHandle<()>>>,
+    windows: Mutex<HashSet<WindowLeaseId>>,
+    next_window_id: Mutex<WindowLeaseId>,
 }
 
 impl ConfigRepository {
-    fn next_sequence(&self) -> u64 {
-        self.save_sequence.fetch_add(1, Ordering::SeqCst) + 1
+    pub(crate) fn new() -> Arc<Self> {
+        Self::with_io(Arc::new(ConfigStoreIo))
     }
 
-    fn is_current(&self, sequence: u64) -> bool {
-        sequence == self.save_sequence.load(Ordering::SeqCst)
-    }
-
-    fn save_sender(self: &Arc<Self>) -> mpsc::Sender<(u64, SaveRequest)> {
-        self.save_tx
-            .get_or_init(|| {
-                let (sender, receiver) = mpsc::channel::<(u64, SaveRequest)>();
-                let repository = Arc::clone(self);
-                let worker = thread::Builder::new()
-                    .name("tiny-shell-config-save".to_string())
-                    .spawn(move || {
-                        while let Ok((sequence, request)) = receiver.recv() {
-                            let (mut latest_full, mut latest_preferences) = match request {
-                                SaveRequest::Full(config) => (Some((sequence, config)), None),
-                                SaveRequest::Preferences(config) => {
-                                    (None, Some((sequence, config)))
-                                }
-                                SaveRequest::Flush(reply) => {
-                                    let _ = reply.send(Ok(()));
-                                    continue;
-                                }
-                            };
-                            let mut latest_sequence = sequence;
-                            let mut barrier = None;
-
-                            while let Ok((next_sequence, next_source)) =
-                                receiver.recv_timeout(Duration::from_millis(100))
-                            {
-                                match next_source {
-                                    SaveRequest::Full(config) => {
-                                        latest_sequence = next_sequence;
-                                        latest_full = Some((next_sequence, config));
-                                    }
-                                    SaveRequest::Preferences(config) => {
-                                        latest_sequence = next_sequence;
-                                        latest_preferences = Some((next_sequence, config));
-                                    }
-                                    SaveRequest::Flush(reply) => {
-                                        barrier = Some(reply);
-                                        break;
-                                    }
-                                }
-                            }
-
-                            let result = if !repository.is_current(sequence)
-                                || !repository.is_current(latest_sequence)
-                            {
-                                Ok(())
-                            } else {
-                                match repository.save_lock.lock() {
-                                    Ok(_guard) => match (latest_full, latest_preferences) {
-                                        (
-                                            Some((full_sequence, mut config)),
-                                            Some((preference_sequence, source)),
-                                        ) if preference_sequence > full_sequence => {
-                                            config.merge_interactive_preferences_from(&source);
-                                            config.save()
-                                        }
-                                        (Some((_, config)), _) => config.save(),
-                                        (None, Some((_, source))) => {
-                                            ConfigStore::load().and_then(|mut config| {
-                                                config.merge_interactive_preferences_from(&source);
-                                                config.save()
-                                            })
-                                        }
-                                        (None, None) => Ok(()),
-                                    },
-                                    Err(_) => {
-                                        Err(anyhow::anyhow!("config repository lock is poisoned"))
-                                    }
-                                }
-                            };
-
-                            if let Err(error) = &result {
-                                tracing::warn!("failed to save config in background: {error:#}");
-                            }
-                            if let Some(reply) = barrier {
-                                let _ = reply.send(result);
-                            }
-                        }
-                    });
-                if let Err(error) = worker {
-                    tracing::warn!("failed to start config save worker: {error}");
-                }
-                sender
-            })
-            .clone()
-    }
-
-    fn persist_async(self: &Arc<Self>, source: ConfigStore) {
-        let sequence = self.next_sequence();
-        if let Err(error) = self
-            .save_sender()
-            .send((sequence, SaveRequest::Preferences(source)))
+    pub(crate) fn with_io(io: Arc<dyn ConfigIo>) -> Arc<Self> {
+        let (sender, receiver) = mpsc::channel();
+        let worker_io = Arc::clone(&io);
+        let worker = match thread::Builder::new()
+            .name("tiny-shell-config-save".to_string())
+            .spawn(move || worker_loop(worker_io, receiver))
         {
-            tracing::warn!("failed to queue preference save: {error}");
+            Ok(worker) => worker,
+            Err(error) => {
+                tracing::error!("failed to start config save worker: {error}");
+                return Arc::new(Self {
+                    sender,
+                    state: Mutex::new(RepositoryState::Stopped),
+                    worker: Mutex::new(None),
+                    windows: Mutex::new(HashSet::new()),
+                    next_window_id: Mutex::new(0),
+                });
+            }
+        };
+
+        Arc::new(Self {
+            sender,
+            state: Mutex::new(RepositoryState::Running),
+            worker: Mutex::new(Some(worker)),
+            windows: Mutex::new(HashSet::new()),
+            next_window_id: Mutex::new(0),
+        })
+    }
+
+    pub(crate) fn register_window(&self) -> anyhow::Result<WindowLeaseId> {
+        let mut next = self
+            .next_window_id
+            .lock()
+            .map_err(|_| anyhow::anyhow!("config repository window id lock is poisoned"))?;
+        *next = next
+            .checked_add(1)
+            .ok_or_else(|| anyhow::anyhow!("config repository window id exhausted"))?;
+        let id = *next;
+        self.windows
+            .lock()
+            .map_err(|_| anyhow::anyhow!("config repository window lock is poisoned"))?
+            .insert(id);
+        Ok(id)
+    }
+
+    pub(crate) fn close_window(&self, id: WindowLeaseId) -> anyhow::Result<WindowCloseResult> {
+        let is_last = {
+            let mut windows = self
+                .windows
+                .lock()
+                .map_err(|_| anyhow::anyhow!("config repository window lock is poisoned"))?;
+            if !windows.remove(&id) {
+                return Ok(WindowCloseResult::AlreadyClosed);
+            }
+            windows.is_empty()
+        };
+        if is_last {
+            self.shutdown()?;
+            Ok(WindowCloseResult::ShutDown)
+        } else {
+            self.flush()?;
+            Ok(WindowCloseResult::Flushed)
         }
     }
 
-    fn save_full_async(self: &Arc<Self>, config: ConfigStore) -> anyhow::Result<()> {
-        let sequence = self.next_sequence();
-        self.save_sender()
-            .send((sequence, SaveRequest::Full(config)))
+    pub(crate) fn persist_async(
+        self: &Arc<Self>,
+        source: ConfigStore,
+    ) -> anyhow::Result<SaveReceipt> {
+        let (reply, result) = mpsc::channel();
+        self.enqueue(SaveRequest::Preferences(source, reply))?;
+        Ok(SaveReceipt { reply: result })
+    }
+
+    pub(crate) fn save_full_async(
+        self: &Arc<Self>,
+        config: ConfigStore,
+    ) -> anyhow::Result<SaveReceipt> {
+        let (reply, result) = mpsc::channel();
+        self.enqueue(SaveRequest::Full(config, reply))?;
+        Ok(SaveReceipt { reply: result })
+    }
+
+    pub(crate) fn save_full(&self, config: &ConfigStore) -> anyhow::Result<()> {
+        let (reply, result) = mpsc::channel();
+        self.enqueue(SaveRequest::Full(config.clone(), reply))?;
+        receive_reply(result)
+    }
+
+    pub(crate) fn persist_sync(&self, source: &ConfigStore) -> anyhow::Result<()> {
+        let (reply, result) = mpsc::channel();
+        self.enqueue(SaveRequest::Preferences(source.clone(), reply))?;
+        receive_reply(result)
+    }
+
+    pub(crate) fn flush(&self) -> anyhow::Result<()> {
+        let (reply, result) = mpsc::channel();
+        self.enqueue(SaveRequest::Flush(reply))?;
+        receive_reply(result)
+    }
+
+    pub(crate) fn shutdown(&self) -> anyhow::Result<()> {
+        let should_send_shutdown = {
+            let mut state = self
+                .state
+                .lock()
+                .map_err(|_| anyhow::anyhow!("config repository state lock is poisoned"))?;
+            match *state {
+                RepositoryState::Running => {
+                    *state = RepositoryState::ShuttingDown;
+                    true
+                }
+                RepositoryState::ShuttingDown => false,
+                RepositoryState::Stopped => {
+                    return Err(anyhow::anyhow!("config repository is already shut down"));
+                }
+            }
+        };
+
+        let operation_result = if should_send_shutdown {
+            let (reply, result) = mpsc::channel();
+            self.enqueue_unchecked(SaveRequest::Shutdown(reply))
+                .and_then(|()| receive_reply(result))
+        } else {
+            Ok(())
+        };
+        let join_result = self.join_worker();
+        if join_result.is_ok()
+            && let Ok(mut state) = self.state.lock()
+        {
+            *state = RepositoryState::Stopped;
+        }
+        operation_result.and(join_result)
+    }
+
+    fn enqueue(&self, request: SaveRequest) -> anyhow::Result<()> {
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| anyhow::anyhow!("config repository state lock is poisoned"))?;
+        if *state != RepositoryState::Running {
+            return Err(anyhow::anyhow!("config repository is shut down"));
+        }
+        self.enqueue_unchecked(request)
+    }
+
+    fn enqueue_unchecked(&self, request: SaveRequest) -> anyhow::Result<()> {
+        self.sender
+            .send(request)
             .map_err(|_| anyhow::anyhow!("config save worker is unavailable"))
     }
 
-    fn flush(self: &Arc<Self>) -> anyhow::Result<()> {
-        let (reply_tx, reply_rx) = mpsc::channel();
-        self.save_sender()
-            .send((
-                self.save_sequence.load(Ordering::SeqCst),
-                SaveRequest::Flush(reply_tx),
-            ))
-            .map_err(|_| anyhow::anyhow!("config save worker is unavailable"))?;
-        reply_rx
-            .recv()
-            .map_err(|_| anyhow::anyhow!("config save worker stopped"))?
-    }
-
-    fn persist_sync(&self, source: &ConfigStore) -> anyhow::Result<()> {
-        self.next_sequence();
-        let _guard = self
-            .save_lock
+    fn join_worker(&self) -> anyhow::Result<()> {
+        let worker = self
+            .worker
             .lock()
-            .map_err(|_| anyhow::anyhow!("config repository lock is poisoned"))?;
-        let mut config = ConfigStore::load()?;
-        config.merge_interactive_preferences_from(source);
-        config.save()
+            .map_err(|_| anyhow::anyhow!("config worker lock is poisoned"))?
+            .take();
+        let Some(worker) = worker else {
+            return Ok(());
+        };
+        let deadline = Instant::now() + OPERATION_TIMEOUT;
+        while !worker.is_finished() {
+            if Instant::now() >= deadline {
+                self.worker
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("config worker lock is poisoned"))?
+                    .replace(worker);
+                return Err(anyhow::anyhow!("config save worker shutdown timed out"));
+            }
+            thread::sleep(WORKER_JOIN_POLL_INTERVAL);
+        }
+        worker
+            .join()
+            .map_err(|_| anyhow::anyhow!("config save worker panicked"))?;
+        Ok(())
+    }
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(crate) struct CloseErrorReport {
+    failures: Vec<(&'static str, String)>,
+}
+
+impl CloseErrorReport {
+    pub(crate) fn record(&mut self, stage: &'static str, error: impl ToString) {
+        self.failures.push((stage, error.to_string()));
     }
 
-    fn save_full_sync(&self, config: &ConfigStore) -> anyhow::Result<()> {
-        self.next_sequence();
-        let _guard = self
-            .save_lock
-            .lock()
-            .map_err(|_| anyhow::anyhow!("config repository lock is poisoned"))?;
-        config.save()
+    pub(crate) fn log(&self) {
+        for (stage, error) in &self.failures {
+            tracing::error!(target: "tiny_shell::window_close", close_stage = *stage, error = %error, "window close persistence failed");
+        }
     }
 }
 
-pub(crate) fn persist_async(source: ConfigStore) {
-    repository().persist_async(source);
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum WindowCloseResult {
+    Flushed,
+    ShutDown,
+    AlreadyClosed,
 }
 
-pub(crate) fn persist_sync(source: &ConfigStore) -> anyhow::Result<()> {
-    repository().persist_sync(source)
+fn config_fingerprint(config: &ConfigStore) -> anyhow::Result<Vec<u8>> {
+    serde_json::to_vec(&config.cache)
+        .map_err(|error| anyhow::anyhow!("failed to fingerprint config: {error}"))
 }
 
-pub(crate) fn save_full(config: &ConfigStore) -> anyhow::Result<()> {
-    repository().save_full_sync(config)
+fn save_full_with_revision(
+    io: &Io,
+    last_saved: &mut Option<ConfigStore>,
+    source: ConfigStore,
+) -> anyhow::Result<()> {
+    if let Some(previous) = last_saved.as_ref() {
+        let current = io.load()?;
+        if config_fingerprint(&current)? != config_fingerprint(previous)?
+            && config_fingerprint(&source)? != config_fingerprint(previous)?
+        {
+            return Err(anyhow::anyhow!(
+                "config changed in another window; refusing stale full-config overwrite"
+            ));
+        }
+    }
+    io.save(&source)?;
+    *last_saved = Some(source);
+    Ok(())
 }
 
-pub(crate) fn save_full_async(config: &ConfigStore) -> anyhow::Result<()> {
-    repository().save_full_async(config.clone())
+fn worker_loop(io: Io, receiver: mpsc::Receiver<SaveRequest>) {
+    let mut last_saved: Option<ConfigStore> = None;
+    let mut last_error: Option<String> = None;
+    while let Ok(request) = receiver.recv() {
+        let (result, reply, should_stop, records_failure) = match request {
+            SaveRequest::Preferences(source, reply) => {
+                let result = io.load().and_then(|mut config| {
+                    config.merge_interactive_preferences_from(&source);
+                    io.save(&config)?;
+                    last_saved = Some(config);
+                    Ok(())
+                });
+                (result, reply, false, true)
+            }
+            SaveRequest::Full(config, reply) => (
+                save_full_with_revision(&io, &mut last_saved, config),
+                reply,
+                false,
+                true,
+            ),
+            SaveRequest::Flush(reply) => {
+                let result = last_error
+                    .take()
+                    .map_or(Ok(()), |error| Err(anyhow::anyhow!(error)));
+                (result, reply, false, false)
+            }
+            SaveRequest::Shutdown(reply) => {
+                let result = last_error
+                    .take()
+                    .map_or(Ok(()), |error| Err(anyhow::anyhow!(error)));
+                (result, reply, true, false)
+            }
+        };
+        if records_failure {
+            if let Err(error) = &result {
+                last_error = Some(error.to_string());
+                tracing::warn!("failed to save config in background: {error:#}");
+            } else {
+                // Keep an earlier failure pending until a caller observes it via
+                // flush/shutdown. A later successful write must not erase the
+                // error before the close path has had a chance to report it.
+            }
+        }
+        let _ = reply.send(result);
+        if should_stop {
+            break;
+        }
+    }
 }
 
-pub(crate) fn flush() -> anyhow::Result<()> {
-    repository().flush()
+// Compatibility helpers are intentionally explicit-repository APIs. They are
+// kept private to this module while call sites migrate to TinyShell ownership.
+pub(crate) fn persist_async(repository: &Arc<ConfigRepository>, source: ConfigStore) {
+    match repository.persist_async(source) {
+        Ok(receipt) => {
+            thread::spawn(move || {
+                if let Err(error) = receipt.wait() {
+                    tracing::warn!("background preference save failed: {error:#}");
+                }
+            });
+        }
+        Err(error) => tracing::warn!("failed to queue preference save: {error:#}"),
+    }
+}
+
+pub(crate) fn persist_sync(
+    repository: &Arc<ConfigRepository>,
+    source: &ConfigStore,
+) -> anyhow::Result<()> {
+    repository.persist_sync(source)
+}
+
+pub(crate) fn save_full(
+    repository: &Arc<ConfigRepository>,
+    config: &ConfigStore,
+) -> anyhow::Result<()> {
+    repository.save_full(config)
+}
+
+pub(crate) fn save_full_async(
+    repository: &Arc<ConfigRepository>,
+    config: &ConfigStore,
+) -> anyhow::Result<()> {
+    let receipt = repository.save_full_async(config.clone())?;
+    thread::spawn(move || {
+        if let Err(error) = receipt.wait() {
+            tracing::warn!("background full config save failed: {error:#}");
+        }
+    });
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{Arc, atomic::AtomicU64};
+    use super::*;
+    use std::sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    };
 
-    use super::ConfigRepository;
-    use crate::session::config::ConfigStore;
-
-    fn test_repository() -> Arc<ConfigRepository> {
-        Arc::new(ConfigRepository {
-            save_sequence: AtomicU64::new(0),
-            save_lock: std::sync::Mutex::new(()),
-            save_tx: std::sync::OnceLock::new(),
-        })
+    struct TestIo {
+        config: Mutex<ConfigStore>,
+        fail_save: AtomicBool,
+        saves: AtomicUsize,
+        history: Mutex<Vec<String>>,
     }
 
-    #[test]
-    fn save_sequence_is_monotonic_across_concurrent_writers() {
-        let repository = test_repository();
-        let (tx, rx) = std::sync::mpsc::channel();
-        std::thread::scope(|scope| {
-            for _ in 0..8 {
-                let repository = Arc::clone(&repository);
-                let tx = tx.clone();
-                scope.spawn(move || {
-                    tx.send(repository.next_sequence()).unwrap();
-                });
+    impl ConfigIo for TestIo {
+        fn load(&self) -> anyhow::Result<ConfigStore> {
+            Ok(self
+                .config
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .clone())
+        }
+        fn save(&self, config: &ConfigStore) -> anyhow::Result<()> {
+            self.saves.fetch_add(1, Ordering::SeqCst);
+            self.history
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .push(config.locale().to_string());
+            if self.fail_save.load(Ordering::SeqCst) {
+                return Err(anyhow::anyhow!("injected save failure"));
             }
-        });
-        drop(tx);
+            *self.config.lock().unwrap_or_else(|p| p.into_inner()) = config.clone();
+            Ok(())
+        }
+    }
 
-        let mut sequences: Vec<_> = rx.iter().collect();
-        sequences.sort_unstable();
-        assert_eq!(sequences, (1..=8).collect::<Vec<_>>());
-        assert!(repository.is_current(8));
-        assert!(!repository.is_current(7));
+    fn repository() -> (Arc<ConfigRepository>, Arc<TestIo>) {
+        let io = Arc::new(TestIo {
+            config: Mutex::new(ConfigStore::in_memory()),
+            fail_save: AtomicBool::new(false),
+            saves: AtomicUsize::new(0),
+            history: Mutex::new(Vec::new()),
+        });
+        (ConfigRepository::with_io(io.clone()), io)
     }
 
     #[test]
-    fn interactive_save_preserves_domain_data_and_updates_preferences() {
-        let mut domain = ConfigStore::in_memory();
-        domain.set_sync_connection("https://sync.example.test".to_string(), "alice".to_string());
-        domain.replace_connection_groups(vec!["production".to_string()]);
+    fn close_error_report_preserves_all_failure_stages() {
+        let mut report = CloseErrorReport::default();
+        report.record("preferences", "preference save failed");
+        report.record("layout", "layout save failed");
+        report.record("close_window", "worker shutdown failed");
+        assert_eq!(report.failures.len(), 3);
+        assert_eq!(report.failures[0].0, "preferences");
+        assert_eq!(report.failures[2].0, "close_window");
+    }
 
+    #[test]
+    fn lifecycle_shares_worker_and_closes_only_after_last_window() {
+        let (repository, io) = repository();
+        let first = repository.register_window().unwrap();
+        let second = repository.register_window().unwrap();
+
+        let mut config = ConfigStore::in_memory();
+        config.set_locale("zh-CN");
+        repository.save_full_async(config).unwrap().wait().unwrap();
+        assert_eq!(
+            repository.close_window(first).unwrap(),
+            WindowCloseResult::Flushed
+        );
+
+        let mut later_config = ConfigStore::in_memory();
+        later_config.set_locale("en");
+        repository
+            .save_full_async(later_config)
+            .unwrap()
+            .wait()
+            .unwrap();
+        assert_eq!(io.saves.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            repository.close_window(first).unwrap(),
+            WindowCloseResult::AlreadyClosed
+        );
+        assert_eq!(
+            repository.close_window(second).unwrap(),
+            WindowCloseResult::ShutDown
+        );
+        assert_eq!(
+            repository.close_window(second).unwrap(),
+            WindowCloseResult::AlreadyClosed
+        );
+    }
+
+    #[test]
+    fn persisted_backend_survives_repository_recreation() {
+        let (repository, io) = repository();
+        let mut config = ConfigStore::in_memory();
+        config.set_locale("zh-CN");
+        repository.save_full_async(config).unwrap().wait().unwrap();
+        repository.shutdown().unwrap();
+
+        let recreated = ConfigRepository::with_io(io.clone());
+        let restored = io
+            .config
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        assert_eq!(restored.locale(), "zh-CN");
+        recreated.shutdown().unwrap();
+    }
+
+    #[test]
+    fn failed_flush_is_reported_once_then_recovery_can_shutdown() {
+        let (repository, io) = repository();
+        io.fail_save.store(true, Ordering::SeqCst);
+        repository
+            .save_full_async(ConfigStore::in_memory())
+            .unwrap()
+            .wait()
+            .unwrap_err();
+        assert!(repository.flush().is_err());
+        assert!(repository.flush().is_ok());
+
+        io.fail_save.store(false, Ordering::SeqCst);
+        repository.save_full(&ConfigStore::in_memory()).unwrap();
+        repository.shutdown().unwrap();
+    }
+
+    #[test]
+    fn different_repositories_are_isolated_while_windows_share_one() {
+        let (first, first_io) = repository();
+        let (second, second_io) = repository();
+        let first_window = first.register_window().unwrap();
+        let second_window = first.register_window().unwrap();
+        let other_window = second.register_window().unwrap();
+
+        first.save_full(&ConfigStore::in_memory()).unwrap();
+        assert_eq!(first_io.saves.load(Ordering::SeqCst), 1);
+        assert_eq!(second_io.saves.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            first.close_window(first_window).unwrap(),
+            WindowCloseResult::Flushed
+        );
+        assert_eq!(
+            first.close_window(second_window).unwrap(),
+            WindowCloseResult::ShutDown
+        );
+        assert_eq!(
+            second.close_window(other_window).unwrap(),
+            WindowCloseResult::ShutDown
+        );
+    }
+
+    #[test]
+    fn instances_are_isolated() {
+        let (first, first_io) = repository();
+        let (second, second_io) = repository();
+        let mut config = ConfigStore::in_memory();
+        config.set_locale("zh-CN");
+        first.save_full(&config).unwrap();
+        assert_eq!(first_io.saves.load(Ordering::SeqCst), 1);
+        assert_eq!(second_io.saves.load(Ordering::SeqCst), 0);
+        first.shutdown().unwrap();
+        second.shutdown().unwrap();
+    }
+
+    #[test]
+    fn save_failure_is_observable_and_flush_is_barrier() {
+        let (repository, io) = repository();
+        io.fail_save.store(true, Ordering::SeqCst);
+        let config = ConfigStore::in_memory();
+        assert!(repository.save_full_async(config).unwrap().wait().is_err());
+        assert!(repository.flush().is_err());
+        repository.shutdown().unwrap();
+    }
+
+    #[test]
+    fn stale_full_config_is_rejected_after_external_window_change() {
+        let (repository, io) = repository();
+        let mut baseline = ConfigStore::in_memory();
+        baseline.set_locale("en");
+        repository.save_full(&baseline).unwrap();
+
+        let mut external = baseline.clone();
+        external.set_locale("zh-CN");
+        *io.config.lock().unwrap_or_else(|p| p.into_inner()) = external;
+
+        let mut stale = baseline;
+        stale.set_locale("ja");
+        assert!(repository.save_full(&stale).is_err());
+        assert!(repository.shutdown().is_err());
+    }
+
+    #[test]
+    fn successful_save_does_not_clear_unobserved_failure() {
+        let (repository, io) = repository();
+        io.fail_save.store(true, Ordering::SeqCst);
+        repository
+            .save_full_async(ConfigStore::in_memory())
+            .unwrap()
+            .wait()
+            .unwrap_err();
+        io.fail_save.store(false, Ordering::SeqCst);
+        repository.save_full(&ConfigStore::in_memory()).unwrap();
+        assert!(repository.shutdown().is_err());
+    }
+
+    #[test]
+    fn shutdown_reports_unobserved_final_save_error_and_joins_worker() {
+        let (repository, io) = repository();
+        io.fail_save.store(true, Ordering::SeqCst);
+        let receipt = repository
+            .save_full_async(ConfigStore::in_memory())
+            .unwrap();
+        assert!(receipt.wait().is_err());
+        assert!(repository.shutdown().is_err());
+        assert!(repository.flush().is_err());
+    }
+
+    #[test]
+    fn shutdown_joins_worker_and_rejects_repeated_shutdown() {
+        let (repository, _) = repository();
+        repository.shutdown().unwrap();
+        assert!(repository.shutdown().is_err());
+        assert!(repository.flush().is_err());
+    }
+
+    #[test]
+    fn save_requests_preserve_order_and_full_save_wins() {
+        let (repository, io) = repository();
         let mut preferences = ConfigStore::in_memory();
         preferences.set_locale("zh-CN");
-        preferences.set_terminal_font_size(16.0);
+        let preference_receipt = repository.persist_async(preferences).unwrap();
 
-        domain.merge_interactive_preferences_from(&preferences);
+        let mut full = ConfigStore::in_memory();
+        full.set_locale("en");
+        let full_receipt = repository.save_full_async(full).unwrap();
 
-        assert_eq!(domain.locale(), "zh-CN");
-        assert_eq!(domain.terminal_font_size(), 16.0);
-        assert_eq!(domain.sync_endpoint(), "https://sync.example.test");
-        assert_eq!(domain.sync_username(), "alice");
-        assert_eq!(domain.connection_groups(), &["production".to_string()]);
+        preference_receipt.wait().unwrap();
+        full_receipt.wait().unwrap();
+        repository.flush().unwrap();
+        assert_eq!(
+            *io.history.lock().unwrap_or_else(|p| p.into_inner()),
+            vec!["zh-CN".to_string(), "en".to_string()]
+        );
+        assert_eq!(
+            io.config.lock().unwrap_or_else(|p| p.into_inner()).locale(),
+            "en"
+        );
+        repository.shutdown().unwrap();
     }
 
     #[test]
-    fn full_save_invalidates_older_async_sequences() {
-        let repository = test_repository();
-        let async_sequence = repository.next_sequence();
-        let full_save_sequence = repository.next_sequence();
-
-        assert!(!repository.is_current(async_sequence));
-        assert!(repository.is_current(full_save_sequence));
+    fn final_save_content_is_available_after_shutdown() {
+        let (repository, io) = repository();
+        let mut config = ConfigStore::in_memory();
+        config.set_locale("zh-CN");
+        repository.save_full_async(config).unwrap().wait().unwrap();
+        repository.shutdown().unwrap();
+        assert_eq!(
+            io.config.lock().unwrap_or_else(|p| p.into_inner()).locale(),
+            "zh-CN"
+        );
     }
 }

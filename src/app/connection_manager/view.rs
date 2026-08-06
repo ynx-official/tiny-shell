@@ -6,7 +6,7 @@ use gpui::{
     div, prelude::FluentBuilder as _, px, rems,
 };
 use gpui_component::{
-    ActiveTheme as _, Icon, IconName, Sizable as _, Size, WindowExt as _,
+    ActiveTheme as _, Icon, IconName, Sizable as _, Size,
     button::{Button, ButtonVariants as _},
     h_flex,
     input::Input,
@@ -212,8 +212,6 @@ fn render_toolbar(
                 .small()
                 .label(t!("overview_new_connection").to_string())
                 .on_click(window.listener_for(view, |this, _, window, cx| {
-                    this.active_dialog = None;
-                    window.close_dialog(cx);
                     this.open_new_ssh_dialog(window, cx);
                 })),
         )
@@ -440,8 +438,7 @@ fn group_context_menu(
                         let group_name = group_name.clone();
                         move |this, _, window, cx| {
                             this.connection_group_parent = Some(group_name.clone());
-                            dismiss_manager_dialog(this, window, cx);
-                            this.open_new_ssh_dialog(window, cx);
+                                    this.open_new_ssh_dialog(window, cx);
                         }
                     }),
                 ),
@@ -608,7 +605,6 @@ fn render_session_row(
             MouseButton::Left,
             window.listener_for(view, move |this, event: &MouseDownEvent, window, cx| {
                 if event.click_count >= 2 {
-                    this.active_dialog = None;
                     this.connect_saved_session(session_id.clone(), window, cx);
                     if needs_prompt {
                         window.defer(cx, |window, _| window.remove_window());
@@ -681,8 +677,7 @@ fn session_menu(
                     {
                         let id = session_id.clone();
                         move |this, _, window, cx| {
-                            this.active_dialog = None;
-                            this.connect_saved_session(id.clone(), window, cx);
+                                    this.connect_saved_session(id.clone(), window, cx);
                             if needs_prompt {
                                 window.defer(cx, |window, _| window.remove_window());
                             } else {
@@ -696,8 +691,7 @@ fn session_menu(
                 PopupMenuItem::new(t!("edit").to_string()).on_click(window.listener_for(&view, {
                     let id = session_for_edit.id.clone();
                     move |this, _, window, cx| {
-                        dismiss_manager_dialog(this, window, cx);
-                        this.edit_saved_session(id.clone(), window, cx);
+                            this.edit_saved_session(id.clone(), window, cx);
                     }
                 })),
             )
@@ -888,7 +882,6 @@ fn render_empty_menu(
         .item(
             PopupMenuItem::new(t!("overview_new_connection").to_string()).on_click(
                 window.listener_for(view, |this, _, window, cx| {
-                    dismiss_manager_dialog(this, window, cx);
                     this.open_new_ssh_dialog(window, cx);
                 }),
             ),
@@ -922,7 +915,6 @@ fn render_empty_menu(
                     else {
                         return;
                     };
-                    dismiss_manager_dialog(this, window, cx);
                     this.connection_group_parent = None;
                     if let Err(error) = this.open_ssh_address_dialog(&address, window, cx) {
                         this.status = t!(
@@ -972,11 +964,6 @@ fn open_connection_operation(
     });
 }
 
-fn dismiss_manager_dialog(this: &mut TinyShell, window: &mut Window, cx: &mut Context<TinyShell>) {
-    this.active_dialog = None;
-    window.close_dialog(cx);
-}
-
 fn run_manager_action(
     this: &mut TinyShell,
     action: ConnectionManagerAction,
@@ -986,7 +973,9 @@ fn run_manager_action(
     let mut staged_actions = this.connection_manager_actions.clone();
     let result = staged_actions
         .execute(&mut staged_config, action)
-        .and_then(|_| crate::app::config_persistence::save_full(&staged_config));
+        .and_then(|_| {
+            crate::app::config_persistence::save_full(&this.config_repository, &staged_config)
+        });
     match result {
         Ok(()) => {
             this.config = staged_config;

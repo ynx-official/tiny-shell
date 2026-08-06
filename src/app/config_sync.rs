@@ -120,7 +120,7 @@ pub(crate) fn sync_failure_status(failure: &SyncFailure) -> String {
         (_, SyncErrorCategory::RemoteMissing) => t!("sync_remote_missing").to_string(),
         _ => failure.detail.clone(),
     };
-    format!("{}: {detail}", t!("sync_failed"))
+    t!("sync_failed", error = detail).to_string()
 }
 
 fn privacy_password_verification_result(
@@ -205,7 +205,8 @@ impl TinyShell {
             return None;
         }
         if let Err(failure) = sync::validate_credentials(&credentials) {
-            self.sync_runtime.status = sync_failure_status(&failure).into();
+            self.sync_runtime
+                .set_failed(sync_failure_status(&failure).into());
             cx.notify();
             return None;
         }
@@ -218,8 +219,8 @@ impl TinyShell {
                 let sealed_password = match seal_webdav_password(password) {
                     Ok(sealed_password) => sealed_password,
                     Err(error) => {
-                        self.sync_runtime.status =
-                            format!("{}: {error:#}", t!("sync_failed")).into();
+                        self.sync_runtime
+                            .set_failed(t!("sync_failed", error = format!("{error:#}")).into());
                         cx.notify();
                         return None;
                     }
@@ -243,12 +244,15 @@ impl TinyShell {
                 );
             }
         }
-        if let Err(err) = crate::app::config_persistence::save_full(&self.config) {
-            self.sync_runtime.status = format!("{}: {err:#}", t!("sync_failed")).into();
+        if let Err(err) =
+            crate::app::config_persistence::save_full(&self.config_repository, &self.config)
+        {
+            self.sync_runtime.status = t!("sync_failed", error = format!("{err:#}")).into();
             cx.notify();
             return None;
         }
         self.sync_runtime.in_progress = true;
+        self.sync_runtime.clear_failure();
         self.sync_runtime.status = status;
         cx.notify();
         Some(credentials)
@@ -290,7 +294,7 @@ impl TinyShell {
         if backend == "s3" {
             self.config.set_sync_enabled(false);
         }
-        match crate::app::config_persistence::save_full(&self.config) {
+        match crate::app::config_persistence::save_full(&self.config_repository, &self.config) {
             Ok(()) => {
                 self.sync_runtime.status = if backend == "s3" {
                     t!("sync_disabled").into()
@@ -302,7 +306,8 @@ impl TinyShell {
             Err(error) => {
                 self.config.set_sync_backend(&previous_backend);
                 self.config.set_sync_enabled(previous_enabled);
-                self.sync_runtime.status = format!("{}: {error:#}", t!("sync_failed")).into();
+                self.sync_runtime
+                    .set_failed(t!("sync_failed", error = format!("{error:#}")).into());
             }
         }
         cx.notify();
@@ -325,7 +330,8 @@ impl TinyShell {
                 return;
             }
             if let Err(failure) = sync::validate_credentials(&form.credentials) {
-                self.sync_runtime.status = sync_failure_status(&failure).into();
+                self.sync_runtime
+                    .set_failed(sync_failure_status(&failure).into());
                 cx.notify();
                 return;
             }
@@ -333,8 +339,8 @@ impl TinyShell {
                 match seal_privacy_password(&form.privacy_password) {
                     Ok(sealed_password) => Some(sealed_password),
                     Err(error) => {
-                        self.sync_runtime.status =
-                            format!("{}: {error:#}", t!("sync_failed")).into();
+                        self.sync_runtime
+                            .set_failed(t!("sync_failed", error = format!("{error:#}")).into());
                         cx.notify();
                         return;
                     }
@@ -351,8 +357,8 @@ impl TinyShell {
                 let sealed_password = match seal_webdav_password(&password) {
                     Ok(sealed_password) => sealed_password,
                     Err(error) => {
-                        self.sync_runtime.status =
-                            format!("{}: {error:#}", t!("sync_failed")).into();
+                        self.sync_runtime
+                            .set_failed(t!("sync_failed", error = format!("{error:#}")).into());
                         cx.notify();
                         return;
                     }
@@ -367,7 +373,7 @@ impl TinyShell {
         }
 
         self.config.set_sync_enabled(enabled);
-        match crate::app::config_persistence::save_full(&self.config) {
+        match crate::app::config_persistence::save_full(&self.config_repository, &self.config) {
             Ok(()) => {
                 self.sync_runtime.status = if enabled {
                     t!("sync_status_enabled").into()
@@ -378,7 +384,8 @@ impl TinyShell {
             }
             Err(error) => {
                 self.config = previous_config;
-                self.sync_runtime.status = format!("{}: {error:#}", t!("sync_failed")).into();
+                self.sync_runtime
+                    .set_failed(t!("sync_failed", error = format!("{error:#}")).into());
             }
         }
         cx.notify();
@@ -415,7 +422,8 @@ impl TinyShell {
         match self.automatic_sync_form() {
             Ok(form) => self.upload_sync_config(form, cx),
             Err(error) => {
-                self.sync_runtime.status = format!("{}: {error:#}", t!("sync_failed")).into();
+                self.sync_runtime
+                    .set_failed(t!("sync_failed", error = format!("{error:#}")).into());
                 cx.notify();
             }
         }
@@ -484,7 +492,7 @@ impl TinyShell {
     ) -> bool {
         let previous = self.config.sync_include_secrets();
         self.config.set_sync_include_secrets(include);
-        match crate::app::config_persistence::save_full(&self.config) {
+        match crate::app::config_persistence::save_full(&self.config_repository, &self.config) {
             Ok(()) => {
                 self.sync_runtime.status = t!("sync_not_run").into();
                 cx.notify();
@@ -492,7 +500,8 @@ impl TinyShell {
             }
             Err(error) => {
                 self.config.set_sync_include_secrets(previous);
-                self.sync_runtime.status = format!("{}: {error:#}", t!("sync_failed")).into();
+                self.sync_runtime
+                    .set_failed(t!("sync_failed", error = format!("{error:#}")).into());
                 cx.notify();
                 false
             }
@@ -663,7 +672,8 @@ impl TinyShell {
             Ok(payload) => payload,
             Err(error) => {
                 self.sync_runtime.in_progress = false;
-                self.sync_runtime.status = format!("{}: {error:#}", t!("sync_failed")).into();
+                self.sync_runtime
+                    .set_failed(t!("sync_failed", error = format!("{error:#}")).into());
                 cx.notify();
                 return;
             }
@@ -829,7 +839,7 @@ impl TinyShell {
             Ok(payload) => payload,
             Err(err) => {
                 self.sync_runtime.in_progress = false;
-                self.sync_runtime.status = format!("{}: {err:#}", t!("sync_failed")).into();
+                self.sync_runtime.status = t!("sync_failed", error = format!("{err:#}")).into();
                 cx.notify();
                 return;
             }

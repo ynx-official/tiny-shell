@@ -14,7 +14,9 @@ pub(crate) fn spawn_local_terminal(
     cols: u16,
     rows: u16,
     events: BackendEventSender,
+    generation: u64,
 ) -> Result<BackendTx> {
+    let events = events.with_generation(generation);
     let pty_system = native_pty_system();
     let pair = pty_system
         .openpty(PtySize {

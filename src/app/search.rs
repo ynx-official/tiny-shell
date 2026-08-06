@@ -17,7 +17,7 @@ use crate::TinyShell;
 
 impl TinyShell {
     pub(crate) fn toggle_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.search_active {
+        if self.window_state.search_active {
             self.close_search(window, cx);
         } else {
             self.open_search(window, cx);
@@ -25,8 +25,8 @@ impl TinyShell {
     }
 
     pub(crate) fn open_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.search_active = true;
-        self.search_epoch = self.search_epoch.wrapping_add(1);
+        self.window_state_mut().search_active = true;
+        self.window_state_mut().search_epoch = self.window_state.search_epoch.wrapping_add(1);
         // Focus the search input on the next frame so it happens after the
         // current render cycle completes, avoiding focus being stolen back
         // by the terminal panel's track_focus.
@@ -36,12 +36,12 @@ impl TinyShell {
     }
 
     pub(crate) fn close_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.search_active = false;
-        self.search_query.clear();
-        self.search_matches.clear();
-        self.search_current = 0;
-        self.search_target_tab = None;
-        self.search_bar_bounds = None;
+        self.window_state_mut().search_active = false;
+        self.window_state_mut().search_query.clear();
+        self.window_state_mut().search_matches.clear();
+        self.window_state_mut().search_current = 0;
+        self.window_state_mut().search_target_tab = None;
+        self.window_state_mut().search_bar_bounds = None;
         self.focus_handle.focus(window, cx);
         cx.notify();
     }
@@ -57,9 +57,9 @@ impl TinyShell {
     pub(crate) fn perform_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let query = self.search_input.read(cx).text().to_string();
         if query.is_empty() {
-            self.search_query.clear();
-            self.search_matches.clear();
-            self.search_current = 0;
+            self.window_state_mut().search_query.clear();
+            self.window_state_mut().search_matches.clear();
+            self.window_state_mut().search_current = 0;
             self.refocus_search_input(window, cx);
             cx.notify();
             return;
@@ -81,7 +81,7 @@ impl TinyShell {
         // Store the id before mutating the nested search state so the immutable
         // tab borrow does not overlap the state update.
         let tab_id = tab.id.clone();
-        self.search_target_tab = Some(tab_id.clone());
+        self.window_state_mut().search_target_tab = Some(tab_id.clone());
         let Some(tab) = self.terminal_tab(&tab_id) else {
             return;
         };
@@ -130,22 +130,22 @@ impl TinyShell {
 
         let match_count = count_match_groups(&matches);
 
-        self.search_query = query;
-        self.search_matches = matches;
+        self.window_state_mut().search_query = query;
+        self.window_state_mut().search_matches = matches;
 
         if match_count > 0 {
-            self.search_current = 0;
+            self.window_state_mut().search_current = 0;
             self.jump_to_current_match(cx);
         }
 
         self.status = format!(
             "{}: {} ({})",
             t!("search"),
-            self.search_query,
+            self.window_state.search_query,
             if match_count == 0 {
                 t!("no_results").to_string()
             } else {
-                format!("{}/{}", self.search_current + 1, match_count)
+                format!("{}/{}", self.window_state.search_current + 1, match_count)
             }
         )
         .into();
@@ -156,41 +156,49 @@ impl TinyShell {
     }
 
     pub(crate) fn search_goto_next(&mut self, cx: &mut Context<Self>) {
-        let match_count = count_match_groups(&self.search_matches);
+        let match_count = count_match_groups(&self.window_state.search_matches);
         if match_count == 0 {
             return;
         }
-        self.search_current = (self.search_current + 1) % match_count;
+        self.window_state_mut().search_current =
+            (self.window_state.search_current + 1) % match_count;
         self.jump_to_current_match(cx);
         cx.notify();
     }
 
     pub(crate) fn search_goto_prev(&mut self, cx: &mut Context<Self>) {
-        let match_count = count_match_groups(&self.search_matches);
+        let match_count = count_match_groups(&self.window_state.search_matches);
         if match_count == 0 {
             return;
         }
-        self.search_current = (self.search_current + match_count - 1) % match_count;
+        self.window_state_mut().search_current =
+            (self.window_state.search_current + match_count - 1) % match_count;
         self.jump_to_current_match(cx);
         cx.notify();
     }
 
     fn jump_to_current_match(&mut self, _cx: &mut Context<Self>) {
         // target_grid_line is the grid line index (negative = history).
-        let Some((target_grid_line, _)) =
-            find_nth_match_start(&self.search_matches, self.search_current)
-        else {
+        let Some((target_grid_line, _)) = find_nth_match_start(
+            &self.window_state.search_matches,
+            self.window_state.search_current,
+        ) else {
             return;
         };
 
-        // Find the tab ID first (immutable borrow), then look up mutably.
-        let tab_id = self.preferred_terminal_tab_id();
+        let tab_ids = self
+            .workspace()
+            .tabs()
+            .iter()
+            .map(|tab| tab.id.clone())
+            .collect::<Vec<_>>();
+        let tab_id = search_target_tab_id(self.window_state.search_target_tab.as_deref(), &tab_ids)
+            .map(str::to_owned);
 
-        let tab = if let Some(id) = tab_id.as_deref() {
-            self.terminal_tab_mut(id)
-        } else {
-            self.tabs.first_mut()
+        let Some(tab_id) = tab_id else {
+            return;
         };
+        let tab = self.terminal_tab_mut(&tab_id);
 
         if let Some(tab) = tab {
             let snapshot = tab.render_snapshot(false);
@@ -223,31 +231,36 @@ impl TinyShell {
         match_color: Hsla,
         current_color: Hsla,
     ) -> Option<HashMap<(i32, i32), Hsla>> {
-        if self.search_matches.is_empty()
-            || self.search_query.is_empty()
-            || self.search_target_tab.as_deref() != Some(tab_id)
+        if self.window_state.search_matches.is_empty()
+            || self.window_state.search_query.is_empty()
+            || self.window_state.search_target_tab.as_deref() != Some(tab_id)
         {
             return None;
         }
 
         // Get current display_offset to convert grid line → viewport row.
-        let tab = self
-            .preferred_terminal_tab_id()
-            .as_deref()
-            .and_then(|id| self.terminal_tab(id))?;
+        let tab_ids = self
+            .workspace()
+            .tabs()
+            .iter()
+            .map(|tab| tab.id.clone())
+            .collect::<Vec<_>>();
+        let target_id =
+            search_target_tab_id(self.window_state.search_target_tab.as_deref(), &tab_ids)?;
+        let tab = self.terminal_tab(target_id)?;
         let snapshot = tab.render_snapshot(false);
         let display_offset = snapshot.display_offset as i32;
         let rows = snapshot.rows as i32;
 
         let mut map = HashMap::new();
 
-        let mut sorted: Vec<(i32, i32)> = self.search_matches.clone();
+        let mut sorted: Vec<(i32, i32)> = self.window_state.search_matches.clone();
         sorted.sort();
 
         let mut group_idx = 0;
         let mut i = 0;
         while i < sorted.len() {
-            let is_current = group_idx == self.search_current;
+            let is_current = group_idx == self.window_state.search_current;
             let color = if is_current {
                 current_color
             } else {
@@ -289,17 +302,17 @@ impl TinyShell {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl gpui::IntoElement {
-        let match_count = count_match_groups(&self.search_matches);
-        let has_query = !self.search_query.is_empty();
+        let match_count = count_match_groups(&self.window_state.search_matches);
+        let has_query = !self.window_state.search_query.is_empty();
         let has_matches = match_count > 0;
         let current_display = if has_matches {
-            format!("{}/{}", self.search_current + 1, match_count)
+            format!("{}/{}", self.window_state.search_current + 1, match_count)
         } else if has_query {
             "0".to_string()
         } else {
             String::new()
         };
-        let search_epoch = self.search_epoch;
+        let search_epoch = self.window_state.search_epoch;
 
         let view = cx.entity();
         div()
@@ -308,7 +321,7 @@ impl TinyShell {
             .right(px(24.))
             .on_prepaint(move |bounds, _window, cx| {
                 view.update(cx, |this, _| {
-                    this.search_bar_bounds = Some(bounds);
+                    this.window_state_mut().search_bar_bounds = Some(bounds);
                 });
             })
             .on_mouse_down(
@@ -390,7 +403,9 @@ impl TinyShell {
     }
 }
 
-// ── Helpers ──────────────────────────────────────────────────────────────
+fn search_target_tab_id<'a>(target: Option<&'a str>, tab_ids: &'a [String]) -> Option<&'a str> {
+    target.filter(|id| tab_ids.iter().any(|candidate| candidate == *id))
+}
 
 /// Count distinct match groups in a sorted list of (row, col) positions.
 /// A group is a run of consecutive columns in the same row.
@@ -435,4 +450,17 @@ fn find_nth_match_start(matches: &[(i32, i32)], n: usize) -> Option<(i32, i32)> 
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::search_target_tab_id;
+
+    #[test]
+    fn search_target_requires_existing_tab() {
+        let tabs = vec!["tab-a".to_string(), "tab-b".to_string()];
+        assert_eq!(search_target_tab_id(Some("tab-a"), &tabs), Some("tab-a"));
+        assert_eq!(search_target_tab_id(Some("missing"), &tabs), None);
+        assert_eq!(search_target_tab_id(None, &tabs), None);
+    }
 }

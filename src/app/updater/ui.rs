@@ -6,7 +6,7 @@ use gpui::{
     rems,
 };
 use gpui_component::{
-    ActiveTheme as _, Disableable as _, Sizable as _, WindowExt as _,
+    ActiveTheme as _, Disableable as _, Sizable as _,
     button::{Button, ButtonVariants as _},
     dialog::Dialog,
     h_flex,
@@ -327,79 +327,101 @@ impl TinyShell {
         };
 
         let view = cx.entity();
-        window.open_dialog(cx, move |dialog: Dialog, _window, _| {
-            let display_version = info.version.clone();
-            let expected_version = info.version.clone();
-            let installation_kind = info.installation_kind;
-            let path = path.clone();
-            let view = view.clone();
-            dialog
-                .title(t!("update_restart_confirm_title").to_string())
-                .w(px(440.))
-                .content(move |content, _window, _cx| {
-                    content.child(div().text_sm().child(
-                        t!(
-                            "update_restart_confirm_desc",
-                            version = display_version.clone()
+        self.replace_dialog(
+            crate::app::DialogKind::Updater,
+            window,
+            cx,
+            move |dialog: Dialog, token, _window, _| {
+                let display_version = info.version.clone();
+                let expected_version = info.version.clone();
+                let installation_kind = info.installation_kind;
+                let path = path.clone();
+                let view = view.clone();
+                dialog
+                    .title(t!("update_restart_confirm_title").to_string())
+                    .w(px(440.))
+                    .on_close({
+                        let view = view.clone();
+                        move |_, _, cx| {
+                            view.update(cx, |this, cx| {
+                                this.dialog_closed(token);
+                                cx.notify();
+                            });
+                        }
+                    })
+                    .content(move |content, _window, _cx| {
+                        content.child(
+                            div().text_sm().child(
+                                t!(
+                                    "update_restart_confirm_desc",
+                                    version = display_version.clone()
+                                )
+                                .to_string(),
+                            ),
                         )
-                        .to_string(),
-                    ))
-                })
-                .footer(
-                    h_flex()
-                        .w_full()
-                        .justify_end()
-                        .gap_2()
-                        .child(
-                            Button::new("cancel-update-restart")
-                                .ghost()
-                                .label(t!("cancel").to_string())
-                                .on_click(|_, window, cx| window.close_dialog(cx)),
-                        )
-                        .child(
-                            Button::new("confirm-update-restart")
-                                .primary()
-                                .label(t!("update_restart_now").to_string())
-                                .on_click({
-                                    let path = path.clone();
-                                    let view = view.clone();
-                                    let expected_version = expected_version.clone();
-                                    move |_, _window, _cx| {
-                                        if let Err(error) =
-                                            crate::app::updater::install_and_restart(
-                                                &path,
-                                                &expected_version,
-                                                installation_kind,
-                                            )
-                                        {
-                                            tracing::error!("failed to install update: {error:#}");
-                                            view.update(_cx, |this, cx| {
-                                                this.update_runtime.status =
-                                                    Some(crate::app::updater::UpdateStatus::Error(
-                                                        format!("{error:#}"),
-                                                    ));
-                                                cx.notify();
+                    })
+                    .footer(
+                        h_flex()
+                            .w_full()
+                            .justify_end()
+                            .gap_2()
+                            .child(
+                                Button::new("cancel-update-restart")
+                                    .ghost()
+                                    .label(t!("cancel").to_string())
+                                    .on_click({
+                                        let view = view.clone();
+                                        move |_, window, cx| {
+                                            view.update(cx, |this, cx| {
+                                                this.dismiss_dialog(token, window, cx);
                                             });
                                         }
-                                    }
-                                }),
-                        ),
-                )
-        });
+                                    }),
+                            )
+                            .child(
+                                Button::new("confirm-update-restart")
+                                    .primary()
+                                    .label(t!("update_restart_now").to_string())
+                                    .on_click({
+                                        let path = path.clone();
+                                        let view = view.clone();
+                                        let expected_version = expected_version.clone();
+                                        move |_, _window, _cx| {
+                                            if let Err(error) =
+                                                crate::app::updater::install_and_restart(
+                                                    &path,
+                                                    &expected_version,
+                                                    installation_kind,
+                                                )
+                                            {
+                                                tracing::error!(
+                                                    "failed to install update: {error:#}"
+                                                );
+                                                view.update(_cx, |this, cx| {
+                                                    this.update_runtime.status = Some(
+                                                        crate::app::updater::UpdateStatus::Error(
+                                                            format!("{error:#}"),
+                                                        ),
+                                                    );
+                                                    cx.notify();
+                                                });
+                                            }
+                                        }
+                                    }),
+                            ),
+                    )
+            },
+        );
     }
 
     pub(crate) fn show_update_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.active_dialog.is_some() {
-            return;
-        }
         if self.update_runtime.status.is_none() {
             self.check_for_updates(cx);
         }
-        self.active_dialog = Some(crate::app::DialogKind::Updater);
 
         let view = cx.entity();
         let notes_scroll_handle = gpui::ScrollHandle::new();
-        window.open_dialog(cx, move |dialog: Dialog, _window, _| {
+        self.open_dialog(crate::app::DialogKind::Updater, window, cx, move |dialog: Dialog, token, _window, _| {
             dialog
                 .title(t!("update_dialog_title").to_string())
                 .w(px(600.))
@@ -409,7 +431,7 @@ impl TinyShell {
                     let view = view.clone();
                     move |_, _, cx| {
                         view.update(cx, |this, cx| {
-                            this.active_dialog = None;
+                            this.dialog_closed(token);
                             cx.notify();
                         });
                     }

@@ -144,7 +144,7 @@ impl FinalShellImportWindow {
                         .filter(|session| session.requires_credential_prompt())
                         .map(|session| session.id.clone())
                 });
-            crate::app::config_persistence::save_full(&staged)?;
+            crate::app::config_persistence::save_full(&owner.config_repository, &staged)?;
             owner.config = staged;
             owner.status = t!(
                 "finalshell_imported",

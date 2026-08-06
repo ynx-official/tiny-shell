@@ -113,7 +113,7 @@ impl ConnectionOperationWindow {
             } else {
                 staged.add_connection_group(full_name.clone());
             }
-            match crate::app::config_persistence::save_full(&staged) {
+            match crate::app::config_persistence::save_full(&owner.config_repository, &staged) {
                 Ok(()) => {
                     if owner.connection_group_filter.as_deref() == original.as_deref()
                         || original.is_none()
@@ -496,7 +496,9 @@ fn commit_catalog_change(
 ) -> bool {
     owner.update(cx, |owner, cx| {
         let mut staged = owner.config.clone();
-        match change(&mut staged).and_then(|_| crate::app::config_persistence::save_full(&staged)) {
+        match change(&mut staged).and_then(|_| {
+            crate::app::config_persistence::save_full(&owner.config_repository, &staged)
+        }) {
             Ok(()) => {
                 owner.config = staged;
                 cx.notify();

@@ -1,5 +1,5 @@
 use gpui::{Context, Entity, SharedString, Window};
-use gpui_component::{WindowExt as _, input::InputState};
+use gpui_component::input::InputState;
 use rust_i18n::t;
 use uuid::Uuid;
 
@@ -59,7 +59,9 @@ impl TinyShell {
     ) {
         self.managed_key_editor_target = Some(editor);
         self.managed_key_dialog_selection = selected;
-        self.active_dialog = None;
+        if let Some(token) = self.managed_key_dialog_token.take() {
+            self.dismiss_dialog(token, window, cx);
+        }
         let view = cx.entity();
         window.defer(cx, move |window, cx| {
             view.update(cx, |this, cx| {
@@ -75,8 +77,9 @@ impl TinyShell {
     ) {
         self.managed_key_editor_target = None;
         self.managed_key_dialog_selection = self.managed_key_selected.clone();
-        self.active_dialog = None;
-        window.close_dialog(cx);
+        if let Some(token) = self.managed_key_dialog_token.take() {
+            self.dismiss_dialog(token, window, cx);
+        }
         let view = cx.entity();
         window.defer(cx, move |window, cx| {
             view.update(cx, |this, cx| {
@@ -142,8 +145,9 @@ impl TinyShell {
         if let Some(editor) = self.managed_key_editor_target.take() {
             let selected = self.managed_key_dialog_selection.take();
             self.editing_managed_key_id = None;
-            self.active_dialog = None;
-            window.close_dialog(cx);
+            if let Some(token) = self.managed_key_dialog_token.take() {
+                self.dismiss_dialog(token, window, cx);
+            }
             editor.update(cx, |editor, cx| {
                 editor.apply_managed_key_selection(selected, cx);
             });
@@ -160,16 +164,18 @@ impl TinyShell {
         if self.managed_key_editor_target.take().is_some() {
             self.editing_managed_key_id = None;
             self.managed_key_dialog_selection = None;
-            self.active_dialog = None;
-            window.close_dialog(cx);
+            if let Some(token) = self.managed_key_dialog_token.take() {
+                self.dismiss_dialog(token, window, cx);
+            }
             cx.notify();
             return;
         }
 
         self.editing_managed_key_id = None;
         self.managed_key_dialog_selection = None;
-        self.active_dialog = None;
-        window.close_dialog(cx);
+        if let Some(token) = self.managed_key_dialog_token.take() {
+            self.dismiss_dialog(token, window, cx);
+        }
         let view = cx.entity();
         window.defer(cx, move |window, cx| {
             view.update(cx, |this, cx| this.show_ssh_dialog(window, cx));
@@ -191,8 +197,9 @@ impl TinyShell {
             window,
             cx,
         );
-        self.active_dialog = None;
-        window.close_dialog(cx);
+        if let Some(token) = self.managed_key_dialog_token.take() {
+            self.dismiss_dialog(token, window, cx);
+        }
         let view = cx.entity();
         window.defer(cx, move |window, cx| {
             view.update(cx, |this, cx| {
@@ -215,8 +222,9 @@ impl TinyShell {
             window,
             cx,
         );
-        self.active_dialog = None;
-        window.close_dialog(cx);
+        if let Some(token) = self.managed_key_dialog_token.take() {
+            self.dismiss_dialog(token, window, cx);
+        }
         let view = cx.entity();
         window.defer(cx, move |window, cx| {
             view.update(cx, |this, cx| {
@@ -365,9 +373,9 @@ impl TinyShell {
         };
         let key_id = key.id.clone();
         self.config.upsert_managed_key(key);
-        if let Err(err) = config_persistence::save_full(&self.config) {
+        if let Err(err) = config_persistence::save_full(&self.config_repository, &self.config) {
             tracing::warn!("failed to save config: {err:#}");
-            self.status = format!("{}: {err:#}", t!("key_import_failed")).into();
+            self.status = t!("key_import_failed", error = format!("{err:#}")).into();
             cx.notify();
             return;
         }
@@ -451,7 +459,9 @@ impl TinyShell {
                     created_at: chrono::Local::now().timestamp(),
                 };
                 self.config.upsert_managed_key(key.clone());
-                if let Err(err) = config_persistence::save_full(&self.config) {
+                if let Err(err) =
+                    config_persistence::save_full(&self.config_repository, &self.config)
+                {
                     tracing::warn!("failed to save config: {err:#}");
                 }
                 self.managed_keys = self.config.managed_keys().to_vec();
@@ -459,7 +469,7 @@ impl TinyShell {
                 cx.notify();
             }
             Err(err) => {
-                self.status = format!("{}: {err:#}", t!("key_import_failed")).into();
+                self.status = t!("key_import_failed", error = format!("{err:#}")).into();
                 cx.notify();
             }
         }
@@ -484,7 +494,7 @@ impl TinyShell {
         let mut updated = key;
         updated.name = new_name;
         self.config.upsert_managed_key(updated);
-        if let Err(err) = config_persistence::save_full(&self.config) {
+        if let Err(err) = config_persistence::save_full(&self.config_repository, &self.config) {
             tracing::warn!("failed to save config: {err:#}");
         }
         self.managed_keys = self.config.managed_keys().to_vec();
@@ -496,7 +506,7 @@ impl TinyShell {
     /// session that used it.
     pub(crate) fn delete_managed_key(&mut self, key_id: String, cx: &mut Context<Self>) {
         self.config.remove_managed_key(&key_id);
-        if let Err(err) = config_persistence::save_full(&self.config) {
+        if let Err(err) = config_persistence::save_full(&self.config_repository, &self.config) {
             tracing::warn!("failed to save config: {err:#}");
         }
         self.managed_keys = self.config.managed_keys().to_vec();

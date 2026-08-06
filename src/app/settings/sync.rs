@@ -29,6 +29,7 @@ pub(crate) fn page(view: &Entity<TinyShell>, inputs: SyncSettingsInputs) -> Sett
                         let (
                             in_progress,
                             status,
+                            failed,
                             is_s3,
                             automatic_enabled,
                             last_synced,
@@ -39,6 +40,7 @@ pub(crate) fn page(view: &Entity<TinyShell>, inputs: SyncSettingsInputs) -> Sett
                             (
                                 state.sync_runtime.in_progress,
                                 state.sync_runtime.status.clone(),
+                                state.sync_runtime.failed,
                                 state.config.sync_backend() == "s3",
                                 state.config.sync_enabled(),
                                 crate::app::config_sync::format_sync_timestamp(
@@ -253,7 +255,7 @@ pub(crate) fn page(view: &Entity<TinyShell>, inputs: SyncSettingsInputs) -> Sett
                                             })),
                                     ),
                             )
-                            .child(status_banner(status.to_string(), cx))
+                            .child(status_banner(status.to_string(), failed, cx))
                     }
                 })),
         )
@@ -384,8 +386,7 @@ fn sync_times(last_synced: String, next_sync: String, cx: &gpui::App) -> gpui::D
         )
 }
 
-fn status_banner(status: String, cx: &gpui::App) -> gpui::Div {
-    let failed = status.starts_with(t!("sync_failed").as_ref());
+fn status_banner(status: String, failed: bool, cx: &gpui::App) -> gpui::Div {
     div()
         .px_3()
         .py_2()

@@ -354,7 +354,7 @@ impl SshEditorWindow {
                 session.last_used = latest.last_used.clone();
             }
             staged.upsert(session.clone());
-            crate::app::config_persistence::save_full(&staged)?;
+            crate::app::config_persistence::save_full(&owner.config_repository, &staged)?;
             owner.config = staged;
             if editing_id.is_none() || self.connect_after_save {
                 owner.open_ssh_session(session, cx);

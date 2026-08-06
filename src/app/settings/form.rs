@@ -77,7 +77,7 @@ impl SettingsInputs {
         let sync = SyncSettingsInputs {
             endpoint: cx.new(|cx| {
                 InputState::new(window, cx)
-                    .placeholder("https://dav.example.com/tiny-shell/")
+                    .placeholder(t!("sync_endpoint_placeholder").to_string())
                     .default_value(config.sync_endpoint())
             }),
             username: cx.new(|cx| {
@@ -98,12 +98,12 @@ impl SettingsInputs {
             }),
             s3_endpoint: cx.new(|cx| {
                 InputState::new(window, cx)
-                    .placeholder("https://s3.example.com")
+                    .placeholder(t!("sync_s3_endpoint_placeholder").to_string())
                     .default_value(config.sync_s3_endpoint())
             }),
             s3_region: cx.new(|cx| {
                 InputState::new(window, cx)
-                    .placeholder("us-east-1")
+                    .placeholder(t!("sync_s3_region_placeholder").to_string())
                     .default_value(config.sync_s3_region())
             }),
             s3_bucket: cx.new(|cx| {
@@ -113,7 +113,7 @@ impl SettingsInputs {
             }),
             s3_object_key: cx.new(|cx| {
                 InputState::new(window, cx)
-                    .placeholder("tiny-shell-sync.json")
+                    .placeholder(t!("sync_s3_object_key_placeholder").to_string())
                     .default_value(config.sync_s3_object_key())
             }),
             s3_access_key: cx.new(|cx| {
@@ -146,14 +146,14 @@ impl SettingsInputs {
             }),
             interval_hours: cx.new(|cx| {
                 InputState::new(window, cx)
-                    .placeholder("24")
+                    .placeholder(t!("sync_interval_placeholder").to_string())
                     .default_value(config.sync_interval_hours().to_string())
             }),
         };
         let update = UpdateSettingsInputs {
             interval_hours: cx.new(|cx| {
                 InputState::new(window, cx)
-                    .placeholder("24")
+                    .placeholder(t!("sync_interval_placeholder").to_string())
                     .default_value(config.update_interval_hours().to_string())
             }),
         };

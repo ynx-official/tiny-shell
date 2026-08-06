@@ -625,7 +625,7 @@ impl Element for TerminalElement {
             let cols = (w / cell_width).floor().max(1.0) as u16;
             let rows = (h / line_height).floor().max(1.0) as u16;
 
-            if let Some(tab) = this.tabs.iter_mut().find(|t| t.id == tab_id) {
+            if let Some(tab) = this.terminal_tab_mut(&tab_id) {
                 tab.resize(cols, rows);
             }
 

@@ -144,26 +144,33 @@ impl TinyShell {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let view = cx.entity();
-        let active_tab_index = self
-            .active_tab
-            .as_ref()
-            .and_then(|active_id| self.tabs.iter().position(|tab| &tab.id == active_id));
-        let active_group_index = self
-            .active_group
-            .as_ref()
-            .and_then(|gid| self.tab_groups.iter().position(|g| g.id == *gid));
+        let active_tab_index = self.workspace().active_tab_id().and_then(|active_id| {
+            self.workspace()
+                .tabs()
+                .iter()
+                .position(|tab| tab.id == active_id)
+        });
+        let active_group_index = self.workspace().active_group_id().and_then(|gid| {
+            self.workspace()
+                .tab_groups()
+                .iter()
+                .position(|g| g.id == gid)
+        });
         // Home is the default tab, but it is not kept open after the user
         // enters a terminal workspace. The trailing plus creates it again.
-        let show_home_tab = self.home_page_open || self.active_tab.is_none();
-        let home_page_selected = self.active_system_info_tab.is_none()
-            && ((show_home_tab && self.home_page_open) || self.active_tab.is_none());
-        let selected = if home_page_selected || self.active_system_info_tab.is_some() {
-            usize::MAX
-        } else {
-            active_group_index.or(active_tab_index).unwrap_or(0)
-        };
+        let show_home_tab = self.home_page_open || self.workspace().active_tab_id().is_none();
+        let home_page_selected = self.workspace().active_system_info_tab_id().is_none()
+            && ((show_home_tab && self.home_page_open)
+                || self.workspace().active_tab_id().is_none());
+        let selected =
+            if home_page_selected || self.workspace().active_system_info_tab_id().is_some() {
+                usize::MAX
+            } else {
+                active_group_index.or(active_tab_index).unwrap_or(0)
+            };
         let groups_data: Vec<(String, u64, String, Vec<String>)> = self
-            .tab_groups
+            .workspace()
+            .tab_groups()
             .iter()
             .map(|g| {
                 let pane_ids: Vec<String> = g
@@ -176,11 +183,13 @@ impl TinyShell {
             })
             .collect();
         let system_info_tabs_data: Vec<(String, String, String, Option<String>)> = self
-            .system_info_tabs
+            .workspace()
+            .system_info_tabs()
             .iter()
             .map(|tab| {
                 let group_id = self
-                    .tab_groups
+                    .workspace()
+                    .tab_groups()
                     .iter()
                     .find(|group| group.pane_root.contains(&tab.source_tab_id))
                     .map(|group| group.id.clone());
@@ -285,7 +294,7 @@ impl TinyShell {
                                     .child(t!("new_tab")),
                             )
                             .on_click(cx.listener(|this, _, _, cx| {
-                                this.active_system_info_tab = None;
+                                this.set_active_system_info_tab(None);
                                 this.home_page_open = true;
                                 this.set_home_page(HomePage::Overview, cx);
                             }));
@@ -308,7 +317,7 @@ impl TinyShell {
                                     .child(Icon::new(IconName::Plus).with_size(Size::Small)),
                             )
                             .on_click(cx.listener(|this, _, _, cx| {
-                                this.active_system_info_tab = None;
+                                this.set_active_system_info_tab(None);
                                 this.home_page_open = true;
                                 this.set_home_page(HomePage::Overview, cx);
                             }));
@@ -322,10 +331,13 @@ impl TinyShell {
                                     } else {
                                         format!("{} {}", ordinal, title)
                                     };
-                                    let close_id = if self.active_group.as_ref() == Some(&gid) {
-                                        self.active_tab.clone().unwrap_or_else(|| {
-                                            pane_ids.first().cloned().unwrap_or_default()
-                                        })
+                                    let close_id = if self.workspace().active_group_id() == Some(gid.as_str()) {
+                                        self.workspace()
+                                            .active_tab_id()
+                                            .map(str::to_owned)
+                                            .unwrap_or_else(|| {
+                                                pane_ids.first().cloned().unwrap_or_default()
+                                            })
                                     } else {
                                         pane_ids.first().cloned().unwrap_or_default()
                                     };
@@ -336,7 +348,7 @@ impl TinyShell {
                                     // means the connection has failed or disconnected.
                                     let dot_color = pane_ids
                                         .first()
-                                        .and_then(|id| self.tabs.iter().find(|t| t.id == *id))
+                                        .and_then(|id| self.workspace().tabs().iter().find(|t| t.id == *id))
                                         .map(|tab| {
                                             if tab.disconnected_reason.is_some() {
                                                 cx.theme().danger
@@ -349,7 +361,7 @@ impl TinyShell {
                                         .unwrap_or(cx.theme().muted_foreground);
                                     let dot_epoch = pane_ids
                                         .first()
-                                        .and_then(|id| self.tabs.iter().find(|tab| tab.id == *id))
+                                        .and_then(|id| self.workspace().tabs().iter().find(|tab| tab.id == *id))
                                         .map(|tab| {
                                             tab.backend_generation.wrapping_mul(3)
                                                 + if tab.disconnected_reason.is_some() {
@@ -465,7 +477,7 @@ impl TinyShell {
                                                         .with_animation(
                                                                 ElementId::NamedInteger(
                                                                     format!("tab-status-dot-{gid}").into(),
-                                                                    u64::from(dot_epoch),
+                                                                    dot_epoch,
                                                                 ),
                                                             Animation::new(Duration::from_millis(160))
                                                                 .with_easing(ease_out_quint()),
@@ -516,7 +528,7 @@ impl TinyShell {
                             )
                             .chain(system_info_tabs_data.iter().enumerate().map(
                                 |(ix, (info_id, source_tab_id, title, group_id))| {
-                                    let selected_info = self.active_system_info_tab.as_ref() == Some(info_id);
+                                    let selected_info = self.workspace().active_system_info_tab_id() == Some(info_id.as_str());
                                     let click_info_id = info_id.clone();
                                     let click_source_id = source_tab_id.clone();
                                     let click_group_id = group_id.clone();
@@ -592,11 +604,11 @@ impl TinyShell {
                                             if let Some(group_id) = click_group_id.clone() {
                                                 this.activate_group(group_id, window, cx);
                                             }
-                                            this.window_state.workspace.activate_terminal_tab(&click_source_id);
-                                            this.system_tab_id = Some(click_source_id.clone());
                                             this.window_state
-                                                .workspace
-                                                .set_system_info_tab(Some(click_info_id.clone()));
+                                                .workspace_state_mut()
+                                                .activate_terminal_tab(&click_source_id);
+                                            this.system_tab_id = Some(click_source_id.clone());
+                                            this.set_active_system_info_tab(Some(click_info_id.clone()));
                                             this.home_page_open = false;
                                             this.request_active_system_snapshot();
                                             cx.notify();
@@ -770,10 +782,9 @@ impl TinyShell {
                     .on_click(cx.listener(|this, _, window, cx| {
                         if let Some(text) = this.active_terminal_selection_text() {
                             cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
-                            let active_id = this.active_tab.clone();
+                            let active_id = this.workspace().active_tab_id().map(str::to_owned);
                             if let Some(active_id) = active_id
-                                && let Some(tab) =
-                                    this.tabs.iter_mut().find(|tab| tab.id == active_id)
+                                && let Some(tab) = this.terminal_tab_mut(&active_id)
                             {
                                 tab.clear_selection();
                             }
@@ -822,8 +833,8 @@ impl TinyShell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let has_active = self.active_tab.is_some();
-        let pane_tree = self.pane_root.clone();
+        let has_active = self.workspace().active_tab_id().is_some();
+        let pane_tree = self.workspace().pane_root().clone();
         let view = cx.entity();
         let bounds_view = view.clone();
         let menu_view = view.clone();
@@ -874,7 +885,7 @@ impl TinyShell {
                 this.child(self.render_terminal_floating_toolbar(window, cx))
             })
             // Search bar overlay — only when search is active.
-            .when(self.search_active, |el| {
+            .when(self.window_state.search_active, |el| {
                 el.child(self.render_search_bar(window, cx))
             })
             .when(
@@ -1109,12 +1120,12 @@ impl TinyShell {
         cx: &mut Context<TinyShell>,
     ) -> Option<AnyElement> {
         let cursor = cursor?;
-        let tab = this.tabs.iter().find(|tab| tab.id == tab_id)?;
+        let tab = this.terminal_tab(tab_id)?;
         if tab.kind != terminal::TabKind::Ssh || tab.is_alternate_screen() {
             return None;
         }
         let state = this.terminal_completions.get(tab_id)?;
-        if !state.is_visible() || this.search_active || this.tab_drag.is_dragging() {
+        if !state.is_visible() || this.window_state.search_active || this.tab_drag.is_dragging() {
             return None;
         }
         let pane_bounds = this.terminal_bounds.get(tab_id)?;
@@ -1252,10 +1263,11 @@ impl TinyShell {
         match layout {
             PaneLayout::Empty => this.render_home_page(cx).into_any_element(),
             PaneLayout::Single(tab_id) => {
-                let is_focused = path == this.focused_pane_path.as_slice();
+                let is_focused = path == this.workspace().focused_pane_path();
                 let keyword_highlight = this.config.keyword_highlight();
                 let snapshot = this
-                    .tabs
+                    .workspace()
+                    .tabs()
                     .iter()
                     .find(|t| &t.id == tab_id)
                     .map(|t| t.render_snapshot(keyword_highlight));
@@ -1320,7 +1332,8 @@ impl TinyShell {
                 // Uses absolute positioning so the terminal element itself is unchanged,
                 // keeping panel size stable in multi-panel layouts.
                 let disconnected_reason = this
-                    .tabs
+                    .workspace()
+                    .tabs()
                     .iter()
                     .find(|t| t.id == *tab_id)
                     .and_then(|tab| tab.disconnected_reason.clone());
@@ -1361,7 +1374,8 @@ impl TinyShell {
                 }
 
                 let indicator_color = this
-                    .tabs
+                    .workspace()
+                    .tabs()
                     .iter()
                     .find(|t| t.id == *tab_id)
                     .map(|tab| {
@@ -1372,7 +1386,7 @@ impl TinyShell {
                         }
                     })
                     .unwrap_or(cx.theme().success);
-                let has_multiple_panes = this.pane_root.tab_ids().len() > 1;
+                let has_multiple_panes = this.workspace().pane_root().tab_ids().len() > 1;
 
                 if !is_focused {
                     el = el.opacity(0.85);
@@ -1922,7 +1936,8 @@ impl TinyShell {
         ) = {
             let this = view.read(cx);
             let group_tab_ids: Vec<String> = this
-                .tab_groups
+                .workspace()
+                .tab_groups()
                 .iter()
                 .find(|group| group.id == group_id)
                 .map(|group| {
@@ -1936,20 +1951,23 @@ impl TinyShell {
                 .unwrap_or_default();
             let close_tab_id = group_tab_ids.first().cloned();
             let close_other_tab_ids: Vec<String> = this
-                .tab_groups
+                .workspace()
+                .tab_groups()
                 .iter()
                 .filter(|group| group.id != group_id)
                 .filter_map(|group| group.pane_root.tab_ids().first().copied())
                 .map(String::from)
                 .collect();
             let close_all_tab_ids: Vec<String> = this
-                .tab_groups
+                .workspace()
+                .tab_groups()
                 .iter()
                 .filter_map(|group| group.pane_root.tab_ids().first().copied())
                 .map(String::from)
                 .collect();
             let duplicate_session = group_tab_ids.iter().find_map(|tab_id| {
-                this.tabs
+                this.workspace()
+                    .tabs()
                     .iter()
                     .find(|tab| tab.id == *tab_id && tab.kind == TabKind::Ssh)
                     .and_then(|tab| tab.session.clone())
@@ -1957,7 +1975,7 @@ impl TinyShell {
             let reconnect_tab_ids: Vec<String> = group_tab_ids
                 .iter()
                 .filter(|tab_id| {
-                    this.tabs.iter().any(|tab| {
+                    this.workspace().tabs().iter().any(|tab| {
                         tab.id == **tab_id
                             && tab.kind == TabKind::Ssh
                             && !tab.connected
@@ -1967,7 +1985,8 @@ impl TinyShell {
                 .cloned()
                 .collect();
             let reconnect_all_tab_ids: Vec<String> = this
-                .tabs
+                .workspace()
+                .tabs()
                 .iter()
                 .filter(|tab| {
                     tab.kind == TabKind::Ssh && !tab.connected && tab.disconnected_reason.is_some()
@@ -1975,7 +1994,8 @@ impl TinyShell {
                 .map(|tab| tab.id.clone())
                 .collect();
             let is_connected_ssh = group_tab_ids.iter().any(|tab_id| {
-                this.tabs
+                this.workspace()
+                    .tabs()
                     .iter()
                     .any(|tab| tab.id == *tab_id && tab.kind == TabKind::Ssh && tab.connected)
             });

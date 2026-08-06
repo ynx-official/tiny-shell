@@ -3,7 +3,7 @@ use gpui::{
     prelude::FluentBuilder as _, px,
 };
 use gpui_component::{
-    ActiveTheme as _, WindowExt as _,
+    ActiveTheme as _,
     button::{Button, ButtonVariants as _},
     dialog::Dialog,
     h_flex,
@@ -22,11 +22,6 @@ impl TinyShell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.active_dialog.is_some() || self.sync_runtime.in_progress {
-            return;
-        }
-        self.active_dialog = Some(crate::app::DialogKind::VerifySyncSecretsPassword);
-
         let password_input = cx.new(|cx| {
             InputState::new(window, cx)
                 .placeholder(t!("sync_privacy_password").to_string())
@@ -34,6 +29,7 @@ impl TinyShell {
         });
         self.sync_runtime.secrets_password_dialog =
             Some(crate::app::SyncSecretsPasswordDialogState {
+                token: crate::app::DialogToken { generation: 0 },
                 status: crate::app::SyncSecretsPasswordDialogStatus::AwaitingInput,
                 message: None,
                 window: window.window_handle(),
@@ -43,7 +39,7 @@ impl TinyShell {
         let view = cx.entity();
         let focus_input = password_input.clone();
         let danger_color = cx.theme().danger;
-        window.open_dialog(cx, move |dialog: Dialog, _window, _cx| {
+        let open_result = self.open_dialog(crate::app::DialogKind::VerifySyncSecretsPassword, window, cx, move |dialog: Dialog, token, _window, _cx| {
             dialog
                 .title(t!("sync_secret_toggle_dialog_title").to_string())
                 .w(px(440.))
@@ -53,7 +49,7 @@ impl TinyShell {
                     let view = view.clone();
                     move |_, _, cx| {
                         view.update(cx, |this, cx| {
-                            this.active_dialog = None;
+                            this.dialog_closed(token);
                             this.sync_runtime.secrets_password_dialog = None;
                             cx.notify();
                         });
@@ -112,10 +108,8 @@ impl TinyShell {
                                     let view = view.clone();
                                     move |_, window, cx| {
                                         view.update(cx, |this, cx| {
-                                            this.active_dialog = None;
                                             this.sync_runtime.secrets_password_dialog = None;
-                                            cx.notify();
-                                            window.close_dialog(cx);
+                                            this.dismiss_dialog(token, window, cx);
                                         });
                                     }
                                 }),
@@ -143,7 +137,11 @@ impl TinyShell {
                         ),
                 )
         });
-        crate::app::input_focus::defer_focus_input_at_end(focus_input, window, cx);
+        if matches!(open_result, crate::app::DialogOpenResult::Ignored) {
+            self.sync_runtime.secrets_password_dialog = None;
+        } else {
+            crate::app::input_focus::defer_focus_input_at_end(focus_input, window, cx);
+        }
     }
 
     /// 上传预检发现远端敏感字段无法解密时，阻止覆盖并引导用户重置。
@@ -154,11 +152,6 @@ impl TinyShell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.active_dialog.is_some() {
-            return;
-        }
-        self.active_dialog = Some(crate::app::DialogKind::SyncUploadSecretsBlocked);
-
         let message = match reason {
             crate::sync::UploadBlockReason::PasswordRequired => {
                 t!("sync_upload_password_required_dialog_message").to_string()
@@ -178,82 +171,85 @@ impl TinyShell {
         };
         let view = cx.entity();
         let danger_color = cx.theme().danger;
-        window.open_dialog(cx, move |dialog: Dialog, _window, _cx| {
-            dialog
-                .title(t!("sync_upload_blocked_dialog_title").to_string())
-                .w(px(460.))
-                .close_button(false)
-                .overlay_closable(false)
-                .content({
-                    let message = message.clone();
-                    move |content, _window, _cx| {
-                        content.child(
-                            v_flex()
-                                .w_full()
-                                .gap_3()
-                                .child(
-                                    div()
-                                        .text_sm()
-                                        .text_color(danger_color)
-                                        .child(message.clone()),
-                                )
-                                .child(
-                                    div()
-                                        .text_sm()
-                                        .child(t!("sync_upload_blocked_dialog_hint").to_string()),
-                                ),
-                        )
-                    }
-                })
-                .footer(
-                    h_flex()
-                        .w_full()
-                        .justify_end()
-                        .gap_2()
-                        .child(
-                            Button::new("cancel-sync-upload-reset")
-                                .secondary()
-                                .label(t!("cancel").to_string())
-                                .on_click({
-                                    let view = view.clone();
-                                    move |_, window, cx| {
-                                        view.update(cx, |this, cx| {
-                                            this.active_dialog = None;
-                                            cx.notify();
-                                        });
-                                        window.close_dialog(cx);
-                                    }
-                                }),
-                        )
-                        .child(
-                            Button::new("continue-sync-upload-reset")
-                                .danger()
-                                .label(t!("sync_reset_privacy_password").to_string())
-                                .on_click({
-                                    let view = view.clone();
-                                    let form = form.clone();
-                                    move |_, window, cx| {
-                                        view.update(cx, |this, cx| {
-                                            this.active_dialog = None;
-                                            cx.notify();
-                                        });
-                                        window.close_dialog(cx);
+        self.open_dialog(
+            crate::app::DialogKind::SyncUploadSecretsBlocked,
+            window,
+            cx,
+            move |dialog: Dialog, token, _window, _cx| {
+                dialog
+                    .title(t!("sync_upload_blocked_dialog_title").to_string())
+                    .w(px(460.))
+                    .close_button(false)
+                    .overlay_closable(false)
+                    .content({
+                        let message = message.clone();
+                        move |content, _window, _cx| {
+                            content.child(
+                                v_flex()
+                                    .w_full()
+                                    .gap_3()
+                                    .child(
+                                        div()
+                                            .text_sm()
+                                            .text_color(danger_color)
+                                            .child(message.clone()),
+                                    )
+                                    .child(
+                                        div().text_sm().child(
+                                            t!("sync_upload_blocked_dialog_hint").to_string(),
+                                        ),
+                                    ),
+                            )
+                        }
+                    })
+                    .footer(
+                        h_flex()
+                            .w_full()
+                            .justify_end()
+                            .gap_2()
+                            .child(
+                                Button::new("cancel-sync-upload-reset")
+                                    .secondary()
+                                    .label(t!("cancel").to_string())
+                                    .on_click({
+                                        let view = view.clone();
+                                        move |_, window, cx| {
+                                            view.update(cx, |this, cx| {
+                                                this.dismiss_dialog(token, window, cx);
+                                                cx.notify();
+                                            });
+                                        }
+                                    }),
+                            )
+                            .child(
+                                Button::new("continue-sync-upload-reset")
+                                    .danger()
+                                    .label(t!("sync_reset_privacy_password").to_string())
+                                    .on_click({
                                         let view = view.clone();
                                         let form = form.clone();
-                                        window.defer(cx, move |window, cx| {
+                                        move |_, window, cx| {
                                             view.update(cx, |this, cx| {
-                                                this.show_reset_privacy_password_dialog(
-                                                    form.clone(),
-                                                    window,
-                                                    cx,
-                                                );
+                                                this.dismiss_dialog(token, window, cx);
+                                                cx.notify();
                                             });
-                                        });
-                                    }
-                                }),
-                        ),
-                )
-        });
+                                            let view = view.clone();
+                                            let form = form.clone();
+                                            window.defer(cx, move |window, cx| {
+                                                view.update(cx, |this, cx| {
+                                                    this.show_reset_privacy_password_dialog(
+                                                        form.clone(),
+                                                        window,
+                                                        cx,
+                                                    );
+                                                });
+                                            });
+                                        }
+                                    }),
+                            ),
+                    )
+            },
+        );
     }
 
     /// 弹出"重置隐私信息加密密码"对话框。
@@ -266,11 +262,6 @@ impl TinyShell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.active_dialog.is_some() {
-            return;
-        }
-        self.active_dialog = Some(crate::app::DialogKind::ResetPrivacyPassword);
-
         let new_pw_input = cx.new(|cx| {
             InputState::new(window, cx)
                 .placeholder(t!("sync_reset_new_password").to_string())
@@ -284,80 +275,89 @@ impl TinyShell {
         let view = cx.entity();
         let focus_input = new_pw_input.clone();
         let danger_color = cx.theme().danger;
-        window.open_dialog(cx, move |dialog: Dialog, _window, _cx| {
-            dialog
-                .title(t!("sync_reset_dialog_title").to_string())
-                .w(px(440.))
-                .close_button(false)
-                .overlay_closable(true)
-                .on_ok({
-                    let view = view.clone();
-                    let new_pw_input = new_pw_input.clone();
-                    let confirm_pw_input = confirm_pw_input.clone();
-                    let form = form.clone();
-                    move |_, window, cx| {
-                        let new_pw = new_pw_input.read(cx).value().to_string();
-                        let confirm_pw = confirm_pw_input.read(cx).value().to_string();
-                        if new_pw != confirm_pw {
+        self.open_dialog(
+            crate::app::DialogKind::ResetPrivacyPassword,
+            window,
+            cx,
+            move |dialog: Dialog, token, _window, _cx| {
+                dialog
+                    .title(t!("sync_reset_dialog_title").to_string())
+                    .w(px(440.))
+                    .close_button(false)
+                    .overlay_closable(true)
+                    .on_ok({
+                        let view = view.clone();
+                        let new_pw_input = new_pw_input.clone();
+                        let confirm_pw_input = confirm_pw_input.clone();
+                        let form = form.clone();
+                        move |_, window, cx| {
+                            let new_pw = new_pw_input.read(cx).value().to_string();
+                            let confirm_pw = confirm_pw_input.read(cx).value().to_string();
+                            if new_pw != confirm_pw {
+                                view.update(cx, |this, cx| {
+                                    this.sync_runtime.status =
+                                        t!("sync_reset_password_mismatch").into();
+                                    cx.notify();
+                                });
+                                return false;
+                            }
+                            if new_pw.chars().count() < 8 {
+                                view.update(cx, |this, cx| {
+                                    this.sync_runtime.status =
+                                        t!("sync_privacy_password_required").into();
+                                    cx.notify();
+                                });
+                                return false;
+                            }
                             view.update(cx, |this, cx| {
-                                this.sync_runtime.status =
-                                    t!("sync_reset_password_mismatch").into();
-                                cx.notify();
+                                this.confirm_reset_privacy_password(
+                                    token,
+                                    new_pw,
+                                    form.clone(),
+                                    window,
+                                    cx,
+                                );
                             });
-                            return false;
+                            false
                         }
-                        if new_pw.chars().count() < 8 {
-                            view.update(cx, |this, cx| {
-                                this.sync_runtime.status =
-                                    t!("sync_privacy_password_required").into();
-                                cx.notify();
-                            });
-                            return false;
-                        }
-                        view.update(cx, |this, cx| {
-                            this.confirm_reset_privacy_password(new_pw, form.clone(), window, cx);
-                        });
-                        false
-                    }
-                })
-                .content({
-                    let new_pw_input = new_pw_input.clone();
-                    let confirm_pw_input = confirm_pw_input.clone();
-                    move |content, _window, _cx| {
-                        content.child(
-                            v_flex()
-                                .w_full()
-                                .gap_3()
-                                .child(
-                                    div()
-                                        .text_sm()
-                                        .text_color(danger_color)
-                                        .child(t!("sync_reset_dialog_warning").to_string()),
-                                )
-                                .child(
-                                    v_flex()
-                                        .gap_1()
-                                        .child(
-                                            div()
-                                                .text_sm()
-                                                .child(t!("sync_reset_new_password").to_string()),
-                                        )
-                                        .child(Input::new(&new_pw_input).w_full()),
-                                )
-                                .child(
-                                    v_flex()
-                                        .gap_1()
-                                        .child(
-                                            div().text_sm().child(
+                    })
+                    .content({
+                        let new_pw_input = new_pw_input.clone();
+                        let confirm_pw_input = confirm_pw_input.clone();
+                        move |content, _window, _cx| {
+                            content.child(
+                                v_flex()
+                                    .w_full()
+                                    .gap_3()
+                                    .child(
+                                        div()
+                                            .text_sm()
+                                            .text_color(danger_color)
+                                            .child(t!("sync_reset_dialog_warning").to_string()),
+                                    )
+                                    .child(
+                                        v_flex()
+                                            .gap_1()
+                                            .child(
+                                                div().text_sm().child(
+                                                    t!("sync_reset_new_password").to_string(),
+                                                ),
+                                            )
+                                            .child(Input::new(&new_pw_input).w_full()),
+                                    )
+                                    .child(
+                                        v_flex()
+                                            .gap_1()
+                                            .child(div().text_sm().child(
                                                 t!("sync_reset_confirm_password").to_string(),
-                                            ),
-                                        )
-                                        .child(Input::new(&confirm_pw_input).w_full()),
-                                ),
-                        )
-                    }
-                })
-        });
+                                            ))
+                                            .child(Input::new(&confirm_pw_input).w_full()),
+                                    ),
+                            )
+                        }
+                    })
+            },
+        );
         // 延迟聚焦到对话框显示完成后
         crate::app::input_focus::defer_focus_input_at_end(focus_input, window, cx);
     }
@@ -365,13 +365,13 @@ impl TinyShell {
     /// 确认重置：关闭对话框并触发强制上传。
     fn confirm_reset_privacy_password(
         &mut self,
+        token: crate::app::DialogToken,
         new_password: String,
         form: crate::app::config_sync::SyncFormSnapshot,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.active_dialog = None;
-        window.close_dialog(cx);
+        self.dismiss_dialog(token, window, cx);
         self.reset_sync_privacy_password(new_password, form, cx);
     }
 }

@@ -7,9 +7,6 @@ impl TinyShell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.active_dialog.is_some() {
-            return;
-        }
         let existing = category_id.as_deref().and_then(|category_id| {
             self.config
                 .quick_command_categories()
@@ -24,68 +21,71 @@ impl TinyShell {
                     .unwrap_or_default(),
             )
         });
-        self.active_dialog = Some(crate::app::DialogKind::QuickCommandCategory);
         let view = cx.entity();
         let submit_input = input.clone();
         let focus_input = input.clone();
-        window.open_dialog(cx, move |dialog: Dialog, _window, _| {
-            let submit_input = submit_input.clone();
-            let content_input = input.clone();
-            let existing = existing.clone();
-            dialog
-                .title(t!("quick_command_category_dialog_title").to_string())
-                .w(px(420.))
-                .on_close({
-                    let view = view.clone();
-                    move |_, _, cx| {
-                        view.update(cx, |this, cx| {
-                            this.active_dialog = None;
-                            cx.notify();
-                        });
-                    }
-                })
-                .on_ok({
-                    let view = view.clone();
-                    move |_, window, cx| {
-                        let name = submit_input.read(cx).value().trim().to_string();
-                        if name.is_empty() {
+        self.open_dialog(
+            crate::app::DialogKind::QuickCommandCategory,
+            window,
+            cx,
+            move |dialog: Dialog, token, _window, _| {
+                let submit_input = submit_input.clone();
+                let content_input = input.clone();
+                let existing = existing.clone();
+                dialog
+                    .title(t!("quick_command_category_dialog_title").to_string())
+                    .w(px(420.))
+                    .on_close({
+                        let view = view.clone();
+                        move |_, _, cx| {
                             view.update(cx, |this, cx| {
-                                this.status = t!("quick_command_category_name_required").into();
+                                this.dialog_closed(token);
                                 cx.notify();
                             });
-                            return false;
                         }
-                        view.update(cx, |this, cx| {
-                            let category =
-                                existing.clone().unwrap_or_else(|| QuickCommandCategory {
-                                    id: uuid::Uuid::new_v4().to_string(),
-                                    name: String::new(),
-                                    commands: Vec::new(),
+                    })
+                    .on_ok({
+                        let view = view.clone();
+                        move |_, window, cx| {
+                            let name = submit_input.read(cx).value().trim().to_string();
+                            if name.is_empty() {
+                                view.update(cx, |this, cx| {
+                                    this.status = t!("quick_command_category_name_required").into();
+                                    cx.notify();
                                 });
-                            let category = QuickCommandCategory { name, ..category };
-                            this.command_category_filter = Some(category.id.clone());
-                            this.config.upsert_quick_command_category(category);
-                            this.mark_config_preferences_dirty();
-                            this.active_dialog = None;
-                            cx.notify();
-                        });
-                        window.close_dialog(cx);
-                        true
-                    }
-                })
-                .content(move |content, _, cx| {
-                    content.child(
-                        v_flex()
-                            .gap_2()
-                            .child(
-                                div()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child(t!("quick_command_category_name")),
-                            )
-                            .child(Input::new(&content_input).w_full()),
-                    )
-                })
-        });
+                                return false;
+                            }
+                            view.update(cx, |this, cx| {
+                                let category =
+                                    existing.clone().unwrap_or_else(|| QuickCommandCategory {
+                                        id: uuid::Uuid::new_v4().to_string(),
+                                        name: String::new(),
+                                        commands: Vec::new(),
+                                    });
+                                let category = QuickCommandCategory { name, ..category };
+                                this.command_category_filter = Some(category.id.clone());
+                                this.config.upsert_quick_command_category(category);
+                                this.mark_config_preferences_dirty();
+                                this.dismiss_dialog(token, window, cx);
+                                cx.notify();
+                            });
+                            true
+                        }
+                    })
+                    .content(move |content, _, cx| {
+                        content.child(
+                            v_flex()
+                                .gap_2()
+                                .child(
+                                    div()
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child(t!("quick_command_category_name")),
+                                )
+                                .child(Input::new(&content_input).w_full()),
+                        )
+                    })
+            },
+        );
         crate::app::input_focus::defer_focus_input_at_end(focus_input, window, cx);
     }
 
@@ -150,9 +150,6 @@ impl TinyShell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.active_dialog.is_some() {
-            return;
-        }
         let categories = self
             .config
             .quick_command_categories()
@@ -201,12 +198,11 @@ impl TinyShell {
             command: command_input.clone(),
         };
         self.editing_quick_command_category = Some(category_id.clone());
-        self.active_dialog = Some(crate::app::DialogKind::QuickCommand);
         let view = cx.entity();
         let source_category_id = category_id.clone();
         let submit_inputs = dialog_inputs.clone();
         let focus_name_input = name_input.clone();
-        window.open_dialog(cx, move |dialog: Dialog, _window, _| {
+        self.open_dialog(crate::app::DialogKind::QuickCommand, window, cx, move |dialog: Dialog, token, _window, _| {
             let submit_inputs = submit_inputs.clone();
             let content_name = name_input.clone();
             let content_remark = remark_input.clone();
@@ -222,7 +218,7 @@ impl TinyShell {
                     let view = view.clone();
                     move |_, _, cx| {
                         view.update(cx, |this, cx| {
-                            this.active_dialog = None;
+                            this.dialog_closed(token);
                             this.editing_quick_command_category = None;
                             cx.notify();
                         });
@@ -408,11 +404,9 @@ impl TinyShell {
                                             .label(t!("cancel").to_string())
                                             .on_click(window.listener_for(
                                                 &view,
-                                                |_this, _, window, cx| {
+                                                move |this, _, window, cx| {
                                                     cx.stop_propagation();
-                                                    window.defer(cx, |window, cx| {
-                                                        window.close_dialog(cx);
-                                                    });
+                                                    this.dismiss_dialog(token, window, cx);
                                                 },
                                             )),
                                     )
@@ -437,9 +431,7 @@ impl TinyShell {
                                                         &inputs,
                                                         cx,
                                                     ) {
-                                                        window.defer(cx, |window, cx| {
-                                                            window.close_dialog(cx);
-                                                        });
+                                                        this.dismiss_dialog(token, window, cx);
                                                     }
                                                 }
                                             })),

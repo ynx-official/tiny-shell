@@ -37,7 +37,7 @@ pub(crate) mod workspace_presentation;
 use std::{
     cell::{Cell, RefCell},
     collections::{HashMap, VecDeque},
-    ops::{Deref, DerefMut, Range},
+    ops::Range,
     rc::Rc,
     sync::{
         Arc, Mutex, MutexGuard, OnceLock,
@@ -52,8 +52,8 @@ use crate::app::{
     monitoring::{MonitoringState, MonitoringVisibilityContext, metrics_visible, push_bounded},
     resizable::ResizableState,
     runtime_state::{
-        AsyncRuntimeState, AuxiliaryWindowsState, ConfigPersistenceState, SyncRuntimeState,
-        UpdateRuntimeState,
+        AsyncRuntimeState, AuxiliaryWindowsState, ConfigPersistenceState, DialogToken,
+        SyncRuntimeState, UpdateRuntimeState,
     },
     settings::form::SettingsInputs,
     ssh_key_import::KeyImportState,
@@ -66,7 +66,8 @@ use gpui::{
     SharedString, Size, UniformListScrollHandle, Window, point, px, size,
 };
 use gpui_component::{
-    Theme, ThemeMode, ThemeRegistry,
+    Theme, ThemeMode, ThemeRegistry, WindowExt,
+    dialog::Dialog,
     input::{InputEvent, InputState},
     scroll::ScrollbarHandle,
 };
@@ -157,6 +158,41 @@ pub(crate) fn window_registry() -> Arc<Mutex<Vec<WindowEntry>>> {
     WINDOW_REGISTRY
         .get_or_init(|| Arc::new(Mutex::new(Vec::new())))
         .clone()
+}
+
+fn select_config_repository(
+    entries: impl IntoIterator<Item = (bool, u64, Arc<config_persistence::ConfigRepository>)>,
+) -> Option<Arc<config_persistence::ConfigRepository>> {
+    entries
+        .into_iter()
+        .filter(|(is_open, _, _)| *is_open)
+        .max_by_key(|(_, activation_seq, _)| *activation_seq)
+        .map(|(_, _, repository)| repository)
+}
+
+/// Reuse the repository owned by an already-open application window.
+///
+/// The registry is the application-level source of truth for window ownership;
+/// keeping this lookup here avoids introducing a second process-global
+/// repository singleton solely for the macOS reopen callback.
+pub(crate) fn config_repository_for_open_window(
+    cx: &App,
+) -> Option<Arc<config_persistence::ConfigRepository>> {
+    let entries = {
+        let registry = window_registry();
+        lock_recover(&registry, "window registry")
+            .iter()
+            .map(|entry| {
+                (
+                    cx.windows().contains(&entry.window_handle),
+                    entry.activation_seq,
+                    entry.entity.read(cx).config_repository.clone(),
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+
+    select_config_repository(entries)
 }
 
 pub(crate) fn next_tab_drag_id() -> u64 {
@@ -558,10 +594,26 @@ pub(crate) enum SyncSecretsPasswordDialogStatus {
 }
 
 pub(crate) struct SyncSecretsPasswordDialogState {
+    pub(crate) token: DialogToken,
     pub(crate) status: SyncSecretsPasswordDialogStatus,
     pub(crate) message: Option<SharedString>,
     pub(crate) window: AnyWindowHandle,
     pub(crate) settings_password_input: Entity<InputState>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DialogOpenResult {
+    Opened,
+    Queued,
+    Ignored,
+}
+
+pub(crate) type DialogBuilder = Box<dyn Fn(Dialog, DialogToken, &mut Window, &mut App) -> Dialog>;
+
+pub(crate) struct PendingDialog {
+    pub(crate) kind: DialogKind,
+    pub(crate) token: DialogToken,
+    pub(crate) builder: DialogBuilder,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -581,6 +633,7 @@ pub(crate) enum DialogKind {
     SyncUploadSecretsBlocked,
     /// 本地强行重置隐私信息加密密码。
     ResetPrivacyPassword,
+    DeleteConfirmation,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -778,6 +831,9 @@ pub(crate) struct TinyShell {
     pub(crate) connection_inputs: ConnectionFormInputs,
     pub(crate) key_import: KeyImportState,
     pub(crate) managed_key_dialog_selection: Option<String>,
+    pub(crate) managed_key_dialog_token: Option<DialogToken>,
+    pub(crate) selector_dialog_token: Option<DialogToken>,
+    pub(crate) connection_group_dialog_token: Option<DialogToken>,
     pub(crate) managed_key_editor_target:
         Option<Entity<connection_manager::ssh_editor_window::SshEditorWindow>>,
     pub(crate) ssh_proxy_type: String,
@@ -813,7 +869,7 @@ pub(crate) struct TinyShell {
     pub(crate) session_store: Entity<crate::session::store::SessionStore>,
     pub(crate) session_owner_id: crate::session::store::WindowOwnerId,
     pub(crate) window_state: WindowState,
-    /// The Home workspace is a first-class tab alongside terminal groups.
+    pub(crate) pending_dialog: Option<PendingDialog>,
     pub(crate) home_page_open: bool,
     pub(crate) home_page: HomePage,
     pub(crate) prev_home_page: HomePage,
@@ -867,6 +923,7 @@ pub(crate) struct TinyShell {
     pub(crate) collapsed_saved_scroll_handle: gpui::ScrollHandle,
     pub(crate) status: SharedString,
     pub(crate) config: ConfigStore,
+    pub(crate) config_repository: Arc<config_persistence::ConfigRepository>,
     pub(crate) config_persistence: ConfigPersistenceState,
     pub(crate) active_title_bar_style: crate::session::config::TitleBarStyle,
     pub(crate) cursor_style: crate::session::config::CursorStyle,
@@ -893,17 +950,133 @@ pub(crate) struct TinyShell {
     pub(crate) _subscriptions: Vec<gpui::Subscription>,
 }
 
-impl Deref for TinyShell {
-    type Target = WindowState;
-
-    fn deref(&self) -> &Self::Target {
-        &self.window_state
+impl TinyShell {
+    pub(crate) fn workspace(&self) -> &crate::app::terminal_workspace::TerminalWorkspaceState {
+        self.window_state.workspace()
     }
-}
 
-impl DerefMut for TinyShell {
-    fn deref_mut(&mut self) -> &mut Self::Target {
+    pub(crate) fn window_state_mut(&mut self) -> &mut WindowState {
         &mut self.window_state
+    }
+
+    pub(crate) fn open_dialog<F>(
+        &mut self,
+        kind: DialogKind,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        builder: F,
+    ) -> DialogOpenResult
+    where
+        F: Fn(Dialog, DialogToken, &mut Window, &mut App) -> Dialog + 'static,
+    {
+        if self.window_state.is_same_active_dialog(kind) {
+            return DialogOpenResult::Ignored;
+        }
+        let token = self.window_state.request_dialog(kind);
+        self.pending_dialog = Some(PendingDialog {
+            kind,
+            token,
+            builder: Box::new(builder),
+        });
+        if self.window_state.active_request().is_some() {
+            DialogOpenResult::Queued
+        } else if self.open_pending_dialog(window, cx) {
+            DialogOpenResult::Opened
+        } else {
+            DialogOpenResult::Queued
+        }
+    }
+
+    pub(crate) fn replace_dialog<F>(
+        &mut self,
+        kind: DialogKind,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        builder: F,
+    ) -> DialogOpenResult
+    where
+        F: Fn(Dialog, DialogToken, &mut Window, &mut App) -> Dialog + 'static,
+    {
+        let active = self.window_state.active_request();
+        let token = self.window_state.request_dialog(kind);
+        self.pending_dialog = Some(PendingDialog {
+            kind,
+            token,
+            builder: Box::new(builder),
+        });
+        if let Some(active) = active {
+            self.dialog_closed(active.token);
+            window.close_dialog(cx);
+            DialogOpenResult::Queued
+        } else if self.open_pending_dialog(window, cx) {
+            DialogOpenResult::Opened
+        } else {
+            DialogOpenResult::Queued
+        }
+    }
+
+    pub(crate) fn open_pending_dialog(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(pending) = self.pending_dialog.as_ref() else {
+            return false;
+        };
+        let token = pending.token;
+        if self.window_state.active_request().is_some()
+            || self.window_state.pending_token() != Some(token)
+        {
+            return false;
+        }
+        let Some(activated) = self.window_state.activate_dialog(token).token() else {
+            return false;
+        };
+        let Some(pending) = self.pending_dialog.take() else {
+            return false;
+        };
+        window.open_dialog(cx, move |dialog, window, cx| {
+            (pending.builder)(dialog, activated, window, cx)
+        });
+        self.record_dialog_token(pending.kind, activated);
+        true
+    }
+
+    fn record_dialog_token(&mut self, kind: DialogKind, token: DialogToken) {
+        match kind {
+            DialogKind::ManagedKeySelector | DialogKind::ManagedKeyImport => {
+                self.managed_key_dialog_token = Some(token)
+            }
+            DialogKind::SessionSelector => self.selector_dialog_token = Some(token),
+            DialogKind::ConnectionGroup => self.connection_group_dialog_token = Some(token),
+            DialogKind::VerifySyncSecretsPassword => {
+                if let Some(state) = self.sync_runtime.secrets_password_dialog.as_mut() {
+                    state.token = token;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    pub(crate) fn dialog_kind(&self) -> Option<DialogKind> {
+        self.window_state.dialog_kind()
+    }
+
+    pub(crate) fn dialog_closed(&mut self, token: DialogToken) -> bool {
+        self.window_state.dialog_closed(token)
+    }
+
+    pub(crate) fn dismiss_dialog(
+        &mut self,
+        token: DialogToken,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if !self.dialog_closed(token) {
+            return false;
+        }
+        window.close_dialog(cx);
+        true
     }
 }
 
@@ -931,23 +1104,49 @@ pub(crate) struct SftpContextMenuState {
 
 impl TinyShell {
     pub(crate) fn terminal_tab(&self, tab_id: &str) -> Option<&TerminalTab> {
-        self.window_state.workspace.terminal_tab(tab_id)
+        self.workspace().terminal_tab(tab_id)
     }
 
     pub(crate) fn terminal_tab_mut(&mut self, tab_id: &str) -> Option<&mut TerminalTab> {
-        self.window_state.workspace.terminal_tab_mut(tab_id)
+        self.window_state
+            .workspace_state_mut()
+            .terminal_tab_mut(tab_id)
     }
 
     pub(crate) fn tab_group(&self, group_id: &str) -> Option<&TabGroup> {
-        self.window_state.workspace.tab_group(group_id)
+        self.workspace().tab_group(group_id)
     }
 
     pub(crate) fn tab_group_mut(&mut self, group_id: &str) -> Option<&mut TabGroup> {
-        self.window_state.workspace.tab_group_mut(group_id)
+        self.window_state
+            .workspace_state_mut()
+            .tab_group_mut(group_id)
     }
 
     pub(crate) fn preferred_terminal_tab_id(&self) -> Option<String> {
-        self.window_state.workspace.preferred_terminal_tab_id()
+        self.workspace().preferred_terminal_tab_id()
+    }
+
+    pub(crate) fn set_active_system_info_tab(&mut self, tab_id: Option<String>) {
+        self.window_state
+            .workspace_state_mut()
+            .set_active_system_info_tab(tab_id);
+    }
+
+    pub(crate) fn allocate_tab_group_ordinal(&mut self) -> u64 {
+        self.window_state
+            .workspace_state_mut()
+            .allocate_tab_group_ordinal()
+    }
+
+    pub(crate) fn install_terminal_tab(&mut self, tab: TerminalTab, group: TabGroup) {
+        self.window_state
+            .workspace_state_mut()
+            .install_terminal_tab(tab, group);
+    }
+
+    pub(crate) fn terminal_tab_count(&self) -> usize {
+        self.workspace().tab_count()
     }
 
     pub(crate) fn backend_events_sender(&self, cx: &mut Context<Self>) -> BackendEventSender {
@@ -961,19 +1160,29 @@ impl TinyShell {
         });
     }
 
-    fn transfer_source_title(&self, tab_id: &str) -> String {
-        self.tabs
+    pub(crate) fn unregister_backend_route(&self, route_id: &str, cx: &mut Context<Self>) {
+        let owner_id = self.session_owner_id;
+        self.session_store.update(cx, |store, _| {
+            store.unregister_event_route(route_id, owner_id);
+        });
+    }
+
+    pub(crate) fn tab_title(&self, tab_id: &str) -> String {
+        self.workspace()
+            .tabs()
             .iter()
             .find(|tab| tab.id == tab_id)
             .map(|tab| tab.title.clone())
             .or_else(|| {
-                self.tab_groups
+                self.workspace()
+                    .tab_groups()
                     .iter()
                     .find(|group| group.id == tab_id)
                     .map(|group| group.title.clone())
             })
             .or_else(|| {
-                self.tab_groups
+                self.workspace()
+                    .tab_groups()
                     .iter()
                     .find(|group| group.pane_root.contains(tab_id))
                     .map(|group| group.title.clone())
@@ -984,6 +1193,7 @@ impl TinyShell {
     pub(crate) fn new(
         window: &mut Window,
         session_store: Entity<crate::session::store::SessionStore>,
+        config_repository: Arc<config_persistence::ConfigRepository>,
         cx: &mut Context<Self>,
     ) -> Self {
         let connection_inputs = ConnectionFormInputs::new(window, cx);
@@ -1075,7 +1285,8 @@ impl TinyShell {
             merge_builtin_quick_commands(&mut categories, &active_locale);
             config.set_quick_command_categories(categories);
             config.set_quick_commands_builtin_version(BUILTIN_QUICK_COMMANDS_VERSION);
-            if let Err(err) = crate::app::config_persistence::save_full(&config) {
+            if let Err(err) = crate::app::config_persistence::save_full(&config_repository, &config)
+            {
                 tracing::warn!("failed to initialize built-in quick commands: {err:#}");
             }
         }
@@ -1102,6 +1313,9 @@ impl TinyShell {
             connection_inputs,
             key_import: KeyImportState::default(),
             managed_key_dialog_selection: None,
+            managed_key_dialog_token: None,
+            selector_dialog_token: None,
+            connection_group_dialog_token: None,
             managed_key_editor_target: None,
             ssh_proxy_type: "none".to_string(),
             global_proxy_type: config.global_proxy_type().to_string(),
@@ -1133,6 +1347,7 @@ impl TinyShell {
             session_store,
             session_owner_id: SESSION_OWNER_SEQ.fetch_add(1, Ordering::Relaxed),
             window_state: WindowState::new(),
+            pending_dialog: None,
             home_page_open: true,
             home_page: HomePage::default(),
             prev_home_page: HomePage::default(),
@@ -1208,6 +1423,7 @@ impl TinyShell {
             status: "ready".into(),
             active_title_bar_style: config.title_bar_style(),
             config,
+            config_repository,
             config_persistence: ConfigPersistenceState::default(),
             monitoring: MonitoringState {
                 system_sampler,
@@ -1360,8 +1576,8 @@ impl TinyShell {
             }
         } else if input == &self.search_input {
             if let InputEvent::PressEnter { .. } = event {
-                if self.search_query.is_empty()
-                    || *self.search_input.read(cx).text() != self.search_query
+                if self.window_state.search_query.is_empty()
+                    || *self.search_input.read(cx).text() != self.window_state.search_query
                 {
                     self.perform_search(window, cx);
                 } else {
@@ -1372,9 +1588,11 @@ impl TinyShell {
             }
         } else if input == &self.connection_inputs.connection_group_input {
             if matches!(event, InputEvent::PressEnter { .. })
-                && self.active_dialog == Some(DialogKind::ConnectionGroup)
+                && self.dialog_kind() == Some(DialogKind::ConnectionGroup)
             {
-                self.confirm_connection_group_dialog(window, cx);
+                if let Some(token) = self.connection_group_dialog_token.take() {
+                    self.confirm_connection_group_dialog(token, window, cx);
+                }
                 window.prevent_default();
                 cx.stop_propagation();
             }
@@ -1404,7 +1622,7 @@ impl TinyShell {
                 cx.stop_propagation();
             }
         } else if matches!(event, InputEvent::PressEnter { .. })
-            && self.active_dialog == Some(DialogKind::NewSsh)
+            && self.dialog_kind() == Some(DialogKind::NewSsh)
             && (input == &self.connection_inputs.session_name_input
                 || input == &self.connection_inputs.host_input
                 || input == &self.connection_inputs.port_input
@@ -1521,8 +1739,8 @@ impl TinyShell {
                 self.config.monitoring_position(),
             ),
             sidebar_collapsed: self.sidebar_collapsed,
-            system_info_open: self.active_system_info_tab.is_some(),
-            active_tab_open: self.active_tab.is_some(),
+            system_info_open: self.workspace().active_system_info_tab_id().is_some(),
+            active_tab_open: self.workspace().active_tab_id().is_some(),
             active_tab_is_ssh: self.active_kind() == Some(TabKind::Ssh),
             home_page_open: self.home_page_open,
         })
@@ -1543,12 +1761,12 @@ impl TinyShell {
         hash = hash
             .wrapping_mul(31)
             .wrapping_add(self.home_page_open as u64);
-        if let Some(id) = &self.active_system_info_tab {
+        if let Some(id) = self.workspace().active_system_info_tab_id() {
             for byte in id.bytes() {
                 hash = hash.wrapping_mul(31).wrapping_add(byte as u64);
             }
         }
-        if let Some(id) = &self.active_tab {
+        if let Some(id) = self.workspace().active_tab_id() {
             for byte in id.bytes() {
                 hash = hash.wrapping_mul(31).wrapping_add(byte as u64);
             }
@@ -1571,11 +1789,19 @@ impl TinyShell {
         let routed_events = self.session_store.update(cx, |store, _| {
             let events = store.drain_events_for(owner_id, remaining);
             let stats = store.queue_stats();
-            if stats.deferred > 0 || stats.rejected > 0 {
+            if stats.deferred > 0
+                || stats.rejected > 0
+                || stats.pending > 0
+                || stats.last_drain_micros > 1_000
+            {
                 tracing::debug!(
                     routed = stats.routed,
                     deferred = stats.deferred,
+                    pending = stats.pending,
                     peak_pending = stats.peak_pending,
+                    last_routed = stats.last_routed,
+                    last_drained = stats.last_drained,
+                    last_drain_micros = stats.last_drain_micros,
                     sent = stats.sent,
                     rejected = stats.rejected,
                     "backend event queue is under pressure"
@@ -1584,7 +1810,18 @@ impl TinyShell {
             events
         });
         events.extend(routed_events);
-        for event in coalesce_backend_events(events) {
+        for envelope in coalesce_backend_events(events) {
+            if let Some(tab) = self
+                .workspace()
+                .tabs()
+                .iter()
+                .find(|tab| envelope.event.tab_id().is_some_and(|id| id == tab.id))
+                && envelope.generation != 0
+                && envelope.generation != tab.backend_generation
+            {
+                continue;
+            }
+            let event = envelope.event;
             changed = true;
             match event {
                 BackendEvent::Output { tab_id, bytes } => {
@@ -1687,14 +1924,12 @@ impl TinyShell {
 
     fn handle_terminal_output(&mut self, tab_id: String, bytes: Vec<u8>, _cx: &mut Context<Self>) {
         if let Some(tab) = self.terminal_tab_mut(&tab_id) {
-            tab.backend_initialized = true;
             tab.feed(&bytes);
         }
     }
 
     fn handle_terminal_status(&mut self, tab_id: String, text: String, _cx: &mut Context<Self>) {
         if let Some(tab) = self.terminal_tab_mut(&tab_id) {
-            tab.backend_initialized = true;
             tab.status = text.clone();
         }
         self.status = text.into();
@@ -1702,7 +1937,6 @@ impl TinyShell {
 
     fn handle_terminal_connected(&mut self, tab_id: String, _cx: &mut Context<Self>) {
         if let Some(tab) = self.terminal_tab_mut(&tab_id) {
-            tab.backend_initialized = true;
             tab.feed_status_line(&t!("connection_succeeded"));
             tab.connected = true;
             tab.disconnected_reason = None;
@@ -1720,7 +1954,7 @@ impl TinyShell {
         if let Some(tab) = self.terminal_tab_mut(&tab_id) {
             tab.dynamic_title = title;
         }
-        if self.active_tab.as_deref() == Some(tab_id.as_str()) {
+        if self.workspace().active_tab_id() == Some(tab_id.as_str()) {
             let initially_synced = self.sync_initial_sftp_to_terminal_tab(&tab_id);
             if !initially_synced {
                 self.sync_sftp_to_terminal_tab(&tab_id, true);
@@ -1737,31 +1971,18 @@ impl TinyShell {
         if self.monitoring.remote_sample_in_flight.as_deref() == Some(tab_id.as_str()) {
             self.monitoring.remote_sample_in_flight = None;
         }
-        let is_stale = self
-            .tabs
-            .iter()
-            .find(|t| t.id == tab_id)
-            .is_some_and(|tab| {
-                // After retry_disconnected_tab, the old backend's threads
-                // may still send Closed events. Skip those — they arrive
-                // before the new backend sends its first Output/Connected.
-                // Once backend_initialized is set, any Closed is from the
-                // current backend and should be processed.
-                tab.backend_generation > 0 && !tab.backend_initialized
-            });
-        if is_stale {
-            return true;
-        }
         self.terminal_completions.remove(&tab_id);
         let was_manually_disconnected = self
-            .tabs
+            .workspace()
+            .tabs()
             .iter()
             .find(|tab| tab.id == tab_id)
             .is_some_and(|tab| !tab.connected && tab.disconnected_reason.is_some());
         let is_graceful_exit = !was_manually_disconnected
             && (reason == "local shell closed" || reason == "ssh session closed");
         let editor_session = self
-            .tab_groups
+            .workspace()
+            .tab_groups()
             .iter()
             .find(|group| group.pane_root.contains(&tab_id))
             .filter(|group| self.sftp_handles.contains_key(&group.id))
@@ -1806,7 +2027,7 @@ impl TinyShell {
                 sftp.directory_entries.insert(path.clone(), entries.clone());
                 if sftp.current_path == path {
                     sftp.entries = entries;
-                    if self.active_group.as_deref() == Some(tab_id.as_str()) {
+                    if self.workspace().active_group_id() == Some(tab_id.as_str()) {
                         self.sftp_workspace.pending_path_sync = Some(path);
                     }
                 }
@@ -1834,7 +2055,7 @@ impl TinyShell {
                 sftp.status = text.clone();
             }
         }
-        if self.active_group.as_ref() == Some(&tab_id) {
+        if self.workspace().active_group_id() == Some(tab_id.as_str()) {
             self.status = text.into();
         }
     }
@@ -1859,17 +2080,22 @@ impl TinyShell {
                 sftp.current_path = home.clone();
                 sftp.entries.clear();
                 Self::expand_sftp_tree_to_path(sftp, &home);
-                if self.active_group.as_deref() == Some(tab_id.as_str()) {
+                if self.workspace().active_group_id() == Some(tab_id.as_str()) {
                     self.sftp_workspace.pending_path_sync = Some(home.clone());
                     self.sftp_workspace.pending_tree_scroll_path = Some(home);
                 }
             }
         }
-        if let Some(terminal_tab_id) = self.active_tab.clone().filter(|terminal_tab_id| {
-            self.tab_groups
-                .iter()
-                .any(|group| group.id == tab_id && group.pane_root.contains(terminal_tab_id))
-        }) {
+        if let Some(terminal_tab_id) =
+            self.workspace()
+                .active_tab_id()
+                .map(str::to_owned)
+                .filter(|terminal_tab_id| {
+                    self.workspace().tab_groups().iter().any(|group| {
+                        group.id == tab_id && group.pane_root.contains(terminal_tab_id)
+                    })
+                })
+        {
             self.sync_initial_sftp_to_terminal_tab(&terminal_tab_id);
         }
     }
@@ -1967,7 +2193,7 @@ impl TinyShell {
         info: crate::terminal::TransferInfo,
         _cx: &mut Context<Self>,
     ) -> bool {
-        let tab_title = self.transfer_source_title(&tab_id);
+        let tab_title = self.tab_title(&tab_id);
         self.transfers.insert(
             0,
             crate::terminal::Transfer {
@@ -2146,17 +2372,14 @@ impl TinyShell {
     /// Clean up all SSH sessions and SFTP handles when the window is closing.
     pub(crate) fn cleanup_on_window_close(&mut self) {
         self.async_runtime.supervisor.cancel_all();
-        if let Err(error) = crate::app::config_persistence::flush() {
-            tracing::warn!("failed to flush config before window close: {error:#}");
-        }
         tracing::info!(
             "[ui] cleaning up {} tabs and {} sftp handles on window close",
-            self.tabs.len(),
+            self.workspace().tab_count(),
             self.sftp_handles.len()
         );
 
         // Send Close to all terminal backends (SSH channels and local PTY)
-        for tab in &self.tabs {
+        for tab in self.workspace().tabs() {
             tab.send_backend(BackendCommand::Close);
         }
 
@@ -2165,12 +2388,7 @@ impl TinyShell {
             handle.close();
         }
 
-        self.tabs.clear();
-        self.tab_groups.clear();
-        self.system_info_tabs.clear();
-        self.active_system_info_tab = None;
-        self.active_tab = None;
-        self.active_group = None;
+        self.window_state_mut().workspace_state_mut().clear();
     }
 
     pub(crate) fn toggle_follow_terminal_cwd(
@@ -2178,13 +2396,11 @@ impl TinyShell {
         _window: &mut gpui::Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(active_group) = self.active_group.clone() else {
+        let Some(active_group) = self.workspace().active_group_id().map(str::to_owned) else {
             return;
         };
         let enabled = self
-            .tab_groups
-            .iter_mut()
-            .find(|group| group.id == active_group)
+            .tab_group_mut(&active_group)
             .and_then(|group| group.sftp.as_mut())
             .map(|sftp| {
                 sftp.follow_terminal_cwd = !sftp.follow_terminal_cwd;
@@ -2192,7 +2408,7 @@ impl TinyShell {
             });
 
         if enabled == Some(true)
-            && let Some(active_tab) = self.active_tab.clone()
+            && let Some(active_tab) = self.workspace().active_tab_id().map(str::to_owned)
         {
             self.sync_sftp_to_terminal_tab(&active_tab, false);
         }
@@ -2211,7 +2427,8 @@ impl TinyShell {
             return false;
         }
         let Some(group) = self
-            .tab_groups
+            .workspace()
+            .tab_groups()
             .iter()
             .find(|group| group.pane_root.contains(tab_id))
         else {
@@ -2242,7 +2459,8 @@ impl TinyShell {
             return false;
         }
         let Some(group) = self
-            .tab_groups
+            .workspace()
+            .tab_groups()
             .iter()
             .find(|group| group.pane_root.contains(tab_id))
         else {
@@ -2262,9 +2480,7 @@ impl TinyShell {
             return false;
         }
         if let Some(sftp) = self
-            .tab_groups
-            .iter_mut()
-            .find(|group| group.id == group_id)
+            .tab_group_mut(&group_id)
             .and_then(|group| group.sftp.as_mut())
         {
             sftp.initial_terminal_cwd_synced = true;
@@ -2297,27 +2513,36 @@ impl TinyShell {
         self.persist_config_preferences_async();
     }
 
-    pub(crate) fn persist_config_preferences(&mut self) {
+    pub(crate) fn persist_config_preferences_checked(&mut self) -> anyhow::Result<()> {
         if !self.config_persistence.is_dirty() {
-            return;
+            return Ok(());
         }
-        match config_persistence::persist_sync(&self.config) {
-            Ok(()) => self.config_persistence.clear(),
-            Err(err) => tracing::warn!("failed to save preferences: {err:#}"),
-        }
+        config_persistence::persist_sync(&self.config_repository, &self.config)?;
+        self.config_persistence.clear();
+        Ok(())
     }
 
     pub(crate) fn persist_config_preferences_async(&self) {
         if !self.config_persistence.is_dirty() {
             return;
         }
-        config_persistence::persist_async(self.config.clone());
+        config_persistence::persist_async(&self.config_repository, self.config.clone());
     }
 
     pub(crate) fn save_layout_state(&self, window: &mut gpui::Window, cx: &gpui::App) {
+        if let Err(error) = self.save_layout_state_checked(window, cx) {
+            tracing::warn!("failed to persist layout state: {error:#}");
+        }
+    }
+
+    pub(crate) fn save_layout_state_checked(
+        &self,
+        window: &mut gpui::Window,
+        cx: &gpui::App,
+    ) -> anyhow::Result<()> {
         if self.is_layout_reset {
             tracing::info!("[ui] layout was reset, skipping save layout state.");
-            return;
+            return Ok(());
         }
         let current_bounds = window.window_bounds();
         let bounds = match current_bounds {
@@ -2331,8 +2556,7 @@ impl TinyShell {
             let mut config = match ConfigStore::load() {
                 Ok(config) => config,
                 Err(error) => {
-                    tracing::warn!("failed to load config before saving layout state: {error:#}");
-                    return;
+                    return Err(error.context("failed to load config before saving layout state"));
                 }
             };
             let saved_bounds = match current_bounds {
@@ -2415,21 +2639,39 @@ impl TinyShell {
             config.set_sidebar_collapsed(self.sidebar_collapsed);
             config.set_sftp_panel_minimized(self.sftp_panel.minimized);
             config.set_show_hidden_files(self.sftp_panel.show_hidden_files);
-            if let Err(error) = crate::app::config_persistence::save_full(&config) {
-                tracing::warn!("failed to persist layout state: {error:#}");
-            }
+            crate::app::config_persistence::save_full(&self.config_repository, &config)?;
         } else {
             tracing::warn!(
                 "[ui] window size is too small ({:?}), skipping save layout state to prevent corrupting saved bounds.",
                 size
             );
         }
+        Ok(())
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{PaneLayout, TinyShell};
+    use std::sync::Arc;
+
+    use super::{PaneLayout, TinyShell, config_persistence, select_config_repository};
+
+    #[test]
+    fn selects_latest_open_window_repository_and_ignores_stale_entries() {
+        let stale = config_persistence::ConfigRepository::new();
+        let older = config_persistence::ConfigRepository::new();
+        let newest = config_persistence::ConfigRepository::new();
+        let selected = select_config_repository([
+            (false, 99, stale.clone()),
+            (true, 1, older.clone()),
+            (true, 2, newest.clone()),
+        ])
+        .expect("an open repository should be selected");
+        assert!(Arc::ptr_eq(&selected, &newest));
+        stale.shutdown().unwrap();
+        older.shutdown().unwrap();
+        newest.shutdown().unwrap();
+    }
 
     #[test]
     fn parses_absolute_terminal_path() {

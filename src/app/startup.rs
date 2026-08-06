@@ -1,7 +1,10 @@
 use std::{
     cell::RefCell,
     rc::Rc,
-    sync::atomic::{AtomicBool, Ordering},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 use gpui::{App, AppContext as _, Bounds, Entity, WindowOptions, point, px, size};
@@ -257,13 +260,15 @@ pub(crate) fn open_main_window(cx: &mut App) {
 
     let window_options = build_window_options(&config, cx, None);
     let session_store = cx.new(|_| SessionStore::new());
-    open_window_with_options(window_options, None, session_store, cx);
+    let config_repository = crate::app::config_persistence::ConfigRepository::new();
+    open_window_with_options(window_options, None, session_store, config_repository, cx);
 }
 
 /// Open a new window, optionally auto-connecting to a session.
 pub(crate) fn open_new_window(
     session: Option<Session>,
     session_store: Option<Entity<SessionStore>>,
+    config_repository: Arc<crate::app::config_persistence::ConfigRepository>,
     cx: &mut App,
 ) {
     let config = ConfigStore::load().unwrap_or_else(|_| ConfigStore::in_memory());
@@ -271,7 +276,13 @@ pub(crate) fn open_new_window(
     let offset = Some((px(40.), px(40.)));
     let window_options = build_window_options(&config, cx, offset);
     let session_store = session_store.unwrap_or_else(|| cx.new(|_| SessionStore::new()));
-    open_window_with_options(window_options, session, session_store, cx);
+    open_window_with_options(
+        window_options,
+        session,
+        session_store,
+        config_repository,
+        cx,
+    );
 }
 
 fn build_window_options(
@@ -353,11 +364,13 @@ fn open_window_with_options(
     window_options: WindowOptions,
     session: Option<Session>,
     session_store: Entity<SessionStore>,
+    config_repository: Arc<crate::app::config_persistence::ConfigRepository>,
     cx: &mut App,
 ) {
     if let Err(error) = open_window_with_initializer(
         window_options,
         session_store,
+        config_repository,
         move |view, cx| {
             if let Some(session) = session {
                 view.update(cx, |this, cx| this.open_ssh_session(session, cx));
@@ -374,15 +387,21 @@ pub(crate) fn open_new_window_with_group(
     transfer: GroupTransfer,
     source_owner_id: WindowOwnerId,
     session_store: Entity<SessionStore>,
+    config_repository: Arc<crate::app::config_persistence::ConfigRepository>,
     cx: &mut App,
 ) -> Result<(), (String, Box<GroupTransfer>)> {
     let config = ConfigStore::load().unwrap_or_else(|_| ConfigStore::in_memory());
     let window_options = build_window_options(&config, cx, Some((px(40.), px(40.))));
-    let (target_window, target) =
-        match open_window_with_initializer(window_options, session_store, |_view, _cx| false, cx) {
-            Ok(opened) => opened,
-            Err(message) => return Err((message, Box::new(transfer))),
-        };
+    let (target_window, target) = match open_window_with_initializer(
+        window_options,
+        session_store,
+        config_repository,
+        |_view, _cx| false,
+        cx,
+    ) {
+        Ok(opened) => opened,
+        Err(message) => return Err((message, Box::new(transfer))),
+    };
 
     // GPUI performs the first Windows draw inside open_window before returning.
     // Keep that draw free of transferred live terminal state; moving the group
@@ -410,68 +429,95 @@ pub(crate) fn open_new_window_with_group(
 fn open_window_with_initializer(
     window_options: WindowOptions,
     session_store: Entity<SessionStore>,
+    config_repository: Arc<crate::app::config_persistence::ConfigRepository>,
     initialize: impl FnOnce(Entity<TinyShell>, &mut App) -> bool + 'static,
     cx: &mut App,
 ) -> Result<(gpui::AnyWindowHandle, Entity<TinyShell>), String> {
+    let lease = config_repository
+        .register_window()
+        .map_err(|error| format!("failed to register config window: {error:#}"))?;
     let opened_view = Rc::new(RefCell::new(None));
     let opened_view_for_window = opened_view.clone();
-    let handle = cx
-        .open_window(window_options, |window, cx| {
-            window.set_window_title(&t!("app_name"));
-            let view = cx.new(|cx| TinyShell::new(window, session_store.clone(), cx));
+    let handle = match cx.open_window(window_options, |window, cx| {
+        window.set_window_title(&t!("app_name"));
+        let view = cx
+            .new(|cx| TinyShell::new(window, session_store.clone(), config_repository.clone(), cx));
 
-            crate::app::register_window(window.window_handle(), view.clone());
-            let should_activate = initialize(view.clone(), cx);
-            if !STARTUP_UPDATE_CHECK_STARTED.swap(true, Ordering::AcqRel) {
-                let window_handle = window.window_handle();
-                view.update(cx, |this, cx| {
-                    this.schedule_automatic_update_checks(window_handle, true, cx);
-                    this.schedule_automatic_sync(false, cx);
-                });
+        crate::app::register_window(window.window_handle(), view.clone());
+        let should_activate = initialize(view.clone(), cx);
+        if !STARTUP_UPDATE_CHECK_STARTED.swap(true, Ordering::AcqRel) {
+            let window_handle = window.window_handle();
+            view.update(cx, |this, cx| {
+                this.schedule_automatic_update_checks(window_handle, true, cx);
+                this.schedule_automatic_sync(false, cx);
+            });
+        }
+
+        tracing::info!("[ui] application window opened");
+        if should_activate {
+            let focus_handle = view.read(cx).focus_handle.clone();
+            // A newly created native window is already activated by Windows. Calling
+            // `activate_window` here makes GPUI synthesize a global Alt key press on
+            // Windows to obtain foreground permission, which can wake unrelated apps
+            // that own global shortcuts. Only establish GPUI's internal focus here;
+            // forced activation remains reserved for merging into an existing window.
+            window.focus(&focus_handle, cx);
+        }
+
+        let view_clone = view.clone();
+        let close_repository = config_repository.clone();
+        window.on_window_should_close(cx, move |window: &mut gpui::Window, cx: &mut gpui::App| {
+            let handle = window.window_handle();
+            let mut close_report = crate::app::config_persistence::CloseErrorReport::default();
+            if !cx.windows().contains(&handle) {
+                tracing::warn!(
+                    "[ui] window not found in app during close, skipping save layout state."
+                );
+                if let Err(error) = close_repository.close_window(lease) {
+                    close_report.record("close_window", error);
+                }
+                close_report.log();
+                crate::app::deregister_window(handle, cx);
+                return true;
             }
-
-            tracing::info!("[ui] application window opened");
-            if should_activate {
-                let focus_handle = view.read(cx).focus_handle.clone();
-                // A newly created native window is already activated by Windows. Calling
-                // `activate_window` here makes GPUI synthesize a global Alt key press on
-                // Windows to obtain foreground permission, which can wake unrelated apps
-                // that own global shortcuts. Only establish GPUI's internal focus here;
-                // forced activation remains reserved for merging into an existing window.
-                window.focus(&focus_handle, cx);
+            view_clone.update(cx, |this, cx| {
+                this.cancel_tab_drag(cx);
+                if let Err(error) = this.persist_config_preferences_checked() {
+                    close_report.record("preferences", error);
+                }
+                if let Err(error) = this.save_layout_state_checked(window, cx) {
+                    close_report.record("layout", error);
+                }
+                this.cleanup_on_window_close();
+                cx.notify();
+            });
+            if let Err(error) = close_repository.close_window(lease) {
+                close_report.record("close_window", error);
             }
+            close_report.log();
+            crate::app::deregister_window(handle, cx);
+            true
+        });
 
-            let view_clone = view.clone();
-            window.on_window_should_close(
-                cx,
-                move |window: &mut gpui::Window, cx: &mut gpui::App| {
-                    let handle = window.window_handle();
-                    if !cx.windows().contains(&handle) {
-                        tracing::warn!(
-                            "[ui] window not found in app during close, skipping save layout state."
-                        );
-                        return true;
-                    }
-                    view_clone.update(cx, |this, cx| {
-                        this.cancel_tab_drag(cx);
-                        this.persist_config_preferences();
-                        let _ = crate::app::config_persistence::flush();
-                        this.save_layout_state(window, cx);
-                        this.cleanup_on_window_close();
-                        cx.notify();
-                    });
-                    crate::app::deregister_window(handle, cx);
-                    true
-                },
-            );
-
-            *opened_view_for_window.borrow_mut() = Some(view.clone());
-            cx.new(|cx| Root::new(view, window, cx))
-        })
-        .map_err(|error| format!("failed to open window: {error:?}"))?;
-    let view = opened_view
-        .borrow_mut()
-        .take()
-        .ok_or_else(|| "new window did not create its main view".to_string())?;
+        *opened_view_for_window.borrow_mut() = Some(view.clone());
+        cx.new(|cx| Root::new(view, window, cx))
+    }) {
+        Ok(handle) => handle,
+        Err(error) => {
+            if let Err(cleanup_error) = config_repository.close_window(lease) {
+                tracing::warn!("failed to clean up config window lease: {cleanup_error:#}");
+            }
+            return Err(format!("failed to open window: {error:?}"));
+        }
+    };
+    let view = match opened_view.borrow_mut().take() {
+        Some(view) => view,
+        None => {
+            if let Err(cleanup_error) = config_repository.close_window(lease) {
+                tracing::warn!("failed to clean up config window lease: {cleanup_error:#}");
+            }
+            return Err("new window did not create its main view".to_string());
+        }
+    };
     Ok((handle.into(), view))
 }

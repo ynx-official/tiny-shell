@@ -65,7 +65,7 @@ impl TinyShell {
                 "k" => self.focus_adjacent_pane(crate::app::PaneDirection::Up),
                 "l" => self.focus_adjacent_pane(crate::app::PaneDirection::Right),
                 "q" => {
-                    if let Some(active_id) = self.active_tab.clone() {
+                    if let Some(active_id) = self.preferred_terminal_tab_id() {
                         self.close_tab(active_id, cx);
                     }
                 }
@@ -138,12 +138,10 @@ impl TinyShell {
             && !event.keystroke.modifiers.alt
             && !event.keystroke.modifiers.platform
         {
-            let active_id = self.active_tab.clone();
+            let active_id = self.preferred_terminal_tab_id();
             if let Some(active_id) = active_id {
                 let is_disconnected = self
-                    .tabs
-                    .iter()
-                    .find(|t| t.id == active_id)
+                    .terminal_tab(&active_id)
                     .is_some_and(|tab| tab.disconnected_reason.is_some());
                 if is_disconnected {
                     self.retry_disconnected_tab(&active_id, cx);
@@ -173,10 +171,10 @@ impl TinyShell {
             return;
         }
 
-        let Some(active_id) = self.active_tab.clone() else {
+        let Some(active_id) = self.preferred_terminal_tab_id() else {
             return;
         };
-        let Some(tab) = self.tabs.iter_mut().find(|t| t.id == active_id) else {
+        let Some(tab) = self.terminal_tab_mut(&active_id) else {
             return;
         };
 
@@ -200,25 +198,19 @@ impl TinyShell {
     }
 
     fn active_ssh_completion_tab_id(&self) -> Option<String> {
-        let active_id = self.active_tab.as_ref()?;
-        self.tabs
-            .iter()
-            .find(|tab| {
-                tab.id == *active_id
-                    && tab.kind == crate::terminal::TabKind::Ssh
-                    && !tab.is_alternate_screen()
-            })
+        let active_id_binding = self.preferred_terminal_tab_id();
+        let active_id = active_id_binding.as_ref()?;
+        self.terminal_tab(active_id)
+            .filter(|tab| tab.kind == crate::terminal::TabKind::Ssh && !tab.is_alternate_screen())
             .map(|tab| tab.id.clone())
     }
 
     fn clear_completion_in_alternate_screen(&mut self) -> bool {
-        let Some(active_id) = self.active_tab.clone() else {
+        let Some(active_id) = self.preferred_terminal_tab_id() else {
             return false;
         };
-        let is_alternate_ssh = self.tabs.iter().any(|tab| {
-            tab.id == active_id
-                && tab.kind == crate::terminal::TabKind::Ssh
-                && tab.is_alternate_screen()
+        let is_alternate_ssh = self.terminal_tab(&active_id).is_some_and(|tab| {
+            tab.kind == crate::terminal::TabKind::Ssh && tab.is_alternate_screen()
         });
         is_alternate_ssh && self.terminal_completions.remove(&active_id).is_some()
     }
@@ -396,10 +388,10 @@ impl TinyShell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(active_id) = self.active_tab.clone() else {
+        let Some(active_id) = self.preferred_terminal_tab_id() else {
             return;
         };
-        let Some(tab) = self.tabs.iter_mut().find(|t| t.id == active_id) else {
+        let Some(tab) = self.terminal_tab_mut(&active_id) else {
             return;
         };
 
@@ -415,10 +407,9 @@ impl TinyShell {
     }
 
     pub(crate) fn active_terminal_selection_text(&self) -> Option<String> {
-        let active_id = self.active_tab.as_ref()?;
-        self.tabs
-            .iter()
-            .find(|tab| &tab.id == active_id)
+        let active_id_binding = self.preferred_terminal_tab_id();
+        let active_id = active_id_binding.as_ref()?;
+        self.terminal_tab(active_id)
             .and_then(|tab| tab.selection_text())
     }
 
@@ -429,10 +420,10 @@ impl TinyShell {
         cx: &mut Context<Self>,
     ) {
         let completion_text = trackable_terminal_paste(text).map(str::to_owned);
-        let Some(active_id) = self.active_tab.clone() else {
+        let Some(active_id) = self.preferred_terminal_tab_id() else {
             return;
         };
-        let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == active_id) else {
+        let Some(tab) = self.terminal_tab_mut(&active_id) else {
             return;
         };
 
@@ -452,7 +443,7 @@ impl TinyShell {
     }
 
     pub(crate) fn terminal_accepts_text_input(&self) -> bool {
-        self.active_tab.is_some()
+        self.preferred_terminal_tab_id().is_some()
     }
 
     pub(crate) fn terminal_marked_text_range(&self) -> Option<Range<usize>> {
@@ -489,11 +480,11 @@ impl TinyShell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(active_id) = self.active_tab.clone() else {
+        let Some(active_id) = self.preferred_terminal_tab_id() else {
             return;
         };
         {
-            let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == active_id) else {
+            let Some(tab) = self.terminal_tab_mut(&active_id) else {
                 return;
             };
 
@@ -510,10 +501,10 @@ impl TinyShell {
     }
 
     pub(crate) fn clear_active_terminal(&mut self, cx: &mut Context<Self>) {
-        let Some(active_id) = self.active_tab.clone() else {
+        let Some(active_id) = self.preferred_terminal_tab_id() else {
             return;
         };
-        if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == active_id) {
+        if let Some(tab) = self.terminal_tab_mut(&active_id) {
             tab.clear_contents();
             cx.notify();
         }
@@ -535,10 +526,10 @@ impl TinyShell {
         let Some((row, col, side)) = self.terminal_grid_point_and_side(event.position) else {
             return;
         };
-        let Some(active_id) = self.active_tab.clone() else {
+        let Some(active_id) = self.preferred_terminal_tab_id() else {
             return;
         };
-        if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == active_id) {
+        if let Some(tab) = self.terminal_tab_mut(&active_id) {
             tab.begin_selection(row, col, side, selection_type);
             self.terminal_selecting = true;
             cx.notify();
@@ -573,7 +564,7 @@ impl TinyShell {
         let cmd_ctrl_pressed = event.modifiers.platform;
         if let Some((row, col, _side)) = self.terminal_grid_point_and_side(event.position) {
             if let Some(snapshot) = self.active_snapshot() {
-                if let Some(active_id) = &self.active_tab {
+                if let Some(active_id) = self.preferred_terminal_tab_id() {
                     if let Some((url, url_cells)) = crate::terminal::highlight::find_url_at_cell(
                         &snapshot.cells,
                         snapshot.rows,
@@ -602,7 +593,7 @@ impl TinyShell {
         let Some((row, col, side)) = self.terminal_grid_point_and_side(event.position) else {
             return;
         };
-        let Some(active_id) = self.active_tab.clone() else {
+        let Some(active_id) = self.preferred_terminal_tab_id() else {
             return;
         };
         let snapshot = match self.active_snapshot() {
@@ -645,7 +636,7 @@ impl TinyShell {
             }
         }
 
-        if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == active_id) {
+        if let Some(tab) = self.terminal_tab_mut(&active_id) {
             if scroll_delta != 0 {
                 tab.scroll_history(scroll_delta);
             }
@@ -676,7 +667,8 @@ impl TinyShell {
         &self,
         position: Point<Pixels>,
     ) -> Option<(usize, usize, Side)> {
-        let active_id = self.active_tab.as_ref()?;
+        let active_id_binding = self.preferred_terminal_tab_id();
+        let active_id = active_id_binding.as_ref()?;
         let bounds = self.terminal_bounds.get(active_id)?;
         if !bounds.contains(&position) {
             // Try other pane bounds
@@ -731,7 +723,7 @@ impl TinyShell {
             return;
         }
 
-        let Some(active_id) = self.active_tab.clone() else {
+        let Some(active_id) = self.preferred_terminal_tab_id() else {
             return;
         };
 
@@ -740,7 +732,7 @@ impl TinyShell {
 
         let line_height = self.terminal_line_height();
 
-        if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == active_id) {
+        if let Some(tab) = self.terminal_tab_mut(&active_id) {
             let delta_lines = match event.delta {
                 ScrollDelta::Lines(point) => point.y.round() as i32,
                 ScrollDelta::Pixels(point) => {
@@ -755,7 +747,7 @@ impl TinyShell {
                 return;
             }
 
-            let mode = tab.term.mode();
+            let mode = tab.mode();
 
             let is_mouse_tracking = mode.intersects(
                 alacritty_terminal::term::TermMode::MOUSE_REPORT_CLICK

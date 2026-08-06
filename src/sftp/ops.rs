@@ -2,7 +2,7 @@ use gpui::{
     Context, ParentElement as _, PathPromptOptions, Pixels, Point, Styled as _, Window, div, px,
 };
 use gpui_component::{
-    ActiveTheme as _, WindowExt as _,
+    ActiveTheme as _,
     button::{Button, ButtonVariants as _},
     checkbox::Checkbox,
     dialog::Dialog,
@@ -101,30 +101,32 @@ pub(crate) fn is_editable_text_file(filename: &str) -> bool {
 
 impl TinyShell {
     pub(crate) fn active_sftp(&self) -> Option<&terminal::SftpUiState> {
-        self.active_group
-            .as_ref()
-            .and_then(|id| self.tab_groups.iter().find(|g| &g.id == id))
+        self.workspace()
+            .active_group_id()
+            .and_then(|id| self.workspace().tab_groups().iter().find(|g| g.id == id))
             .and_then(|g| g.sftp.as_ref())
     }
 
     pub(crate) fn active_sftp_mut(&mut self) -> Option<&mut terminal::SftpUiState> {
-        let active_id = self.active_group.clone()?;
-        self.tab_groups
+        let active_id = self.workspace().active_group_id().map(str::to_owned)?;
+        self.window_state_mut()
+            .workspace_state_mut()
+            .tab_groups_mut()
             .iter_mut()
             .find(|g| g.id == active_id)
             .and_then(|g| g.sftp.as_mut())
     }
 
     pub(crate) fn active_sftp_handle(&self) -> Option<&SftpHandle> {
-        self.active_group
-            .as_ref()
+        self.workspace()
+            .active_group_id()
             .and_then(|id| self.sftp_handles.get(id))
     }
 
     /// 双击文本文件时调用:下载文件内容到内存,打开独立编辑器窗口。
     /// 若同一会话的编辑器已打开该文件,则直接激活窗口并切换 tab。
     pub(crate) fn open_file_in_editor(&mut self, remote_path: String, cx: &mut Context<Self>) {
-        let Some(session_id) = self.active_group.clone() else {
+        let Some(session_id) = self.workspace().active_group_id().map(str::to_owned) else {
             return;
         };
         if crate::app::sftp_editor_window::focus_path(&session_id, &remote_path, cx) {
@@ -138,7 +140,7 @@ impl TinyShell {
     }
 
     pub(crate) fn navigate_sftp(&mut self, path: String, cx: &mut Context<Self>) {
-        if let Some(group_id) = self.active_group.clone()
+        if let Some(group_id) = self.workspace().active_group_id().map(str::to_owned)
             && self.navigate_sftp_group(&group_id, path)
         {
             cx.notify();
@@ -150,7 +152,9 @@ impl TinyShell {
             return false;
         };
         let Some(sftp) = self
-            .tab_groups
+            .window_state_mut()
+            .workspace_state_mut()
+            .tab_groups_mut()
             .iter_mut()
             .find(|group| group.id == group_id)
             .and_then(|group| group.sftp.as_mut())
@@ -172,7 +176,7 @@ impl TinyShell {
         sftp.entries.clear();
         sftp.selected_path = None;
         sftp.selected_entries.clear();
-        if self.active_group.as_deref() == Some(group_id) {
+        if self.workspace().active_group_id() == Some(group_id) {
             self.sftp_workspace.pending_path_sync = Some(path.clone());
             self.sftp_workspace.pending_tree_scroll_path = Some(path.clone());
         }
@@ -422,7 +426,10 @@ impl TinyShell {
                 this.update(cx, |this, cx| {
                     this.config
                         .set_sftp_external_editor(path.to_string_lossy().to_string());
-                    if let Err(err) = crate::app::config_persistence::save_full(&this.config) {
+                    if let Err(err) = crate::app::config_persistence::save_full(
+                        &this.config_repository,
+                        &this.config,
+                    ) {
                         this.status = t!(
                             "sftp_external_editor_save_failed",
                             error = format!("{err:#}")
@@ -487,79 +494,100 @@ impl TinyShell {
     ) {
         let remember = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let view = cx.entity();
-        window.open_dialog(cx, move |dialog: Dialog, _window, _| {
-            dialog
-                .title(t!("confirm_download_directory_title").to_string())
-                .w(px(500.))
-                .content({
-                    let remember = remember.clone();
-                    move |content, _, cx| {
-                        content.child(
-                            v_flex()
-                                .w_full()
-                                .gap_3()
-                                .child(
-                                    div()
-                                        .text_sm()
-                                        .text_color(cx.theme().muted_foreground)
-                                        .child(t!("confirm_download_directory_desc").to_string()),
-                                )
-                                .child(
-                                    Checkbox::new("remember-download-directory")
-                                        .label(t!("remember_download_directory").to_string())
-                                        .checked(
-                                            remember.load(std::sync::atomic::Ordering::Relaxed),
-                                        )
-                                        .on_click({
-                                            let remember = remember.clone();
-                                            move |checked, window, _| {
-                                                remember.store(
-                                                    *checked,
-                                                    std::sync::atomic::Ordering::Relaxed,
+        self.open_dialog(
+            crate::app::DialogKind::Transfers,
+            window,
+            cx,
+            move |dialog: Dialog, token, _window, _| {
+                let on_close_view = view.clone();
+                dialog
+                    .title(t!("confirm_download_directory_title").to_string())
+                    .w(px(500.))
+                    .on_close(move |_, _, cx| {
+                        on_close_view.update(cx, |this, cx| {
+                            this.dialog_closed(token);
+                            cx.notify();
+                        });
+                    })
+                    .content({
+                        let remember = remember.clone();
+                        move |content, _, cx| {
+                            content.child(
+                                v_flex()
+                                    .w_full()
+                                    .gap_3()
+                                    .child(
+                                        div()
+                                            .text_sm()
+                                            .text_color(cx.theme().muted_foreground)
+                                            .child(
+                                                t!("confirm_download_directory_desc").to_string(),
+                                            ),
+                                    )
+                                    .child(
+                                        Checkbox::new("remember-download-directory")
+                                            .label(t!("remember_download_directory").to_string())
+                                            .checked(
+                                                remember.load(std::sync::atomic::Ordering::Relaxed),
+                                            )
+                                            .on_click({
+                                                let remember = remember.clone();
+                                                move |checked, window, _| {
+                                                    remember.store(
+                                                        *checked,
+                                                        std::sync::atomic::Ordering::Relaxed,
+                                                    );
+                                                    window.refresh();
+                                                }
+                                            }),
+                                    ),
+                            )
+                        }
+                    })
+                    .footer(
+                        h_flex()
+                            .w_full()
+                            .justify_end()
+                            .gap_2()
+                            .child(
+                                Button::new("cancel-download-directory")
+                                    .ghost()
+                                    .label(t!("cancel").to_string())
+                                    .on_click(_window.listener_for(
+                                        &view,
+                                        move |this, _, window, cx| {
+                                            this.dismiss_dialog(token, window, cx);
+                                        },
+                                    )),
+                            )
+                            .child(
+                                Button::new("choose-download-directory")
+                                    .primary()
+                                    .label(t!("choose_directory").to_string())
+                                    .on_click({
+                                        let remember = remember.clone();
+                                        let view = view.clone();
+                                        let request = request.clone();
+                                        move |_, window, cx| {
+                                            let remember =
+                                                remember.load(std::sync::atomic::Ordering::Relaxed);
+                                            view.update(cx, |this, cx| {
+                                                this.dismiss_dialog(token, window, cx);
+                                            });
+                                            view.update(cx, |this, cx| {
+                                                this.pick_sftp_download_destination(
+                                                    request.clone(),
+                                                    remember,
+                                                    window,
+                                                    cx,
                                                 );
-                                                window.refresh();
-                                            }
-                                        }),
-                                ),
-                        )
-                    }
-                })
-                .footer(
-                    h_flex()
-                        .w_full()
-                        .justify_end()
-                        .gap_2()
-                        .child(
-                            Button::new("cancel-download-directory")
-                                .ghost()
-                                .label(t!("cancel").to_string())
-                                .on_click(|_, window, cx| window.close_dialog(cx)),
-                        )
-                        .child(
-                            Button::new("choose-download-directory")
-                                .primary()
-                                .label(t!("choose_directory").to_string())
-                                .on_click({
-                                    let remember = remember.clone();
-                                    let view = view.clone();
-                                    let request = request.clone();
-                                    move |_, window, cx| {
-                                        let remember =
-                                            remember.load(std::sync::atomic::Ordering::Relaxed);
-                                        window.close_dialog(cx);
-                                        view.update(cx, |this, cx| {
-                                            this.pick_sftp_download_destination(
-                                                request.clone(),
-                                                remember,
-                                                window,
-                                                cx,
-                                            );
-                                        });
-                                    }
-                                }),
-                        ),
-                )
-        });
+                                            });
+                                        }
+                                    }),
+                            ),
+                    )
+            },
+        );
     }
 
     fn pick_sftp_download_destination(
@@ -804,6 +832,7 @@ impl TinyShell {
             multiple: false,
             prompt: Some(t!("sftp_select_file_to_upload").into()),
         });
+        let window_handle = window.window_handle();
         cx.spawn_in(window, async move |this, cx| {
             match path_prompt.await {
                 Ok(Ok(Some(mut paths))) => {
@@ -815,10 +844,12 @@ impl TinyShell {
                             remote_dir
                         );
                         handle.upload_paths(vec![local_path], remote_dir);
-                        this.update(cx, |this, cx| {
-                            this.request_dialog(crate::app::DialogKind::Transfers);
-                            cx.notify();
-                        })?;
+                        let _ = window_handle.update(cx, |_, window, cx| {
+                            this.update(cx, |this, cx| {
+                                this.show_transfers_dialog(window, cx);
+                                cx.notify();
+                            })
+                        });
                     }
                 }
                 Ok(Err(err)) => {
@@ -849,6 +880,7 @@ impl TinyShell {
             multiple: false,
             prompt: Some(t!("sftp_select_folder_to_upload").into()),
         });
+        let window_handle = window.window_handle();
         cx.spawn_in(window, async move |this, cx| {
             match path_prompt.await {
                 Ok(Ok(Some(mut paths))) => {
@@ -860,10 +892,12 @@ impl TinyShell {
                             remote_dir
                         );
                         handle.upload_paths(vec![local_path], remote_dir);
-                        this.update(cx, |this, cx| {
-                            this.request_dialog(crate::app::DialogKind::Transfers);
-                            cx.notify();
-                        })?;
+                        let _ = window_handle.update(cx, |_, window, cx| {
+                            this.update(cx, |this, cx| {
+                                this.show_transfers_dialog(window, cx);
+                                cx.notify();
+                            })
+                        });
                     }
                 }
                 Ok(Err(err)) => {
@@ -937,7 +971,12 @@ impl TinyShell {
         );
     }
 
-    pub(crate) fn upload_sftp_files_batch(&mut self, paths: Vec<String>, cx: &mut Context<Self>) {
+    pub(crate) fn upload_sftp_files_batch(
+        &mut self,
+        paths: Vec<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if paths.is_empty() {
             return;
         }
@@ -952,7 +991,7 @@ impl TinyShell {
                     locals: paths,
                     remote_dir: sftp.current_path.clone(),
                 });
-                self.pending_dialog = Some(crate::app::DialogKind::Transfers);
+                self.show_transfers_dialog(window, cx);
                 cx.notify();
             }
         }

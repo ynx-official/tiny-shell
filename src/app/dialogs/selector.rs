@@ -2,18 +2,13 @@ use super::*;
 
 impl TinyShell {
     pub(crate) fn show_selector_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.active_dialog.is_some() {
-            return;
-        }
-        self.active_dialog = Some(crate::app::DialogKind::SessionSelector);
-
         let view = cx.entity();
         let selector_focus_handle = self.selector_focus_handle.clone();
         let deferred_selector_focus_handle = selector_focus_handle.clone();
         let sessions = self.config.sessions().to_vec();
         let active_session_id = self.active_session_id().map(ToOwned::to_owned);
         self.selector_selection = self.default_selector_index();
-        window.open_dialog(cx, move |dialog: Dialog, _window, _| {
+        self.open_dialog(crate::app::DialogKind::SessionSelector, window, cx, move |dialog: Dialog, token, _window, _cx| {
             dialog
                 .title(t!("open_session").to_string())
                 .w(px(520.))
@@ -21,7 +16,7 @@ impl TinyShell {
                     let view = view.clone();
                     move |_, _, cx| {
                         view.update(cx, |this, cx| {
-                            this.active_dialog = None;
+                            this.dialog_closed(token);
                             cx.notify();
                         });
                     }
@@ -73,10 +68,9 @@ impl TinyShell {
                                         .hover(|this| this.bg(_cx.theme().secondary))
                                         .on_mouse_down(
                                             MouseButton::Left,
-                                            window.listener_for(&view, |this, _, window, cx| {
-                                                this.active_dialog = None;
+                                            window.listener_for(&view, move |this, _, window, cx| {
                                                 this.open_local(cx);
-                                                window.close_dialog(cx);
+                                                this.dismiss_dialog(token, window, cx);
                                                 cx.notify();
                                             }),
                                         )
@@ -117,9 +111,8 @@ impl TinyShell {
                                         .hover(|this| this.bg(_cx.theme().secondary))
                                         .on_mouse_down(
                                             MouseButton::Left,
-                                            window.listener_for(&view, |this, _, window, cx| {
-                                                this.active_dialog = None;
-                                                window.close_dialog(cx);
+                                            window.listener_for(&view, move |this, _, window, cx| {
+                                                this.dismiss_dialog(token, window, cx);
                                                 this.open_new_ssh_dialog(window, cx);
                                                 cx.notify();
                                             }),
@@ -189,13 +182,12 @@ impl TinyShell {
                                                         window.listener_for(
                                                             &view,
                                                             move |this, _, window, cx| {
-                                                                this.active_dialog = None;
                                                                 this.connect_saved_session(
                                                                     connect_id.clone(),
                                                                     window,
                                                                     cx,
                                                                 );
-                                                                window.close_dialog(cx);
+                                                                this.dismiss_dialog(token, window, cx);
                                                                 cx.notify();
                                                             },
                                                         ),

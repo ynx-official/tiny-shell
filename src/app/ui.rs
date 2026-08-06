@@ -129,9 +129,9 @@ impl Render for TinyShell {
         // Overview and Key Manager pages.
         let main_view_key = self.main_view_key();
         let presentation = self.workspace_mode.presentation(self.sftp_panel.minimized);
-        let main_content_raw = if self.active_system_info_tab.is_some() {
+        let main_content_raw = if self.workspace().active_system_info_tab_id().is_some() {
             self.render_system_info_page(cx).into_any_element()
-        } else if self.active_tab.is_some() && !self.home_page_open {
+        } else if self.workspace().active_tab_id().is_some() && !self.home_page_open {
             let monitoring_position =
                 MonitoringPosition::from_config(self.config.monitoring_position());
             let monitoring_contents = v_flex()
@@ -273,11 +273,12 @@ impl Render for TinyShell {
                 )
                 .into_any_element()
         } else {
-            let sidebar_content = if self.active_tab.is_some() && !self.home_page_open {
-                self.sidebar(cx).into_any_element()
-            } else {
-                self.render_overview_sidebar(cx).into_any_element()
-            };
+            let sidebar_content =
+                if self.workspace().active_tab_id().is_some() && !self.home_page_open {
+                    self.sidebar(cx).into_any_element()
+                } else {
+                    self.render_overview_sidebar(cx).into_any_element()
+                };
 
             let sidebar_area = resizable_panel()
                 .size(px(self
@@ -454,7 +455,7 @@ impl Render for TinyShell {
                 this.split_current_pane(crate::app::PaneDirection::Down, cx)
             }))
             .on_action(cx.listener(|this, _: &crate::ClosePane, _, cx| {
-                if let Some(active_id) = this.active_tab.clone() {
+                if let Some(active_id) = this.workspace().active_tab_id().map(str::to_owned) {
                     this.close_tab(active_id, cx);
                 }
             }))
@@ -462,10 +463,9 @@ impl Render for TinyShell {
                 if window.focused(cx) == Some(this.focus_handle.clone()) {
                     if let Some(text) = this.active_terminal_selection_text() {
                         cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
-                        let active_id = this.active_tab.clone();
+                        let active_id = this.workspace().active_tab_id().map(str::to_owned);
                         if let Some(active_id) = active_id {
-                            if let Some(tab) = this.tabs.iter_mut().find(|tab| tab.id == active_id)
-                            {
+                            if let Some(tab) = this.terminal_tab_mut(&active_id) {
                                 tab.clear_selection();
                             }
                         }
@@ -567,23 +567,17 @@ impl Render for TinyShell {
                     }
 
                     view.update(cx, |this, cx| {
-                        if matches!(
-                            this.take_pending_dialog(),
-                            Some(crate::app::DialogKind::Transfers)
-                        ) {
-                            this.show_transfers_dialog(window, cx);
-                        }
+                        this.open_pending_dialog(window, cx);
                         this.sync_sftp_path_input(window, cx);
                         this.sync_sftp_tree_scroll();
 
-                        if let Some(active_id) = this.active_tab.clone() {
+                        if let Some(active_id) = this.workspace().active_tab_id().map(str::to_owned)
+                        {
                             if let Some(scrollbar) = this.terminal_scrollbars.get(&active_id) {
                                 if let Some(new_display_offset) =
                                     scrollbar.future_display_offset.take()
                                 {
-                                    if let Some(tab) =
-                                        this.tabs.iter_mut().find(|tab| tab.id == active_id)
-                                    {
+                                    if let Some(tab) = this.terminal_tab_mut(&active_id) {
                                         let current = tab.display_offset();
                                         match new_display_offset.cmp(&current) {
                                             std::cmp::Ordering::Greater => {

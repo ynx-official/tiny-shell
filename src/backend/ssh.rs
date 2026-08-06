@@ -26,15 +26,49 @@ use crate::{
     terminal::{BackendCommand, BackendEvent, BackendEventSender, BackendTx},
 };
 
-pub(crate) fn spawn_ssh_terminal(
-    runtime: &tokio::runtime::Handle,
+pub(crate) struct SshTerminalRequest {
     tab_id: String,
     session: Session,
     proxy_config: ConfigStore,
     cols: u16,
     rows: u16,
+    generation: u64,
+}
+
+impl SshTerminalRequest {
+    pub(crate) fn new(
+        tab_id: String,
+        session: Session,
+        proxy_config: ConfigStore,
+        cols: u16,
+        rows: u16,
+        generation: u64,
+    ) -> Self {
+        Self {
+            tab_id,
+            session,
+            proxy_config,
+            cols,
+            rows,
+            generation,
+        }
+    }
+}
+
+pub(crate) fn spawn_ssh_terminal(
+    runtime: &tokio::runtime::Handle,
+    request: SshTerminalRequest,
     events: BackendEventSender,
 ) -> BackendTx {
+    let SshTerminalRequest {
+        tab_id,
+        session,
+        proxy_config,
+        cols,
+        rows,
+        generation,
+    } = request;
+    let events = events.with_generation(generation);
     let (cmd_tx, cmd_rx) = mpsc::unbounded_channel::<BackendCommand>();
     let task_tab = tab_id.clone();
     runtime.spawn(async move {

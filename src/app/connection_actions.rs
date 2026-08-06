@@ -59,7 +59,7 @@ impl TinyShell {
 
     pub(crate) fn remove_saved_session(&mut self, session_id: String, cx: &mut Context<Self>) {
         self.config.remove(&session_id);
-        if let Err(err) = config_persistence::save_full(&self.config) {
+        if let Err(err) = config_persistence::save_full(&self.config_repository, &self.config) {
             tracing::warn!("failed to save config: {err:#}");
         }
         self.status = t!("session_removed").into();
@@ -181,7 +181,7 @@ impl TinyShell {
     }
 
     pub(crate) fn open_ssh_session(&mut self, mut session: Session, cx: &mut Context<Self>) {
-        self.active_system_info_tab = None;
+        self.set_active_system_info_tab(None);
         self.home_page_open = false;
         let ordinal = self.allocate_tab_group_ordinal();
         tracing::info!(
@@ -198,7 +198,9 @@ impl TinyShell {
         if let Some(mut saved_session) = self.config.get(&session.id).cloned() {
             saved_session.last_used = Some(last_used);
             self.config.upsert(saved_session);
-            if let Err(err) = config_persistence::save_full_async(&self.config) {
+            if let Err(err) =
+                config_persistence::save_full_async(&self.config_repository, &self.config)
+            {
                 tracing::warn!("failed to save session recency: {err:#}");
             }
         }
@@ -226,11 +228,14 @@ impl TinyShell {
         self.register_backend_route(id.clone(), cx);
         let backend = ssh::spawn_ssh_terminal(
             self.runtime.handle(),
-            id.clone(),
-            session.clone(),
-            proxy_config.clone(),
-            crate::app::constants::DEFAULT_COLS,
-            crate::app::constants::DEFAULT_ROWS,
+            ssh::SshTerminalRequest::new(
+                id.clone(),
+                session.clone(),
+                proxy_config.clone(),
+                crate::app::constants::DEFAULT_COLS,
+                crate::app::constants::DEFAULT_ROWS,
+                1,
+            ),
             events.clone(),
         );
         let tab = TerminalTab::new_ssh(id.clone(), &session, backend, events.clone());
@@ -254,12 +259,13 @@ impl TinyShell {
                 latency_ms: None,
             }),
         };
-        self.window_state.workspace.install_terminal_tab(tab, group);
+        self.install_terminal_tab(tab, group);
         if let Some(tab) = self.terminal_tab_mut(&id) {
             tab.feed_status_line(&rust_i18n::t!("starting_connection"));
         }
         self.sftp_workspace.pending_path_sync = Some("/".into());
-        self.tabs_scroll_handle.scroll_to_item(self.tabs.len() - 1);
+        self.tabs_scroll_handle
+            .scroll_to_item(self.terminal_tab_count() - 1);
         if let Some(session_id) = self.active_session_id() {
             if let Some(index) = self
                 .config
@@ -291,58 +297,82 @@ impl TinyShell {
     /// The existing `TerminalTab` (including its `term` scrollback history)
     /// is preserved — only the backend is swapped via `set_backend()`.
     pub(crate) fn retry_disconnected_tab(&mut self, tab_id: &str, cx: &mut Context<Self>) {
-        let Some(ix) = self.tabs.iter().position(|t| t.id == tab_id) else {
+        let Some(ix) = self
+            .window_state_mut()
+            .workspace_state_mut()
+            .tabs_mut()
+            .iter()
+            .position(|t| t.id == tab_id)
+        else {
             return;
         };
-        if self.tabs[ix].connected || self.tabs[ix].disconnected_reason.is_none() {
+        if self.window_state_mut().workspace_state_mut().tabs_mut()[ix].connected
+            || self.window_state_mut().workspace_state_mut().tabs_mut()[ix]
+                .disconnected_reason
+                .is_none()
+        {
             return;
         }
         self.terminal_completions.remove(tab_id);
 
-        let is_ssh = self.tabs[ix].session.is_some();
-        let session = self.tabs[ix].session.clone();
-        let new_generation = self.tabs[ix].backend_generation + 1;
-        let cols = self.tabs[ix].cols;
-        let rows = self.tabs[ix].rows;
+        let is_ssh = self.window_state_mut().workspace_state_mut().tabs_mut()[ix]
+            .session
+            .is_some();
+        let session = self.window_state_mut().workspace_state_mut().tabs_mut()[ix]
+            .session
+            .clone();
+        let new_generation = self.window_state_mut().workspace_state_mut().tabs_mut()[ix]
+            .backend_generation
+            .saturating_add(1);
+        let cols = self.window_state_mut().workspace_state_mut().tabs_mut()[ix].cols;
+        let rows = self.window_state_mut().workspace_state_mut().tabs_mut()[ix].rows;
         let events = self.backend_events_sender(cx);
         let proxy_config = self.config.clone();
         self.register_backend_route(tab_id.to_string(), cx);
 
         // Close old backend (sends Close through the shared Arc<Mutex>)
-        self.tabs[ix].send_backend(BackendCommand::Close);
+        self.window_state_mut().workspace_state_mut().tabs_mut()[ix]
+            .send_backend(BackendCommand::Close);
 
         if let Some(session) = session {
             // SSH tab: spawn new SSH connection
             let backend = ssh::spawn_ssh_terminal(
                 self.runtime.handle(),
-                tab_id.to_string(),
-                session.clone(),
-                proxy_config.clone(),
-                cols,
-                rows,
+                ssh::SshTerminalRequest::new(
+                    tab_id.to_string(),
+                    session.clone(),
+                    proxy_config.clone(),
+                    cols,
+                    rows,
+                    new_generation,
+                ),
                 events.clone(),
             );
 
             // Swap the backend — the Term's internal listener shares the
             // same Arc<Mutex<BackendTx>>, so user input is automatically
             // routed to the new backend. Terminal history is preserved.
-            self.tabs[ix].set_backend(backend);
-            self.tabs[ix].connected = false;
-            self.tabs[ix].status = "connecting".into();
-            self.tabs[ix].disconnected_reason = None;
-            self.tabs[ix].backend_generation = new_generation;
-            self.tabs[ix].backend_initialized = false;
-            self.tabs[ix].feed_status_line(&rust_i18n::t!("starting_connection"));
+            self.window_state_mut().workspace_state_mut().tabs_mut()[ix].set_backend(backend);
+            self.window_state_mut().workspace_state_mut().tabs_mut()[ix].connected = false;
+            self.window_state_mut().workspace_state_mut().tabs_mut()[ix].status =
+                "connecting".into();
+            self.window_state_mut().workspace_state_mut().tabs_mut()[ix].disconnected_reason = None;
+            self.window_state_mut().workspace_state_mut().tabs_mut()[ix].backend_generation =
+                new_generation;
+            self.window_state_mut().workspace_state_mut().tabs_mut()[ix]
+                .feed_status_line(&rust_i18n::t!("starting_connection"));
 
             // Restart SFTP for the group containing this tab
             if let Some(group) = self
-                .tab_groups
+                .workspace()
+                .tab_groups()
                 .iter()
                 .find(|g| g.pane_root.contains(tab_id))
             {
                 let group_id = group.id.clone();
                 let group_session = self
-                    .tabs
+                    .workspace()
+                    .tabs()
                     .iter()
                     .find(|t| group.pane_root.contains(&t.id) && t.session.is_some())
                     .and_then(|t| t.session.clone());
@@ -361,7 +391,13 @@ impl TinyShell {
                     );
                     self.sftp_handles.insert(group_id.clone(), sftp_handle);
 
-                    if let Some(group) = self.tab_groups.iter_mut().find(|g| g.id == group_id) {
+                    if let Some(group) = self
+                        .window_state_mut()
+                        .workspace_state_mut()
+                        .tab_groups_mut()
+                        .iter_mut()
+                        .find(|g| g.id == group_id)
+                    {
                         if let Some(sftp) = group.sftp.as_mut() {
                             sftp.status = rust_i18n::t!("sftp_connecting").to_string();
                         }
@@ -370,17 +406,27 @@ impl TinyShell {
             }
         } else {
             // Local tab: spawn new local shell
-            match local::spawn_local_terminal(tab_id.to_string(), cols, rows, events) {
+            match local::spawn_local_terminal(
+                tab_id.to_string(),
+                cols,
+                rows,
+                events,
+                new_generation,
+            ) {
                 Ok(backend) => {
                     // Swap the backend — preserves terminal history.
-                    self.tabs[ix].set_backend(backend);
-                    self.tabs[ix].connected = true;
-                    self.tabs[ix].status = "local shell".into();
-                    self.tabs[ix].disconnected_reason = None;
-                    self.tabs[ix].backend_generation = new_generation;
-                    self.tabs[ix].backend_initialized = false;
+                    self.window_state_mut().workspace_state_mut().tabs_mut()[ix]
+                        .set_backend(backend);
+                    self.window_state_mut().workspace_state_mut().tabs_mut()[ix].connected = true;
+                    self.window_state_mut().workspace_state_mut().tabs_mut()[ix].status =
+                        t!("local_shell").into();
+                    self.window_state_mut().workspace_state_mut().tabs_mut()[ix]
+                        .disconnected_reason = None;
+                    self.window_state_mut().workspace_state_mut().tabs_mut()[ix]
+                        .backend_generation = new_generation;
                     // Resize the new PTY to match the pane dimensions.
-                    self.tabs[ix].send_backend(BackendCommand::Resize { cols, rows });
+                    self.window_state_mut().workspace_state_mut().tabs_mut()[ix]
+                        .send_backend(BackendCommand::Resize { cols, rows });
                 }
                 Err(err) => {
                     self.status =

@@ -3,6 +3,7 @@ use super::*;
 impl TinyShell {
     pub(crate) fn confirm_connection_group_dialog(
         &mut self,
+        token: crate::app::DialogToken,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -36,13 +37,14 @@ impl TinyShell {
             self.config.add_connection_group(full_name.clone());
             self.connection_group_filter = Some(full_name);
         }
-        if let Err(err) = crate::app::config_persistence::save_full(&self.config) {
+        if let Err(err) =
+            crate::app::config_persistence::save_full(&self.config_repository, &self.config)
+        {
             tracing::warn!("failed to save connection group: {err:#}");
         }
-        self.active_dialog = None;
+        self.dismiss_dialog(token, window, cx);
         self.editing_connection_group = None;
         self.connection_group_parent = None;
-        window.close_dialog(cx);
         cx.notify();
     }
 }

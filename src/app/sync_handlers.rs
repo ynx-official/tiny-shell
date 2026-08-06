@@ -1,5 +1,4 @@
 use gpui::Context;
-use gpui_component::WindowExt;
 use rust_i18n::t;
 
 use crate::{
@@ -152,15 +151,19 @@ impl TinyShell {
                 self.config.set_sync_secrets_password_hash(hash);
             })
         });
-        match password_result.and_then(|()| config_persistence::save_full(&self.config)) {
+        match password_result
+            .and_then(|()| config_persistence::save_full(&self.config_repository, &self.config))
+        {
             Ok(()) => {
+                self.sync_runtime.clear_failure();
                 self.sync_runtime.status = t!("sync_upload_complete").into();
                 self.schedule_automatic_sync(false, cx);
             }
             Err(err) => {
                 self.config = previous_config;
                 self.managed_keys = previous_managed_keys;
-                self.sync_runtime.status = format!("{}: {err:#}", t!("sync_failed")).into();
+                self.sync_runtime
+                    .set_failed(t!("sync_failed", error = format!("{err:#}")).into());
             }
         }
     }
@@ -237,7 +240,7 @@ impl TinyShell {
             .map(|category| category.commands.len())
             .sum::<usize>();
         let (previous_config, previous_managed_keys) = self.apply_sync_downloaded_config(config);
-        match config_persistence::save_full(&self.config) {
+        match config_persistence::save_full(&self.config_repository, &self.config) {
             Ok(()) => {
                 let summary = t!(
                     "sync_download_summary",
@@ -287,7 +290,8 @@ impl TinyShell {
             Err(err) => {
                 self.config = previous_config;
                 self.managed_keys = previous_managed_keys;
-                self.sync_runtime.status = format!("{}: {err:#}", t!("sync_failed")).into()
+                self.sync_runtime
+                    .set_failed(t!("sync_failed", error = format!("{err:#}")).into());
             }
         }
     }
@@ -329,24 +333,24 @@ impl TinyShell {
                 let previous_synced_at = self.config.sync_last_synced_at();
                 self.config
                     .set_sync_last_synced_at(chrono::Utc::now().timestamp());
-                match config_persistence::save_full(&self.config) {
+                match config_persistence::save_full(&self.config_repository, &self.config) {
                     Ok(()) => {
                         self.sync_runtime.status = t!("sync_reset_complete").into();
                         self.schedule_automatic_sync(false, cx);
                     }
                     Err(err) => {
                         self.config.set_sync_last_synced_at(previous_synced_at);
-                        self.sync_runtime.status = format!(
-                            "{}: {err:#}; {}",
-                            t!("sync_failed"),
-                            t!("sync_reset_local_save_failed")
+                        self.sync_runtime.status = t!(
+                            "sync_failed",
+                            error = format!("{err:#}; {}", t!("sync_reset_local_save_failed"))
                         )
                         .into();
                     }
                 }
             }
             Err(err) => {
-                self.sync_runtime.status = format!("{}: {err:#}", t!("sync_failed")).into();
+                self.sync_runtime
+                    .set_failed(t!("sync_failed", error = format!("{err:#}")).into());
             }
         }
     }
@@ -359,14 +363,17 @@ impl TinyShell {
     ) {
         if self.set_sync_include_secrets(true, cx) {
             if let Some(dialog) = self.sync_runtime.secrets_password_dialog.take() {
-                self.active_dialog = None;
+                let token = dialog.token;
                 let input = dialog.settings_password_input;
                 let input_password = password.clone();
+                let view = cx.entity();
                 let _ = dialog.window.update(cx, move |_, window, cx| {
                     input.update(cx, |input, cx| {
                         input.set_value(input_password.clone(), window, cx);
                     });
-                    window.close_dialog(cx);
+                    view.update(cx, |this, cx| {
+                        this.dismiss_dialog(token, window, cx);
+                    });
                 });
             }
             let form = config_sync::SyncFormSnapshot::with_privacy_password(credentials, password);
@@ -390,13 +397,16 @@ impl TinyShell {
             PrivacyPasswordStatus::Verified => {
                 if self.set_sync_include_secrets(true, cx) {
                     if let Some(dialog) = self.sync_runtime.secrets_password_dialog.take() {
-                        self.active_dialog = None;
+                        let token = dialog.token;
                         let input = dialog.settings_password_input;
+                        let view = cx.entity();
                         let _ = dialog.window.update(cx, move |_, window, cx| {
                             input.update(cx, |input, cx| {
                                 input.set_value(password.clone(), window, cx);
                             });
-                            window.close_dialog(cx);
+                            view.update(cx, |this, cx| {
+                                this.dismiss_dialog(token, window, cx);
+                            });
                         });
                     }
                 } else {

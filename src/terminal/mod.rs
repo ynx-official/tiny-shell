@@ -8,7 +8,7 @@ use std::{
     sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
-        mpsc::{self, Receiver, Sender, SyncSender, TrySendError},
+        mpsc::{self, Receiver, Sender, SyncSender, TryRecvError, TrySendError},
     },
 };
 
@@ -46,6 +46,13 @@ pub(crate) enum BackendCommand {
     Resize { cols: u16, rows: u16 },
     SampleMetrics,
     Close,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct BackendEventEnvelope {
+    pub(crate) event: BackendEvent,
+    pub(crate) generation: u64,
+    pub(crate) sequence: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -140,13 +147,92 @@ pub(crate) enum BackendEvent {
     },
 }
 
+impl BackendEvent {
+    pub(crate) fn tab_id(&self) -> Option<&str> {
+        match self {
+            Self::Output { tab_id, .. }
+            | Self::Status { tab_id, .. }
+            | Self::Connected { tab_id }
+            | Self::SftpEntries { tab_id, .. }
+            | Self::SftpDirectoryEntries { tab_id, .. }
+            | Self::SftpStatus { tab_id, .. }
+            | Self::SftpLatency { tab_id, .. }
+            | Self::SftpFileContent { tab_id, .. }
+            | Self::SftpContentUploaded { tab_id, .. }
+            | Self::SftpContentConflict { tab_id, .. }
+            | Self::SftpContentUploadFailed { tab_id, .. }
+            | Self::RemoteSystem { tab_id, .. }
+            | Self::RemoteSystemUnavailable { tab_id, .. }
+            | Self::SftpHome { tab_id, .. }
+            | Self::TransferProgress { tab_id, .. }
+            | Self::TransferStarted { tab_id, .. }
+            | Self::Closed { tab_id, .. }
+            | Self::TerminalTitleChanged { tab_id, .. } => Some(tab_id),
+            Self::SyncFinished { .. } => None,
+        }
+    }
+
+    fn is_control(&self) -> bool {
+        !matches!(self, Self::Output { .. })
+    }
+}
+pub(crate) struct BackendEventReceiver {
+    control: Receiver<BackendEventEnvelope>,
+    output: Receiver<BackendEventEnvelope>,
+    control_streak: usize,
+    pending_output: Option<BackendEventEnvelope>,
+    pending_control: Option<BackendEventEnvelope>,
+}
+
+impl BackendEventReceiver {
+    pub(crate) fn try_recv(&mut self) -> Result<BackendEventEnvelope, TryRecvError> {
+        const CONTROL_BURST: usize = 32;
+        if self.pending_output.is_none() {
+            self.pending_output = self.output.try_recv().ok();
+        }
+        if self.control_streak >= CONTROL_BURST {
+            if let Some(output) = self.pending_output.take() {
+                self.control_streak = 0;
+                return Ok(output);
+            }
+        }
+        let control = self
+            .pending_control
+            .take()
+            .or_else(|| self.control.try_recv().ok());
+        if let Some(control) = control {
+            let must_preserve_output = matches!(control.event, BackendEvent::Closed { .. })
+                && self.pending_output.as_ref().is_some_and(|output| {
+                    output.event.tab_id() == control.event.tab_id()
+                        && output.sequence < control.sequence
+                });
+            if must_preserve_output {
+                self.pending_control = Some(control.clone());
+                self.control_streak = 0;
+                if let Some(output) = self.pending_output.take() {
+                    return Ok(output);
+                }
+            }
+            self.control_streak = self.control_streak.saturating_add(1);
+            return Ok(control);
+        }
+        if let Some(output) = self.pending_output.take() {
+            self.control_streak = 0;
+            return Ok(output);
+        }
+        self.output.try_recv()
+    }
+}
 #[derive(Clone)]
 pub(crate) struct BackendEventSender {
-    events: SyncSender<BackendEvent>,
+    control_events: SyncSender<BackendEventEnvelope>,
+    output_events: SyncSender<BackendEventEnvelope>,
     wake_generation: Arc<AtomicU64>,
+    sequence: Arc<AtomicU64>,
     sent_events: Arc<AtomicU64>,
     rejected_events: Arc<AtomicU64>,
     wake: tokio::sync::watch::Sender<u64>,
+    default_generation: u64,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -160,7 +246,31 @@ pub(crate) struct BackendEventSendError;
 
 impl BackendEventSender {
     pub fn send(&self, event: BackendEvent) -> Result<(), BackendEventSendError> {
-        match self.events.try_send(event) {
+        self.send_with_generation(event, self.default_generation)
+    }
+
+    pub(crate) fn with_generation(&self, generation: u64) -> Self {
+        let mut sender = self.clone();
+        sender.default_generation = generation;
+        sender
+    }
+
+    pub(crate) fn send_with_generation(
+        &self,
+        event: BackendEvent,
+        generation: u64,
+    ) -> Result<(), BackendEventSendError> {
+        let sender = if event.is_control() {
+            &self.control_events
+        } else {
+            &self.output_events
+        };
+        let envelope = BackendEventEnvelope {
+            event,
+            generation,
+            sequence: self.sequence.fetch_add(1, Ordering::Relaxed),
+        };
+        match sender.try_send(envelope) {
             Ok(()) => {
                 self.sent_events.fetch_add(1, Ordering::Relaxed);
                 let generation = self.wake_generation.fetch_add(1, Ordering::AcqRel) + 1;
@@ -193,22 +303,116 @@ impl BackendEventSender {
     }
 }
 
-pub(crate) fn backend_event_channel() -> (BackendEventSender, Receiver<BackendEvent>) {
-    // Bound producer memory while still allowing normal terminal bursts to be
-    // absorbed without stalling the UI on every individual event.
-    const EVENT_QUEUE_CAPACITY: usize = 16_384;
-    let (events, receiver) = mpsc::sync_channel(EVENT_QUEUE_CAPACITY);
+pub(crate) fn backend_event_channel() -> (BackendEventSender, BackendEventReceiver) {
+    const CONTROL_QUEUE_CAPACITY: usize = 4_096;
+    const OUTPUT_QUEUE_CAPACITY: usize = 16_384;
+    let (control_events, control) = mpsc::sync_channel(CONTROL_QUEUE_CAPACITY);
+    let (output_events, output) = mpsc::sync_channel(OUTPUT_QUEUE_CAPACITY);
     let (wake, _) = tokio::sync::watch::channel(0);
     (
         BackendEventSender {
-            events,
+            control_events,
+            output_events,
             wake_generation: Arc::new(AtomicU64::new(0)),
+            sequence: Arc::new(AtomicU64::new(0)),
             sent_events: Arc::new(AtomicU64::new(0)),
             rejected_events: Arc::new(AtomicU64::new(0)),
             wake,
+            default_generation: 0,
         },
-        receiver,
+        BackendEventReceiver {
+            control,
+            output,
+            control_streak: 0,
+            pending_output: None,
+            pending_control: None,
+        },
     )
+}
+
+#[cfg(test)]
+mod backend_event_tests {
+    use super::{BackendEvent, backend_event_channel};
+
+    #[test]
+    fn control_event_is_received_before_queued_output() {
+        let (sender, mut receiver) = backend_event_channel();
+        sender
+            .send(BackendEvent::Output {
+                tab_id: "session-a".to_string(),
+                bytes: b"output".to_vec(),
+            })
+            .unwrap();
+        sender
+            .send(BackendEvent::Closed {
+                tab_id: "session-a".to_string(),
+                reason: "closed".to_string(),
+            })
+            .unwrap();
+
+        assert!(matches!(
+            receiver.try_recv().unwrap().event,
+            BackendEvent::Output { .. }
+        ));
+        assert!(matches!(
+            receiver.try_recv().unwrap().event,
+            BackendEvent::Closed { .. }
+        ));
+    }
+
+    #[test]
+    fn output_is_not_starved_by_control_flood() {
+        let (sender, mut receiver) = backend_event_channel();
+        sender
+            .send(BackendEvent::Output {
+                tab_id: "a".into(),
+                bytes: vec![1],
+            })
+            .unwrap();
+        for _ in 0..40 {
+            sender
+                .send(BackendEvent::Status {
+                    tab_id: "a".into(),
+                    text: "status".into(),
+                })
+                .unwrap();
+        }
+        let mut saw_output = false;
+        for _ in 0..40 {
+            if matches!(
+                receiver.try_recv().unwrap().event,
+                BackendEvent::Output { .. }
+            ) {
+                saw_output = true;
+                break;
+            }
+        }
+        assert!(saw_output);
+    }
+    #[test]
+    fn control_event_remains_sendable_when_output_queue_is_full() {
+        let (sender, mut receiver) = backend_event_channel();
+        for _ in 0..16_384 {
+            sender
+                .send(BackendEvent::Output {
+                    tab_id: "session-a".to_string(),
+                    bytes: vec![b'x'],
+                })
+                .unwrap();
+        }
+
+        sender
+            .send(BackendEvent::Closed {
+                tab_id: "session-a".to_string(),
+                reason: "closed".to_string(),
+            })
+            .unwrap();
+        assert!(matches!(
+            receiver.try_recv().unwrap().event,
+            BackendEvent::Output { .. }
+        ));
+        assert_eq!(sender.stats().rejected, 0);
+    }
 }
 
 #[derive(Clone)]
@@ -239,11 +443,7 @@ pub(crate) struct TerminalTab {
     pub disconnected_reason: Option<String>,
     /// Incremented each time the tab is reconnected. Used to ignore stale
     /// `BackendEvent::Closed` from the previous backend after a retry.
-    pub backend_generation: u32,
-    /// Set to `true` when the current backend sends its first `Output` or
-    /// `Connected` event. Used to skip stale `Closed` events that arrive
-    /// before the new backend has started producing output.
-    pub backend_initialized: bool,
+    pub backend_generation: u64,
     pub session: Option<Session>,
     processor: Processor,
     term: Term<TerminalListener>,
@@ -400,8 +600,7 @@ impl TerminalTab {
             status,
             connected: matches!(kind, TabKind::Local),
             disconnected_reason: None,
-            backend_generation: 0,
-            backend_initialized: true,
+            backend_generation: 1,
             session: None,
             processor: Processor::new(),
             term,
@@ -505,6 +704,10 @@ impl TerminalTab {
 
     pub fn app_cursor_mode(&self) -> bool {
         self.term.mode().contains(TermMode::APP_CURSOR)
+    }
+
+    pub fn mode(&self) -> TermMode {
+        *self.term.mode()
     }
 
     pub fn is_alternate_screen(&self) -> bool {

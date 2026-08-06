@@ -38,9 +38,12 @@ fn main() {
         .with_assets(Assets)
         .with_quit_mode(gpui::QuitMode::LastWindowClosed);
 
-    // On reopen (e.g. dock click), always open a new window
+    // Reopen reuses the active window repository when possible. When the last
+    // window was closed, the registry is empty and a fresh repository is needed.
     app.on_reopen(|cx| {
-        app::startup::open_new_window(None, None, cx);
+        let config_repository = app::config_repository_for_open_window(cx)
+            .unwrap_or_else(app::config_persistence::ConfigRepository::new);
+        app::startup::open_new_window(None, None, config_repository, cx);
     });
     app.run(move |cx| {
         gpui_component::init(cx);
