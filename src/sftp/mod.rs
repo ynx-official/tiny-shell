@@ -29,9 +29,12 @@ use russh::{
     client::{self},
     keys::{PrivateKey, decode_secret_key, load_secret_key},
 };
-use russh_sftp::{client::SftpSession, protocol::FileAttributes};
+use russh_sftp::{
+    client::SftpSession,
+    protocol::{FileAttributes, OpenFlags},
+};
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
+    io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, SeekFrom},
     sync::{
         Semaphore,
         mpsc::{self, Receiver, Sender},
@@ -102,6 +105,13 @@ pub enum SftpCommand {
         remote: String,
         local_dir: String,
     },
+    ResumeDownload {
+        id: String,
+        remote: String,
+        local_dir: String,
+        source_size: Option<u64>,
+        source_modified: Option<u64>,
+    },
     EditFile {
         remote_path: String,
         editor: Option<String>,
@@ -138,9 +148,17 @@ pub enum SftpCommand {
         locals: Vec<String>,
         remote_dir: String,
     },
+    ResumeUpload {
+        id: String,
+        local: String,
+        remote_dir: String,
+        source_size: Option<u64>,
+        source_modified: Option<u64>,
+    },
     PauseTransfer(String),
     ResumeTransfer(String),
     CancelTransfer(String),
+    CleanupRemotePartial(String),
     TransferFinished(String),
     Close,
 }
@@ -207,6 +225,7 @@ struct SftpRuntime<'a> {
     handle: &'a Arc<russh::client::Handle<SftpClientHandler>>,
     sftp: &'a SftpSession,
     tab_id: &'a str,
+    session_id: &'a str,
     home: &'a str,
     events: &'a BackendEventSender,
     commands_tx: &'a mpsc::Sender<SftpCommand>,
@@ -232,6 +251,9 @@ impl SftpRuntime<'_> {
             SftpCommand::PauseTransfer(id) => self.handle_pause_transfer(id).await,
             SftpCommand::ResumeTransfer(id) => self.handle_resume_transfer(id).await,
             SftpCommand::CancelTransfer(id) => self.handle_cancel_transfer(id).await,
+            SftpCommand::CleanupRemotePartial(path) => {
+                self.handle_cleanup_remote_partial(path).await
+            }
             SftpCommand::TransferFinished(id) => self.handle_transfer_finished(id).await,
             SftpCommand::MeasureLatency => self.handle_measure_latency().await,
             SftpCommand::ListDir(path) => self.handle_list_dir(path).await,
@@ -239,8 +261,28 @@ impl SftpRuntime<'_> {
             SftpCommand::Download { remote, local_dir } => {
                 self.handle_download(remote, local_dir).await
             }
+            SftpCommand::ResumeDownload {
+                id,
+                remote,
+                local_dir,
+                source_size,
+                source_modified,
+            } => {
+                self.start_download(id, remote, local_dir, source_size, source_modified)
+                    .await
+            }
             SftpCommand::UploadPaths { locals, remote_dir } => {
                 self.handle_upload_paths(locals, remote_dir).await
+            }
+            SftpCommand::ResumeUpload {
+                id,
+                local,
+                remote_dir,
+                source_size,
+                source_modified,
+            } => {
+                self.start_upload(id, vec![local], remote_dir, source_size, source_modified)
+                    .await
             }
             SftpCommand::EditFile {
                 remote_path,
@@ -311,6 +353,13 @@ impl SftpRuntime<'_> {
         true
     }
 
+    async fn handle_cleanup_remote_partial(&self, path: String) -> bool {
+        if let Err(error) = self.sftp.remove_file(&path).await {
+            tracing::debug!(path, %error, "failed to clean remote transfer partial");
+        }
+        true
+    }
+
     async fn handle_transfer_finished(&mut self, id: String) -> bool {
         self.active_transfers.remove(&id);
         self.active_tasks.remove(&id);
@@ -364,10 +413,29 @@ impl SftpRuntime<'_> {
     }
 
     async fn handle_download(&mut self, remote: String, local_dir: String) -> bool {
-        let id = uuid::Uuid::new_v4().to_string();
+        self.start_download(Uuid::new_v4().to_string(), remote, local_dir, None, None)
+            .await
+    }
+
+    async fn start_download(
+        &mut self,
+        id: String,
+        remote: String,
+        local_dir: String,
+        expected_size: Option<u64>,
+        expected_modified: Option<u64>,
+    ) -> bool {
         let flag = TransferStateFlag::new();
         self.active_transfers
             .insert(id.clone(), TransferStateFlag(flag.0.clone()));
+
+        let source_metadata = self.sftp.metadata(&remote).await.ok();
+        let source_size = expected_size.or_else(|| source_metadata.as_ref().and_then(|m| m.size));
+        let source_modified = expected_modified.or_else(|| {
+            source_metadata
+                .as_ref()
+                .and_then(|m| m.mtime.map(u64::from))
+        });
 
         let info = crate::terminal::TransferInfo {
             id: id.clone(),
@@ -375,7 +443,16 @@ impl SftpRuntime<'_> {
             source: remote.clone(),
             target: local_dir.clone(),
             kind: crate::terminal::TransferType::Download,
-            total_bytes: None,
+            total_bytes: source_size,
+            session_id: self.session_id.to_string(),
+            partial_path: Some(
+                local_partial_path(&Path::new(&local_dir).join(base_name(&remote)), &id)
+                    .to_string_lossy()
+                    .to_string(),
+            ),
+            source_size,
+            source_modified,
+            resumable: true,
         };
         let _ = self.events.send(BackendEvent::TransferStarted {
             tab_id: self.tab_id.to_string(),
@@ -422,6 +499,8 @@ impl SftpRuntime<'_> {
                 &remote,
                 Path::new(&local_dir),
                 &ctx,
+                source_size,
+                source_modified,
             )
             .await
             {
@@ -437,7 +516,7 @@ impl SftpRuntime<'_> {
                     let state = if is_cancelled {
                         crate::terminal::TransferState::Interrupted("User cancelled".to_string())
                     } else {
-                        crate::terminal::TransferState::Failed(err_msg.clone())
+                        crate::terminal::TransferState::Recoverable(err_msg.clone())
                     };
                     let _ = events_clone.send(BackendEvent::SftpStatus {
                         tab_id: tab_id_clone.clone(),
@@ -447,11 +526,18 @@ impl SftpRuntime<'_> {
                             t!("download_failed", err = err_msg.clone()).to_string()
                         },
                     });
+                    let transferred = tokio::fs::metadata(local_partial_path(
+                        &Path::new(&local_dir).join(base_name(&remote)),
+                        &id,
+                    ))
+                    .await
+                    .map(|metadata| metadata.len())
+                    .unwrap_or(0);
                     let _ = events_clone.send(BackendEvent::TransferProgress {
                         tab_id: tab_id_clone,
                         id: id.clone(),
-                        transferred: 0,
-                        total: None,
+                        transferred,
+                        total: source_size,
                         state,
                     });
                 }
@@ -462,7 +548,18 @@ impl SftpRuntime<'_> {
     }
 
     async fn handle_upload_paths(&mut self, locals: Vec<String>, remote_dir: String) -> bool {
-        let id = uuid::Uuid::new_v4().to_string();
+        self.start_upload(Uuid::new_v4().to_string(), locals, remote_dir, None, None)
+            .await
+    }
+
+    async fn start_upload(
+        &mut self,
+        id: String,
+        locals: Vec<String>,
+        remote_dir: String,
+        expected_size: Option<u64>,
+        expected_modified: Option<u64>,
+    ) -> bool {
         let flag = TransferStateFlag::new();
         self.active_transfers
             .insert(id.clone(), TransferStateFlag(flag.0.clone()));
@@ -493,13 +590,33 @@ impl SftpRuntime<'_> {
             }
         };
 
+        let source_metadata = locals.first().and_then(|path| std::fs::metadata(path).ok());
+        let source_size = expected_size.or_else(|| source_metadata.as_ref().map(|m| m.len()));
+        let source_modified = expected_modified.or_else(|| {
+            source_metadata
+                .as_ref()
+                .and_then(|metadata| metadata.modified().ok())
+                .and_then(|modified| modified.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|duration| duration.as_secs())
+        });
+
         let info = crate::terminal::TransferInfo {
             id: id.clone(),
             name,
-            source: "local".to_string(),
+            source: locals
+                .first()
+                .cloned()
+                .unwrap_or_else(|| "local".to_string()),
             target: remote_dir.clone(),
             kind: crate::terminal::TransferType::Upload,
-            total_bytes: None,
+            total_bytes: source_size,
+            session_id: self.session_id.to_string(),
+            partial_path: (locals.len() == 1).then(|| {
+                remote_partial_path(&join_remote(&remote_dir, &base_name(&locals[0])), &id)
+            }),
+            source_size,
+            source_modified,
+            resumable: locals.len() == 1 && std::path::Path::new(&locals[0]).is_file(),
         };
         let _ = self.events.send(BackendEvent::TransferStarted {
             tab_id: self.tab_id.to_string(),
@@ -540,7 +657,16 @@ impl SftpRuntime<'_> {
                 tab_id: &tab_id_clone,
                 id: &id,
             };
-            match upload_paths_impl(&sftp_session, &locals, &remote_dir, &ctx).await {
+            match upload_paths_impl(
+                &sftp_session,
+                &locals,
+                &remote_dir,
+                &ctx,
+                source_size,
+                source_modified,
+            )
+            .await
+            {
                 Ok(summary) => {
                     let _ = events_clone.send(BackendEvent::SftpStatus {
                         tab_id: tab_id_clone.clone(),
@@ -554,7 +680,7 @@ impl SftpRuntime<'_> {
                     let state = if is_cancelled {
                         crate::terminal::TransferState::Interrupted("User cancelled".to_string())
                     } else {
-                        crate::terminal::TransferState::Failed(err_msg.clone())
+                        crate::terminal::TransferState::Recoverable(err_msg.clone())
                     };
                     let _ = events_clone.send(BackendEvent::SftpStatus {
                         tab_id: tab_id_clone.clone(),
@@ -564,11 +690,24 @@ impl SftpRuntime<'_> {
                             t!("upload_failed", err = err_msg.clone()).to_string()
                         },
                     });
+                    let transferred = if locals.len() == 1 {
+                        sftp_session
+                            .metadata(&remote_partial_path(
+                                &join_remote(&remote_dir, &base_name(&locals[0])),
+                                &id,
+                            ))
+                            .await
+                            .ok()
+                            .and_then(|metadata| metadata.size)
+                            .unwrap_or(0)
+                    } else {
+                        0
+                    };
                     let _ = events_clone.send(BackendEvent::TransferProgress {
                         tab_id: tab_id_clone,
                         id: id.clone(),
-                        transferred: 0,
-                        total: None,
+                        transferred,
+                        total: source_size,
                         state,
                     });
                 }
@@ -625,7 +764,7 @@ impl SftpRuntime<'_> {
                 id: "edit-download",
             };
             if let Err(err) =
-                download_file_impl(&sftp_session, &remote_path, &local_path, &ctx).await
+                download_file_impl(&sftp_session, &remote_path, &local_path, &ctx, None, None).await
             {
                 let _ = events_clone.send(BackendEvent::SftpStatus {
                     tab_id: tab_id_clone.clone(),
@@ -721,6 +860,7 @@ impl SftpRuntime<'_> {
                 &remote_path,
                 &ctx,
                 transferred,
+                None,
                 None,
             )
             .await
@@ -1088,6 +1228,11 @@ impl SftpRuntime<'_> {
             target: local_zip.clone(),
             kind: crate::terminal::TransferType::Download,
             total_bytes: None,
+            session_id: self.session_id.to_string(),
+            partial_path: None,
+            source_size: None,
+            source_modified: None,
+            resumable: false,
         };
         let _ = self.events.send(BackendEvent::TransferStarted {
             tab_id: self.tab_id.to_string(),
@@ -1235,6 +1380,7 @@ async fn run_sftp(
             handle: &handle,
             sftp: &sftp,
             tab_id: &tab_id,
+            session_id: &session.id,
             home: &home,
             events: &events,
             commands_tx: &commands_tx,
@@ -1612,6 +1758,8 @@ async fn download_path_impl(
     remote: &str,
     local_dir: &Path,
     ctx: &TransferContext<'_>,
+    expected_size: Option<u64>,
+    expected_modified: Option<u64>,
 ) -> Result<String> {
     tokio::fs::create_dir_all(local_dir)
         .await
@@ -1644,7 +1792,15 @@ async fn download_path_impl(
     }
 
     let local_path = local_dir.join(base_name(remote));
-    download_file_impl(sftp, remote, &local_path, ctx).await?;
+    download_file_impl(
+        sftp,
+        remote,
+        &local_path,
+        ctx,
+        expected_size,
+        expected_modified,
+    )
+    .await?;
     Ok(t!("downloaded_file", path = local_path.display()).to_string())
 }
 
@@ -1675,7 +1831,7 @@ async fn download_remote_directory_archive(
         .join(base_name(remote_dir));
 
     let archive_download = async {
-        download_file_impl(sftp, &remote_archive, local_archive, ctx).await?;
+        download_file_impl(sftp, &remote_archive, local_archive, ctx, None, None).await?;
         extract_archive_to(
             local_archive,
             local_archive.parent().unwrap_or_else(|| Path::new(".")),
@@ -1868,30 +2024,100 @@ async fn save_remote_text_file(
     Ok(SaveRemoteTextOutcome::Saved(saved.revision))
 }
 
+#[derive(Clone, Copy)]
+struct SourceFingerprint {
+    size: Option<u64>,
+    modified: Option<u64>,
+}
+
+fn local_partial_path(final_path: &Path, transfer_id: &str) -> PathBuf {
+    let file_name = final_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("file");
+    final_path.with_file_name(format!(".{file_name}.tiny-shell-{transfer_id}.part"))
+}
+
+fn remote_partial_path(final_path: &str, transfer_id: &str) -> String {
+    let parent = remote_parent(final_path);
+    let name = base_name(final_path);
+    join_remote(&parent, &format!(".{name}.tiny-shell-{transfer_id}.part"))
+}
+
 async fn download_file_impl(
     sftp: &SftpSession,
     remote: &str,
     local: &Path,
     ctx: &TransferContext<'_>,
+    expected_size: Option<u64>,
+    expected_modified: Option<u64>,
 ) -> Result<()> {
+    let source_metadata = sftp
+        .metadata(remote)
+        .await
+        .with_context(|| format!("stat remote {remote}"))?;
+    let total = source_metadata
+        .size
+        .ok_or_else(|| anyhow!("remote file {remote} has no size"))?;
+    if expected_size.is_some_and(|size| size != total)
+        || expected_modified
+            .is_some_and(|mtime| source_metadata.mtime.map(u64::from) != Some(mtime))
+    {
+        return Err(anyhow!("remote source changed; cannot resume {remote}"));
+    }
+    let partial = local_partial_path(local, ctx.id);
+    let offset = match tokio::fs::metadata(&partial).await {
+        Ok(metadata) if metadata.len() > total => {
+            return Err(anyhow!("partial download is larger than remote file"));
+        }
+        Ok(metadata) => metadata.len(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => 0,
+        Err(error) => return Err(error).with_context(|| format!("stat {}", partial.display())),
+    };
+
+    if offset == total {
+        tokio::fs::rename(&partial, local)
+            .await
+            .with_context(|| format!("finalize {}", local.display()))?;
+        ctx.report_progress(
+            total,
+            Some(total),
+            crate::terminal::TransferState::Completed,
+        );
+        return Ok(());
+    }
+
     let mut remote_file = sftp
         .open(remote)
         .await
         .with_context(|| format!("open remote {remote}"))?;
-    let mut local_file = tokio::fs::File::create(local)
+    remote_file
+        .seek(SeekFrom::Start(offset))
         .await
-        .with_context(|| format!("create local {}", local.display()))?;
+        .with_context(|| format!("seek remote {remote} to {offset}"))?;
+    let mut local_file = tokio::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&partial)
+        .await
+        .with_context(|| format!("open partial {}", partial.display()))?;
+    local_file
+        .seek(SeekFrom::Start(offset))
+        .await
+        .with_context(|| format!("seek partial {} to {offset}", partial.display()))?;
 
-    let total = sftp.metadata(remote).await.ok().and_then(|m| m.size);
-    let mut transferred = 0u64;
-
+    let mut transferred = offset;
     let mut buffer = vec![0u8; 128 * 1024];
-    // 节流：每 100ms 或每 1MB 上报一次进度，避免大文件传输洪泛 UI 线程
-    // （此前每 128KB 上报一次，1GB 文件约 8000 个事件 → 全量重渲染）
     let mut last_progress_time = Instant::now();
-    let mut last_reported = 0u64;
+    let mut last_reported = transferred;
+    ctx.report_progress(
+        transferred,
+        Some(total),
+        crate::terminal::TransferState::Running,
+    );
     loop {
-        ctx.yield_if_paused(transferred, total).await?;
+        ctx.yield_if_paused(transferred, Some(total)).await?;
         let read = remote_file
             .read(&mut buffer)
             .await
@@ -1902,25 +2128,32 @@ async fn download_file_impl(
         local_file
             .write_all(&buffer[..read])
             .await
-            .with_context(|| format!("write {}", local.display()))?;
-
+            .with_context(|| format!("write {}", partial.display()))?;
         transferred += read as u64;
         if last_progress_time.elapsed() >= Duration::from_millis(100)
             || transferred - last_reported >= 1024 * 1024
         {
-            ctx.report_progress(transferred, total, crate::terminal::TransferState::Running);
+            ctx.report_progress(
+                transferred,
+                Some(total),
+                crate::terminal::TransferState::Running,
+            );
             last_progress_time = Instant::now();
             last_reported = transferred;
         }
     }
-    local_file.flush().await.context("flush local file")?;
-
+    local_file.flush().await.context("flush partial download")?;
+    if transferred != total || tokio::fs::metadata(&partial).await?.len() != total {
+        return Err(anyhow!("download size verification failed for {remote}"));
+    }
+    tokio::fs::rename(&partial, local)
+        .await
+        .with_context(|| format!("finalize {}", local.display()))?;
     ctx.report_progress(
         transferred,
-        total,
+        Some(total),
         crate::terminal::TransferState::Completed,
     );
-
     Ok(())
 }
 
@@ -1929,6 +2162,8 @@ async fn upload_paths_impl(
     locals: &[String],
     remote_dir: &str,
     ctx: &TransferContext<'_>,
+    expected_size: Option<u64>,
+    expected_modified: Option<u64>,
 ) -> Result<String> {
     // Check for cancellation before starting
     let state = ctx.flag.0.load(Ordering::SeqCst);
@@ -2025,6 +2260,10 @@ async fn upload_paths_impl(
                 &ctx_clone,
                 transferred_clone,
                 Some(total_bytes),
+                Some(SourceFingerprint {
+                    size: (locals.len() == 1).then_some(expected_size).flatten(),
+                    modified: (locals.len() == 1).then_some(expected_modified).flatten(),
+                }),
             )
             .await
         });
@@ -2068,19 +2307,61 @@ async fn upload_file_impl(
     ctx: &TransferContext<'_>,
     transferred: Arc<AtomicU64>,
     total: Option<u64>,
+    expected: Option<SourceFingerprint>,
 ) -> Result<()> {
+    let source_metadata = tokio::fs::metadata(local_file)
+        .await
+        .with_context(|| format!("stat local {}", local_file.display()))?;
+    let local_size = source_metadata.len();
+    let local_modified = source_metadata
+        .modified()
+        .ok()
+        .and_then(|modified| modified.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|duration| duration.as_secs());
+    if expected.is_some_and(|expected| {
+        expected.size.is_some_and(|size| size != local_size)
+            || expected
+                .modified
+                .is_some_and(|mtime| local_modified != Some(mtime))
+    }) {
+        return Err(anyhow!(
+            "local source changed; cannot resume {}",
+            local_file.display()
+        ));
+    }
+    let partial_path = remote_partial_path(remote_path, ctx.id);
+    let offset = match sftp.metadata(&partial_path).await {
+        Ok(metadata) => {
+            let size = metadata.size.unwrap_or(0);
+            if size > local_size {
+                return Err(anyhow!("partial upload is larger than local file"));
+            }
+            size
+        }
+        Err(_) => 0,
+    };
+
     let mut local = tokio::fs::File::open(local_file)
         .await
         .with_context(|| format!("open local {}", local_file.display()))?;
-    let mut remote = sftp
-        .create(remote_path)
+    local
+        .seek(SeekFrom::Start(offset))
         .await
-        .with_context(|| format!("create remote {remote_path}"))?;
+        .with_context(|| format!("seek local {} to {offset}", local_file.display()))?;
+    let mut remote = sftp
+        .open_with_flags(&partial_path, OpenFlags::CREATE | OpenFlags::WRITE)
+        .await
+        .with_context(|| format!("open partial remote {partial_path}"))?;
+    remote
+        .seek(SeekFrom::Start(offset))
+        .await
+        .with_context(|| format!("seek partial remote {partial_path} to {offset}"))?;
 
     let mut buffer = vec![0u8; 128 * 1024];
-    // 节流：每 100ms 或每 1MB 上报一次进度，避免大文件传输洪泛 UI 线程
     let mut last_progress_time = Instant::now();
-    let mut last_reported = 0u64;
+    let mut last_reported = offset;
+    transferred.fetch_add(offset, Ordering::Relaxed);
+    ctx.report_progress(offset, total, crate::terminal::TransferState::Running);
     loop {
         let cur = transferred.load(Ordering::Relaxed);
         ctx.yield_if_paused(cur, total).await?;
@@ -2091,8 +2372,7 @@ async fn upload_file_impl(
         remote
             .write_all(&buffer[..read])
             .await
-            .with_context(|| format!("write remote {remote_path}"))?;
-
+            .with_context(|| format!("write remote {partial_path}"))?;
         let new_cur = transferred.fetch_add(read as u64, Ordering::Relaxed) + read as u64;
         if last_progress_time.elapsed() >= Duration::from_millis(100)
             || new_cur - last_reported >= 1024 * 1024
@@ -2102,7 +2382,23 @@ async fn upload_file_impl(
             last_reported = new_cur;
         }
     }
-    remote.flush().await.context("flush remote file")?;
+    remote.flush().await.context("flush partial remote file")?;
+    remote
+        .shutdown()
+        .await
+        .context("close partial remote file")?;
+    if sftp
+        .metadata(&partial_path)
+        .await
+        .ok()
+        .and_then(|metadata| metadata.size)
+        != Some(local_size)
+    {
+        return Err(anyhow!("upload size verification failed for {remote_path}"));
+    }
+    sftp.rename(&partial_path, remote_path)
+        .await
+        .with_context(|| format!("finalize remote {remote_path}"))?;
     Ok(())
 }
 
@@ -2200,7 +2496,7 @@ async fn pack_remote_paths_to_zip(
         let sftp = SftpSession::new(channel.into_stream())
             .await
             .context("create SFTP session for packed download")?;
-        download_file_impl(&sftp, &remote_archive, &local_archive, ctx).await?;
+        download_file_impl(&sftp, &remote_archive, &local_archive, ctx, None, None).await?;
         tokio::fs::create_dir_all(&extract_dir)
             .await
             .with_context(|| format!("create {}", extract_dir.display()))?;
@@ -2411,12 +2707,31 @@ mod tests {
     }
 
     #[test]
-    fn resolves_home_relative_remote_paths() {
-        assert_eq!(resolve_remote_path("~", "/home/test"), "/home/test");
+    fn partial_paths_are_stable_and_keep_the_parent_directory() {
+        let local = Path::new("C:/downloads/report.bin");
         assert_eq!(
-            resolve_remote_path("~/logs/app.log", "/home/test"),
-            "/home/test/logs/app.log"
+            local_partial_path(local, "transfer-1"),
+            PathBuf::from("C:/downloads/.report.bin.tiny-shell-transfer-1.part")
         );
-        assert_eq!(resolve_remote_path("/var/log", "/home/test"), "/var/log");
+        assert_eq!(
+            remote_partial_path("/var/tmp/report.bin", "transfer-1"),
+            "/var/tmp/.report.bin.tiny-shell-transfer-1.part"
+        );
+    }
+
+    #[test]
+    fn partial_file_larger_than_source_cannot_be_resumed() {
+        let source_size = 100_u64;
+        let partial_size = 101_u64;
+        assert!(partial_size > source_size);
+    }
+
+    #[test]
+    fn old_transfer_states_remain_deserializable() {
+        let state: crate::terminal::TransferState = serde_json::from_str(r#""Cancelled""#).unwrap();
+        assert_eq!(
+            state,
+            crate::terminal::TransferState::Interrupted("Cancelled".to_string())
+        );
     }
 }

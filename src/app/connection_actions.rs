@@ -278,6 +278,7 @@ impl TinyShell {
         }
         cx.notify();
         self.register_backend_route(group_id.clone(), cx);
+        let session_id = session.id.clone();
         let sftp_handle = crate::sftp::spawn_sftp(
             self.runtime.handle(),
             group_id.clone(),
@@ -285,7 +286,9 @@ impl TinyShell {
             proxy_config,
             events,
         );
-        self.sftp_handles.insert(group_id.clone(), sftp_handle);
+        self.sftp_handles
+            .insert(group_id.clone(), sftp_handle.clone());
+        self.transfer_manager.bind_session(session_id, sftp_handle);
         self.status = t!("ssh_tab_opened").into();
         cx.notify();
     }
@@ -378,9 +381,11 @@ impl TinyShell {
                     .and_then(|t| t.session.clone());
 
                 if let Some(session) = group_session {
+                    let session_id = session.id.clone();
                     if let Some(old_handle) = self.sftp_handles.remove(&group_id) {
                         old_handle.close();
                     }
+                    self.transfer_manager.unbind_session(&session_id);
                     self.register_backend_route(group_id.clone(), cx);
                     let sftp_handle = crate::sftp::spawn_sftp(
                         self.runtime.handle(),
@@ -389,7 +394,9 @@ impl TinyShell {
                         proxy_config.clone(),
                         events.clone(),
                     );
-                    self.sftp_handles.insert(group_id.clone(), sftp_handle);
+                    self.sftp_handles
+                        .insert(group_id.clone(), sftp_handle.clone());
+                    self.transfer_manager.bind_session(session_id, sftp_handle);
 
                     if let Some(group) = self
                         .window_state_mut()

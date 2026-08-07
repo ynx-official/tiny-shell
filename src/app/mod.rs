@@ -30,6 +30,7 @@ pub(crate) mod terminal_completion;
 pub(crate) mod terminal_settings;
 pub(crate) mod terminal_workspace;
 pub(crate) mod theme;
+pub(crate) mod transfer_manager;
 pub(crate) mod ui;
 pub(crate) mod updater;
 pub(crate) mod workspace_presentation;
@@ -905,6 +906,7 @@ pub(crate) struct TinyShell {
     pub(crate) sftp_workspace: SftpWorkspaceState,
     pub(crate) sftp_panel: SftpPanelState,
     pub(crate) transfers: Vec<crate::terminal::Transfer>,
+    pub(crate) transfer_manager: transfer_manager::TransferManager,
     pub(crate) terminal_panel_bounds: Option<Bounds<Pixels>>,
     pub(crate) terminal_bounds: HashMap<String, Bounds<Pixels>>,
     pub(crate) tab_bar_bounds: Option<Bounds<Pixels>>,
@@ -1401,12 +1403,18 @@ impl TinyShell {
                         crate::terminal::TransferState::Running
                             | crate::terminal::TransferState::Paused
                     ) {
-                        t.state =
-                            crate::terminal::TransferState::Zombie(t!("zombie_reason").to_string());
+                        t.state = if transfer_manager::TransferManager::is_resumable(t) {
+                            crate::terminal::TransferState::Recoverable(
+                                t!("recoverable_reason").to_string(),
+                            )
+                        } else {
+                            crate::terminal::TransferState::Zombie(t!("zombie_reason").to_string())
+                        };
                     }
                 }
                 transfers
             },
+            transfer_manager: transfer_manager::TransferManager::new(),
             terminal_bounds: HashMap::new(),
             tab_bar_bounds: None,
             tab_group_bounds: HashMap::new(),
@@ -1778,6 +1786,7 @@ impl TinyShell {
         const MAX_EVENTS_PER_TICK: usize = 2_048;
         let mut changed = false;
         let mut transfers_changed = false;
+        let mut transfers_force_persist = false;
         let mut events = Vec::with_capacity(MAX_EVENTS_PER_TICK);
         while events.len() < MAX_EVENTS_PER_TICK
             && let Ok(event) = self.async_runtime.events_rx.try_recv()
@@ -1908,6 +1917,15 @@ impl TinyShell {
                     total,
                     state,
                 } => {
+                    transfers_force_persist |= matches!(
+                        state,
+                        crate::terminal::TransferState::Paused
+                            | crate::terminal::TransferState::Completed
+                            | crate::terminal::TransferState::Failed(_)
+                            | crate::terminal::TransferState::Interrupted(_)
+                            | crate::terminal::TransferState::Recoverable(_)
+                            | crate::terminal::TransferState::Zombie(_)
+                    );
                     transfers_changed |=
                         self.handle_transfer_progress(tab_id, id, transferred, total, state, cx);
                 }
@@ -1916,7 +1934,11 @@ impl TinyShell {
                 }
             }
         }
-        if transfers_changed {
+        if transfers_changed
+            && self
+                .transfer_manager
+                .should_persist(transfers_force_persist)
+        {
             self.config.set_transfers(self.transfers.clone());
         }
         changed
@@ -2194,6 +2216,8 @@ impl TinyShell {
         _cx: &mut Context<Self>,
     ) -> bool {
         let tab_title = self.tab_title(&tab_id);
+        self.transfers
+            .retain(|transfer| transfer.info.id != info.id);
         self.transfers.insert(
             0,
             crate::terminal::Transfer {
@@ -2363,8 +2387,47 @@ impl TinyShell {
         ))
     }
 
+    pub(crate) fn sftp_handle_for_transfer(
+        &self,
+        transfer_id: &str,
+    ) -> Option<&crate::sftp::SftpHandle> {
+        self.transfers
+            .iter()
+            .find(|transfer| transfer.info.id == transfer_id)
+            .and_then(|transfer| self.transfer_manager.handle_for_transfer(transfer))
+    }
+
     pub(crate) fn remove_transfer(&mut self, transfer_id: &str, cx: &mut Context<Self>) {
+        let cleanup = self
+            .transfers
+            .iter()
+            .find(|transfer| transfer.info.id == transfer_id)
+            .map(|transfer| {
+                (
+                    transfer.info.kind.clone(),
+                    transfer.info.session_id.clone(),
+                    transfer.info.partial_path.clone(),
+                )
+            });
         self.transfers.retain(|t| t.info.id != transfer_id);
+        if let Some((kind, session_id, Some(partial_path))) = cleanup {
+            match kind {
+                crate::terminal::TransferType::Download => {
+                    if let Err(error) = std::fs::remove_file(&partial_path)
+                        && error.kind() != std::io::ErrorKind::NotFound
+                    {
+                        tracing::debug!(path = %partial_path, %error, "failed to clean local transfer partial");
+                    }
+                }
+                crate::terminal::TransferType::Upload => {
+                    if let Some(handle) = self.transfer_manager.handle_for_session(&session_id) {
+                        handle.send_command(crate::sftp::SftpCommand::CleanupRemotePartial(
+                            partial_path,
+                        ));
+                    }
+                }
+            }
+        }
         self.config.set_transfers(self.transfers.clone());
         cx.notify();
     }

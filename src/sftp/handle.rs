@@ -50,8 +50,42 @@ impl SftpHandle {
         self.send_command(SftpCommand::Download { remote, local_dir });
     }
 
+    pub fn resume_download(
+        &self,
+        id: String,
+        remote: String,
+        local_dir: String,
+        source_size: Option<u64>,
+        source_modified: Option<u64>,
+    ) {
+        self.send_command(SftpCommand::ResumeDownload {
+            id,
+            remote,
+            local_dir,
+            source_size,
+            source_modified,
+        });
+    }
+
     pub fn upload_paths(&self, locals: Vec<String>, remote_dir: String) {
         self.send_command(SftpCommand::UploadPaths { locals, remote_dir });
+    }
+
+    pub fn resume_upload(
+        &self,
+        id: String,
+        local: String,
+        remote_dir: String,
+        source_size: Option<u64>,
+        source_modified: Option<u64>,
+    ) {
+        self.send_command(SftpCommand::ResumeUpload {
+            id,
+            local,
+            remote_dir,
+            source_size,
+            source_modified,
+        });
     }
 
     pub fn edit_file(&self, remote_path: String) {

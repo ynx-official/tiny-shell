@@ -155,7 +155,9 @@ impl TinyShell {
                                         .on_click(window.listener_for(&view, {
                                             let id = t.info.id.clone();
                                             move |this, _, _, _| {
-                                                if let Some(handle) = this.active_sftp_handle() {
+                                                if let Some(handle) =
+                                                    this.sftp_handle_for_transfer(&id)
+                                                {
                                                     handle.pause_transfer(id.clone());
                                                 }
                                             }
@@ -170,7 +172,9 @@ impl TinyShell {
                                         .on_click(window.listener_for(&view, {
                                             let id = t.info.id.clone();
                                             move |this, _, _, _| {
-                                                if let Some(handle) = this.active_sftp_handle() {
+                                                if let Some(handle) =
+                                                    this.sftp_handle_for_transfer(&id)
+                                                {
                                                     handle.cancel_transfer(id.clone());
                                                 }
                                             }
@@ -189,7 +193,9 @@ impl TinyShell {
                                         .on_click(window.listener_for(&view, {
                                             let id = t.info.id.clone();
                                             move |this, _, _, _| {
-                                                if let Some(handle) = this.active_sftp_handle() {
+                                                if let Some(handle) =
+                                                    this.sftp_handle_for_transfer(&id)
+                                                {
                                                     handle.resume_transfer(id.clone());
                                                 }
                                             }
@@ -204,15 +210,66 @@ impl TinyShell {
                                         .on_click(window.listener_for(&view, {
                                             let id = t.info.id.clone();
                                             move |this, _, _, _| {
-                                                if let Some(handle) = this.active_sftp_handle() {
+                                                if let Some(handle) =
+                                                    this.sftp_handle_for_transfer(&id)
+                                                {
                                                     handle.cancel_transfer(id.clone());
                                                 }
                                             }
                                         }));
                                         (txt, h_flex().gap_1().child(btn_resume).child(btn_cancel))
                                     }
-                                    crate::terminal::TransferState::Interrupted(ref reason) => {
+                                    crate::terminal::TransferState::Interrupted(ref reason)
+                                    | crate::terminal::TransferState::Recoverable(ref reason) => {
                                         let txt = format!("{}: {}", t!("interrupted"), reason);
+                                        let mut actions = h_flex().gap_1();
+                                        if matches!(
+                                            t.state,
+                                            crate::terminal::TransferState::Recoverable(_)
+                                        ) {
+                                            let id = t.info.id.clone();
+                                            let source = t.info.source.clone();
+                                            let target = t.info.target.clone();
+                                            let kind = t.info.kind.clone();
+                                            let source_size = t.info.source_size;
+                                            let source_modified = t.info.source_modified;
+                                            let btn_resume = Button::new(SharedString::from(
+                                                format!("resume-{}", t.info.id),
+                                            ))
+                                            .ghost()
+                                            .small()
+                                            .icon(IconName::Play)
+                                            .on_click(window.listener_for(
+                                                &view,
+                                                move |this, _, _, _| {
+                                                    if let Some(handle) =
+                                                        this.sftp_handle_for_transfer(&id)
+                                                    {
+                                                        match kind {
+                                                        crate::terminal::TransferType::Download => {
+                                                            handle.resume_download(
+                                                                id.clone(),
+                                                                source.clone(),
+                                                                target.clone(),
+                                                                source_size,
+                                                                source_modified,
+                                                            );
+                                                        }
+                                                        crate::terminal::TransferType::Upload => {
+                                                            handle.resume_upload(
+                                                                id.clone(),
+                                                                source.clone(),
+                                                                target.clone(),
+                                                                source_size,
+                                                                source_modified,
+                                                            );
+                                                        }
+                                                    }
+                                                    }
+                                                },
+                                            ));
+                                            actions = actions.child(btn_resume);
+                                        }
                                         let btn_remove = Button::new(SharedString::from(format!(
                                             "remove-{}",
                                             t.info.id
@@ -226,7 +283,8 @@ impl TinyShell {
                                                 this.remove_transfer(&id, cx);
                                             }
                                         }));
-                                        (txt, h_flex().gap_1().child(btn_remove))
+                                        actions = actions.child(btn_remove);
+                                        (txt, actions)
                                     }
                                     crate::terminal::TransferState::Completed => {
                                         let txt = t!("completed").to_string();
@@ -313,6 +371,7 @@ impl TinyShell {
                                     crate::terminal::TransferState::Running => 0,
                                     crate::terminal::TransferState::Paused => 1,
                                     crate::terminal::TransferState::Interrupted(_) => 2,
+                                    crate::terminal::TransferState::Recoverable(_) => 2,
                                     crate::terminal::TransferState::Completed => 3,
                                     crate::terminal::TransferState::Failed(_) => 4,
                                     crate::terminal::TransferState::Zombie(_) => 5,

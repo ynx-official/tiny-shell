@@ -1386,10 +1386,9 @@ pub(crate) enum TransferState {
     Paused,
     Completed,
     Failed(String),
-    Interrupted(String), // 中断传输：包含原因（例如 "User cancelled", "Network timeout"）
-    Zombie(String),      // 程序重启后残留的 Running/Paused 任务
-                         // 兼容 v0.3.11 -> v0.4.x：旧配置里曾保存过 `Cancelled`，
-                         // 新版本改成了带原因的状态，因此要手动接住旧枚举值。
+    Interrupted(String), // 用户主动中断，默认保留临时文件以便后续恢复
+    Recoverable(String), // 连接或进程中断，具备断点恢复条件
+    Zombie(String),      // 旧版本任务没有足够恢复信息
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
@@ -1399,6 +1398,7 @@ enum TransferStateCompat {
     Completed,
     Failed(String),
     Interrupted(String),
+    Recoverable(String),
     Zombie(String),
     Cancelled,
 }
@@ -1411,6 +1411,7 @@ impl From<TransferStateCompat> for TransferState {
             TransferStateCompat::Completed => Self::Completed,
             TransferStateCompat::Failed(reason) => Self::Failed(reason),
             TransferStateCompat::Interrupted(reason) => Self::Interrupted(reason),
+            TransferStateCompat::Recoverable(reason) => Self::Recoverable(reason),
             TransferStateCompat::Zombie(reason) => Self::Zombie(reason),
             TransferStateCompat::Cancelled => Self::Interrupted("Cancelled".to_string()),
         }
@@ -1434,6 +1435,16 @@ pub(crate) struct TransferInfo {
     pub target: String,
     pub kind: TransferType,
     pub total_bytes: Option<u64>,
+    #[serde(default)]
+    pub session_id: String,
+    #[serde(default)]
+    pub partial_path: Option<String>,
+    #[serde(default)]
+    pub source_size: Option<u64>,
+    #[serde(default)]
+    pub source_modified: Option<u64>,
+    #[serde(default)]
+    pub resumable: bool,
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
