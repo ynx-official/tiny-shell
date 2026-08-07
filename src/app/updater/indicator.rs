@@ -6,20 +6,9 @@ use gpui::{
 };
 use gpui_component::{Icon, IconName, Sizable as _, h_flex};
 
-const DEFAULT_CONTAINER_SIZE: f32 = 36.0;
-const DEFAULT_ICON_SIZE: f32 = 24.0;
 const COMPACT_CONTAINER_SIZE: f32 = 20.0;
 const COMPACT_ICON_SIZE: f32 = 12.0;
 const ACTIVE_PORTION: f32 = 0.86;
-
-pub(crate) fn pulse_icon(animation_id: &'static str, color: Hsla) -> impl IntoElement {
-    pulse_icon_with_size(
-        animation_id,
-        color,
-        DEFAULT_CONTAINER_SIZE,
-        DEFAULT_ICON_SIZE,
-    )
-}
 
 pub(crate) fn compact_pulse_icon(animation_id: &'static str, color: Hsla) -> impl IntoElement {
     pulse_icon_with_size(

@@ -4,11 +4,6 @@ use super::*;
 
 impl TinyShell {
     pub(super) fn sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let show_update_pulse = matches!(
-            self.update_runtime.status,
-            Some(crate::app::updater::UpdateStatus::UpdateAvailable(_))
-                | Some(crate::app::updater::UpdateStatus::ReadyToRestart(_, _))
-        );
         let show_update_error_badge = matches!(
             self.update_runtime.status,
             Some(crate::app::updater::UpdateStatus::DownloadCancelled(_))
@@ -111,13 +106,7 @@ impl TinyShell {
                                                         .bg(cx.theme().danger),
                                                 )
                                             }),
-                                    )
-                                    .when(show_update_pulse, |this| {
-                                        this.child(crate::app::updater::pulse_icon(
-                                            "sidebar-update-pulse",
-                                            cx.theme().primary,
-                                        ))
-                                    }),
+                                    ),
                             ),
                     )
                     .child(
