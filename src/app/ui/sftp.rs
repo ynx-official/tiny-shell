@@ -173,8 +173,10 @@ impl TinyShell {
 
         v_flex()
             .w(px(236.))
+            .max_w(relative(0.4))
+            .min_w(px(120.))
             .h_full()
-            .flex_none()
+            .flex_shrink_1()
             .min_h(px(0.))
             .bg(cx.theme().background)
             .child(
@@ -1068,7 +1070,9 @@ impl TinyShell {
 
         let selected_path = sftp.selected_path.clone();
         let entries = sftp
-            .entries
+            .directory_entries
+            .get(&sftp.current_path)
+            .unwrap_or(&sftp.entries)
             .clone()
             .into_iter()
             .filter(|entry| self.sftp_panel.show_hidden_files || !entry.name.starts_with('.'))
@@ -1136,12 +1140,17 @@ impl TinyShell {
                 )
                 .child(
                     h_flex()
+                        .w_full()
                         .flex_1()
+                        .min_w(px(0.))
                         .min_h(px(0.))
+                        .overflow_hidden()
                         .child(self.render_sftp_directory_tree(sftp, cx))
                         .child(
                             v_flex()
+                                .w_full()
                                 .flex_1()
+                                .flex_shrink_1()
                                 .h_full()
                                 .min_w(px(0.))
                                 .min_h(px(0.))
@@ -1206,6 +1215,7 @@ impl TinyShell {
                                 )
                                 .child(
                                     div()
+                                        .w_full()
                                         .flex_1()
                                         .relative()
                                         .min_h(px(0.))
@@ -1230,7 +1240,20 @@ impl TinyShell {
                                                 }
                                             }),
                                         )
-                                        .child({
+                                        .child(if entries.is_empty() {
+                                            v_flex()
+                                                .size_full()
+                                                .items_center()
+                                                .justify_center()
+                                                .gap_3()
+                                                .text_color(cx.theme().muted_foreground)
+                                                .child(
+                                                    Icon::new(IconName::FolderOpen)
+                                                        .with_size(Size::Large),
+                                                )
+                                                .child(t!("sftp_directory_empty"))
+                                                .into_any_element()
+                                        } else {
                                             let entries = entries.clone();
                                             let selected_entries = selected_entries.clone();
                                             let selected_path = selected_path.clone();
@@ -1417,6 +1440,7 @@ impl TinyShell {
                                             .track_scroll(
                                                 &self.sftp_workspace.remote_files_scroll_handle,
                                             )
+                                            .into_any_element()
                                         })
                                         .child(
                                             div()

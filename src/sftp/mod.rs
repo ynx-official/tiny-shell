@@ -1187,6 +1187,7 @@ async fn run_sftp(
             .min(u128::from(u64::MAX)) as u64
     });
     let home = home_result.unwrap_or_else(|_| "/".to_string());
+    let home = normalize_remote_directory_path(home);
 
     let _ = events.send(BackendEvent::SftpLatency {
         tab_id: tab_id.clone(),

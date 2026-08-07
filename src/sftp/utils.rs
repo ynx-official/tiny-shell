@@ -24,6 +24,17 @@ pub(crate) fn parent_dir(path: &str) -> Option<String> {
     }
 }
 
+pub(crate) fn normalize_remote_directory_path(path: String) -> String {
+    let normalized = path.trim_end_matches('/');
+    if normalized.is_empty() {
+        "/".to_string()
+    } else if normalized.len() == path.len() {
+        path
+    } else {
+        normalized.to_string()
+    }
+}
+
 pub(crate) fn join_remote(parent: &str, child: &str) -> String {
     if parent == "/" {
         format!("/{child}")
@@ -69,4 +80,19 @@ pub(crate) fn resolve_remote_path(path: &str, home: &str) -> String {
 
 pub(crate) fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\"'\"'"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_remote_directory_path;
+
+    #[test]
+    fn normalizes_remote_directory_trailing_slashes() {
+        assert_eq!(
+            normalize_remote_directory_path("/home/user/".to_string()),
+            "/home/user"
+        );
+        assert_eq!(normalize_remote_directory_path("/".to_string()), "/");
+        assert_eq!(normalize_remote_directory_path("///".to_string()), "/");
+    }
 }
