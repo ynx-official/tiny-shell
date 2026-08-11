@@ -128,7 +128,9 @@ impl FinalShellImportWindow {
             return;
         };
         let selected = self.selected.clone();
-        let result = self.owner.update(cx, |owner, cx| {
+        let import_window = cx.entity();
+        let owner_for_credentials = self.owner.clone();
+        self.owner.update(cx, move |owner, cx| {
             let mut staged = owner.config.clone();
             let summary = apply_finalshell_import_selected(&mut staged, preview.clone(), &selected);
             let pending_credentials = preview
@@ -144,43 +146,49 @@ impl FinalShellImportWindow {
                         .filter(|session| session.requires_credential_prompt())
                         .map(|session| session.id.clone())
                 });
-            crate::app::config_persistence::save_full(&owner.config_repository, &staged)?;
-            owner.config = staged;
-            owner.status = t!(
-                "finalshell_imported",
-                count = summary.imported_sessions,
-                skipped = summary.skipped_sessions
-            )
-            .to_string()
-            .into();
-            cx.notify();
-            Ok::<Option<String>, anyhow::Error>(pending_credentials)
-        });
-        match result {
-            Ok(pending_credentials) => {
-                window.remove_window();
-                if let Some(session_id) = pending_credentials {
-                    let owner = self.owner.clone();
-                    window.defer(cx, move |window, cx| {
-                        if let Some(session) = owner.read(cx).config.get(&session_id).cloned() {
-                            crate::app::connection_manager::ssh_editor_window::open(
-                                owner,
-                                crate::app::connection_manager::ssh_editor_window::SshEditorRequest::Credentials {
-                                    session,
-                                },
-                                cx,
-                            );
-                        } else {
-                            window.activate_window();
-                        }
+            owner.commit_staged_config_in_window_async(
+                staged,
+                window,
+                move |owner, window, cx| {
+                    owner.status = t!(
+                        "finalshell_imported",
+                        count = summary.imported_sessions,
+                        skipped = summary.skipped_sessions
+                    )
+                    .to_string()
+                    .into();
+                    cx.notify();
+                    if let Some(session_id) = pending_credentials {
+                        let owner = owner_for_credentials.clone();
+                        window.defer(cx, move |window, cx| {
+                            if let Some(session) = owner.read(cx).config.get(&session_id).cloned() {
+                                crate::app::connection_manager::ssh_editor_window::open(
+                                    owner,
+                                    crate::app::connection_manager::ssh_editor_window::SshEditorRequest::Credentials {
+                                        session,
+                                    },
+                                    cx,
+                                );
+                            } else {
+                                window.activate_window();
+                            }
+                            crate::app::deregister_auxiliary_window(window.window_handle());
+                            window.remove_window();
+                        });
+                    } else {
+                        crate::app::deregister_auxiliary_window(window.window_handle());
+                        window.remove_window();
+                    }
+                },
+                move |_, error, _, cx| {
+                    import_window.update(cx, |this, cx| {
+                        this.error = Some(error.to_string());
+                        cx.notify();
                     });
-                }
-            }
-            Err(error) => {
-                self.error = Some(error.to_string());
-                cx.notify();
-            }
-        }
+                },
+                cx,
+            );
+        });
     }
 }
 
@@ -352,7 +360,10 @@ impl Render for FinalShellImportWindow {
                             Button::new("finalshell-import-cancel")
                                 .secondary()
                                 .label(t!("cancel").to_string())
-                                .on_click(|_, window, _| window.remove_window()),
+                                .on_click(|_, window, _| {
+                                    crate::app::deregister_auxiliary_window(window.window_handle());
+                                    window.remove_window();
+                                }),
                         )
                         .child(
                             Button::new("finalshell-import-confirm")
@@ -380,7 +391,10 @@ impl Render for FinalShellImportWindow {
                         Button::new("finalshell-import-cancel")
                             .secondary()
                             .label(t!("cancel").to_string())
-                            .on_click(|_, window, _| window.remove_window()),
+                            .on_click(|_, window, _| {
+                                crate::app::deregister_auxiliary_window(window.window_handle());
+                                window.remove_window();
+                            }),
                     ),
                 );
             body.into_any_element()
@@ -404,15 +418,22 @@ impl Render for FinalShellImportWindow {
 }
 
 pub(crate) fn open(owner: Entity<TinyShell>, cx: &mut App) {
+    let owner_id = owner.read(cx).session_owner_id;
     let mut options = super::connection_manager::window::window_options(cx);
     options.window_min_size = Some(gpui::size(gpui::px(420.), gpui::px(300.)));
     let opened = cx.open_window(options, move |window, cx| {
         window.set_window_title(t!("finalshell_import_title").as_ref());
+        let window_handle = window.window_handle();
+        crate::app::register_auxiliary_window(window_handle, owner_id);
         let view = cx.new(|cx| FinalShellImportWindow::new(owner, cx));
         let focus_handle = view.read(cx).focus_handle.clone();
         window.defer(cx, move |window, cx| {
             window.activate_window();
             window.focus(&focus_handle, cx);
+        });
+        window.on_window_should_close(cx, move |_, _| {
+            crate::app::deregister_auxiliary_window(window_handle);
+            true
         });
         cx.new(|cx| Root::new(view, window, cx))
     });

@@ -140,11 +140,18 @@ pub(crate) struct IncomingTabDrag {
 }
 
 static WINDOW_REGISTRY: OnceLock<Arc<Mutex<Vec<WindowEntry>>>> = OnceLock::new();
+static AUXILIARY_WINDOW_REGISTRY: OnceLock<Arc<Mutex<Vec<AuxiliaryWindowEntry>>>> = OnceLock::new();
 static TAB_DRAG_HOVER: OnceLock<Mutex<Option<(u64, AnyWindowHandle, u64)>>> = OnceLock::new();
 static WINDOW_ACTIVATION_SEQ: AtomicU64 = AtomicU64::new(1);
 static TAB_DRAG_SEQ: AtomicU64 = AtomicU64::new(1);
 static TAB_DRAG_HOVER_SEQ: AtomicU64 = AtomicU64::new(1);
 static SESSION_OWNER_SEQ: AtomicU64 = AtomicU64::new(1);
+
+#[derive(Clone, Copy)]
+struct AuxiliaryWindowEntry {
+    owner_id: crate::session::store::WindowOwnerId,
+    window: AnyWindowHandle,
+}
 fn lock_recover<'a, T>(mutex: &'a Mutex<T>, name: &str) -> MutexGuard<'a, T> {
     match mutex.lock() {
         Ok(guard) => guard,
@@ -159,6 +166,57 @@ pub(crate) fn window_registry() -> Arc<Mutex<Vec<WindowEntry>>> {
     WINDOW_REGISTRY
         .get_or_init(|| Arc::new(Mutex::new(Vec::new())))
         .clone()
+}
+
+fn auxiliary_window_registry() -> Arc<Mutex<Vec<AuxiliaryWindowEntry>>> {
+    AUXILIARY_WINDOW_REGISTRY
+        .get_or_init(|| Arc::new(Mutex::new(Vec::new())))
+        .clone()
+}
+
+pub(crate) fn register_auxiliary_window(
+    window: AnyWindowHandle,
+    owner_id: crate::session::store::WindowOwnerId,
+) {
+    let registry = auxiliary_window_registry();
+    let mut guard = lock_recover(&registry, "auxiliary window registry");
+    if !guard.iter().any(|entry| entry.window == window) {
+        guard.push(AuxiliaryWindowEntry { owner_id, window });
+    }
+}
+
+pub(crate) fn deregister_auxiliary_window(window: AnyWindowHandle) {
+    let registry = auxiliary_window_registry();
+    lock_recover(&registry, "auxiliary window registry").retain(|entry| entry.window != window);
+}
+
+/// Close every independent window owned by the application. Handles are
+/// removed from the registry before calling into GPUI so close callbacks can
+/// safely update their owner without re-entering this registry.
+pub(crate) fn close_auxiliary_windows(
+    owner_id: crate::session::store::WindowOwnerId,
+    cx: &mut App,
+) {
+    crate::app::sftp_editor_window::force_close_all(owner_id, cx);
+    let windows = {
+        let registry = auxiliary_window_registry();
+        let mut guard = lock_recover(&registry, "auxiliary window registry");
+        let mut windows = Vec::new();
+        guard.retain(|entry| {
+            if entry.owner_id == owner_id {
+                windows.push(entry.window);
+                false
+            } else {
+                true
+            }
+        });
+        windows
+    };
+    for window in windows {
+        if let Err(error) = window.update(cx, |_, window, _| window.remove_window()) {
+            tracing::debug!("independent window was already closed: {error:?}");
+        }
+    }
 }
 
 fn select_config_repository(
@@ -420,6 +478,8 @@ pub(crate) enum PaneLayout {
 #[derive(Clone)]
 pub(crate) struct TabGroup {
     pub(crate) id: String,
+    /// Stable identity for drag sessions; it must not change on every render.
+    pub(crate) drag_id: u64,
     /// Monotonic per-window label used to distinguish similarly named hosts.
     pub(crate) ordinal: u64,
     pub(crate) title: String,
@@ -944,7 +1004,16 @@ pub(crate) struct TinyShell {
 
     pub(crate) runtime: Arc<Runtime>,
     pub(crate) async_runtime: AsyncRuntimeState,
+    pub(crate) pending_close_window: Option<AnyWindowHandle>,
+    pub(crate) close_prompt_open: bool,
+    pub(crate) close_sync_requested: bool,
+    pub(crate) close_sync_running: bool,
+    pub(crate) close_sync_completed: bool,
+    pub(crate) close_finalized: bool,
+    pub(crate) window_lease: Option<config_persistence::WindowLeaseId>,
     pub(crate) last_window_size: Option<gpui::Size<Pixels>>,
+    pub(crate) last_registered_window_bounds: Option<Bounds<Pixels>>,
+    pub(crate) was_window_active: bool,
     pub(crate) last_sidebar_width: Option<Pixels>,
     pub(crate) should_move_window: bool,
     pub(crate) hovered_url: Option<HoveredUrl>,
@@ -1196,6 +1265,7 @@ impl TinyShell {
         window: &mut Window,
         session_store: Entity<crate::session::store::SessionStore>,
         config_repository: Arc<config_persistence::ConfigRepository>,
+        window_lease: config_persistence::WindowLeaseId,
         cx: &mut Context<Self>,
     ) -> Self {
         let connection_inputs = ConnectionFormInputs::new(window, cx);
@@ -1466,7 +1536,16 @@ impl TinyShell {
 
             runtime,
             async_runtime: AsyncRuntimeState::new(events_tx, events_rx),
+            pending_close_window: None,
+            close_prompt_open: false,
+            close_sync_requested: false,
+            close_sync_running: false,
+            close_sync_completed: false,
+            close_finalized: false,
+            window_lease: Some(window_lease),
             last_window_size: None,
+            last_registered_window_bounds: None,
+            was_window_active: false,
             last_sidebar_width,
             should_move_window: false,
             hovered_url: None,
@@ -1670,6 +1749,7 @@ impl TinyShell {
                     break;
                 }
                 let active = match this.update(cx, |this, cx| {
+                    this.drive_config_preferences_save();
                     let changed = this.drain_backend_events(cx);
                     let system_sampled = this.sample_system_if_due();
                     this.sample_sftp_latency_if_due();
@@ -2011,10 +2091,10 @@ impl TinyShell {
             .filter(|group| !is_graceful_exit || group.pane_root.total_panes() <= 1)
             .map(|group| group.id.clone());
         if let Some(session_id) = editor_session {
-            sftp_editor_window::notify_connection_lost(&session_id, cx);
+            sftp_editor_window::notify_connection_lost(&session_id, self.session_owner_id, cx);
         }
         if is_graceful_exit {
-            self.handle_tab_close(tab_id.clone());
+            self.handle_tab_close(tab_id.clone(), cx);
             self.status = reason.into();
             return true;
         }
@@ -2130,7 +2210,14 @@ impl TinyShell {
         cx: &mut Context<Self>,
     ) {
         if let Some(handle) = self.sftp_handles.get(&tab_id).cloned() {
-            sftp_editor_window::open_or_focus(tab_id, remote_path, file, handle, cx);
+            sftp_editor_window::open_or_focus(
+                tab_id,
+                self.session_owner_id,
+                remote_path,
+                file,
+                handle,
+                cx,
+            );
         }
     }
 
@@ -2141,7 +2228,13 @@ impl TinyShell {
         revision: crate::sftp::text_file::RemoteFileRevision,
         cx: &mut Context<Self>,
     ) {
-        sftp_editor_window::mark_uploaded(&tab_id, &remote_path, revision, cx);
+        sftp_editor_window::mark_uploaded(
+            &tab_id,
+            self.session_owner_id,
+            &remote_path,
+            revision,
+            cx,
+        );
     }
 
     fn handle_sftp_content_conflict(
@@ -2151,7 +2244,13 @@ impl TinyShell {
         remote_file: crate::sftp::text_file::RemoteTextFile,
         cx: &mut Context<Self>,
     ) {
-        sftp_editor_window::mark_conflict(&tab_id, &remote_path, remote_file, cx);
+        sftp_editor_window::mark_conflict(
+            &tab_id,
+            self.session_owner_id,
+            &remote_path,
+            remote_file,
+            cx,
+        );
     }
 
     fn handle_sftp_content_upload_failed(
@@ -2161,7 +2260,13 @@ impl TinyShell {
         error: String,
         cx: &mut Context<Self>,
     ) {
-        sftp_editor_window::mark_upload_failed(&tab_id, &remote_path, error, cx);
+        sftp_editor_window::mark_upload_failed(
+            &tab_id,
+            self.session_owner_id,
+            &remote_path,
+            error,
+            cx,
+        );
     }
 
     fn handle_remote_system(
@@ -2572,29 +2677,180 @@ impl TinyShell {
     }
 
     pub(crate) fn mark_config_preferences_dirty(&mut self) {
-        self.config_persistence.mark_dirty();
-        self.persist_config_preferences_async();
+        self.config_persistence.mark_dirty(Instant::now());
     }
 
     pub(crate) fn persist_config_preferences_checked(&mut self) -> anyhow::Result<()> {
         if !self.config_persistence.is_dirty() {
             return Ok(());
         }
+        let generation = self.config_persistence.generation();
         config_persistence::persist_sync(&self.config_repository, &self.config)?;
-        self.config_persistence.clear();
+        self.config_persistence.mark_saved(generation);
         Ok(())
     }
 
-    pub(crate) fn persist_config_preferences_async(&self) {
-        if !self.config_persistence.is_dirty() {
-            return;
-        }
-        config_persistence::persist_async(&self.config_repository, self.config.clone());
+    pub(crate) fn persist_config_preferences_async(&mut self) {
+        self.config_persistence.request_immediate_save();
+        self.drive_config_preferences_save();
     }
 
-    pub(crate) fn save_layout_state(&self, window: &mut gpui::Window, cx: &gpui::App) {
-        if let Err(error) = self.save_layout_state_checked(window, cx) {
-            tracing::warn!("failed to persist layout state: {error:#}");
+    /// Persist a full configuration transaction off the UI thread and expose
+    /// it to the window only after storage confirms the write. Only one full
+    /// transaction per window is admitted at a time, which prevents two staged
+    /// snapshots from committing out of order.
+    pub(crate) fn commit_staged_config_async<Committed, Failed>(
+        &mut self,
+        staged: ConfigStore,
+        on_committed: Committed,
+        on_failed: Failed,
+        cx: &mut Context<Self>,
+    ) where
+        Committed: FnOnce(&mut Self, &mut Context<Self>) + 'static,
+        Failed: FnOnce(&mut Self, anyhow::Error, &mut Context<Self>) + 'static,
+    {
+        if !self.config_persistence.begin_full_commit() {
+            on_failed(
+                self,
+                anyhow::anyhow!("another configuration save is still in progress"),
+                cx,
+            );
+            return;
+        }
+
+        let preference_generation = self.config_persistence.generation();
+        let receipt = match self.config_repository.save_full_async(staged.clone()) {
+            Ok(receipt) => receipt,
+            Err(error) => {
+                self.config_persistence.finish_full_commit();
+                on_failed(self, error, cx);
+                return;
+            }
+        };
+        let wait_for_save = cx
+            .background_executor()
+            .spawn(async move { receipt.wait() });
+        cx.spawn(async move |this, cx| {
+            let result = wait_for_save.await;
+            let _ = this.update(cx, move |this, cx| {
+                this.config_persistence.finish_full_commit();
+                match result {
+                    Ok(()) => {
+                        let mut committed = staged;
+                        // Preferences may have changed while the full snapshot
+                        // was being written. Keep those newer UI values in
+                        // memory and let the generation driver persist them.
+                        committed.merge_interactive_preferences_from(&this.config);
+                        this.config = committed;
+                        this.config_persistence.mark_saved(preference_generation);
+                        this.continue_queued_close_sync(cx);
+                        on_committed(this, cx);
+                    }
+                    Err(error) => {
+                        this.continue_queued_close_sync(cx);
+                        on_failed(this, error, cx);
+                    }
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// Window-aware counterpart of [`Self::commit_staged_config_async`] for
+    /// dialogs that must only close after the configuration write succeeds.
+    pub(crate) fn commit_staged_config_in_window_async<Committed, Failed>(
+        &mut self,
+        staged: ConfigStore,
+        window: &mut Window,
+        on_committed: Committed,
+        on_failed: Failed,
+        cx: &mut Context<Self>,
+    ) where
+        Committed: FnOnce(&mut Self, &mut Window, &mut Context<Self>) + 'static,
+        Failed: FnOnce(&mut Self, anyhow::Error, &mut Window, &mut Context<Self>) + 'static,
+    {
+        if !self.config_persistence.begin_full_commit() {
+            on_failed(
+                self,
+                anyhow::anyhow!("another configuration save is still in progress"),
+                window,
+                cx,
+            );
+            return;
+        }
+
+        let preference_generation = self.config_persistence.generation();
+        let receipt = match self.config_repository.save_full_async(staged.clone()) {
+            Ok(receipt) => receipt,
+            Err(error) => {
+                self.config_persistence.finish_full_commit();
+                on_failed(self, error, window, cx);
+                return;
+            }
+        };
+        let wait_for_save = cx
+            .background_executor()
+            .spawn(async move { receipt.wait() });
+        let window_handle = window.window_handle();
+        cx.spawn(async move |this, cx| {
+            let result = wait_for_save.await;
+            let commit_result = this.update(cx, move |this, cx| {
+                this.config_persistence.finish_full_commit();
+                match result {
+                    Ok(()) => {
+                        let mut committed = staged;
+                        committed.merge_interactive_preferences_from(&this.config);
+                        this.config = committed;
+                        this.config_persistence.mark_saved(preference_generation);
+                        this.continue_queued_close_sync(cx);
+                        Ok(())
+                    }
+                    Err(error) => Err(error),
+                }
+            });
+            let Ok(commit_result) = commit_result else {
+                return Ok::<(), anyhow::Error>(());
+            };
+            let _ = window_handle.update(cx, move |_, window, cx| {
+                let _ = this.update(cx, move |this, cx| match commit_result {
+                    Ok(()) => on_committed(this, window, cx),
+                    Err(error) => on_failed(this, error, window, cx),
+                });
+            });
+            Ok::<(), anyhow::Error>(())
+        })
+        .detach();
+    }
+
+    fn drive_config_preferences_save(&mut self) {
+        const PREFERENCE_SAVE_DEBOUNCE: Duration = Duration::from_millis(350);
+        const PREFERENCE_SAVE_RETRY_DELAY: Duration = Duration::from_secs(2);
+
+        let now = Instant::now();
+        if let Some((generation, result)) = self.config_persistence.poll_result() {
+            match result {
+                Ok(()) => self.config_persistence.mark_saved(generation),
+                Err(error) => {
+                    tracing::warn!(generation, "background preference save failed: {error:#}");
+                    self.config_persistence
+                        .mark_save_failed(now, PREFERENCE_SAVE_RETRY_DELAY);
+                }
+            }
+        }
+
+        let Some(generation) = self
+            .config_persistence
+            .ready_generation(now, PREFERENCE_SAVE_DEBOUNCE)
+        else {
+            return;
+        };
+        match self.config_repository.persist_async(self.config.clone()) {
+            Ok(receipt) => self.config_persistence.set_in_flight(generation, receipt),
+            Err(error) => {
+                tracing::warn!(generation, "failed to queue preference save: {error:#}");
+                self.config_persistence
+                    .mark_save_failed(now, PREFERENCE_SAVE_RETRY_DELAY);
+            }
         }
     }
 

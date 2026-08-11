@@ -181,6 +181,15 @@ impl TinyShell {
                     .w(px(460.))
                     .close_button(false)
                     .overlay_closable(false)
+                    .on_close({
+                        let view = view.clone();
+                        move |_, _, cx| {
+                            view.update(cx, |this, cx| {
+                                this.dialog_closed(token);
+                                cx.notify();
+                            });
+                        }
+                    })
                     .content({
                         let message = message.clone();
                         move |content, _window, _cx| {
@@ -285,6 +294,15 @@ impl TinyShell {
                     .w(px(440.))
                     .close_button(false)
                     .overlay_closable(true)
+                    .on_close({
+                        let view = view.clone();
+                        move |_, _, cx| {
+                            view.update(cx, |this, cx| {
+                                this.dialog_closed(token);
+                                cx.notify();
+                            });
+                        }
+                    })
                     .on_ok({
                         let view = view.clone();
                         let new_pw_input = new_pw_input.clone();

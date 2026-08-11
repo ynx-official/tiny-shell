@@ -178,6 +178,63 @@ fn upload_preflight_result(
 }
 
 impl TinyShell {
+    /// Queue one pull/merge/upload cycle as soon as a window-close gesture is
+    /// received. Confirmation is tracked separately, so cancelling the dialog
+    /// never turns a completed background sync into an implicit window close.
+    pub(crate) fn begin_close_sync(&mut self, cx: &mut Context<Self>) {
+        self.close_sync_requested = true;
+        self.close_sync_completed = false;
+        if self.sync_runtime.in_progress {
+            return;
+        }
+        self.run_close_sync(cx);
+    }
+
+    fn run_close_sync(&mut self, cx: &mut Context<Self>) {
+        if !self.close_sync_requested || self.close_sync_running || self.close_sync_completed {
+            return;
+        }
+        if self.config_persistence.is_full_commit_in_flight() {
+            return;
+        }
+        if self.config.sync_backend() != "webdav" {
+            self.complete_close_sync(cx);
+            return;
+        }
+        let form = match self.automatic_sync_form() {
+            Ok(form) => form,
+            Err(error) => {
+                self.sync_runtime
+                    .set_failed(t!("sync_failed", error = format!("{error:#}")).into());
+                self.complete_close_sync(cx);
+                return;
+            }
+        };
+        self.close_sync_running = true;
+        self.upload_sync_config(form, cx);
+        if !self.sync_runtime.in_progress {
+            self.complete_close_sync(cx);
+        }
+    }
+
+    pub(crate) fn complete_close_sync(&mut self, cx: &mut Context<Self>) {
+        self.close_sync_running = false;
+        self.close_sync_completed = true;
+        if self.pending_close_window.is_some() {
+            self.approve_pending_close(cx);
+        }
+    }
+
+    pub(crate) fn continue_queued_close_sync(&mut self, cx: &mut Context<Self>) {
+        if self.close_sync_requested
+            && !self.close_sync_running
+            && !self.close_sync_completed
+            && !self.sync_runtime.in_progress
+        {
+            self.run_close_sync(cx);
+        }
+    }
+
     fn spawn_sync_operation<F>(&mut self, operation: F)
     where
         F: Future<Output = SyncResult> + Send + 'static,
@@ -675,6 +732,11 @@ impl TinyShell {
                 self.sync_runtime
                     .set_failed(t!("sync_failed", error = format!("{error:#}")).into());
                 cx.notify();
+                if self.close_sync_running {
+                    self.complete_close_sync(cx);
+                } else {
+                    self.continue_queued_close_sync(cx);
+                }
                 return;
             }
         };

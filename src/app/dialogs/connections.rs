@@ -17,16 +17,18 @@ impl TinyShell {
         if name.is_empty() {
             return;
         }
-        if let Some(old_name) = self.editing_connection_group.clone() {
+        let mut staged = self.config.clone();
+        let next_filter = if let Some(old_name) = self.editing_connection_group.clone() {
             let full_name = self
                 .connection_group_parent
                 .as_deref()
                 .map(|parent| format!("{parent}/{name}"))
                 .unwrap_or(name.clone());
-            self.config
-                .rename_connection_group(&old_name, full_name.clone());
+            staged.rename_connection_group(&old_name, full_name.clone());
             if self.connection_group_filter.as_deref() == Some(old_name.as_str()) {
-                self.connection_group_filter = Some(full_name);
+                Some(full_name)
+            } else {
+                self.connection_group_filter.clone()
             }
         } else {
             let full_name = self
@@ -34,17 +36,25 @@ impl TinyShell {
                 .as_deref()
                 .map(|parent| format!("{parent}/{name}"))
                 .unwrap_or(name.clone());
-            self.config.add_connection_group(full_name.clone());
-            self.connection_group_filter = Some(full_name);
-        }
-        if let Err(err) =
-            crate::app::config_persistence::save_full(&self.config_repository, &self.config)
-        {
-            tracing::warn!("failed to save connection group: {err:#}");
-        }
-        self.dismiss_dialog(token, window, cx);
-        self.editing_connection_group = None;
-        self.connection_group_parent = None;
-        cx.notify();
+            staged.add_connection_group(full_name.clone());
+            Some(full_name)
+        };
+        self.commit_staged_config_in_window_async(
+            staged,
+            window,
+            move |this, window, cx| {
+                this.connection_group_filter = next_filter;
+                this.dismiss_dialog(token, window, cx);
+                this.editing_connection_group = None;
+                this.connection_group_parent = None;
+                cx.notify();
+            },
+            |this, error, _, cx| {
+                tracing::warn!("failed to save connection group: {error:#}");
+                this.status = t!("config_save_failed", error = format!("{error:#}")).into();
+                cx.notify();
+            },
+            cx,
+        );
     }
 }

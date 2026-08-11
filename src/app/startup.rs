@@ -8,7 +8,7 @@ use std::{
 };
 
 use gpui::{App, AppContext as _, Bounds, Entity, WindowOptions, point, px, size};
-use gpui_component::Root;
+use gpui_component::{Root, WindowExt as _, button::ButtonVariant, dialog::DialogButtonProps};
 use rust_i18n::t;
 
 use crate::TinyShell;
@@ -21,6 +21,137 @@ use crate::{
 };
 
 static STARTUP_UPDATE_CHECK_STARTED: AtomicBool = AtomicBool::new(false);
+
+impl TinyShell {
+    pub(crate) fn request_main_window_close(
+        &mut self,
+        window: &mut gpui::Window,
+        cx: &mut gpui::Context<Self>,
+    ) {
+        if self.close_finalized || self.close_prompt_open || self.pending_close_window.is_some() {
+            return;
+        }
+
+        self.close_prompt_open = true;
+        self.begin_close_sync(cx);
+        let owner = cx.entity();
+        window.open_alert_dialog(cx, move |dialog, _dialog_window, _| {
+            dialog
+                .title(t!("close_window_confirm_title").to_string())
+                .description(t!("close_window_confirm_desc").to_string())
+                .button_props(
+                    DialogButtonProps::default()
+                        .cancel_text(t!("cancel").to_string())
+                        .show_cancel(true)
+                        .ok_text(t!("close_window_confirm").to_string())
+                        .ok_variant(ButtonVariant::Danger),
+                )
+                .on_close({
+                    let owner = owner.clone();
+                    move |_, _, cx| {
+                        owner.update(cx, |this, _| {
+                            this.close_prompt_open = false;
+                        });
+                    }
+                })
+                .on_cancel({
+                    let owner = owner.clone();
+                    move |_, _, cx| {
+                        owner.update(cx, |this, _| {
+                            this.close_prompt_open = false;
+                            this.pending_close_window = None;
+                        });
+                        true
+                    }
+                })
+                .on_ok({
+                    let owner = owner.clone();
+                    move |_, window, cx| {
+                        // Do not call `AnyWindowHandle::update` while the
+                        // dialog button is still dispatching on this window.
+                        // GPUI rejects that re-entrant update, which used to
+                        // leave the confirmation dialog closed but the main
+                        // window still open when sync had already completed.
+                        let owner_for_deferred = owner.clone();
+                        window.defer(cx, move |window, cx| {
+                            owner_for_deferred.update(cx, |this, cx| {
+                                this.confirm_close_after_sync_in_window(window, cx);
+                            });
+                        });
+                        true
+                    }
+                })
+        });
+    }
+
+    pub(crate) fn approve_pending_close(&mut self, cx: &mut gpui::Context<Self>) {
+        let Some(window) = self.pending_close_window.take() else {
+            return;
+        };
+        let owner = cx.entity();
+        if let Err(error) = window.update(cx, move |_, window, cx| {
+            window.defer(cx, move |window, cx| {
+                owner.update(cx, |this, cx| {
+                    this.finalize_main_window_close(window, cx);
+                });
+                window.remove_window();
+            });
+        }) {
+            self.close_prompt_open = false;
+            tracing::debug!("failed to finish closing the main window: {error:?}");
+        }
+    }
+
+    /// Complete an already-confirmed close from the window's deferred callback.
+    /// This avoids a nested handle update when the sync had finished before the
+    /// user pressed the confirmation button.
+    pub(crate) fn confirm_close_after_sync_in_window(
+        &mut self,
+        window: &mut gpui::Window,
+        cx: &mut gpui::Context<Self>,
+    ) {
+        self.close_prompt_open = false;
+        self.pending_close_window = Some(window.window_handle());
+        if self.close_sync_completed {
+            self.pending_close_window = None;
+            self.finalize_main_window_close(window, cx);
+            window.remove_window();
+        } else {
+            self.continue_queued_close_sync(cx);
+        }
+    }
+
+    pub(crate) fn finalize_main_window_close(
+        &mut self,
+        window: &mut gpui::Window,
+        cx: &mut gpui::Context<Self>,
+    ) {
+        if self.close_finalized {
+            return;
+        }
+        self.close_finalized = true;
+        self.close_prompt_open = false;
+
+        let mut close_report = crate::app::config_persistence::CloseErrorReport::default();
+        self.cancel_tab_drag(cx);
+        if let Err(error) = self.persist_config_preferences_checked() {
+            close_report.record("preferences", error);
+        }
+        if let Err(error) = self.save_layout_state_checked(window, cx) {
+            close_report.record("layout", error);
+        }
+        self.cleanup_on_window_close();
+        crate::app::close_auxiliary_windows(self.session_owner_id, cx);
+        if let Some(lease) = self.window_lease.take()
+            && let Err(error) = self.config_repository.close_window(lease)
+        {
+            close_report.record("close_window", error);
+        }
+        close_report.log();
+        crate::app::deregister_window(window.window_handle(), cx);
+        cx.notify();
+    }
+}
 
 pub(crate) fn bind_workspace_keys(cx: &mut gpui::App) {
     let config = ConfigStore::load().unwrap_or_else(|_| ConfigStore::in_memory());
@@ -237,6 +368,9 @@ fn read_proxy_from_env() -> Option<(String, String, Option<u16>, String, String)
 pub(crate) fn sync_macos_launch_environment() {}
 
 pub(crate) fn open_main_window(cx: &mut App) {
+    if let Err(error) = ConfigStore::initialize_temp_workspace() {
+        tracing::warn!("failed to initialize temporary workspace: {error:#}");
+    }
     let config = ConfigStore::load().unwrap_or_else(|_| ConfigStore::in_memory());
 
     let _ = crate::session::config::ENV_PROXY.get_or_init(|| {
@@ -416,7 +550,12 @@ pub(crate) fn open_new_window_with_group(
             Ok(())
         }
         Err((message, transfer)) => {
-            if let Err(error) = target_window.update(cx, |_, window, _| window.remove_window()) {
+            if let Err(error) = target_window.update(cx, |_, window, cx| {
+                target.update(cx, |this, cx| {
+                    this.finalize_main_window_close(window, cx);
+                });
+                window.remove_window();
+            }) {
                 tracing::warn!(
                     "[ui] failed to close empty window after group transfer failure: {error:?}"
                 );
@@ -440,8 +579,15 @@ fn open_window_with_initializer(
     let opened_view_for_window = opened_view.clone();
     let handle = match cx.open_window(window_options, |window, cx| {
         window.set_window_title(&t!("app_name"));
-        let view = cx
-            .new(|cx| TinyShell::new(window, session_store.clone(), config_repository.clone(), cx));
+        let view = cx.new(|cx| {
+            TinyShell::new(
+                window,
+                session_store.clone(),
+                config_repository.clone(),
+                lease,
+                cx,
+            )
+        });
 
         crate::app::register_window(window.window_handle(), view.clone());
         let should_activate = initialize(view.clone(), cx);
@@ -465,38 +611,16 @@ fn open_window_with_initializer(
         }
 
         let view_clone = view.clone();
-        let close_repository = config_repository.clone();
         window.on_window_should_close(cx, move |window: &mut gpui::Window, cx: &mut gpui::App| {
-            let handle = window.window_handle();
-            let mut close_report = crate::app::config_persistence::CloseErrorReport::default();
-            if !cx.windows().contains(&handle) {
-                tracing::warn!(
-                    "[ui] window not found in app during close, skipping save layout state."
-                );
-                if let Err(error) = close_repository.close_window(lease) {
-                    close_report.record("close_window", error);
-                }
-                close_report.log();
-                crate::app::deregister_window(handle, cx);
-                return true;
-            }
             view_clone.update(cx, |this, cx| {
-                this.cancel_tab_drag(cx);
-                if let Err(error) = this.persist_config_preferences_checked() {
-                    close_report.record("preferences", error);
+                if this.close_finalized {
+                    return true;
                 }
-                if let Err(error) = this.save_layout_state_checked(window, cx) {
-                    close_report.record("layout", error);
-                }
-                this.cleanup_on_window_close();
-                cx.notify();
-            });
-            if let Err(error) = close_repository.close_window(lease) {
-                close_report.record("close_window", error);
-            }
-            close_report.log();
-            crate::app::deregister_window(handle, cx);
-            true
+                this.request_main_window_close(window, cx);
+                // Both native title-bar closing and the custom title-bar button are
+                // completed asynchronously after confirmation and WebDAV sync.
+                false
+            })
         });
 
         *opened_view_for_window.borrow_mut() = Some(view.clone());

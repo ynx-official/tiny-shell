@@ -18,6 +18,7 @@ use crate::{
 #[derive(Clone)]
 struct EditorWindowEntry {
     session_id: String,
+    owner_id: crate::session::store::WindowOwnerId,
     window: AnyWindowHandle,
     editor: Entity<SftpEditor>,
 }
@@ -30,13 +31,16 @@ fn registry() -> Arc<Mutex<Vec<EditorWindowEntry>>> {
         .clone()
 }
 
-fn entries_for(session_id: &str) -> Vec<EditorWindowEntry> {
+fn entries_for(
+    session_id: &str,
+    owner_id: crate::session::store::WindowOwnerId,
+) -> Vec<EditorWindowEntry> {
     registry()
         .lock()
         .map(|entries| {
             entries
                 .iter()
-                .filter(|entry| entry.session_id == session_id)
+                .filter(|entry| entry.session_id == session_id && entry.owner_id == owner_id)
                 .cloned()
                 .collect()
         })
@@ -57,6 +61,13 @@ fn deregister(session_id: &str, window: AnyWindowHandle) {
     if let Ok(mut entries) = registry().lock() {
         entries.retain(|entry| entry.session_id != session_id || entry.window != window);
     }
+}
+
+pub(crate) fn deregister_window(window: AnyWindowHandle) {
+    if let Ok(mut entries) = registry().lock() {
+        entries.retain(|entry| entry.window != window);
+    }
+    crate::app::deregister_auxiliary_window(window);
 }
 
 fn window_options(cx: &App, position_hint: Option<Point<Pixels>>) -> WindowOptions {
@@ -100,16 +111,17 @@ fn window_options(cx: &App, position_hint: Option<Point<Pixels>>) -> WindowOptio
 
 pub(crate) fn open_or_focus(
     session_id: String,
+    owner_id: crate::session::store::WindowOwnerId,
     remote_path: String,
     file: RemoteTextFile,
     sftp: SftpHandle,
     cx: &mut App,
 ) {
-    if focus_path(&session_id, &remote_path, cx) {
+    if focus_path(&session_id, owner_id, &remote_path, cx) {
         return;
     }
 
-    for entry in entries_for(&session_id) {
+    for entry in entries_for(&session_id, owner_id) {
         let editor = entry.editor.clone();
         let remote_path_for_existing = remote_path.clone();
         let file_for_existing = file.clone();
@@ -141,6 +153,7 @@ pub(crate) fn open_or_focus(
         let editor = cx.new(|cx| {
             SftpEditor::new(
                 session_id_for_window.clone(),
+                owner_id,
                 remote_path,
                 file,
                 sftp,
@@ -149,9 +162,11 @@ pub(crate) fn open_or_focus(
             )
         });
         let window_handle = window.window_handle();
+        crate::app::register_auxiliary_window(window_handle, owner_id);
         debug_assert_eq!(editor.read(cx).session_id(), session_id_for_window);
         register(EditorWindowEntry {
             session_id: session_id_for_window.clone(),
+            owner_id,
             window: window_handle,
             editor: editor.clone(),
         });
@@ -163,6 +178,7 @@ pub(crate) fn open_or_focus(
                 editor_for_close.update(cx, |editor, cx| editor.request_window_close(window, cx));
             if should_close {
                 deregister(&session_id_for_close, window.window_handle());
+                crate::app::deregister_auxiliary_window(window.window_handle());
             }
             should_close
         });
@@ -185,6 +201,7 @@ pub(crate) fn open_or_focus(
 
 pub(crate) fn open_detached(
     session_id: String,
+    owner_id: crate::session::store::WindowOwnerId,
     tab: EditorTab,
     sftp: SftpHandle,
     position: Point<Pixels>,
@@ -200,11 +217,20 @@ pub(crate) fn open_detached(
             t!("editor_window_title")
         ));
         let editor = cx.new(|cx| {
-            SftpEditor::from_detached(session_id_for_window.clone(), tab, sftp, window, cx)
+            SftpEditor::from_detached(
+                session_id_for_window.clone(),
+                owner_id,
+                tab,
+                sftp,
+                window,
+                cx,
+            )
         });
         let window_handle = window.window_handle();
+        crate::app::register_auxiliary_window(window_handle, owner_id);
         register(EditorWindowEntry {
             session_id: session_id_for_window.clone(),
+            owner_id,
             window: window_handle,
             editor: editor.clone(),
         });
@@ -216,6 +242,7 @@ pub(crate) fn open_detached(
                 editor_for_close.update(cx, |editor, cx| editor.request_window_close(window, cx));
             if should_close {
                 deregister(&session_id_for_close, window.window_handle());
+                crate::app::deregister_auxiliary_window(window.window_handle());
             }
             should_close
         });
@@ -240,8 +267,12 @@ pub(crate) fn open_detached(
     }
 }
 
-pub(crate) fn notify_connection_lost(session_id: &str, cx: &mut App) {
-    for entry in entries_for(session_id) {
+pub(crate) fn notify_connection_lost(
+    session_id: &str,
+    owner_id: crate::session::store::WindowOwnerId,
+    cx: &mut App,
+) {
+    for entry in entries_for(session_id, owner_id) {
         let editor = entry.editor.clone();
         if entry
             .window
@@ -255,23 +286,47 @@ pub(crate) fn notify_connection_lost(session_id: &str, cx: &mut App) {
     }
 }
 
-pub(crate) fn force_close_session_windows(session_id: &str, cx: &mut App) {
-    for entry in entries_for(session_id) {
+pub(crate) fn force_close_session_windows(
+    session_id: &str,
+    owner_id: crate::session::store::WindowOwnerId,
+    cx: &mut App,
+) {
+    for entry in entries_for(session_id, owner_id) {
         let editor = entry.editor.clone();
         let _ = entry.window.update(cx, move |_, window, cx| {
             editor.update(cx, |editor, cx| editor.force_close_window(window, cx));
         });
+        crate::app::deregister_auxiliary_window(entry.window);
         deregister(session_id, entry.window);
+    }
+}
+
+pub(crate) fn force_close_all(owner_id: crate::session::store::WindowOwnerId, cx: &mut App) {
+    let entries = registry()
+        .lock()
+        .map(|entries| entries.clone())
+        .unwrap_or_default();
+    for entry in entries
+        .into_iter()
+        .filter(|entry| entry.owner_id == owner_id)
+    {
+        let editor = entry.editor.clone();
+        let _ = entry.window.update(cx, move |_, window, cx| {
+            editor.update(cx, |editor, cx| editor.force_close_window(window, cx));
+        });
+        crate::app::deregister_auxiliary_window(entry.window);
+        deregister(&entry.session_id, entry.window);
     }
 }
 
 pub(crate) fn request_session_close(
     session_id: &str,
+    owner_id: crate::session::store::WindowOwnerId,
     tab_id: String,
     owner: Entity<crate::TinyShell>,
     cx: &mut App,
 ) -> bool {
-    let entries = entries_for(session_id);
+    let entries = entries_for(session_id, owner_id);
     if entries.is_empty() {
         return true;
     }
@@ -293,12 +348,17 @@ pub(crate) fn request_session_close(
             .unwrap_or(true);
     }
 
-    force_close_session_windows(session_id, cx);
+    force_close_session_windows(session_id, owner_id, cx);
     true
 }
 
-pub(crate) fn focus_path(session_id: &str, remote_path: &str, cx: &mut App) -> bool {
-    for entry in entries_for(session_id) {
+pub(crate) fn focus_path(
+    session_id: &str,
+    owner_id: crate::session::store::WindowOwnerId,
+    remote_path: &str,
+    cx: &mut App,
+) -> bool {
+    for entry in entries_for(session_id, owner_id) {
         let editor = entry.editor.clone();
         let remote_path = remote_path.to_string();
         match entry.window.update(cx, move |_, window, cx| {
@@ -320,11 +380,12 @@ pub(crate) fn focus_path(session_id: &str, remote_path: &str, cx: &mut App) -> b
 
 pub(crate) fn mark_uploaded(
     session_id: &str,
+    owner_id: crate::session::store::WindowOwnerId,
     remote_path: &str,
     revision: RemoteFileRevision,
     cx: &mut App,
 ) {
-    for entry in entries_for(session_id) {
+    for entry in entries_for(session_id, owner_id) {
         let remote_path = remote_path.to_string();
         let revision = revision.clone();
         entry.editor.update(cx, |editor, cx| {
@@ -335,11 +396,12 @@ pub(crate) fn mark_uploaded(
 
 pub(crate) fn mark_conflict(
     session_id: &str,
+    owner_id: crate::session::store::WindowOwnerId,
     remote_path: &str,
     remote_file: RemoteTextFile,
     cx: &mut App,
 ) {
-    for entry in entries_for(session_id) {
+    for entry in entries_for(session_id, owner_id) {
         let remote_path = remote_path.to_string();
         let remote_file = remote_file.clone();
         entry.editor.update(cx, |editor, cx| {
@@ -348,8 +410,14 @@ pub(crate) fn mark_conflict(
     }
 }
 
-pub(crate) fn mark_upload_failed(session_id: &str, remote_path: &str, error: String, cx: &mut App) {
-    for entry in entries_for(session_id) {
+pub(crate) fn mark_upload_failed(
+    session_id: &str,
+    owner_id: crate::session::store::WindowOwnerId,
+    remote_path: &str,
+    error: String,
+    cx: &mut App,
+) {
+    for entry in entries_for(session_id, owner_id) {
         let remote_path = remote_path.to_string();
         let error = error.clone();
         entry.editor.update(cx, |editor, cx| {

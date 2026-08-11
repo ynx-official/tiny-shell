@@ -173,10 +173,13 @@ pub(crate) fn open(
     cx: &mut App,
 ) -> Option<AnyWindowHandle> {
     let options = window_options(cx);
+    let owner_id = owner.read(cx).session_owner_id;
     let original_config = config.clone();
     let owner_for_window = owner.clone();
     let opened = cx.open_window(options, move |window, cx| {
         window.set_window_title(t!("settings").as_ref());
+        let window_handle = window.window_handle();
+        crate::app::register_auxiliary_window(window_handle, owner_id);
 
         let owner_for_close = owner_for_window.clone();
         let original_config = original_config.clone();
@@ -197,6 +200,7 @@ pub(crate) fn open(
                 this.persist_config_preferences_async();
                 cx.notify();
             });
+            crate::app::deregister_auxiliary_window(window_handle);
             true
         });
 

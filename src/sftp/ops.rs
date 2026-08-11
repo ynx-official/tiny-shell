@@ -23,15 +23,6 @@ enum SftpDownloadRequest {
     },
 }
 
-#[derive(Clone)]
-pub(crate) struct SftpTreeRow {
-    pub path: String,
-    pub name: String,
-    pub depth: usize,
-    pub expanded: bool,
-    pub permissions: Option<u32>,
-}
-
 use crate::{
     SftpContextMenuState, TinyShell,
     sftp::{RemoteEntry, SftpHandle},
@@ -129,7 +120,12 @@ impl TinyShell {
         let Some(session_id) = self.workspace().active_group_id().map(str::to_owned) else {
             return;
         };
-        if crate::app::sftp_editor_window::focus_path(&session_id, &remote_path, cx) {
+        if crate::app::sftp_editor_window::focus_path(
+            &session_id,
+            self.session_owner_id,
+            &remote_path,
+            cx,
+        ) {
             return;
         }
         if let Some(handle) = self.sftp_handles.get(&session_id) {
@@ -195,9 +191,9 @@ impl TinyShell {
         let Some(sftp) = self.active_sftp() else {
             return;
         };
-        let Some(index) = sftp_tree_rows(sftp, self.sftp_panel.show_hidden_files)
+        let Some(index) = sftp_tree_paths(sftp, self.sftp_panel.show_hidden_files)
             .iter()
-            .position(|row| row.path == path)
+            .position(|row| row == &path)
         else {
             return;
         };
@@ -998,25 +994,23 @@ impl TinyShell {
     }
 }
 
-pub(crate) fn sftp_tree_rows(
+pub(crate) fn sftp_tree_paths(
     sftp: &terminal::SftpUiState,
     show_hidden_files: bool,
-) -> Vec<SftpTreeRow> {
+) -> Vec<String> {
     fn append_rows(
-        rows: &mut Vec<SftpTreeRow>,
+        rows: &mut Vec<String>,
         visited: &mut std::collections::HashSet<String>,
         sftp: &terminal::SftpUiState,
         show_hidden_files: bool,
-        mut row: SftpTreeRow,
+        path: String,
+        depth: usize,
     ) {
-        if row.depth > 32 || !visited.insert(row.path.clone()) {
+        if depth > 32 || !visited.insert(path.clone()) {
             return;
         }
-        row.expanded = row.path == "/" || sftp.expanded_directories.contains(&row.path);
-        let path = row.path.clone();
-        let depth = row.depth;
-        let expanded = row.expanded;
-        rows.push(row);
+        let expanded = path == "/" || sftp.expanded_directories.contains(&path);
+        rows.push(path.clone());
 
         if !expanded {
             return;
@@ -1033,19 +1027,13 @@ pub(crate) fn sftp_tree_rows(
                     visited,
                     sftp,
                     show_hidden_files,
-                    SftpTreeRow {
-                        path: entry.full_path.clone(),
-                        name: entry.name.clone(),
-                        depth: depth + 1,
-                        expanded: false,
-                        permissions: Some(entry.permissions),
-                    },
+                    entry.full_path.clone(),
+                    depth + 1,
                 );
             }
         }
     }
 
-    let root = "/".to_string();
     let mut rows = Vec::new();
     let mut visited = std::collections::HashSet::new();
     append_rows(
@@ -1053,13 +1041,8 @@ pub(crate) fn sftp_tree_rows(
         &mut visited,
         sftp,
         show_hidden_files,
-        SftpTreeRow {
-            path: root,
-            name: "/".to_string(),
-            depth: 0,
-            expanded: true,
-            permissions: None,
-        },
+        "/".to_string(),
+        0,
     );
     rows
 }

@@ -46,6 +46,11 @@ pub(crate) struct ConnectionOperationWindow {
 }
 
 impl ConnectionOperationWindow {
+    fn close_window(window: &mut Window) {
+        crate::app::deregister_auxiliary_window(window.window_handle());
+        window.remove_window();
+    }
+
     fn new(
         owner: Entity<TinyShell>,
         operation: ConnectionOperation,
@@ -137,7 +142,7 @@ impl ConnectionOperationWindow {
             }
         });
         if saved {
-            window.remove_window();
+            Self::close_window(window);
         }
     }
 
@@ -154,7 +159,7 @@ impl ConnectionOperationWindow {
         if commit_catalog_change(&self.owner, window, cx, move |config| {
             crate::session::connection_catalog::move_session(config, &session_id, target.as_deref())
         }) {
-            window.remove_window();
+            Self::close_window(window);
         }
     }
 
@@ -171,7 +176,7 @@ impl ConnectionOperationWindow {
             )
             .map(|_| ())
         }) {
-            window.remove_window();
+            Self::close_window(window);
         }
     }
 
@@ -218,7 +223,7 @@ impl ConnectionOperationWindow {
         };
         if !path.as_os_str().is_empty() {
             if self.run_archive(path, &password, cx) {
-                window.remove_window();
+                Self::close_window(window);
             }
             return;
         }
@@ -251,7 +256,9 @@ impl ConnectionOperationWindow {
                         let succeeded =
                             this.update(cx, |this, cx| this.run_archive(&path, &password, cx))?;
                         if succeeded {
-                            let _ = window_handle.update(cx, |_, window, _| window.remove_window());
+                            let _ = window_handle.update(cx, |_, window, _| {
+                                Self::close_window(window);
+                            });
                         }
                     }
                 }
@@ -292,7 +299,7 @@ impl ConnectionOperationWindow {
                         Button::new("connection-archive-window-cancel")
                             .secondary()
                             .label(t!("cancel").to_string())
-                            .on_click(|_, window, _| window.remove_window()),
+                            .on_click(|_, window, _| Self::close_window(window)),
                     )
                     .child(
                         Button::new("connection-archive-window-confirm")
@@ -333,7 +340,7 @@ impl ConnectionOperationWindow {
                         Button::new("connection-operation-cancel")
                             .secondary()
                             .label(t!("cancel").to_string())
-                            .on_click(|_, window, _| window.remove_window()),
+                            .on_click(|_, window, _| Self::close_window(window)),
                     )
                     .child(
                         Button::new("connection-operation-save")
@@ -568,6 +575,7 @@ impl TinyShell {
 }
 
 pub(crate) fn open(owner: Entity<TinyShell>, operation: ConnectionOperation, cx: &mut App) {
+    let owner_id = owner.read(cx).session_owner_id;
     let compact = matches!(
         operation,
         ConnectionOperation::EditGroup { .. } | ConnectionOperation::Archive { .. }
@@ -587,6 +595,8 @@ pub(crate) fn open(owner: Entity<TinyShell>, operation: ConnectionOperation, cx:
     };
     let opened = cx.open_window(window_options(cx, compact), move |window, cx| {
         window.set_window_title(&title);
+        let window_handle = window.window_handle();
+        crate::app::register_auxiliary_window(window_handle, owner_id);
         let view =
             cx.new(|cx| ConnectionOperationWindow::new(owner.clone(), operation, window, cx));
         let focus_input = view
@@ -601,6 +611,10 @@ pub(crate) fn open(owner: Entity<TinyShell>, operation: ConnectionOperation, cx:
                 window.focus(&focus_handle, cx);
             });
         }
+        window.on_window_should_close(cx, move |_, _| {
+            crate::app::deregister_auxiliary_window(window_handle);
+            true
+        });
         cx.new(|cx| Root::new(view, window, cx))
     });
     if let Err(error) = opened {

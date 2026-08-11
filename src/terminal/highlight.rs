@@ -1021,28 +1021,81 @@ pub(crate) fn find_url_at_cell(
     row: usize,
     col: usize,
 ) -> Option<(String, Vec<(usize, usize)>)> {
-    let logical_lines = build_logical_lines(cells, rows);
-    for line in logical_lines {
-        let text = line.text.as_str();
-        for m in find_urls(text) {
-            let url_len = find_url_len(&text[m..]);
-            let mut url_cells = Vec::with_capacity(url_len);
-            let mut matched = false;
-            for i in 0..url_len {
-                let idx = m + i;
-                if idx < line.byte_to_cell.len() {
-                    let (r, c) = line.byte_to_cell[idx];
-                    if r == row && c == col {
-                        matched = true;
-                    }
-                    url_cells.push((r, c));
+    let line = logical_line_at_row(cells, rows, row)?;
+    let text = line.text.as_str();
+    for m in find_urls(text) {
+        let url_len = find_url_len(&text[m..]);
+        let mut url_cells = Vec::with_capacity(url_len);
+        let mut matched = false;
+        for i in 0..url_len {
+            let idx = m + i;
+            if idx < line.byte_to_cell.len() {
+                let (r, c) = line.byte_to_cell[idx];
+                if r == row && c == col {
+                    matched = true;
                 }
+                url_cells.push((r, c));
             }
-            if matched {
-                let url_str = text[m..m + url_len].to_string();
-                return Some((url_str, url_cells));
-            }
+        }
+        if matched {
+            let url_str = text[m..m + url_len].to_string();
+            return Some((url_str, url_cells));
         }
     }
     None
+}
+
+/// Builds only the wrapped logical line containing `target_row`. URL hover is
+/// invoked for every mouse move, so rebuilding and sorting the entire terminal
+/// viewport here is unnecessarily expensive.
+fn logical_line_at_row<'a>(
+    cells: &'a [RenderCell],
+    rows: usize,
+    target_row: usize,
+) -> Option<LogicalLine<'a>> {
+    if rows == 0 || target_row >= rows || cells.len() % rows != 0 {
+        return None;
+    }
+    let cols = cells.len() / rows;
+    if cols == 0 {
+        return None;
+    }
+
+    let wraps_to_next = |row: usize| {
+        cells
+            .get((row + 1).saturating_mul(cols).saturating_sub(1))
+            .is_some_and(|cell| {
+                cell.cell
+                    .flags
+                    .contains(alacritty_terminal::term::cell::Flags::WRAPLINE)
+            })
+    };
+
+    let mut first_row = target_row;
+    while first_row > 0 && wraps_to_next(first_row - 1) {
+        first_row -= 1;
+    }
+    let mut last_row = target_row;
+    while last_row + 1 < rows && wraps_to_next(last_row) {
+        last_row += 1;
+    }
+
+    let mut line = LogicalLine {
+        text: String::with_capacity((last_row - first_row + 1) * cols),
+        byte_to_cell: Vec::with_capacity((last_row - first_row + 1) * cols),
+        row_cells: Vec::with_capacity((last_row - first_row + 1) * cols),
+    };
+    for row in first_row..=last_row {
+        let row_start = row * cols;
+        for cell in &cells[row_start..row_start + cols] {
+            line.text.push(cell.cell.c);
+            let end_len = line.text.len();
+            while line.byte_to_cell.len() < end_len {
+                line.byte_to_cell
+                    .push((cell.row as usize, cell.col as usize));
+            }
+            line.row_cells.push(cell);
+        }
+    }
+    Some(line)
 }

@@ -1,23 +1,30 @@
+use std::sync::Arc;
+
 use tokio::sync::mpsc::{self, Sender};
 
-use super::SftpCommand;
+use super::{SftpCommand, SftpControl};
 use crate::sftp::text_file::RemoteTextSave;
 
 pub struct SftpHandle {
     commands: Sender<SftpCommand>,
+    controls: Arc<super::SftpControlQueue>,
 }
 
 impl Clone for SftpHandle {
     fn clone(&self) -> Self {
         Self {
             commands: self.commands.clone(),
+            controls: self.controls.clone(),
         }
     }
 }
 
 impl SftpHandle {
-    pub(crate) fn new(commands: Sender<SftpCommand>) -> Self {
-        Self { commands }
+    pub(crate) fn new(
+        commands: Sender<SftpCommand>,
+        controls: Arc<super::SftpControlQueue>,
+    ) -> Self {
+        Self { commands, controls }
     }
 
     pub(crate) fn send_command(&self, command: SftpCommand) -> bool {
@@ -112,18 +119,18 @@ impl SftpHandle {
     }
 
     pub fn close(&self) {
-        self.send_command(SftpCommand::Close);
+        self.controls.send(SftpControl::Close);
     }
 
     pub fn pause_transfer(&self, id: String) {
-        self.send_command(SftpCommand::PauseTransfer(id));
+        self.controls.send(SftpControl::PauseTransfer(id));
     }
 
     pub fn resume_transfer(&self, id: String) {
-        self.send_command(SftpCommand::ResumeTransfer(id));
+        self.controls.send(SftpControl::ResumeTransfer(id));
     }
 
     pub fn cancel_transfer(&self, id: String) {
-        self.send_command(SftpCommand::CancelTransfer(id));
+        self.controls.send(SftpControl::CancelTransfer(id));
     }
 }

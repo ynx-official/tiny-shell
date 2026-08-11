@@ -4,7 +4,7 @@ use rust_i18n::t;
 
 use crate::{
     TinyShell,
-    app::{config_persistence, resizable::ResizableState, theme},
+    app::{resizable::ResizableState, theme},
     session::config::{CursorStyle, TerminalDisplayStyle},
     session::terminal_preferences::{terminal_cell_width_for, terminal_line_height_for},
 };
@@ -82,18 +82,24 @@ impl TinyShell {
         cx.notify();
     }
 
-    pub(crate) fn reset_layout(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
-        self.config.set_layout_state(None, None, None);
-        if let Err(error) =
-            config_persistence::save_full_async(&self.config_repository, &self.config)
-        {
-            tracing::warn!("failed to persist reset layout: {error:#}");
-        }
-
-        self.is_layout_reset = true;
-        self.workspace_panels = cx.new(|_| ResizableState::default());
-        self.body_panels = cx.new(|_| ResizableState::default());
-
-        cx.notify();
+    pub(crate) fn reset_layout(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let mut staged = self.config.clone();
+        staged.set_layout_state(None, None, None);
+        self.commit_staged_config_in_window_async(
+            staged,
+            window,
+            |this, _, cx| {
+                this.is_layout_reset = true;
+                this.workspace_panels = cx.new(|_| ResizableState::default());
+                this.body_panels = cx.new(|_| ResizableState::default());
+                cx.notify();
+            },
+            |this, error, _, cx| {
+                tracing::warn!("failed to persist reset layout: {error:#}");
+                this.status = t!("config_save_failed", error = format!("{error:#}")).into();
+                cx.notify();
+            },
+            cx,
+        );
     }
 }

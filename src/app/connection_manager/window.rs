@@ -52,6 +52,7 @@ impl Render for ConnectionManagerWindow {
                 if event.keystroke.key.as_str() == "escape" {
                     window.prevent_default();
                     cx.stop_propagation();
+                    crate::app::deregister_auxiliary_window(window.window_handle());
                     window.remove_window();
                 }
             })
@@ -101,9 +102,12 @@ pub(crate) fn window_options(cx: &App) -> WindowOptions {
 
 pub(crate) fn open(owner: Entity<TinyShell>, cx: &mut App) -> Option<AnyWindowHandle> {
     let options = window_options(cx);
+    let owner_id = owner.read(cx).session_owner_id;
     let owner_for_window = owner.clone();
     let opened = cx.open_window(options, move |window, cx| {
         window.set_window_title(t!("quick_connection_title").as_ref());
+        let window_handle = window.window_handle();
+        crate::app::register_auxiliary_window(window_handle, owner_id);
 
         let manager =
             cx.new(|cx| ConnectionManagerWindow::new(owner_for_window.clone(), window, cx));
@@ -115,6 +119,7 @@ pub(crate) fn open(owner: Entity<TinyShell>, cx: &mut App) -> Option<AnyWindowHa
                 this.auxiliary_windows.connection_manager.opening = false;
                 cx.notify();
             });
+            crate::app::deregister_auxiliary_window(window_handle);
             true
         });
         window.defer(cx, move |window, cx| {

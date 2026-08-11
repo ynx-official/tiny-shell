@@ -1,5 +1,17 @@
+use std::{
+    cell::{Cell, RefCell},
+    collections::HashMap,
+};
+
 use crate::app::{PaneLayout, SystemInfoTab, TabGroup};
 use crate::terminal::TerminalTab;
+
+#[derive(Default)]
+struct WorkspaceIndexes {
+    tabs: HashMap<String, usize>,
+    groups: HashMap<String, usize>,
+    group_by_tab: HashMap<String, String>,
+}
 
 pub(crate) struct TerminalWorkspaceState {
     tabs: Vec<TerminalTab>,
@@ -11,6 +23,8 @@ pub(crate) struct TerminalWorkspaceState {
     active_system_info_tab: Option<String>,
     pane_root: PaneLayout,
     focused_pane_path: Vec<usize>,
+    indexes: RefCell<WorkspaceIndexes>,
+    indexes_dirty: Cell<bool>,
 }
 
 impl Default for TerminalWorkspaceState {
@@ -25,6 +39,8 @@ impl Default for TerminalWorkspaceState {
             active_system_info_tab: None,
             pane_root: PaneLayout::Empty,
             focused_pane_path: Vec::new(),
+            indexes: RefCell::new(WorkspaceIndexes::default()),
+            indexes_dirty: Cell::new(false),
         }
     }
 }
@@ -74,6 +90,32 @@ pub(crate) fn choose_transfer_active_tab(
 }
 
 impl TerminalWorkspaceState {
+    fn invalidate_indexes(&self) {
+        self.indexes_dirty.set(true);
+    }
+
+    fn ensure_indexes(&self) {
+        if !self.indexes_dirty.replace(false) {
+            return;
+        }
+        let mut indexes = self.indexes.borrow_mut();
+        indexes.tabs.clear();
+        indexes.groups.clear();
+        indexes.group_by_tab.clear();
+        for (index, tab) in self.tabs.iter().enumerate() {
+            indexes.tabs.entry(tab.id.clone()).or_insert(index);
+        }
+        for (index, group) in self.tab_groups.iter().enumerate() {
+            indexes.groups.entry(group.id.clone()).or_insert(index);
+            for tab_id in group.pane_root.tab_ids() {
+                indexes
+                    .group_by_tab
+                    .entry(tab_id.to_owned())
+                    .or_insert_with(|| group.id.clone());
+            }
+        }
+    }
+
     pub(crate) fn new() -> Self {
         Self {
             next_tab_group_ordinal: 1,
@@ -102,6 +144,15 @@ impl TerminalWorkspaceState {
     }
 
     pub(crate) fn pane_root_mut(&mut self) -> &mut PaneLayout {
+        self.ensure_indexes();
+        let active_group_index = self
+            .active_group
+            .as_deref()
+            .and_then(|group_id| self.indexes.borrow().groups.get(group_id).copied());
+        if let Some(index) = active_group_index {
+            self.invalidate_indexes();
+            return &mut self.tab_groups[index].pane_root;
+        }
         &mut self.pane_root
     }
 
@@ -116,10 +167,12 @@ impl TerminalWorkspaceState {
     pub(crate) fn insert_group(&mut self, index: usize, group: TabGroup) {
         self.tab_groups
             .insert(index.min(self.tab_groups.len()), group);
+        self.invalidate_indexes();
     }
 
     pub(crate) fn insert_tab(&mut self, index: usize, tab: TerminalTab) {
         self.tabs.insert(index.min(self.tabs.len()), tab);
+        self.invalidate_indexes();
     }
 
     pub(crate) fn tab_groups(&self) -> &[TabGroup] {
@@ -139,6 +192,14 @@ impl TerminalWorkspaceState {
     }
 
     pub(crate) fn pane_root(&self) -> &PaneLayout {
+        self.ensure_indexes();
+        if let Some(index) = self
+            .active_group
+            .as_deref()
+            .and_then(|group_id| self.indexes.borrow().groups.get(group_id).copied())
+        {
+            return &self.tab_groups[index].pane_root;
+        }
         &self.pane_root
     }
 
@@ -147,21 +208,27 @@ impl TerminalWorkspaceState {
     }
 
     pub(crate) fn tabs_mut(&mut self) -> &mut Vec<TerminalTab> {
+        self.invalidate_indexes();
         &mut self.tabs
     }
 
     pub(crate) fn terminal_tab_mut(&mut self, tab_id: &str) -> Option<&mut TerminalTab> {
-        self.tabs.iter_mut().find(|tab| tab.id == tab_id)
+        self.ensure_indexes();
+        let index = self.indexes.borrow().tabs.get(tab_id).copied()?;
+        self.invalidate_indexes();
+        self.tabs.get_mut(index)
     }
 
     pub(crate) fn tab_groups_mut(&mut self) -> &mut Vec<TabGroup> {
+        self.invalidate_indexes();
         &mut self.tab_groups
     }
 
     pub(crate) fn tab_group_mut(&mut self, group_id: &str) -> Option<&mut TabGroup> {
-        self.tab_groups
-            .iter_mut()
-            .find(|group| group.id == group_id)
+        self.ensure_indexes();
+        let index = self.indexes.borrow().groups.get(group_id).copied()?;
+        self.invalidate_indexes();
+        self.tab_groups.get_mut(index)
     }
 
     pub(crate) fn clear(&mut self) {
@@ -173,30 +240,41 @@ impl TerminalWorkspaceState {
         self.active_system_info_tab = None;
         self.pane_root = PaneLayout::Empty;
         self.focused_pane_path.clear();
+        self.invalidate_indexes();
     }
 
     pub(crate) fn push_tab(&mut self, tab: TerminalTab) {
         self.tabs.push(tab);
+        self.invalidate_indexes();
     }
 
     pub(crate) fn take_tabs(&mut self) -> Vec<TerminalTab> {
-        std::mem::take(&mut self.tabs)
+        let tabs = std::mem::take(&mut self.tabs);
+        self.invalidate_indexes();
+        tabs
     }
 
     pub(crate) fn replace_tabs(&mut self, tabs: Vec<TerminalTab>) {
         self.tabs = tabs;
+        self.invalidate_indexes();
     }
 
     pub(crate) fn append_tabs(&mut self, mut tabs: Vec<TerminalTab>) {
         self.tabs.append(&mut tabs);
+        self.invalidate_indexes();
     }
 
     pub(crate) fn push_group(&mut self, group: TabGroup) {
         self.tab_groups.push(group);
+        self.invalidate_indexes();
     }
 
     pub(crate) fn remove_group(&mut self, index: usize) -> Option<TabGroup> {
-        (index < self.tab_groups.len()).then(|| self.tab_groups.remove(index))
+        let removed = (index < self.tab_groups.len()).then(|| self.tab_groups.remove(index));
+        if removed.is_some() {
+            self.invalidate_indexes();
+        }
+        removed
     }
 
     pub(crate) fn push_system_info_tab(&mut self, tab: SystemInfoTab) {
@@ -225,7 +303,17 @@ impl TerminalWorkspaceState {
     }
 
     pub(crate) fn set_pane_root(&mut self, pane_root: PaneLayout) {
-        self.pane_root = pane_root;
+        self.ensure_indexes();
+        if let Some(index) = self
+            .active_group
+            .as_deref()
+            .and_then(|group_id| self.indexes.borrow().groups.get(group_id).copied())
+        {
+            self.tab_groups[index].pane_root = pane_root;
+            self.invalidate_indexes();
+        } else {
+            self.pane_root = pane_root;
+        }
     }
 
     pub(crate) fn set_focused_pane_path(&mut self, path: Vec<usize>) {
@@ -249,11 +337,20 @@ impl TerminalWorkspaceState {
     }
 
     pub(crate) fn terminal_tab(&self, tab_id: &str) -> Option<&TerminalTab> {
-        self.tabs.iter().find(|tab| tab.id == tab_id)
+        self.ensure_indexes();
+        let index = self.indexes.borrow().tabs.get(tab_id).copied()?;
+        self.tabs.get(index)
     }
 
     pub(crate) fn tab_group(&self, group_id: &str) -> Option<&TabGroup> {
-        self.tab_groups.iter().find(|group| group.id == group_id)
+        self.ensure_indexes();
+        let index = self.indexes.borrow().groups.get(group_id).copied()?;
+        self.tab_groups.get(index)
+    }
+
+    pub(crate) fn group_id_for_tab(&self, tab_id: &str) -> Option<String> {
+        self.ensure_indexes();
+        self.indexes.borrow().group_by_tab.get(tab_id).cloned()
     }
 
     pub(crate) fn allocate_tab_group_ordinal(&mut self) -> u64 {
@@ -267,11 +364,7 @@ impl TerminalWorkspaceState {
             return false;
         }
         self.active_tab = Some(tab_id.to_owned());
-        self.active_group = self
-            .tab_groups
-            .iter()
-            .find(|group| group.pane_root.contains(tab_id))
-            .map(|group| group.id.clone());
+        self.active_group = self.group_id_for_tab(tab_id);
         true
     }
 
@@ -282,8 +375,9 @@ impl TerminalWorkspaceState {
         self.tab_groups.push(group);
         self.active_tab = Some(tab_id.clone());
         self.active_group = Some(group_id);
-        self.pane_root = PaneLayout::Single(tab_id);
+        self.pane_root = PaneLayout::Empty;
         self.focused_pane_path.clear();
+        self.invalidate_indexes();
     }
 
     pub(crate) fn preferred_terminal_tab_id(&self) -> Option<String> {

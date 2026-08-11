@@ -212,6 +212,7 @@ impl EditorTabDrag {
 
 pub(crate) struct SftpEditor {
     session_id: String,
+    owner_id: crate::session::store::WindowOwnerId,
     sftp: SftpHandle,
     tabs: Vec<EditorTab>,
     /// 当前激活的 tab 索引。
@@ -246,6 +247,7 @@ impl SftpEditor {
     /// 创建编辑器并打开第一个文件。
     pub fn new(
         session_id: String,
+        owner_id: crate::session::store::WindowOwnerId,
         remote_path: String,
         file: RemoteTextFile,
         sftp: SftpHandle,
@@ -255,6 +257,7 @@ impl SftpEditor {
         let tab = EditorTab::new(remote_path, file, window, cx);
         Self {
             session_id,
+            owner_id,
             sftp,
             tabs: vec![tab],
             active_idx: 0,
@@ -267,6 +270,7 @@ impl SftpEditor {
 
     pub(crate) fn from_detached(
         session_id: String,
+        owner_id: crate::session::store::WindowOwnerId,
         tab: EditorTab,
         sftp: SftpHandle,
         _window: &mut Window,
@@ -275,6 +279,7 @@ impl SftpEditor {
         subscribe_input_changes(&tab.input, cx);
         Self {
             session_id,
+            owner_id,
             sftp,
             tabs: vec![tab],
             active_idx: 0,
@@ -604,6 +609,7 @@ impl SftpEditor {
     fn close_window(&mut self, window: &mut Window, cx: &mut gpui::Context<Self>) {
         self.force_close = true;
         cx.notify();
+        crate::app::sftp_editor_window::deregister_window(window.window_handle());
         window.remove_window();
     }
 
@@ -695,10 +701,11 @@ impl SftpEditor {
                     window.defer(cx, move |_window, cx| {
                         crate::app::sftp_editor_window::force_close_session_windows(
                             &session_id,
+                            owner.read(cx).session_owner_id,
                             cx,
                         );
                         owner.update(cx, |owner, cx| {
-                            owner.handle_tab_close(tab_id);
+                            owner.handle_tab_close(tab_id, cx);
                             cx.notify();
                         });
                     });
@@ -773,6 +780,7 @@ impl SftpEditor {
 
         if crate::app::sftp_editor_window::open_detached(
             self.session_id.clone(),
+            self.owner_id,
             tab,
             self.sftp.clone(),
             screen_position,

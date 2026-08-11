@@ -1,6 +1,6 @@
 [package]
 name = "tiny-shell"
-version = "1.4.3"
+version = "1.4.4"
 edition = "2024"
 authors = ["tiny-shell contributors"]
 description = "A modern, fast, GPUI Component-based desktop terminal client"
@@ -54,6 +54,7 @@ hex = "0.4"
 rand = "0.8"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
 semver = "1"
+sha1 = "0.10"
 sha2 = "0.10"
 
 [target.'cfg(windows)'.dependencies]

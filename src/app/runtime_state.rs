@@ -4,11 +4,12 @@ use std::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
+    time::{Duration, Instant},
 };
 
 use gpui::{AnyWindowHandle, SharedString};
 
-use crate::app::{SyncSecretsPasswordDialogState, updater};
+use crate::app::{SyncSecretsPasswordDialogState, config_persistence::SaveReceipt, updater};
 use crate::terminal::{BackendEventReceiver, BackendEventSender};
 
 #[derive(Default)]
@@ -240,20 +241,99 @@ pub(crate) struct AuxiliaryWindowsState {
 
 #[derive(Default)]
 pub(crate) struct ConfigPersistenceState {
-    dirty: bool,
+    generation: u64,
+    persisted_generation: u64,
+    last_dirty_at: Option<Instant>,
+    retry_after: Option<Instant>,
+    save_immediately: bool,
+    in_flight: Option<PendingPreferenceSave>,
+    full_commit_in_flight: bool,
+}
+
+struct PendingPreferenceSave {
+    generation: u64,
+    receipt: SaveReceipt,
 }
 
 impl ConfigPersistenceState {
-    pub(crate) fn mark_dirty(&mut self) {
-        self.dirty = true;
+    pub(crate) fn mark_dirty(&mut self, now: Instant) -> u64 {
+        self.generation = self.generation.wrapping_add(1);
+        if self.generation == 0 {
+            // Overflow is practically unreachable, but resetting both counters
+            // preserves the generation comparison contract if it occurs.
+            self.generation = 1;
+            self.persisted_generation = 0;
+        }
+        self.last_dirty_at = Some(now);
+        self.generation
     }
 
-    pub(crate) fn clear(&mut self) {
-        self.dirty = false;
+    pub(crate) fn request_immediate_save(&mut self) {
+        self.save_immediately = true;
+    }
+
+    pub(crate) fn ready_generation(&self, now: Instant, debounce: Duration) -> Option<u64> {
+        if !self.is_dirty() || self.in_flight.is_some() {
+            return None;
+        }
+        if self
+            .retry_after
+            .is_some_and(|retry_after| now < retry_after)
+        {
+            return None;
+        }
+        let quiet_long_enough = self
+            .last_dirty_at
+            .is_some_and(|last_dirty_at| now.saturating_duration_since(last_dirty_at) >= debounce);
+        (self.save_immediately || quiet_long_enough).then_some(self.generation)
+    }
+
+    pub(crate) fn set_in_flight(&mut self, generation: u64, receipt: SaveReceipt) {
+        self.save_immediately = false;
+        self.retry_after = None;
+        self.in_flight = Some(PendingPreferenceSave {
+            generation,
+            receipt,
+        });
+    }
+
+    pub(crate) fn poll_result(&mut self) -> Option<(u64, anyhow::Result<()>)> {
+        let result = self.in_flight.as_ref()?.receipt.try_result()?;
+        let generation = self.in_flight.take()?.generation;
+        Some((generation, result))
+    }
+
+    pub(crate) fn mark_saved(&mut self, generation: u64) {
+        self.persisted_generation = self.persisted_generation.max(generation);
+        self.retry_after = None;
+    }
+
+    pub(crate) fn mark_save_failed(&mut self, now: Instant, retry_delay: Duration) {
+        self.retry_after = Some(now + retry_delay);
     }
 
     pub(crate) fn is_dirty(&self) -> bool {
-        self.dirty
+        self.persisted_generation < self.generation
+    }
+
+    pub(crate) fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    pub(crate) fn begin_full_commit(&mut self) -> bool {
+        if self.full_commit_in_flight {
+            return false;
+        }
+        self.full_commit_in_flight = true;
+        true
+    }
+
+    pub(crate) fn finish_full_commit(&mut self) {
+        self.full_commit_in_flight = false;
+    }
+
+    pub(crate) fn is_full_commit_in_flight(&self) -> bool {
+        self.full_commit_in_flight
     }
 }
 
@@ -344,6 +424,7 @@ impl SyncRuntimeState {
 mod tests {
     use super::{ConfigPersistenceState, DialogCoordinator, TaskGeneration, TaskSupervisor};
     use crate::app::DialogKind;
+    use std::time::Instant;
 
     #[test]
     fn dialog_coordinator_reports_same_active_kind_for_normal_open_ignore() {
@@ -479,10 +560,10 @@ mod tests {
         let mut state = ConfigPersistenceState::default();
         assert!(!state.is_dirty());
 
-        state.mark_dirty();
+        state.mark_dirty(Instant::now());
         assert!(state.is_dirty());
 
-        state.clear();
+        state.mark_saved(state.generation());
         assert!(!state.is_dirty());
     }
 

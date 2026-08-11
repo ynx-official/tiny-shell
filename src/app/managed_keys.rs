@@ -5,7 +5,7 @@ use uuid::Uuid;
 
 use crate::{
     TinyShell,
-    app::{config_persistence, input_focus, ssh_key_import::KeyImportValidation},
+    app::{input_focus, ssh_key_import::KeyImportValidation},
     session::config::ManagedKey,
 };
 
@@ -372,17 +372,24 @@ impl TinyShell {
             created_at: chrono::Local::now().timestamp(),
         };
         let key_id = key.id.clone();
-        self.config.upsert_managed_key(key);
-        if let Err(err) = config_persistence::save_full(&self.config_repository, &self.config) {
-            tracing::warn!("failed to save config: {err:#}");
-            self.status = t!("key_import_failed", error = format!("{err:#}")).into();
-            cx.notify();
-            return;
-        }
-        self.managed_keys = self.config.managed_keys().to_vec();
-        self.managed_key_dialog_selection = Some(key_id);
-        self.status = t!("key_imported").to_string().into();
-        self.close_key_import(window, cx);
+        let mut staged = self.config.clone();
+        staged.upsert_managed_key(key);
+        self.commit_staged_config_in_window_async(
+            staged,
+            window,
+            move |this, window, cx| {
+                this.managed_keys = this.config.managed_keys().to_vec();
+                this.managed_key_dialog_selection = Some(key_id);
+                this.status = t!("key_imported").to_string().into();
+                this.close_key_import(window, cx);
+            },
+            |this, error, _, cx| {
+                tracing::warn!("failed to save imported key: {error:#}");
+                this.status = t!("key_import_failed", error = format!("{error:#}")).into();
+                cx.notify();
+            },
+            cx,
+        );
     }
 
     /// Open a file picker to import a private key into managed storage.
@@ -458,15 +465,22 @@ impl TinyShell {
                     passphrase,
                     created_at: chrono::Local::now().timestamp(),
                 };
-                self.config.upsert_managed_key(key.clone());
-                if let Err(err) =
-                    config_persistence::save_full(&self.config_repository, &self.config)
-                {
-                    tracing::warn!("failed to save config: {err:#}");
-                }
-                self.managed_keys = self.config.managed_keys().to_vec();
-                self.status = t!("key_imported").to_string().into();
-                cx.notify();
+                let mut staged = self.config.clone();
+                staged.upsert_managed_key(key);
+                self.commit_staged_config_async(
+                    staged,
+                    |this, cx| {
+                        this.managed_keys = this.config.managed_keys().to_vec();
+                        this.status = t!("key_imported").to_string().into();
+                        cx.notify();
+                    },
+                    |this, error, cx| {
+                        tracing::warn!("failed to save imported key: {error:#}");
+                        this.status = t!("key_import_failed", error = format!("{error:#}")).into();
+                        cx.notify();
+                    },
+                    cx,
+                );
             }
             Err(err) => {
                 self.status = t!("key_import_failed", error = format!("{err:#}")).into();
@@ -493,30 +507,48 @@ impl TinyShell {
         };
         let mut updated = key;
         updated.name = new_name;
-        self.config.upsert_managed_key(updated);
-        if let Err(err) = config_persistence::save_full(&self.config_repository, &self.config) {
-            tracing::warn!("failed to save config: {err:#}");
-        }
-        self.managed_keys = self.config.managed_keys().to_vec();
-        self.editing_managed_key_id = None;
-        cx.notify();
+        let mut staged = self.config.clone();
+        staged.upsert_managed_key(updated);
+        self.commit_staged_config_async(
+            staged,
+            |this, cx| {
+                this.managed_keys = this.config.managed_keys().to_vec();
+                this.editing_managed_key_id = None;
+                cx.notify();
+            },
+            |this, error, cx| {
+                tracing::warn!("failed to rename managed key: {error:#}");
+                this.status = t!("config_save_failed", error = format!("{error:#}")).into();
+                cx.notify();
+            },
+            cx,
+        );
     }
 
     /// Delete a managed key by id. Also clears the reference from any
     /// session that used it.
     pub(crate) fn delete_managed_key(&mut self, key_id: String, cx: &mut Context<Self>) {
-        self.config.remove_managed_key(&key_id);
-        if let Err(err) = config_persistence::save_full(&self.config_repository, &self.config) {
-            tracing::warn!("failed to save config: {err:#}");
-        }
-        self.managed_keys = self.config.managed_keys().to_vec();
-        if self.managed_key_selected.as_deref() == Some(&key_id) {
-            self.managed_key_selected = None;
-        }
-        if self.managed_key_dialog_selection.as_deref() == Some(&key_id) {
-            self.managed_key_dialog_selection = None;
-        }
-        cx.notify();
+        let mut staged = self.config.clone();
+        staged.remove_managed_key(&key_id);
+        self.commit_staged_config_async(
+            staged,
+            move |this, cx| {
+                this.managed_keys = this.config.managed_keys().to_vec();
+                if this.managed_key_selected.as_deref() == Some(&key_id) {
+                    this.managed_key_selected = None;
+                }
+                if this.managed_key_dialog_selection.as_deref() == Some(&key_id) {
+                    this.managed_key_dialog_selection = None;
+                }
+                cx.notify();
+            },
+            |this, error, cx| {
+                tracing::warn!("failed to delete managed key: {error:#}");
+                this.status = t!("config_save_failed", error = format!("{error:#}")).into();
+                cx.notify();
+            },
+            cx,
+        );
     }
 
     pub(crate) fn delete_selected_managed_key(

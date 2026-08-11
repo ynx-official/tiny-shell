@@ -10,7 +10,7 @@ use uuid::Uuid;
 use crate::{
     PaneLayout, SelectorEntry, TabGroup, TinyShell,
     app::{
-        IncomingTabDrag, PaneDirection, SystemInfoTab,
+        AuxiliaryWindowsState, IncomingTabDrag, PaneDirection, SystemInfoTab,
         constants::{DEFAULT_COLS, DEFAULT_ROWS},
         tab_drag::{
             DropIntent, cursor_inside_viewport, reorder_index_at_x, should_close_empty_source,
@@ -123,6 +123,7 @@ impl TinyShell {
                     tab,
                     TabGroup {
                         id: group_id.clone(),
+                        drag_id: crate::app::next_tab_drag_id(),
                         ordinal,
                         title,
                         pane_root: PaneLayout::Single(id.clone()),
@@ -333,14 +334,18 @@ impl TinyShell {
         cx: &mut Context<Self>,
     ) {
         // Persist the edited/new session before opening it.
-        self.config.upsert(session.clone());
-        if let Err(err) =
-            crate::app::config_persistence::save_full(&self.config_repository, &self.config)
-        {
-            tracing::warn!("failed to save config: {err:#}");
-        }
-
-        self.open_ssh_session(session, cx);
+        let mut staged = self.config.clone();
+        staged.upsert(session.clone());
+        self.commit_staged_config_async(
+            staged,
+            move |this, cx| this.open_ssh_session(session, cx),
+            |this, error, cx| {
+                tracing::warn!("failed to save SSH session: {error:#}");
+                this.status = t!("config_save_failed", error = format!("{error:#}")).into();
+                cx.notify();
+            },
+            cx,
+        );
     }
 
     // ── SSH 对话框 ──
@@ -489,6 +494,7 @@ impl TinyShell {
         if let Some(session_id) = closing_sftp_group {
             if !crate::app::sftp_editor_window::request_session_close(
                 &session_id,
+                self.session_owner_id,
                 id.clone(),
                 cx.entity(),
                 cx,
@@ -520,7 +526,7 @@ impl TinyShell {
             self.unregister_backend_route(&route_id, cx);
         }
 
-        self.handle_tab_close(id);
+        self.handle_tab_close(id, cx);
         cx.notify();
     }
 
@@ -560,7 +566,7 @@ impl TinyShell {
         cx.notify();
     }
 
-    pub(crate) fn handle_tab_close(&mut self, id: String) {
+    pub(crate) fn handle_tab_close(&mut self, id: String, cx: &mut Context<Self>) {
         if self.window_state.search_target_tab.as_deref() == Some(id.as_str()) {
             self.window_state.search_target_tab = None;
             self.window_state.search_matches.clear();
@@ -602,6 +608,10 @@ impl TinyShell {
             }
             self.workspace_state_mut().append_tabs(tabs);
             self.monitoring.remote_system_snapshots.remove(&id);
+            if self.workspace().tab_count() == 0 {
+                self.auxiliary_windows = AuxiliaryWindowsState::default();
+                crate::app::close_auxiliary_windows(self.session_owner_id, cx);
+            }
             return;
         };
 
@@ -622,6 +632,8 @@ impl TinyShell {
                 handle.close();
             }
             self.home_page_open = true;
+            self.auxiliary_windows = AuxiliaryWindowsState::default();
+            crate::app::close_auxiliary_windows(self.session_owner_id, cx);
             return;
         }
 
@@ -864,24 +876,21 @@ impl TinyShell {
     pub(crate) fn active_snapshot(&self) -> Option<RenderSnapshot> {
         self.workspace()
             .active_tab_id()
-            .as_ref()
-            .and_then(|id| self.workspace().tabs().iter().find(|t| &t.id == id))
+            .and_then(|id| self.workspace().terminal_tab(id))
             .map(|t| t.render_snapshot(self.config.keyword_highlight()))
     }
 
     pub(crate) fn active_kind(&self) -> Option<TabKind> {
         self.workspace()
             .active_tab_id()
-            .as_ref()
-            .and_then(|id| self.workspace().tabs().iter().find(|t| &t.id == id))
+            .and_then(|id| self.workspace().terminal_tab(id))
             .map(|tab| tab.kind)
     }
 
     pub(crate) fn active_session_id(&self) -> Option<&str> {
         self.workspace()
             .active_tab_id()
-            .as_ref()
-            .and_then(|id| self.workspace().tabs().iter().find(|tab| &tab.id == id))
+            .and_then(|id| self.workspace().terminal_tab(id))
             .and_then(|tab| tab.session.as_ref())
             .map(|session| session.id.as_str())
     }
@@ -913,7 +922,7 @@ impl TinyShell {
         if id.is_empty() {
             return None;
         }
-        let title = workspace.tabs().iter().find(|t| t.id == id)?.title.clone();
+        let title = workspace.terminal_tab(id)?.title.clone();
         Some((id.to_owned(), title))
     }
 
@@ -925,12 +934,7 @@ impl TinyShell {
         direction: PaneDirection,
         cx: &mut Context<Self>,
     ) {
-        let (current_kind, current_session) = match self
-            .workspace_state_mut()
-            .tabs()
-            .iter()
-            .find(|t| t.id == tab_id)
-        {
+        let (current_kind, current_session) = match self.workspace().terminal_tab(&tab_id) {
             Some(tab) => (tab.kind, tab.session.clone()),
             None => return,
         };
@@ -1192,19 +1196,8 @@ impl TinyShell {
     ) {
         self.home_page_open = false;
         self.workspace_state_mut().clear_active_system_info_tab();
-        // Save current group state
-        if let Some(current_group_id) = self.workspace_state_mut().active_group_value().clone() {
-            let pane_root = self.workspace().pane_root().clone();
-            if let Some(group) = self
-                .workspace_state_mut()
-                .tab_groups_mut()
-                .iter_mut()
-                .find(|g| g.id == current_group_id)
-            {
-                group.pane_root = pane_root;
-            }
-        }
-        // Load new group state
+        // The active group owns its layout; switching the active id is enough
+        // to make `workspace().pane_root()` resolve to the new group.
         if let Some((pane_root, ids)) = self.tab_group(&group_id).map(|group| {
             (
                 group.pane_root.clone(),
@@ -1216,8 +1209,8 @@ impl TinyShell {
                     .collect::<Vec<_>>(),
             )
         }) {
-            self.workspace_state_mut().set_pane_root(pane_root);
             self.workspace_state_mut().set_active_group(Some(group_id));
+            self.workspace_state_mut().set_pane_root(pane_root);
             if let Some(first_id) = ids.first() {
                 self.workspace_state_mut()
                     .set_active_tab(Some(first_id.clone()));
@@ -1230,17 +1223,8 @@ impl TinyShell {
     }
 
     pub(crate) fn sync_pane_root_to_group(&mut self) {
-        if let Some(group_id) = self.workspace_state_mut().active_group_value().clone() {
-            let pane_root = self.workspace().pane_root().clone();
-            if let Some(group) = self
-                .workspace_state_mut()
-                .tab_groups_mut()
-                .iter_mut()
-                .find(|g| g.id == group_id)
-            {
-                group.pane_root = pane_root;
-            }
-        }
+        // Kept as a compatibility hook for older action paths. Layout reads
+        // and mutations now resolve directly to the active TabGroup.
     }
 
     pub(crate) fn sync_system_tab_to_active_group(&mut self) {
@@ -1251,7 +1235,7 @@ impl TinyShell {
                 .map(|group| group.pane_root.tab_ids())
                 .unwrap_or_default();
             for id in ids {
-                if let Some(tab) = self.workspace().tabs().iter().find(|t| t.id == id) {
+                if let Some(tab) = self.workspace().terminal_tab(id) {
                     if tab.kind == TabKind::Ssh {
                         group_ssh_tabs.push(tab.id.clone());
                     }
@@ -1863,7 +1847,10 @@ impl TinyShell {
             )
         });
         if should_close_source {
-            if let Err(error) = source_window.update(cx, |_, window, _| {
+            if let Err(error) = source_window.update(cx, |_, window, cx| {
+                source.update(cx, |source, cx| {
+                    source.finalize_main_window_close(window, cx);
+                });
                 window.remove_window();
             }) {
                 tracing::warn!(
@@ -2354,6 +2341,7 @@ impl TinyShell {
         let group_id = Uuid::new_v4().to_string();
         self.workspace_state_mut().push_group(TabGroup {
             id: group_id.clone(),
+            drag_id: crate::app::next_tab_drag_id(),
             ordinal,
             title,
             pane_root: pane_root.clone(),

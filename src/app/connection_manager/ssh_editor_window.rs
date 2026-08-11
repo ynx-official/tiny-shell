@@ -15,7 +15,10 @@ use rust_i18n::t;
 
 use crate::{
     TinyShell,
-    session::config::{AuthMethod, Session},
+    session::{
+        config::{AuthMethod, Session},
+        ssh_config::SshConfigEntry,
+    },
 };
 
 #[derive(Clone)]
@@ -62,6 +65,9 @@ pub(crate) struct SshEditorWindow {
     group: Option<String>,
     proxy_type: String,
     managed_key_id: Option<String>,
+    ssh_config_entries: Vec<SshConfigEntry>,
+    ssh_config_selected: Option<usize>,
+    config_key_path: String,
     connect_after_save: bool,
     inputs: SshEditorInputs,
     error: Option<SharedString>,
@@ -112,13 +118,13 @@ impl SshEditorWindow {
                 (None, None, Some(session.clone()), session.group.clone())
             }
         };
-        let auth = session.as_ref().map_or(AuthMethod::Password, |item| {
-            if item.auth == AuthMethod::Password {
-                AuthMethod::Password
-            } else {
-                AuthMethod::Key
-            }
-        });
+        let auth = session
+            .as_ref()
+            .map_or(AuthMethod::Password, |item| match item.auth {
+                AuthMethod::Password => AuthMethod::Password,
+                AuthMethod::Config => AuthMethod::Config,
+                AuthMethod::Key | AuthMethod::KeyPending => AuthMethod::Key,
+            });
         let proxy_type = session
             .as_ref()
             .map(|item| item.proxy_type.clone())
@@ -127,6 +133,26 @@ impl SshEditorWindow {
         let managed_key_id = session
             .as_ref()
             .and_then(|item| item.managed_key_id.clone());
+        let config_key_path = session
+            .as_ref()
+            .map(|item| item.private_key_path.clone())
+            .unwrap_or_default();
+        let ssh_config_entries =
+            crate::session::ssh_config::parse_ssh_config().unwrap_or_else(|error| {
+                tracing::warn!(%error, "failed to read OpenSSH config for connection editor");
+                Vec::new()
+            });
+        let ssh_config_selected = session.as_ref().and_then(|session| {
+            (auth == AuthMethod::Config)
+                .then(|| {
+                    ssh_config_entries.iter().position(|entry| {
+                        entry.hostname == session.host
+                            && entry.port == session.port
+                            && (entry.user.is_empty() || entry.user == session.user)
+                    })
+                })
+                .flatten()
+        });
 
         let inputs = SshEditorInputs {
             name: new_input(
@@ -244,6 +270,9 @@ impl SshEditorWindow {
             group,
             proxy_type,
             managed_key_id,
+            ssh_config_entries,
+            ssh_config_selected,
+            config_key_path,
             connect_after_save,
             inputs,
             error: None,
@@ -297,7 +326,7 @@ impl SshEditorWindow {
         let password = Self::input_value(&self.inputs.password, cx);
         let mut session = match self.auth {
             AuthMethod::Password => Session::password(host.clone(), port, user.clone(), password),
-            AuthMethod::Key | AuthMethod::KeyPending | AuthMethod::Config => {
+            AuthMethod::Key | AuthMethod::KeyPending => {
                 let mut session = Session::key(
                     host.clone(),
                     port,
@@ -307,6 +336,18 @@ impl SshEditorWindow {
                     String::new(),
                 );
                 session.managed_key_id = self.managed_key_id.clone();
+                session
+            }
+            AuthMethod::Config => {
+                let mut session = Session::key(
+                    host.clone(),
+                    port,
+                    user.clone(),
+                    self.config_key_path.clone(),
+                    String::new(),
+                    String::new(),
+                );
+                session.auth = AuthMethod::Config;
                 session
             }
         };
@@ -339,6 +380,8 @@ impl SshEditorWindow {
         };
         let editing_id = self.editing_id.clone();
         let baseline = self.baseline.clone();
+        let connect_after_save = self.connect_after_save;
+        let editor = cx.entity();
         let result = self.owner.update(cx, |owner, cx| {
             let mut staged = owner.config.clone();
             if let Some(id) = &editing_id {
@@ -354,16 +397,29 @@ impl SshEditorWindow {
                 session.last_used = latest.last_used.clone();
             }
             staged.upsert(session.clone());
-            crate::app::config_persistence::save_full(&owner.config_repository, &staged)?;
-            owner.config = staged;
-            if editing_id.is_none() || self.connect_after_save {
-                owner.open_ssh_session(session, cx);
-            }
-            cx.notify();
+            owner.commit_staged_config_in_window_async(
+                staged,
+                window,
+                move |owner, window, cx| {
+                    if editing_id.is_none() || connect_after_save {
+                        owner.open_ssh_session(session, cx);
+                    }
+                    cx.notify();
+                    crate::app::deregister_auxiliary_window(window.window_handle());
+                    window.remove_window();
+                },
+                move |_, error, _, cx| {
+                    editor.update(cx, |editor, cx| {
+                        editor.error = Some(error.to_string().into());
+                        cx.notify();
+                    });
+                },
+                cx,
+            );
             Ok(())
         });
         match result {
-            Ok(()) => window.remove_window(),
+            Ok(()) => {}
             Err(error) => {
                 self.error = Some(error.to_string().into());
                 cx.notify();
@@ -377,6 +433,41 @@ impl SshEditorWindow {
         cx: &mut Context<Self>,
     ) {
         self.managed_key_id = key_id;
+        self.error = None;
+        cx.notify();
+    }
+
+    fn apply_ssh_config_entry(
+        &mut self,
+        index: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(entry) = self.ssh_config_entries.get(index).cloned() else {
+            return;
+        };
+        let user = if entry.user.is_empty() {
+            std::env::var("USER")
+                .or_else(|_| std::env::var("USERNAME"))
+                .unwrap_or_else(|_| "root".to_string())
+        } else {
+            entry.user.clone()
+        };
+        self.inputs.name.update(cx, |input, cx| {
+            input.set_value(entry.host_alias.clone(), window, cx)
+        });
+        self.inputs.host.update(cx, |input, cx| {
+            input.set_value(entry.hostname.clone(), window, cx)
+        });
+        self.inputs.port.update(cx, |input, cx| {
+            input.set_value(entry.port.to_string(), window, cx)
+        });
+        self.inputs
+            .user
+            .update(cx, |input, cx| input.set_value(user, window, cx));
+        self.config_key_path = entry.identity_files.first().cloned().unwrap_or_default();
+        self.ssh_config_selected = Some(index);
+        self.auth = AuthMethod::Config;
         self.error = None;
         cx.notify();
     }
@@ -414,11 +505,16 @@ impl Render for SshEditorWindow {
             .group
             .clone()
             .unwrap_or_else(|| t!("ssh_editor_group_unselected").to_string());
-        let auth_label = if self.auth == AuthMethod::Password {
-            t!("ssh_editor_password_label").to_string()
-        } else {
-            t!("ssh_editor_key_label").to_string()
+        let auth_label = match self.auth {
+            AuthMethod::Password => t!("ssh_editor_password_label").to_string(),
+            AuthMethod::Config => t!("ssh_config").to_string(),
+            AuthMethod::Key | AuthMethod::KeyPending => t!("ssh_editor_key_label").to_string(),
         };
+        let ssh_config_label = self
+            .ssh_config_selected
+            .and_then(|index| self.ssh_config_entries.get(index))
+            .map(|entry| entry.host_alias.clone())
+            .unwrap_or_else(|| t!("ssh_config").to_string());
         let proxy_label = match self.proxy_type.as_str() {
             "socks5" => "SOCKS5".to_string(),
             "http" => "HTTP".to_string(),
@@ -586,6 +682,47 @@ impl Render for SshEditorWindow {
                             }),
                         ),
                     )
+                    .item(
+                        PopupMenuItem::new(t!("ssh_config").to_string()).on_click(
+                            window.listener_for(&editor, |this, _, _, cx| {
+                                this.auth = AuthMethod::Config;
+                                cx.notify();
+                            }),
+                        ),
+                    )
+                }
+            });
+
+        let ssh_config_entries = self.ssh_config_entries.clone();
+        let config_selector = Button::new("ssh-editor-openssh-config")
+            .w_full()
+            .label(ssh_config_label)
+            .dropdown_caret(true)
+            .dropdown_menu({
+                let editor = editor.clone();
+                move |mut menu, window, _| {
+                    if ssh_config_entries.is_empty() {
+                        return menu.item(
+                            PopupMenuItem::new(t!("ssh_config_empty").to_string()).disabled(true),
+                        );
+                    }
+                    for (index, entry) in ssh_config_entries.iter().enumerate() {
+                        let label = if entry.user.is_empty() {
+                            format!("{} — {}:{}", entry.host_alias, entry.hostname, entry.port)
+                        } else {
+                            format!(
+                                "{} — {}@{}:{}",
+                                entry.host_alias, entry.user, entry.hostname, entry.port
+                            )
+                        };
+                        menu = menu.item(PopupMenuItem::new(label).on_click(window.listener_for(
+                            &editor,
+                            move |this, _, window, cx| {
+                                this.apply_ssh_config_entry(index, window, cx);
+                            },
+                        )));
+                    }
+                    menu
                 }
             });
 
@@ -671,6 +808,21 @@ impl Render for SshEditorWindow {
                                 .child(t!("ssh_editor_key_label").to_string()),
                         )
                         .child(gpui::div().flex_1().child(self.render_key_fields(cx))),
+                )
+            })
+            .when(self.auth == AuthMethod::Config, |this| {
+                this.child(
+                    h_flex()
+                        .items_start()
+                        .gap_3()
+                        .child(
+                            gpui::div()
+                                .w(px(64.))
+                                .pt_2()
+                                .whitespace_nowrap()
+                                .child(t!("ssh_config").to_string()),
+                        )
+                        .child(gpui::div().flex_1().child(config_selector)),
                 )
             });
 
@@ -830,6 +982,7 @@ impl Render for SshEditorWindow {
                 if event.keystroke.key.as_str() == "escape" {
                     window.prevent_default();
                     cx.stop_propagation();
+                    crate::app::deregister_auxiliary_window(window.window_handle());
                     window.remove_window();
                 }
             })
@@ -898,7 +1051,10 @@ impl Render for SshEditorWindow {
                         Button::new("ssh-editor-cancel")
                             .secondary()
                             .label(t!("cancel").to_string())
-                            .on_click(|_, window, _| window.remove_window()),
+                            .on_click(|_, window, _| {
+                                crate::app::deregister_auxiliary_window(window.window_handle());
+                                window.remove_window();
+                            }),
                     )
                     .child(
                         Button::new("ssh-editor-submit")
@@ -975,6 +1131,7 @@ fn window_options(cx: &App, compact: bool) -> WindowOptions {
 }
 
 pub(crate) fn open(owner: Entity<TinyShell>, request: SshEditorRequest, cx: &mut App) {
+    let owner_id = owner.read(cx).session_owner_id;
     let credentials_only = matches!(&request, SshEditorRequest::Credentials { .. });
     let editing = matches!(
         request,
@@ -989,6 +1146,8 @@ pub(crate) fn open(owner: Entity<TinyShell>, request: SshEditorRequest, cx: &mut
     };
     let opened = cx.open_window(window_options(cx, credentials_only), move |window, cx| {
         window.set_window_title(&title);
+        let window_handle = window.window_handle();
+        crate::app::register_auxiliary_window(window_handle, owner_id);
         let editor = cx.new(|cx| SshEditorWindow::new(owner, request, window, cx));
         let focus_input =
             if editor.read(cx).connect_after_save && editor.read(cx).auth == AuthMethod::Password {
@@ -999,6 +1158,10 @@ pub(crate) fn open(owner: Entity<TinyShell>, request: SshEditorRequest, cx: &mut
         window.defer(cx, move |window, cx| {
             window.activate_window();
             window.focus(&focus_input.read(cx).focus_handle(cx), cx);
+        });
+        window.on_window_should_close(cx, move |_, _| {
+            crate::app::deregister_auxiliary_window(window_handle);
+            true
         });
         cx.new(|cx| Root::new(editor, window, cx))
     });

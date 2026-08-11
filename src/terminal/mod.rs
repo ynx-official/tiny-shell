@@ -4,11 +4,11 @@ pub(crate) mod highlight;
 pub(crate) mod input;
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     sync::{
-        Arc,
-        atomic::{AtomicU64, Ordering},
-        mpsc::{self, Receiver, Sender, SyncSender, TryRecvError, TrySendError},
+        Arc, Mutex,
+        atomic::{AtomicBool, AtomicU64, Ordering},
+        mpsc::{self, Receiver, SyncSender, TryRecvError},
     },
 };
 
@@ -46,6 +46,17 @@ pub(crate) enum BackendCommand {
     Resize { cols: u16, rows: u16 },
     SampleMetrics,
     Close,
+}
+
+impl BackendCommand {
+    fn kind(&self) -> &'static str {
+        match self {
+            Self::Input(_) => "input",
+            Self::Resize { .. } => "resize",
+            Self::SampleMetrics => "sample-metrics",
+            Self::Close => "close",
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -172,61 +183,227 @@ impl BackendEvent {
         }
     }
 
-    fn is_control(&self) -> bool {
-        !matches!(self, Self::Output { .. })
+    pub(crate) fn is_reliable_lifecycle(&self) -> bool {
+        matches!(
+            self,
+            Self::Connected { .. }
+                | Self::Closed { .. }
+                | Self::SftpFileContent { .. }
+                | Self::SftpContentUploaded { .. }
+                | Self::SftpContentConflict { .. }
+                | Self::SftpContentUploadFailed { .. }
+                | Self::SftpHome { .. }
+                | Self::RemoteSystem { .. }
+                | Self::RemoteSystemUnavailable { .. }
+                | Self::TransferStarted { .. }
+                | Self::SyncFinished { .. }
+                | Self::TransferProgress {
+                    state: TransferState::Paused
+                        | TransferState::Completed
+                        | TransferState::Failed(_)
+                        | TransferState::Interrupted(_)
+                        | TransferState::Recoverable(_)
+                        | TransferState::Zombie(_),
+                    ..
+                }
+        )
     }
 }
+
+const OUTPUT_QUEUE_BYTE_CAPACITY: usize = 8 * 1024 * 1024;
+const OUTPUT_QUEUE_EVENT_CAPACITY: usize = 1_024;
+const MAX_COALESCED_OUTPUT_BYTES: usize = 64 * 1024;
+
+#[derive(Default)]
+struct OutputEventQueue {
+    events: VecDeque<BackendEventEnvelope>,
+    queued_bytes: usize,
+}
+
+impl OutputEventQueue {
+    fn push(&mut self, envelope: BackendEventEnvelope) -> Result<(), BackendEventEnvelope> {
+        let BackendEvent::Output {
+            tab_id: incoming_tab,
+            bytes: incoming_bytes,
+        } = &envelope.event
+        else {
+            return Err(envelope);
+        };
+        let incoming_len = incoming_bytes.len();
+        if incoming_len > OUTPUT_QUEUE_BYTE_CAPACITY
+            || self.queued_bytes.saturating_add(incoming_len) > OUTPUT_QUEUE_BYTE_CAPACITY
+        {
+            return Err(envelope);
+        }
+
+        if let Some(previous) = self.events.back_mut()
+            && previous.generation == envelope.generation
+            && previous.sequence.checked_add(1) == Some(envelope.sequence)
+            && let BackendEvent::Output {
+                tab_id,
+                bytes: previous_bytes,
+            } = &mut previous.event
+            && tab_id == incoming_tab
+            && previous_bytes.len().saturating_add(incoming_len) <= MAX_COALESCED_OUTPUT_BYTES
+        {
+            previous_bytes.extend_from_slice(incoming_bytes);
+            previous.sequence = envelope.sequence;
+            self.queued_bytes += incoming_len;
+            return Ok(());
+        }
+
+        if self.events.len() >= OUTPUT_QUEUE_EVENT_CAPACITY {
+            return Err(envelope);
+        }
+        self.queued_bytes += incoming_len;
+        self.events.push_back(envelope);
+        Ok(())
+    }
+
+    fn pop_front(&mut self) -> Option<BackendEventEnvelope> {
+        let event = self.events.pop_front()?;
+        self.queued_bytes = self.queued_bytes.saturating_sub(output_event_bytes(&event));
+        Some(event)
+    }
+
+    fn coalesce_earlier_for(
+        &mut self,
+        tab_id: &str,
+        generation: u64,
+        sequence: u64,
+    ) -> Option<BackendEventEnvelope> {
+        let mut retained = VecDeque::with_capacity(self.events.len());
+        let mut merged: Option<BackendEventEnvelope> = None;
+        while let Some(event) = self.events.pop_front() {
+            let should_merge = event.generation == generation
+                && event.sequence < sequence
+                && matches!(
+                    &event.event,
+                    BackendEvent::Output {
+                        tab_id: output_tab,
+                        ..
+                    } if output_tab == tab_id
+                );
+            if !should_merge {
+                retained.push_back(event);
+                continue;
+            }
+
+            self.queued_bytes = self.queued_bytes.saturating_sub(output_event_bytes(&event));
+            if let Some(current) = merged.as_mut() {
+                if let (
+                    BackendEvent::Output { bytes, .. },
+                    BackendEvent::Output {
+                        bytes: incoming, ..
+                    },
+                ) = (&mut current.event, &event.event)
+                {
+                    bytes.extend_from_slice(incoming);
+                    current.sequence = event.sequence;
+                } else {
+                    retained.push_back(event);
+                }
+            } else {
+                merged = Some(event);
+            }
+        }
+        self.events = retained;
+        merged
+    }
+}
+
+fn output_event_bytes(event: &BackendEventEnvelope) -> usize {
+    match &event.event {
+        BackendEvent::Output { bytes, .. } => bytes.len(),
+        _ => 0,
+    }
+}
+
 pub(crate) struct BackendEventReceiver {
+    lifecycle: Receiver<BackendEventEnvelope>,
     control: Receiver<BackendEventEnvelope>,
-    output: Receiver<BackendEventEnvelope>,
+    output: Arc<Mutex<OutputEventQueue>>,
     control_streak: usize,
-    pending_output: Option<BackendEventEnvelope>,
+    pending_lifecycle: Option<BackendEventEnvelope>,
     pending_control: Option<BackendEventEnvelope>,
 }
 
 impl BackendEventReceiver {
     pub(crate) fn try_recv(&mut self) -> Result<BackendEventEnvelope, TryRecvError> {
         const CONTROL_BURST: usize = 32;
-        if self.pending_output.is_none() {
-            self.pending_output = self.output.try_recv().ok();
+
+        if self.pending_lifecycle.is_none() {
+            self.pending_lifecycle = self.lifecycle.try_recv().ok();
         }
-        if self.control_streak >= CONTROL_BURST {
-            if let Some(output) = self.pending_output.take() {
-                self.control_streak = 0;
-                return Ok(output);
+        if let Some(lifecycle) = self.pending_lifecycle.take() {
+            let lifecycle_generation = lifecycle.generation;
+            let lifecycle_sequence = lifecycle.sequence;
+            if self.pending_control.is_none() {
+                self.pending_control = self.control.try_recv().ok();
             }
+            if self
+                .pending_control
+                .as_ref()
+                .is_some_and(|control| control.sequence < lifecycle.sequence)
+            {
+                self.pending_lifecycle = Some(lifecycle.clone());
+                self.control_streak = self.control_streak.saturating_add(1);
+                if let Some(control) = self.pending_control.take() {
+                    return Ok(control);
+                }
+            }
+            if let BackendEvent::Closed { tab_id, .. } = &lifecycle.event {
+                let earlier_output = self
+                    .output
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .coalesce_earlier_for(tab_id, lifecycle_generation, lifecycle_sequence);
+                if let Some(output) = earlier_output {
+                    self.pending_lifecycle = Some(lifecycle);
+                    self.control_streak = 0;
+                    return Ok(output);
+                }
+            }
+            self.control_streak = self.control_streak.saturating_add(1);
+            return Ok(lifecycle);
+        }
+
+        if self.control_streak >= CONTROL_BURST
+            && let Some(output) = self
+                .output
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .pop_front()
+        {
+            self.control_streak = 0;
+            return Ok(output);
         }
         let control = self
             .pending_control
             .take()
             .or_else(|| self.control.try_recv().ok());
         if let Some(control) = control {
-            let must_preserve_output = matches!(control.event, BackendEvent::Closed { .. })
-                && self.pending_output.as_ref().is_some_and(|output| {
-                    output.event.tab_id() == control.event.tab_id()
-                        && output.sequence < control.sequence
-                });
-            if must_preserve_output {
-                self.pending_control = Some(control.clone());
-                self.control_streak = 0;
-                if let Some(output) = self.pending_output.take() {
-                    return Ok(output);
-                }
-            }
             self.control_streak = self.control_streak.saturating_add(1);
             return Ok(control);
         }
-        if let Some(output) = self.pending_output.take() {
+        if let Some(output) = self
+            .output
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .pop_front()
+        {
             self.control_streak = 0;
             return Ok(output);
         }
-        self.output.try_recv()
+        Err(TryRecvError::Empty)
     }
 }
 #[derive(Clone)]
 pub(crate) struct BackendEventSender {
+    lifecycle_events: SyncSender<BackendEventEnvelope>,
     control_events: SyncSender<BackendEventEnvelope>,
-    output_events: SyncSender<BackendEventEnvelope>,
+    output_events: Arc<Mutex<OutputEventQueue>>,
+    send_order: Arc<Mutex<()>>,
     wake_generation: Arc<AtomicU64>,
     sequence: Arc<AtomicU64>,
     sent_events: Arc<AtomicU64>,
@@ -260,33 +437,40 @@ impl BackendEventSender {
         event: BackendEvent,
         generation: u64,
     ) -> Result<(), BackendEventSendError> {
-        let sender = if event.is_control() {
-            &self.control_events
-        } else {
-            &self.output_events
-        };
+        let _send_guard = self
+            .send_order
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let envelope = BackendEventEnvelope {
             event,
             generation,
             sequence: self.sequence.fetch_add(1, Ordering::Relaxed),
         };
-        match sender.try_send(envelope) {
+        let result = if matches!(&envelope.event, BackendEvent::Output { .. }) {
+            self.output_events
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .push(envelope)
+                .map_err(|_| BackendEventSendError)
+        } else if envelope.event.is_reliable_lifecycle() {
+            self.lifecycle_events
+                .send(envelope)
+                .map_err(|_| BackendEventSendError)
+        } else {
+            self.control_events
+                .try_send(envelope)
+                .map_err(|_| BackendEventSendError)
+        };
+        match result {
             Ok(()) => {
                 self.sent_events.fetch_add(1, Ordering::Relaxed);
                 let generation = self.wake_generation.fetch_add(1, Ordering::AcqRel) + 1;
                 self.wake.send_replace(generation);
                 Ok(())
             }
-            Err(TrySendError::Full(_event)) => {
-                // Producers must never block on terminal output. The bounded
-                // queue is the backpressure boundary; higher-level coalescing
-                // remains responsible for preserving control-event semantics.
+            Err(error) => {
                 self.rejected_events.fetch_add(1, Ordering::Relaxed);
-                Err(BackendEventSendError)
-            }
-            Err(TrySendError::Disconnected(_event)) => {
-                self.rejected_events.fetch_add(1, Ordering::Relaxed);
-                Err(BackendEventSendError)
+                Err(error)
             }
         }
     }
@@ -304,15 +488,21 @@ impl BackendEventSender {
 }
 
 pub(crate) fn backend_event_channel() -> (BackendEventSender, BackendEventReceiver) {
+    const LIFECYCLE_QUEUE_CAPACITY: usize = 4_096;
     const CONTROL_QUEUE_CAPACITY: usize = 4_096;
-    const OUTPUT_QUEUE_CAPACITY: usize = 16_384;
+    // Lifecycle events are bounded separately from ordinary controls. Sending
+    // them may briefly apply backpressure, but it cannot grow memory without
+    // limit while the UI is stalled.
+    let (lifecycle_events, lifecycle) = mpsc::sync_channel(LIFECYCLE_QUEUE_CAPACITY);
     let (control_events, control) = mpsc::sync_channel(CONTROL_QUEUE_CAPACITY);
-    let (output_events, output) = mpsc::sync_channel(OUTPUT_QUEUE_CAPACITY);
+    let output = Arc::new(Mutex::new(OutputEventQueue::default()));
     let (wake, _) = tokio::sync::watch::channel(0);
     (
         BackendEventSender {
+            lifecycle_events,
             control_events,
-            output_events,
+            output_events: output.clone(),
+            send_order: Arc::new(Mutex::new(())),
             wake_generation: Arc::new(AtomicU64::new(0)),
             sequence: Arc::new(AtomicU64::new(0)),
             sent_events: Arc::new(AtomicU64::new(0)),
@@ -321,10 +511,11 @@ pub(crate) fn backend_event_channel() -> (BackendEventSender, BackendEventReceiv
             default_generation: 0,
         },
         BackendEventReceiver {
+            lifecycle,
             control,
             output,
             control_streak: 0,
-            pending_output: None,
+            pending_lifecycle: None,
             pending_control: None,
         },
     )
@@ -417,19 +608,53 @@ mod backend_event_tests {
 
 #[derive(Clone)]
 pub(crate) enum BackendTx {
-    Local(Sender<BackendCommand>),
-    Ssh(tokio::sync::mpsc::UnboundedSender<BackendCommand>),
+    Local {
+        commands: SyncSender<BackendCommand>,
+        close: Arc<AtomicBool>,
+        resize: Arc<Mutex<Option<(u16, u16)>>>,
+    },
+    Ssh {
+        commands: tokio::sync::mpsc::Sender<BackendCommand>,
+        close: tokio::sync::watch::Sender<bool>,
+        resize: tokio::sync::watch::Sender<Option<(u16, u16)>>,
+    },
 }
 
+pub(crate) const BACKEND_COMMAND_QUEUE_CAPACITY: usize = 1_024;
+static REJECTED_BACKEND_COMMANDS: AtomicU64 = AtomicU64::new(0);
+
 impl BackendTx {
-    pub fn send(&self, command: BackendCommand) {
-        let sent = match self {
-            Self::Local(tx) => tx.send(command).is_ok(),
-            Self::Ssh(tx) => tx.send(command).is_ok(),
+    pub fn send(&self, command: BackendCommand) -> bool {
+        let command_kind = command.kind();
+        let sent = match (self, command) {
+            (Self::Local { close, .. }, BackendCommand::Close) => {
+                close.store(true, Ordering::Release);
+                true
+            }
+            (Self::Local { resize, .. }, BackendCommand::Resize { cols, rows }) => {
+                *resize
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some((cols, rows));
+                true
+            }
+            (Self::Local { commands, .. }, command) => commands.try_send(command).is_ok(),
+            (Self::Ssh { close, .. }, BackendCommand::Close) => close.send(true).is_ok(),
+            (Self::Ssh { resize, .. }, BackendCommand::Resize { cols, rows }) => {
+                resize.send(Some((cols, rows))).is_ok()
+            }
+            (Self::Ssh { commands, .. }, command) => commands.try_send(command).is_ok(),
         };
         if !sent {
-            tracing::debug!("backend command dropped because its receiver is closed");
+            let rejected = REJECTED_BACKEND_COMMANDS.fetch_add(1, Ordering::Relaxed) + 1;
+            if rejected.is_power_of_two() {
+                tracing::warn!(
+                    command = command_kind,
+                    rejected,
+                    "backend command queue is full or closed"
+                );
+            }
         }
+        sent
     }
 }
 
@@ -648,9 +873,13 @@ impl TerminalTab {
     }
 
     /// Send a command to the backend. Thread-safe via the shared Arc<Mutex>.
-    pub fn send_backend(&self, command: BackendCommand) {
-        if let Ok(backend) = self.backend.lock() {
-            backend.send(command);
+    pub fn send_backend(&self, command: BackendCommand) -> bool {
+        match self.backend.lock() {
+            Ok(backend) => backend.send(command),
+            Err(poisoned) => {
+                tracing::warn!("terminal backend command lock was poisoned; recovering");
+                poisoned.into_inner().send(command)
+            }
         }
     }
 
@@ -963,12 +1192,17 @@ mod tests {
 
     #[test]
     fn clear_contents_removes_viewport_and_scrollback() {
-        let (backend_tx, backend_rx) = std::sync::mpsc::channel();
+        let (backend_tx, backend_rx) =
+            std::sync::mpsc::sync_channel(BACKEND_COMMAND_QUEUE_CAPACITY);
         let (event_tx, _event_rx) = backend_event_channel();
         let mut tab = TerminalTab::new_local(
             "test".to_string(),
             "Test".to_string(),
-            BackendTx::Local(backend_tx),
+            BackendTx::Local {
+                commands: backend_tx,
+                close: Arc::new(AtomicBool::new(false)),
+                resize: Arc::new(Mutex::new(None)),
+            },
             event_tx,
         );
 
@@ -1002,12 +1236,17 @@ mod tests {
 
     #[test]
     fn idle_snapshot_reuses_shared_cells_until_terminal_changes() {
-        let (backend_tx, _backend_rx) = std::sync::mpsc::channel();
+        let (backend_tx, _backend_rx) =
+            std::sync::mpsc::sync_channel(BACKEND_COMMAND_QUEUE_CAPACITY);
         let (event_tx, _event_rx) = backend_event_channel();
         let mut tab = TerminalTab::new_local(
             "test".to_string(),
             "Test".to_string(),
-            BackendTx::Local(backend_tx),
+            BackendTx::Local {
+                commands: backend_tx,
+                close: Arc::new(AtomicBool::new(false)),
+                resize: Arc::new(Mutex::new(None)),
+            },
             event_tx,
         );
 
@@ -1023,12 +1262,17 @@ mod tests {
 
     #[test]
     fn terminal_damage_tracks_only_touched_rows_for_simple_output() {
-        let (backend_tx, _backend_rx) = std::sync::mpsc::channel();
+        let (backend_tx, _backend_rx) =
+            std::sync::mpsc::sync_channel(BACKEND_COMMAND_QUEUE_CAPACITY);
         let (event_tx, _event_rx) = backend_event_channel();
         let mut tab = TerminalTab::new_local(
             "test".to_string(),
             "Test".to_string(),
-            BackendTx::Local(backend_tx),
+            BackendTx::Local {
+                commands: backend_tx,
+                close: Arc::new(AtomicBool::new(false)),
+                resize: Arc::new(Mutex::new(None)),
+            },
             event_tx,
         );
         let _ = tab.render_snapshot(false);
@@ -1046,12 +1290,17 @@ mod tests {
     #[test]
     #[ignore = "manual performance benchmark"]
     fn benchmark_incremental_terminal_rendering() {
-        let (backend_tx, _backend_rx) = std::sync::mpsc::channel();
+        let (backend_tx, _backend_rx) =
+            std::sync::mpsc::sync_channel(BACKEND_COMMAND_QUEUE_CAPACITY);
         let (event_tx, _event_rx) = backend_event_channel();
         let mut tab = TerminalTab::new_local(
             "benchmark".to_string(),
             "Benchmark".to_string(),
-            BackendTx::Local(backend_tx),
+            BackendTx::Local {
+                commands: backend_tx,
+                close: Arc::new(AtomicBool::new(false)),
+                resize: Arc::new(Mutex::new(None)),
+            },
             event_tx,
         );
         let _ = tab.render_snapshot(false);

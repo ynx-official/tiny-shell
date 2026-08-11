@@ -11,12 +11,12 @@ pub(crate) use handler::SftpClientHandler;
 pub(crate) use transfer::TransferStateFlag;
 pub(crate) use utils::*;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::{
     fs,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 
@@ -36,7 +36,7 @@ use russh_sftp::{
 use tokio::{
     io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, SeekFrom},
     sync::{
-        Semaphore,
+        Notify, Semaphore,
         mpsc::{self, Receiver, Sender},
     },
     task::JoinHandle,
@@ -49,7 +49,7 @@ use rust_i18n::t;
 
 use crate::{
     session::{
-        config::{AuthMethod, ConfigStore, Session},
+        config::{AuthMethod, ConfigStore, Session, TempTaskDirectory},
         ssh_keys::{
             authenticate_with_default_keys, normalize_inline_private_key, private_keys_with_algs,
             session_has_explicit_key,
@@ -66,16 +66,85 @@ use crate::{
 };
 
 const COMMAND_QUEUE_CAPACITY: usize = 256;
+const CONTROL_QUEUE_CAPACITY: usize = 1_024;
 
-struct TemporaryEditFile(PathBuf);
+enum SftpTempDirectory {
+    Managed(TempTaskDirectory),
+    Fallback(PathBuf),
+}
 
-impl Drop for TemporaryEditFile {
+impl SftpTempDirectory {
+    fn path(&self) -> &Path {
+        match self {
+            Self::Managed(directory) => directory.path(),
+            Self::Fallback(path) => path,
+        }
+    }
+}
+
+impl Drop for SftpTempDirectory {
     fn drop(&mut self) {
-        if let Err(error) = fs::remove_file(&self.0)
+        let Self::Fallback(path) = self else {
+            return;
+        };
+        if let Err(error) = fs::remove_dir_all(&*path)
             && error.kind() != std::io::ErrorKind::NotFound
         {
-            tracing::debug!(path = %self.0.display(), %error, "failed to clean up SFTP edit file");
+            tracing::debug!(path = %path.display(), %error, "failed to clean up SFTP temporary directory");
         }
+    }
+}
+
+fn allocate_sftp_temp_directory(purpose: &str) -> Result<SftpTempDirectory> {
+    if let Some(workspace) = ConfigStore::temp_workspace() {
+        match workspace.allocate(purpose) {
+            Ok(directory) => return Ok(SftpTempDirectory::Managed(directory)),
+            Err(error) => {
+                tracing::warn!(%error, purpose, "falling back to the operating-system temporary directory");
+            }
+        }
+    }
+
+    let path = std::env::temp_dir().join("tiny-shell").join(format!(
+        "{}-{}",
+        purpose
+            .chars()
+            .map(|character| {
+                if character.is_ascii_alphanumeric() || matches!(character, '-' | '_') {
+                    character
+                } else {
+                    '_'
+                }
+            })
+            .collect::<String>(),
+        Uuid::new_v4()
+    ));
+    fs::create_dir_all(&path)
+        .with_context(|| format!("create SFTP temporary directory {}", path.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o700))
+            .with_context(|| format!("secure SFTP temporary directory {}", path.display()))?;
+    }
+    Ok(SftpTempDirectory::Fallback(path))
+}
+
+fn safe_local_edit_name(remote_path: &str) -> String {
+    let sanitized = base_name(remote_path)
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, '.' | '-' | '_') {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    if sanitized.is_empty() || matches!(sanitized.as_str(), "." | "..") {
+        "remote-file".to_string()
+    } else {
+        sanitized
     }
 }
 
@@ -155,24 +224,117 @@ pub enum SftpCommand {
         source_size: Option<u64>,
         source_modified: Option<u64>,
     },
+    CleanupRemotePartial(String),
+}
+
+/// Low-volume lifecycle commands use a separate reliable queue so a burst of
+/// directory operations cannot discard close, cancellation, or task cleanup.
+#[derive(Debug)]
+pub(crate) enum SftpControl {
     PauseTransfer(String),
     ResumeTransfer(String),
     CancelTransfer(String),
-    CleanupRemotePartial(String),
     TransferFinished(String),
     Close,
+}
+
+/// Bounded synchronous-producer mailbox for lifecycle controls. Pause and
+/// resume requests are coalesced per transfer, while cancellation and cleanup
+/// can evict an older coalescible request when the queue is full.
+pub(crate) struct SftpControlQueue {
+    queue: Mutex<VecDeque<SftpControl>>,
+    notify: Notify,
+}
+
+impl SftpControlQueue {
+    fn new() -> Self {
+        Self {
+            queue: Mutex::new(VecDeque::with_capacity(CONTROL_QUEUE_CAPACITY)),
+            notify: Notify::new(),
+        }
+    }
+
+    pub(crate) fn send(&self, control: SftpControl) -> bool {
+        let mut queue = self
+            .queue
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(id) = control.coalescing_id()
+            && let Some(index) = queue.iter().rposition(|queued| {
+                queued
+                    .coalescing_id()
+                    .is_some_and(|queued_id| queued_id == id)
+            })
+        {
+            queue.remove(index);
+        }
+        if queue.len() >= CONTROL_QUEUE_CAPACITY {
+            let removable = queue
+                .iter()
+                .position(SftpControl::is_coalescible)
+                .or_else(|| {
+                    control
+                        .is_high_priority()
+                        .then(|| queue.iter().position(|queued| !queued.is_high_priority()))
+                        .flatten()
+                });
+            let Some(index) = removable else {
+                tracing::warn!("SFTP control queue is full; dropping control");
+                return false;
+            };
+            queue.remove(index);
+        }
+        queue.push_back(control);
+        drop(queue);
+        self.notify.notify_one();
+        true
+    }
+
+    pub(crate) async fn recv(&self) -> SftpControl {
+        loop {
+            if let Some(control) = self
+                .queue
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .pop_front()
+            {
+                return control;
+            }
+            self.notify.notified().await;
+        }
+    }
+}
+
+impl SftpControl {
+    fn coalescing_id(&self) -> Option<&str> {
+        match self {
+            Self::PauseTransfer(id) | Self::ResumeTransfer(id) => Some(id),
+            Self::CancelTransfer(_) | Self::TransferFinished(_) | Self::Close => None,
+        }
+    }
+
+    fn is_coalescible(&self) -> bool {
+        matches!(self, Self::PauseTransfer(_) | Self::ResumeTransfer(_))
+    }
+
+    fn is_high_priority(&self) -> bool {
+        matches!(
+            self,
+            Self::CancelTransfer(_) | Self::TransferFinished(_) | Self::Close
+        )
+    }
 }
 
 /// Ensures `TransferFinished` is sent for a transfer task even when the task
 /// returns early because of a setup failure, keeping `active_transfers` in sync
 /// with the UI.
 struct TransferCleanup {
-    tx: Option<mpsc::Sender<SftpCommand>>,
+    tx: Option<Arc<SftpControlQueue>>,
     id: Option<String>,
 }
 
 impl TransferCleanup {
-    fn new(tx: mpsc::Sender<SftpCommand>, id: String) -> Self {
+    fn new(tx: Arc<SftpControlQueue>, id: String) -> Self {
         Self {
             tx: Some(tx),
             id: Some(id),
@@ -183,7 +345,7 @@ impl TransferCleanup {
 impl Drop for TransferCleanup {
     fn drop(&mut self) {
         if let (Some(tx), Some(id)) = (self.tx.take(), self.id.take()) {
-            let _ = tx.try_send(SftpCommand::TransferFinished(id));
+            tx.send(SftpControl::TransferFinished(id));
         }
     }
 }
@@ -196,7 +358,9 @@ pub fn spawn_sftp(
     events: BackendEventSender,
 ) -> SftpHandle {
     let (cmd_tx, cmd_rx) = mpsc::channel(COMMAND_QUEUE_CAPACITY);
+    let control_queue = Arc::new(SftpControlQueue::new());
     let cmd_tx_clone = cmd_tx.clone();
+    let control_queue_clone = control_queue.clone();
     let _join = runtime.spawn(async move {
         if let Err(err) = run_sftp(
             tab_id.clone(),
@@ -204,6 +368,8 @@ pub fn spawn_sftp(
             proxy_config,
             cmd_rx,
             cmd_tx_clone,
+            control_queue_clone.clone(),
+            control_queue_clone,
             events.clone(),
         )
         .await
@@ -218,7 +384,7 @@ pub fn spawn_sftp(
             });
         }
     });
-    SftpHandle::new(cmd_tx)
+    SftpHandle::new(cmd_tx, control_queue)
 }
 
 struct SftpRuntime<'a> {
@@ -229,6 +395,7 @@ struct SftpRuntime<'a> {
     home: &'a str,
     events: &'a BackendEventSender,
     commands_tx: &'a mpsc::Sender<SftpCommand>,
+    controls_tx: &'a Arc<SftpControlQueue>,
     active_transfers: &'a mut HashMap<String, TransferStateFlag>,
     active_tasks: &'a mut HashMap<String, JoinHandle<()>>,
     channel_slots: &'a Arc<Semaphore>,
@@ -245,16 +412,11 @@ impl SftpRuntime<'_> {
         }
     }
 
-    async fn handle_command(mut self, command: SftpCommand) -> bool {
+    async fn handle_command(&mut self, command: SftpCommand) -> bool {
         match command {
-            SftpCommand::Close => self.handle_close().await,
-            SftpCommand::PauseTransfer(id) => self.handle_pause_transfer(id).await,
-            SftpCommand::ResumeTransfer(id) => self.handle_resume_transfer(id).await,
-            SftpCommand::CancelTransfer(id) => self.handle_cancel_transfer(id).await,
             SftpCommand::CleanupRemotePartial(path) => {
                 self.handle_cleanup_remote_partial(path).await
             }
-            SftpCommand::TransferFinished(id) => self.handle_transfer_finished(id).await,
             SftpCommand::MeasureLatency => self.handle_measure_latency().await,
             SftpCommand::ListDir(path) => self.handle_list_dir(path).await,
             SftpCommand::ListDirectoryTree(path) => self.handle_list_directory_tree(path).await,
@@ -319,6 +481,16 @@ impl SftpRuntime<'_> {
                 remote_paths,
                 local_zip,
             } => self.handle_pack_download(remote_paths, local_zip).await,
+        }
+    }
+
+    async fn handle_control(&mut self, control: SftpControl) -> bool {
+        match control {
+            SftpControl::Close => self.handle_close().await,
+            SftpControl::PauseTransfer(id) => self.handle_pause_transfer(id).await,
+            SftpControl::ResumeTransfer(id) => self.handle_resume_transfer(id).await,
+            SftpControl::CancelTransfer(id) => self.handle_cancel_transfer(id).await,
+            SftpControl::TransferFinished(id) => self.handle_transfer_finished(id).await,
         }
     }
 
@@ -412,6 +584,15 @@ impl SftpRuntime<'_> {
         true
     }
 
+    async fn refresh_directory(&self, path: String) {
+        if let Err(error) = emit_entries(self.events, self.tab_id, self.sftp, &path).await {
+            let _ = self.events.send(BackendEvent::SftpStatus {
+                tab_id: self.tab_id.to_string(),
+                text: t!("sftp_list_failed", error = format!("{error:#}")).to_string(),
+            });
+        }
+    }
+
     async fn handle_download(&mut self, remote: String, local_dir: String) -> bool {
         self.start_download(Uuid::new_v4().to_string(), remote, local_dir, None, None)
             .await
@@ -463,11 +644,11 @@ impl SftpRuntime<'_> {
         let channel_slots_clone = self.channel_slots.clone();
         let events_clone = self.events.clone();
         let tab_id_clone = self.tab_id.to_string();
-        let commands_tx_clone = self.commands_tx.clone();
+        let controls_tx_clone = self.controls_tx.clone();
 
         let transfer_id = id.clone();
         let task = tokio::spawn(async move {
-            let _cleanup = TransferCleanup::new(commands_tx_clone.clone(), id.clone());
+            let _cleanup = TransferCleanup::new(controls_tx_clone, id.clone());
 
             let Ok(_channel_permit) = channel_slots_clone.acquire_owned().await else {
                 return;
@@ -627,11 +808,11 @@ impl SftpRuntime<'_> {
         let channel_slots_clone = self.channel_slots.clone();
         let events_clone = self.events.clone();
         let tab_id_clone = self.tab_id.to_string();
-        let commands_tx_clone = self.commands_tx.clone();
+        let controls_tx_clone = self.controls_tx.clone();
 
         let transfer_id = id.clone();
         let task = tokio::spawn(async move {
-            let _cleanup = TransferCleanup::new(commands_tx_clone.clone(), id.clone());
+            let _cleanup = TransferCleanup::new(controls_tx_clone, id.clone());
 
             let Ok(_channel_permit) = channel_slots_clone.acquire_owned().await else {
                 return;
@@ -672,7 +853,14 @@ impl SftpRuntime<'_> {
                         tab_id: tab_id_clone.clone(),
                         text: summary,
                     });
-                    let _ = commands_tx_clone.try_send(SftpCommand::ListDir(remote_dir));
+                    if let Err(error) =
+                        emit_entries(&events_clone, &tab_id_clone, &sftp_session, &remote_dir).await
+                    {
+                        let _ = events_clone.send(BackendEvent::SftpStatus {
+                            tab_id: tab_id_clone.clone(),
+                            text: t!("sftp_list_failed", error = format!("{error:#}")).to_string(),
+                        });
+                    }
                 }
                 Err(err) => {
                     let err_msg = format!("{err:#}");
@@ -719,19 +907,21 @@ impl SftpRuntime<'_> {
 
     async fn handle_edit_file(&mut self, remote_path: String, editor: Option<String>) -> bool {
         let id = uuid::Uuid::new_v4().to_string();
-        let config = match crate::session::config::ConfigStore::load() {
-            Ok(config) => config,
+        let temp_directory = match allocate_sftp_temp_directory("sftp-edit") {
+            Ok(directory) => directory,
             Err(err) => {
                 let _ = self.events.send(BackendEvent::SftpStatus {
                     tab_id: self.tab_id.to_string(),
-                    text: t!("sftp_config_load_failed", error = format!("{err:#}")).to_string(),
+                    text: t!("sftp_temp_dir_failed", error = format!("{err:#}")).to_string(),
                 });
                 return true;
             }
         };
-        let tmp_dir = config.tmp_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
-        let base = base_name(&remote_path);
-        let local_path = tmp_dir.join(format!("{}-{}", id, base));
+        let base = base_name(&remote_path).to_string();
+        let local_path =
+            temp_directory
+                .path()
+                .join(format!("{}-{}", id, safe_local_edit_name(&remote_path)));
 
         let handle_clone = self.handle.clone();
         let commands_tx_clone = self.commands_tx.clone();
@@ -740,7 +930,7 @@ impl SftpRuntime<'_> {
 
         let transfer_id = id.clone();
         let task = tokio::spawn(async move {
-            let _temporary_file = TemporaryEditFile(local_path.clone());
+            let _temp_directory = temp_directory;
             let flag = TransferStateFlag::new();
             let Ok(channel) = handle_clone.channel_open_session().await else {
                 return;
@@ -754,7 +944,7 @@ impl SftpRuntime<'_> {
 
             let _ = events_clone.send(BackendEvent::SftpStatus {
                 tab_id: tab_id_clone.clone(),
-                text: t!("downloading_file", base = base).to_string(),
+                text: t!("downloading_file", base = base.as_str()).to_string(),
             });
 
             let ctx = TransferContext {
@@ -812,10 +1002,11 @@ impl SftpRuntime<'_> {
                 while rx.try_recv().is_ok() {} // drain pending
 
                 if commands_tx_clone
-                    .try_send(SftpCommand::UploadEditedFile {
+                    .send(SftpCommand::UploadEditedFile {
                         local_path: local_path.to_string_lossy().to_string(),
                         remote_path: remote_path.clone(),
                     })
+                    .await
                     .is_err()
                 {
                     break;
@@ -1025,14 +1216,10 @@ impl SftpRuntime<'_> {
                     text: t!("create_folder_success", name = base_name(&actual_path)).to_string(),
                 });
 
-                // Re-fetch the parent directory to show the newly created folder
-                if let Some(parent) = parent_dir(&actual_path) {
-                    let _ = self.commands_tx.try_send(SftpCommand::ListDir(parent));
-                } else {
-                    let _ = self
-                        .commands_tx
-                        .try_send(SftpCommand::ListDir("/".to_string()));
-                }
+                // Refresh directly. Re-enqueuing onto the queue currently being
+                // consumed can deadlock under backpressure or lose the update.
+                self.refresh_directory(parent_dir(&actual_path).unwrap_or_else(|| "/".into()))
+                    .await;
             }
             Err(err) => {
                 let _ = self.events.send(BackendEvent::SftpStatus {
@@ -1065,9 +1252,7 @@ impl SftpRuntime<'_> {
                     text: t!("sftp_create_file_success", name = base_name(&actual_path))
                         .to_string(),
                 });
-                let _ = self
-                    .commands_tx
-                    .try_send(SftpCommand::ListDir(remote_parent(&actual_path)));
+                self.refresh_directory(remote_parent(&actual_path)).await;
             }
             Err(err) => {
                 let _ = self.events.send(BackendEvent::SftpStatus {
@@ -1088,9 +1273,7 @@ impl SftpRuntime<'_> {
                     tab_id: self.tab_id.to_string(),
                     text: t!("sftp_rename_success", name = base_name(&new_path)).to_string(),
                 });
-                let _ = self
-                    .commands_tx
-                    .try_send(SftpCommand::ListDir(remote_parent(&new_path)));
+                self.refresh_directory(remote_parent(&new_path)).await;
             }
             Err(err) => {
                 let _ = self.events.send(BackendEvent::SftpStatus {
@@ -1126,9 +1309,7 @@ impl SftpRuntime<'_> {
                     )
                     .to_string(),
                 });
-                let _ = self
-                    .commands_tx
-                    .try_send(SftpCommand::ListDir(remote_parent(&remote_path)));
+                self.refresh_directory(remote_parent(&remote_path)).await;
             }
             Err(err) => {
                 let _ = self.events.send(BackendEvent::SftpStatus {
@@ -1170,13 +1351,8 @@ impl SftpRuntime<'_> {
 
         if let Some(first) = paths.first() {
             let actual_path = self.resolve_home_path(first.clone());
-            if let Some(parent) = parent_dir(&actual_path) {
-                let _ = self.commands_tx.try_send(SftpCommand::ListDir(parent));
-            } else {
-                let _ = self
-                    .commands_tx
-                    .try_send(SftpCommand::ListDir("/".to_string()));
-            }
+            self.refresh_directory(parent_dir(&actual_path).unwrap_or_else(|| "/".into()))
+                .await;
         }
         true
     }
@@ -1209,9 +1385,7 @@ impl SftpRuntime<'_> {
             }
         }
         if let Some(first) = resolved_paths.first() {
-            let _ = self
-                .commands_tx
-                .try_send(SftpCommand::ListDir(remote_parent(first)));
+            self.refresh_directory(remote_parent(first)).await;
         }
         true
     }
@@ -1243,14 +1417,30 @@ impl SftpRuntime<'_> {
         let channel_slots_clone = self.channel_slots.clone();
         let events_clone = self.events.clone();
         let tab_id_clone = self.tab_id.to_string();
-        let commands_tx_clone = self.commands_tx.clone();
-        let tmp_dir = crate::session::config::ConfigStore::load()
-            .ok()
-            .and_then(|config| config.tmp_dir())
-            .unwrap_or_else(std::env::temp_dir);
+        let controls_tx_clone = self.controls_tx.clone();
+        let temp_directory = match allocate_sftp_temp_directory("sftp-pack") {
+            Ok(directory) => directory,
+            Err(error) => {
+                self.active_transfers.remove(&id);
+                let _ = self.events.send(BackendEvent::SftpStatus {
+                    tab_id: self.tab_id.to_string(),
+                    text: t!("sftp_pack_download_failed", err = format!("{error:#}")).to_string(),
+                });
+                let _ = self.events.send(BackendEvent::TransferProgress {
+                    tab_id: self.tab_id.to_string(),
+                    id,
+                    transferred: 0,
+                    total: None,
+                    state: crate::terminal::TransferState::Failed(format!("{error:#}")),
+                });
+                return true;
+            }
+        };
+        let tmp_dir = temp_directory.path().to_path_buf();
         let transfer_id = id.clone();
         let task = tokio::spawn(async move {
-            let _cleanup = TransferCleanup::new(commands_tx_clone.clone(), id.clone());
+            let _temp_directory = temp_directory;
+            let _cleanup = TransferCleanup::new(controls_tx_clone, id.clone());
 
             let Ok(_channel_permit) = channel_slots_clone.acquire_owned().await else {
                 return;
@@ -1297,12 +1487,15 @@ impl SftpRuntime<'_> {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_sftp(
     tab_id: String,
     session: Session,
     proxy_config: ConfigStore,
     mut commands: Receiver<SftpCommand>,
     commands_tx: Sender<SftpCommand>,
+    controls: Arc<SftpControlQueue>,
+    controls_tx: Arc<SftpControlQueue>,
     events: BackendEventSender,
 ) -> Result<()> {
     let _ = events.send(BackendEvent::SftpStatus {
@@ -1310,7 +1503,26 @@ async fn run_sftp(
         text: t!("sftp_connecting").to_string(),
     });
 
-    let handle = connect_and_authenticate(&session, &proxy_config).await?;
+    let connect = connect_and_authenticate(&session, &proxy_config);
+    tokio::pin!(connect);
+    let handle = loop {
+        tokio::select! {
+            biased;
+            control = controls.recv() => match control {
+                SftpControl::Close => return Ok(()),
+                _ => {
+                    // Transfers do not exist until authentication completes, so
+                    // other lifecycle commands have nothing to act on yet.
+                }
+            },
+            command = commands.recv() => {
+                if command.is_none() {
+                    return Ok(());
+                }
+            }
+            result = &mut connect => break result?,
+        }
+    };
     let channel = handle
         .channel_open_session()
         .await
@@ -1374,9 +1586,9 @@ async fn run_sftp(
     let mut active_tasks: HashMap<String, JoinHandle<()>> = HashMap::new();
     let channel_slots = Arc::new(Semaphore::new(4));
 
-    while let Some(command) = commands.recv().await {
+    loop {
         active_tasks.retain(|_, task| !task.is_finished());
-        let continue_loop = SftpRuntime {
+        let mut runtime = SftpRuntime {
             handle: &handle,
             sftp: &sftp,
             tab_id: &tab_id,
@@ -1384,12 +1596,21 @@ async fn run_sftp(
             home: &home,
             events: &events,
             commands_tx: &commands_tx,
+            controls_tx: &controls_tx,
             active_transfers: &mut active_transfers,
             active_tasks: &mut active_tasks,
             channel_slots: &channel_slots,
-        }
-        .handle_command(command)
-        .await;
+        };
+        let next = tokio::select! {
+            biased;
+            control = controls.recv() => Some(EitherSftpCommand::Control(control)),
+            command = commands.recv() => command.map(EitherSftpCommand::Work),
+        };
+        let continue_loop = match next {
+            Some(EitherSftpCommand::Control(control)) => runtime.handle_control(control).await,
+            Some(EitherSftpCommand::Work(command)) => runtime.handle_command(command).await,
+            None => false,
+        };
         if !continue_loop {
             break;
         }
@@ -1399,6 +1620,11 @@ async fn run_sftp(
         .disconnect(Disconnect::ByApplication, "bye", "")
         .await;
     Ok(())
+}
+
+enum EitherSftpCommand {
+    Control(SftpControl),
+    Work(SftpCommand),
 }
 
 use std::future::Future;
@@ -1528,8 +1754,9 @@ async fn connect_and_authenticate(
             ..Default::default()
         });
         let addr = format!("{}:{}", session.host, session.port);
+        let handler = SftpClientHandler::new(&session.host, session.port)?;
         let stream = crate::session::config::connect_proxy(session, proxy_config).await?;
-        let mut handle = client::connect_stream(config, stream, SftpClientHandler)
+        let mut handle = client::connect_stream(config, stream, handler)
             .await
             .with_context(|| format!("connect {addr} failed"))?;
 

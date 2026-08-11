@@ -539,13 +539,26 @@ impl TinyShell {
             crate::app::DialogKind::ManagedKeySelector,
             window,
             cx,
-            move |dialog: Dialog, _token, window, _cx| {
+            move |dialog: Dialog, token, window, _cx| {
                 let dialog_width = px(760.).min(window.viewport_size().width - px(24.));
                 dialog
                     .title(t!("select_private_key").to_string())
                     .w(dialog_width)
                     .close_button(false)
                     .overlay_closable(false)
+                    .on_close({
+                        let view = view.clone();
+                        move |_, _, cx| {
+                            view.update(cx, |this, cx| {
+                                this.dialog_closed(token);
+                                this.managed_key_dialog_token = None;
+                                this.managed_key_editor_target = None;
+                                this.managed_key_dialog_selection = None;
+                                this.editing_managed_key_id = None;
+                                cx.notify();
+                            });
+                        }
+                    })
                     .on_ok({
                         let view = view.clone();
                         move |_, window, cx| {
@@ -795,12 +808,24 @@ impl TinyShell {
             crate::app::DialogKind::ManagedKeyImport,
             window,
             cx,
-            move |dialog: Dialog, _token, _window, _cx| {
+            move |dialog: Dialog, token, _window, _cx| {
                 dialog
                     .title(t!("key_import_dialog_title").to_string())
                     .w(px(440.))
                     .close_button(false)
                     .overlay_closable(false)
+                    .on_close({
+                        let view = view.clone();
+                        move |_, _, cx| {
+                            view.update(cx, |this, cx| {
+                                this.dialog_closed(token);
+                                this.managed_key_dialog_token = None;
+                                this.key_import.close();
+                                this.managed_key_dialog_selection = None;
+                                cx.notify();
+                            });
+                        }
+                    })
                     .on_ok({
                         let view = view.clone();
                         move |_, window, cx| {

@@ -4,6 +4,7 @@ pub(crate) mod connection_archive;
 pub(crate) mod connection_catalog;
 pub(crate) mod connection_import;
 pub mod crypto;
+pub(crate) mod host_key;
 pub mod proxy;
 pub(crate) mod quick_commands;
 pub mod session_types;

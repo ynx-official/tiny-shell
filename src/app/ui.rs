@@ -407,9 +407,9 @@ impl Render for TinyShell {
             .on_action(cx.listener(|this, _: &crate::OpenTransfers, window, cx| {
                 this.show_transfers_dialog(window, cx)
             }))
-            .on_action(
-                cx.listener(|this, _: &crate::NewSsh, window, cx| this.show_ssh_dialog(window, cx)),
-            )
+            .on_action(cx.listener(|this, _: &crate::NewSsh, window, cx| {
+                this.open_new_ssh_dialog(window, cx)
+            }))
             .on_action(cx.listener(|this, _: &crate::NewWindow, _, cx| this.open_new_window(cx)))
             .on_action(
                 cx.listener(|this, _: &crate::DetachTabToWindow, window, cx| {
@@ -561,12 +561,18 @@ impl Render for TinyShell {
                         | gpui::WindowBounds::Maximized(b)
                         | gpui::WindowBounds::Windowed(b) => b,
                     };
-                    crate::app::update_window_bounds(handle, screen_bounds);
-                    if window.is_window_active() {
-                        crate::app::mark_window_active(handle);
-                    }
+                    let is_window_active = window.is_window_active();
 
                     view.update(cx, |this, cx| {
+                        if this.last_registered_window_bounds != Some(screen_bounds) {
+                            this.last_registered_window_bounds = Some(screen_bounds);
+                            crate::app::update_window_bounds(handle, screen_bounds);
+                        }
+                        if is_window_active && !this.was_window_active {
+                            crate::app::mark_window_active(handle);
+                        }
+                        this.was_window_active = is_window_active;
+
                         this.open_pending_dialog(window, cx);
                         this.sync_sftp_path_input(window, cx);
                         this.sync_sftp_tree_scroll();

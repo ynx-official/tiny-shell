@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crate::terminal::{
     BackendEvent, BackendEventEnvelope, BackendEventReceiver, BackendEventSender,
@@ -8,6 +8,155 @@ use crate::terminal::{
 };
 
 pub(crate) type WindowOwnerId = u64;
+
+const MAX_ROUTED_EVENTS_PER_TICK: usize = 2_048;
+const MAX_PENDING_EVENTS_PER_OWNER: usize = 8_192;
+const MAX_PENDING_OUTPUT_BYTES_PER_OWNER: usize = 8 * 1024 * 1024;
+const MAX_UNROUTED_ROUTES: usize = 256;
+const MAX_UNROUTED_EVENTS: usize = 4_096;
+const MAX_UNROUTED_EVENTS_PER_ROUTE: usize = 256;
+const MAX_UNROUTED_OUTPUT_BYTES: usize = 2 * 1024 * 1024;
+const MAX_UNROUTED_OUTPUT_BYTES_PER_ROUTE: usize = 512 * 1024;
+const UNROUTED_EVENT_TTL: Duration = Duration::from_secs(30);
+const MAX_ROUTE_TOMBSTONES: usize = 4_096;
+const MAX_COALESCED_PENDING_OUTPUT_BYTES: usize = 128 * 1024;
+
+#[derive(Default)]
+struct EventQueue {
+    events: VecDeque<BackendEventEnvelope>,
+    output_bytes: usize,
+}
+
+impl EventQueue {
+    fn len(&self) -> usize {
+        self.events.len()
+    }
+
+    fn is_empty(&self) -> bool {
+        self.events.is_empty()
+    }
+
+    fn push_bounded(
+        &mut self,
+        event: BackendEventEnvelope,
+        max_events: usize,
+        max_output_bytes: usize,
+    ) -> Result<(), BackendEventEnvelope> {
+        let incoming_output_bytes = output_bytes(&event);
+        let would_exceed_output_limit = incoming_output_bytes > 0
+            && self.output_bytes.saturating_add(incoming_output_bytes) > max_output_bytes;
+        if would_exceed_output_limit && !event.event.is_reliable_lifecycle() {
+            return Err(event);
+        }
+        if self.try_coalesce_output(&event) {
+            self.output_bytes += incoming_output_bytes;
+            return Ok(());
+        }
+
+        let reliable = event.event.is_reliable_lifecycle();
+        let would_exceed_event_limit = self.events.len() >= max_events;
+
+        // Keep lifecycle events ahead of ordinary data when a queue is full,
+        // but never let the queue itself grow without limit. This also makes
+        // route restoration and cross-window moves obey the same bounds as
+        // direct routing.
+        if would_exceed_event_limit {
+            if !reliable {
+                return Err(event);
+            }
+            let Some(index) = self
+                .events
+                .iter()
+                .position(|queued| !queued.event.is_reliable_lifecycle())
+            else {
+                return Err(event);
+            };
+            if let Some(dropped) = self.events.remove(index) {
+                self.output_bytes = self.output_bytes.saturating_sub(output_bytes(&dropped));
+            }
+        }
+
+        self.output_bytes += incoming_output_bytes;
+        self.events.push_back(event);
+        Ok(())
+    }
+
+    fn push_preserving(&mut self, event: BackendEventEnvelope) {
+        let incoming_output_bytes = output_bytes(&event);
+        if !self.try_coalesce_output(&event) {
+            self.events.push_back(event);
+        }
+        self.output_bytes += incoming_output_bytes;
+    }
+
+    fn try_coalesce_output(&mut self, incoming: &BackendEventEnvelope) -> bool {
+        let BackendEvent::Output {
+            tab_id: incoming_tab,
+            bytes: incoming_bytes,
+        } = &incoming.event
+        else {
+            return false;
+        };
+        let Some(previous) = self.events.back_mut() else {
+            return false;
+        };
+        if previous.generation != incoming.generation
+            || previous.sequence.checked_add(1) != Some(incoming.sequence)
+        {
+            return false;
+        }
+        let BackendEvent::Output { tab_id, bytes } = &mut previous.event else {
+            return false;
+        };
+        if tab_id != incoming_tab
+            || bytes.len().saturating_add(incoming_bytes.len()) > MAX_COALESCED_PENDING_OUTPUT_BYTES
+        {
+            return false;
+        }
+        bytes.extend_from_slice(incoming_bytes);
+        previous.sequence = incoming.sequence;
+        true
+    }
+
+    fn pop_front(&mut self) -> Option<BackendEventEnvelope> {
+        let event = self.events.pop_front()?;
+        self.output_bytes = self.output_bytes.saturating_sub(output_bytes(&event));
+        Some(event)
+    }
+
+    fn drain(&mut self, limit: usize) -> Vec<BackendEventEnvelope> {
+        let count = limit.min(self.events.len());
+        let mut drained = Vec::with_capacity(count);
+        for _ in 0..count {
+            if let Some(event) = self.pop_front() {
+                drained.push(event);
+            }
+        }
+        drained
+    }
+
+    fn retain(&mut self, mut keep: impl FnMut(&BackendEventEnvelope) -> bool) {
+        let mut retained = Self::default();
+        while let Some(event) = self.pop_front() {
+            if keep(&event) {
+                retained.push_preserving(event);
+            }
+        }
+        *self = retained;
+    }
+}
+
+struct UnroutedEventQueue {
+    pending: EventQueue,
+    last_seen: Instant,
+}
+
+fn output_bytes(event: &BackendEventEnvelope) -> usize {
+    match &event.event {
+        BackendEvent::Output { bytes, .. } => bytes.len(),
+        _ => 0,
+    }
+}
 
 pub(crate) struct SessionQueueStats {
     pub(crate) routed: u64,
@@ -31,11 +180,11 @@ fn saturating_u64(value: usize) -> u64 {
 
 pub(crate) struct SessionStore {
     event_routes: HashMap<String, WindowOwnerId>,
-    pending_events: HashMap<WindowOwnerId, VecDeque<BackendEventEnvelope>>,
-    unrouted_events: HashMap<String, VecDeque<BackendEventEnvelope>>,
+    pending_events: HashMap<WindowOwnerId, EventQueue>,
+    unrouted_events: HashMap<String, UnroutedEventQueue>,
+    route_tombstones: HashMap<String, Instant>,
     events_tx: BackendEventSender,
     events_rx: BackendEventReceiver,
-    deferred_event: Option<BackendEventEnvelope>,
     routed_events: AtomicU64,
     deferred_events: AtomicU64,
     peak_pending_events: AtomicU64,
@@ -51,9 +200,9 @@ impl SessionStore {
             event_routes: HashMap::new(),
             pending_events: HashMap::new(),
             unrouted_events: HashMap::new(),
+            route_tombstones: HashMap::new(),
             events_tx,
             events_rx,
-            deferred_event: None,
             routed_events: AtomicU64::new(0),
             deferred_events: AtomicU64::new(0),
             peak_pending_events: AtomicU64::new(0),
@@ -68,12 +217,24 @@ impl SessionStore {
     }
 
     pub(crate) fn register_event_route(&mut self, route_id: String, owner_id: WindowOwnerId) {
+        let now = Instant::now();
+        self.prune_route_lifecycle(now);
+        self.route_tombstones.remove(&route_id);
         self.event_routes.insert(route_id.clone(), owner_id);
-        if let Some(events) = self.unrouted_events.remove(&route_id) {
-            self.pending_events
-                .entry(owner_id)
-                .or_default()
-                .extend(events);
+        if let Some(mut unrouted) = self.unrouted_events.remove(&route_id) {
+            let pending = self.pending_events.entry(owner_id).or_default();
+            while let Some(event) = unrouted.pending.pop_front() {
+                if pending
+                    .push_bounded(
+                        event,
+                        MAX_PENDING_EVENTS_PER_OWNER,
+                        MAX_PENDING_OUTPUT_BYTES_PER_OWNER,
+                    )
+                    .is_err()
+                {
+                    self.deferred_events.fetch_add(1, Ordering::Relaxed);
+                }
+            }
         }
     }
 
@@ -87,17 +248,13 @@ impl SessionStore {
         }
         self.event_routes.remove(route_id);
         self.unrouted_events.remove(route_id);
+        self.route_tombstones
+            .insert(route_id.to_string(), Instant::now());
+        self.trim_route_tombstones();
         for pending in self.pending_events.values_mut() {
             pending.retain(|event| event_route_id(event) != Some(route_id));
         }
         self.pending_events.retain(|_, events| !events.is_empty());
-        if self
-            .deferred_event
-            .as_ref()
-            .is_some_and(|event| event_route_id(event) == Some(route_id))
-        {
-            self.deferred_event = None;
-        }
         true
     }
 
@@ -119,23 +276,32 @@ impl SessionStore {
 
         let route_ids = route_ids.iter().map(String::as_str).collect::<HashSet<_>>();
         if let Some(mut source_events) = self.pending_events.remove(&source_id) {
-            let mut retained = VecDeque::new();
-            let mut moved = VecDeque::new();
+            let mut retained = EventQueue::default();
+            let mut moved = EventQueue::default();
             while let Some(event) = source_events.pop_front() {
                 if event_route_id(&event).is_some_and(|route_id| route_ids.contains(route_id)) {
-                    moved.push_back(event);
+                    moved.push_preserving(event);
                 } else {
-                    retained.push_back(event);
+                    retained.push_preserving(event);
                 }
             }
             if !retained.is_empty() {
                 self.pending_events.insert(source_id, retained);
             }
             if !moved.is_empty() {
-                self.pending_events
-                    .entry(target_id)
-                    .or_default()
-                    .extend(moved);
+                let target = self.pending_events.entry(target_id).or_default();
+                while let Some(event) = moved.pop_front() {
+                    if target
+                        .push_bounded(
+                            event,
+                            MAX_PENDING_EVENTS_PER_OWNER,
+                            MAX_PENDING_OUTPUT_BYTES_PER_OWNER,
+                        )
+                        .is_err()
+                    {
+                        self.deferred_events.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
             }
         }
         true
@@ -145,14 +311,13 @@ impl SessionStore {
         let pending = self
             .pending_events
             .values()
-            .map(VecDeque::len)
+            .map(EventQueue::len)
             .sum::<usize>()
             + self
                 .unrouted_events
                 .values()
-                .map(VecDeque::len)
-                .sum::<usize>()
-            + usize::from(self.deferred_event.is_some());
+                .map(|events| events.pending.len())
+                .sum::<usize>();
         let send_stats = self.events_tx.stats();
         SessionQueueStats {
             routed: self.routed_events.load(Ordering::Relaxed),
@@ -179,65 +344,68 @@ impl SessionStore {
         // Keep routing work bounded as well as UI dispatch work. A busy SSH
         // session must not monopolize the window that is currently draining
         // events, especially when another window owns the next event batch.
-        const MAX_ROUTED_EVENTS_PER_TICK: usize = 2_048;
-        const MAX_PENDING_EVENTS_PER_OWNER: usize = 8_192;
         let started = Instant::now();
+        self.prune_route_lifecycle(started);
         let mut routed = 0;
         while routed < MAX_ROUTED_EVENTS_PER_TICK {
-            let event = if let Some(event) = self.deferred_event.take() {
-                event
-            } else {
-                let Ok(event) = self.events_rx.try_recv() else {
-                    break;
-                };
-                event
+            let Ok(event) = self.events_rx.try_recv() else {
+                break;
             };
             routed += 1;
-            let Some(route_id) = event_route_id(&event) else {
+            let Some(route_id) = event_route_id(&event).map(str::to_owned) else {
                 continue;
             };
-            if let Some(owner_id) = self.event_routes.get(route_id).copied() {
+            if let Some(owner_id) = self.event_routes.get(&route_id).copied() {
                 let pending = self.pending_events.entry(owner_id).or_default();
-                if pending.len() >= MAX_PENDING_EVENTS_PER_OWNER {
+                if pending
+                    .push_bounded(
+                        event,
+                        MAX_PENDING_EVENTS_PER_OWNER,
+                        MAX_PENDING_OUTPUT_BYTES_PER_OWNER,
+                    )
+                    .is_err()
+                {
                     self.deferred_events.fetch_add(1, Ordering::Relaxed);
-                    self.deferred_event = Some(event);
-                    break;
+                    continue;
                 }
-                pending.push_back(event);
                 self.routed_events.fetch_add(1, Ordering::Relaxed);
+            } else if self.route_tombstones.contains_key(&route_id) {
+                // A backend may race with tab teardown. Tombstoned routes are
+                // terminal: late events must not be resurrected as unrouted
+                // work that can attach to a future window.
+                self.deferred_events.fetch_add(1, Ordering::Relaxed);
             } else {
-                let pending = self
-                    .unrouted_events
-                    .entry(route_id.to_string())
-                    .or_default();
-                if pending.len() >= MAX_PENDING_EVENTS_PER_OWNER {
+                if !self.enqueue_unrouted(route_id, event, started) {
                     self.deferred_events.fetch_add(1, Ordering::Relaxed);
-                    self.deferred_event = Some(event);
-                    break;
+                    continue;
                 }
-                pending.push_back(event);
                 self.routed_events.fetch_add(1, Ordering::Relaxed);
             }
         }
         let pending_total = self
             .pending_events
             .values()
-            .map(VecDeque::len)
+            .map(EventQueue::len)
             .sum::<usize>()
             + self
                 .unrouted_events
                 .values()
-                .map(VecDeque::len)
-                .sum::<usize>()
-            + usize::from(self.deferred_event.is_some());
+                .map(|events| events.pending.len())
+                .sum::<usize>();
         self.peak_pending_events
             .fetch_max(saturating_u64(pending_total), Ordering::Relaxed);
-        let pending = self.pending_events.entry(owner_id).or_default();
-        let count = limit.min(pending.len());
-        let drained = pending.drain(..count).collect();
-        if pending.is_empty() {
+        let drained = self
+            .pending_events
+            .get_mut(&owner_id)
+            .map_or_else(Vec::new, |pending| pending.drain(limit));
+        if self
+            .pending_events
+            .get(&owner_id)
+            .is_some_and(EventQueue::is_empty)
+        {
             self.pending_events.remove(&owner_id);
         }
+        let count = drained.len();
         self.last_routed_events
             .store(saturating_u64(routed), Ordering::Relaxed);
         self.last_drained_events
@@ -247,6 +415,100 @@ impl SessionStore {
             Ordering::Relaxed,
         );
         drained
+    }
+
+    fn enqueue_unrouted(
+        &mut self,
+        route_id: String,
+        event: BackendEventEnvelope,
+        now: Instant,
+    ) -> bool {
+        if !self.unrouted_events.contains_key(&route_id)
+            && self.unrouted_events.len() >= MAX_UNROUTED_ROUTES
+        {
+            if let Some(dropped) = self.evict_oldest_unrouted_route() {
+                self.deferred_events
+                    .fetch_add(saturating_u64(dropped), Ordering::Relaxed);
+            }
+        }
+
+        let incoming_output_bytes = output_bytes(&event);
+        while self.unrouted_event_count() >= MAX_UNROUTED_EVENTS
+            || (incoming_output_bytes > 0
+                && self
+                    .unrouted_output_bytes()
+                    .saturating_add(incoming_output_bytes)
+                    > MAX_UNROUTED_OUTPUT_BYTES)
+        {
+            let Some(dropped) = self.evict_oldest_unrouted_route() else {
+                return false;
+            };
+            self.deferred_events
+                .fetch_add(saturating_u64(dropped), Ordering::Relaxed);
+        }
+
+        let unrouted = self
+            .unrouted_events
+            .entry(route_id)
+            .or_insert_with(|| UnroutedEventQueue {
+                pending: EventQueue::default(),
+                last_seen: now,
+            });
+        unrouted.last_seen = now;
+        unrouted
+            .pending
+            .push_bounded(
+                event,
+                MAX_UNROUTED_EVENTS_PER_ROUTE,
+                MAX_UNROUTED_OUTPUT_BYTES_PER_ROUTE,
+            )
+            .is_ok()
+    }
+
+    fn prune_route_lifecycle(&mut self, now: Instant) {
+        self.unrouted_events.retain(|_, events| {
+            now.saturating_duration_since(events.last_seen) <= UNROUTED_EVENT_TTL
+        });
+        self.trim_route_tombstones();
+    }
+
+    fn trim_route_tombstones(&mut self) {
+        while self.route_tombstones.len() > MAX_ROUTE_TOMBSTONES {
+            let Some(oldest) = self
+                .route_tombstones
+                .iter()
+                .min_by_key(|(_, removed_at)| **removed_at)
+                .map(|(route_id, _)| route_id.clone())
+            else {
+                break;
+            };
+            self.route_tombstones.remove(&oldest);
+        }
+    }
+
+    fn evict_oldest_unrouted_route(&mut self) -> Option<usize> {
+        let oldest = self
+            .unrouted_events
+            .iter()
+            .min_by_key(|(_, events)| events.last_seen)
+            .map(|(route_id, _)| route_id.clone())?;
+        self.unrouted_events
+            .remove(&oldest)
+            .map(|events| events.pending.len())
+    }
+
+    fn unrouted_event_count(&self) -> usize {
+        self.unrouted_events
+            .values()
+            .map(|events| events.pending.len())
+            .sum()
+    }
+
+    fn unrouted_output_bytes(&self) -> usize {
+        self.unrouted_events
+            .values()
+            .map(|events| events.pending.output_bytes)
+            .sum()
     }
 }
 

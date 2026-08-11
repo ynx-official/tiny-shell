@@ -2,6 +2,7 @@ use std::{
     fs::{self, OpenOptions},
     io::Write,
     path::{Path, PathBuf},
+    sync::{Arc, OnceLock},
 };
 
 use anyhow::{Context, Result};
@@ -30,6 +31,126 @@ pub struct ConfigStore {
     pub(crate) cache: ConfigFile,
 }
 
+/// Process-scoped temporary storage owned by TinyShell.
+///
+/// A workspace always uses a unique child of the supplied root, so starting a
+/// second window or process never clears files that are still in use elsewhere.
+/// Clones share ownership and the directory is removed only after the final
+/// handle is dropped.
+#[derive(Clone, Debug)]
+pub struct TempWorkspace {
+    inner: Arc<TempWorkspaceInner>,
+}
+
+#[derive(Debug)]
+struct TempWorkspaceInner {
+    path: PathBuf,
+}
+
+impl Drop for TempWorkspaceInner {
+    fn drop(&mut self) {
+        if let Err(error) = fs::remove_dir_all(&self.path)
+            && error.kind() != std::io::ErrorKind::NotFound
+        {
+            tracing::warn!(
+                path = %self.path.display(),
+                "failed to clean TinyShell temporary workspace: {error}"
+            );
+        }
+    }
+}
+
+impl TempWorkspace {
+    /// Create a unique process workspace below `root` without touching sibling
+    /// workspaces. Supplying the root explicitly keeps this usable in tests and
+    /// by portable/platform-specific launchers.
+    pub fn initialize_in(root: impl AsRef<Path>) -> Result<Self> {
+        let root = root.as_ref();
+        ensure_private_directory(root)?;
+        let path = root.join(format!("runtime-{}-{}", std::process::id(), Uuid::new_v4()));
+        ensure_private_directory(&path)?;
+        Ok(Self {
+            inner: Arc::new(TempWorkspaceInner { path }),
+        })
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.inner.path
+    }
+
+    /// Allocate an isolated directory for one operation. The returned guard
+    /// keeps the process workspace alive and removes only its own directory.
+    pub fn allocate(&self, purpose: &str) -> Result<TempTaskDirectory> {
+        let purpose = sanitized_temp_component(purpose);
+        let path = self.path().join(format!("{purpose}-{}", Uuid::new_v4()));
+        ensure_private_directory(&path)?;
+        Ok(TempTaskDirectory {
+            path,
+            _workspace: self.clone(),
+        })
+    }
+}
+
+#[derive(Debug)]
+pub struct TempTaskDirectory {
+    path: PathBuf,
+    _workspace: TempWorkspace,
+}
+
+impl TempTaskDirectory {
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for TempTaskDirectory {
+    fn drop(&mut self) {
+        if let Err(error) = fs::remove_dir_all(&self.path)
+            && error.kind() != std::io::ErrorKind::NotFound
+        {
+            tracing::warn!(
+                path = %self.path.display(),
+                "failed to clean TinyShell temporary task directory: {error}"
+            );
+        }
+    }
+}
+
+static PROCESS_TEMP_WORKSPACE: OnceLock<TempWorkspace> = OnceLock::new();
+
+fn ensure_private_directory(path: &Path) -> Result<()> {
+    fs::create_dir_all(path)
+        .with_context(|| format!("failed to create temporary directory {}", path.display()))?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o700))
+            .with_context(|| format!("failed to secure temporary directory {}", path.display()))?;
+    }
+
+    Ok(())
+}
+
+fn sanitized_temp_component(value: &str) -> String {
+    let sanitized = value
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, '-' | '_') {
+                character
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>();
+    let sanitized = sanitized.trim_matches('-');
+    if sanitized.is_empty() {
+        "task".to_string()
+    } else {
+        sanitized.to_string()
+    }
+}
+
 fn connection_catalog_timestamp() -> i64 {
     chrono::Utc::now().timestamp()
 }
@@ -50,24 +171,12 @@ fn unique_connection_group_name(existing: &[String], requested: &str) -> String 
 impl ConfigStore {
     pub fn load() -> Result<Self> {
         let path = Self::config_path()?;
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)
-                .with_context(|| format!("failed to create config dir {}", parent.display()))?;
+        Self::load_from_path(path)
+    }
 
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                if let Ok(mut perms) = fs::metadata(parent).map(|m| m.permissions()) {
-                    perms.set_mode(0o700);
-                    let _ = fs::set_permissions(parent, perms);
-                }
-            }
-
-            let tmp_dir = parent.join("tmp");
-            let _ = fs::remove_dir_all(&tmp_dir);
-            let _ = fs::create_dir_all(&tmp_dir);
-        }
-
+    /// Read a configuration snapshot without creating, deleting, or rewriting
+    /// any file-system entries.
+    pub(crate) fn load_from_path(path: PathBuf) -> Result<Self> {
         let mut cache = if path.exists() {
             let raw_bytes =
                 fs::read(&path).with_context(|| format!("failed to read {}", path.display()))?;
@@ -108,6 +217,29 @@ impl ConfigStore {
             normalize_key_auth_state(session);
         }
         Ok(Self { path, cache })
+    }
+
+    /// Initialize and retain the process-wide temporary workspace.
+    ///
+    /// Unlike [`Self::load`], this is an explicit mutating operation and should
+    /// be called once during application startup.
+    pub fn initialize_temp_workspace() -> Result<&'static TempWorkspace> {
+        if let Some(workspace) = PROCESS_TEMP_WORKSPACE.get() {
+            return Ok(workspace);
+        }
+        let root = Self::config_path()?
+            .parent()
+            .context("configuration path has no parent directory")?
+            .join("tmp");
+        let workspace = TempWorkspace::initialize_in(root)?;
+        let _ = PROCESS_TEMP_WORKSPACE.set(workspace);
+        PROCESS_TEMP_WORKSPACE
+            .get()
+            .context("failed to initialize process temporary workspace")
+    }
+
+    pub fn temp_workspace() -> Option<&'static TempWorkspace> {
+        PROCESS_TEMP_WORKSPACE.get()
     }
 
     pub fn in_memory() -> Self {
@@ -579,10 +711,6 @@ impl ConfigStore {
 
     pub fn set_sync_secrets_password_hash(&mut self, hash: String) {
         self.cache.sync_secrets_password_hash = hash;
-    }
-
-    pub fn tmp_dir(&self) -> Option<PathBuf> {
-        self.path.parent().map(|p| p.join("tmp"))
     }
 
     pub fn follow_system_theme(&self) -> bool {

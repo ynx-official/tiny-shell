@@ -1876,17 +1876,26 @@ impl TinyShell {
                                                     .on_click(window.listener_for(&view, {
                                                         let group_name = group_name.clone();
                                                         move |this, _, _, cx| {
-                                                            this.config.remove_connection_group(&group_name);
-                                                            if let Err(err) = crate::app::config_persistence::save_full(
-                                                                &this.config_repository,
-                                                                &this.config,
-                                                            ) {
-                                                                tracing::warn!("failed to remove connection group: {err:#}");
-                                                            }
-                                                            if this.connection_group_filter.as_deref() == Some(group_name.as_str()) {
-                                                                this.connection_group_filter = None;
-                                                            }
-                                                            cx.notify();
+                                                            let mut staged = this.config.clone();
+                                                            staged.remove_connection_group(&group_name);
+                                                            let filter_group_name = group_name.clone();
+                                                            this.commit_staged_config_async(
+                                                                staged,
+                                                                move |this, cx| {
+                                                                    if this.connection_group_filter.as_deref()
+                                                                        == Some(filter_group_name.as_str())
+                                                                    {
+                                                                        this.connection_group_filter = None;
+                                                                    }
+                                                                    cx.notify();
+                                                                },
+                                                                |this, error, cx| {
+                                                                    tracing::warn!("failed to remove connection group: {error:#}");
+                                                                    this.status = t!("config_save_failed", error = format!("{error:#}")).into();
+                                                                    cx.notify();
+                                                                },
+                                                                cx,
+                                                            );
                                                         }
                                                     })),
                                             )
@@ -2054,14 +2063,18 @@ impl TinyShell {
                                                                         .cloned()
                                                                     {
                                                                         session.group = None;
-                                                                        this.config.upsert(session);
-                                                                        if let Err(error) = crate::app::config_persistence::save_full(
-                                                                &this.config_repository,
-                                                                &this.config,
-                                                            ) {
-                                                                            tracing::warn!("failed to move connection to ungrouped: {error:#}");
-                                                                        }
-                                                                        cx.notify();
+                                                                        let mut staged = this.config.clone();
+                                                                        staged.upsert(session);
+                                                                        this.commit_staged_config_async(
+                                                                            staged,
+                                                                            |_, cx| cx.notify(),
+                                                                            |this, error, cx| {
+                                                                                tracing::warn!("failed to move connection to ungrouped: {error:#}");
+                                                                                this.status = t!("config_save_failed", error = format!("{error:#}")).into();
+                                                                                cx.notify();
+                                                                            },
+                                                                            cx,
+                                                                        );
                                                                     }
                                                                 }
                                                             })),
@@ -2086,15 +2099,18 @@ impl TinyShell {
                                                                             session.group = Some(
                                                                                 group_name.clone(),
                                                                             );
-                                                                            this.config
-                                                                                .upsert(session);
-                                                                            if let Err(error) = crate::app::config_persistence::save_full(
-                                                                &this.config_repository,
-                                                                &this.config,
-                                                            ) {
-                                                                                tracing::warn!("failed to move connection to group: {error:#}");
-                                                                            }
-                                                                            cx.notify();
+                                                                            let mut staged = this.config.clone();
+                                                                            staged.upsert(session);
+                                                                            this.commit_staged_config_async(
+                                                                                staged,
+                                                                                |_, cx| cx.notify(),
+                                                                                |this, error, cx| {
+                                                                                    tracing::warn!("failed to move connection to group: {error:#}");
+                                                                                    this.status = t!("config_save_failed", error = format!("{error:#}")).into();
+                                                                                    cx.notify();
+                                                                                },
+                                                                                cx,
+                                                                            );
                                                                         }
                                                                     },
                                                                 )),

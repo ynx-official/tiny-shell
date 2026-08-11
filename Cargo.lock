@@ -7614,7 +7614,7 @@ dependencies = [
 
 [[package]]
 name = "tiny-shell"
-version = "1.4.3"
+version = "1.4.4"
 dependencies = [
  "alacritty_terminal",
  "anyhow",
@@ -7648,6 +7648,7 @@ dependencies = [
  "semver",
  "serde",
  "serde_json",
+ "sha1",
  "sha2",
  "ssh-key",
  "sys-locale",

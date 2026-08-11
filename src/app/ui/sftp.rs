@@ -1,4 +1,126 @@
 use super::*;
+use std::sync::Arc;
+
+#[derive(Clone, Copy)]
+struct SftpTreeColors {
+    primary: Hsla,
+    foreground: Hsla,
+    muted_foreground: Hsla,
+    secondary: Hsla,
+    background: Hsla,
+    muted: Hsla,
+}
+
+#[derive(Clone, Copy)]
+struct SftpTreeRenderRow<'a> {
+    path: &'a str,
+    name: &'a str,
+    depth: usize,
+    expanded: bool,
+    permissions: Option<u32>,
+}
+
+struct SftpEntriesRenderSnapshot {
+    entries: Arc<[crate::sftp::RemoteEntry]>,
+    selected_entries: Arc<HashSet<String>>,
+    selected_path: Option<Arc<str>>,
+    all_selected: bool,
+}
+
+impl SftpEntriesRenderSnapshot {
+    fn new(sftp: &terminal::SftpUiState, show_hidden_files: bool) -> Self {
+        // `uniform_list` retains a `'static` renderer. Build one owned snapshot
+        // for that renderer, then share it with row listeners through `Arc`
+        // instead of cloning the table and selection set at each layer.
+        let entries = sftp
+            .directory_entries
+            .get(&sftp.current_path)
+            .unwrap_or(&sftp.entries)
+            .iter()
+            .filter(|entry| show_hidden_files || !entry.name.starts_with('.'))
+            .cloned()
+            .collect::<Vec<_>>();
+        let all_selected = !entries.is_empty()
+            && entries
+                .iter()
+                .all(|entry| sftp.selected_entries.contains(&entry.full_path));
+
+        Self {
+            entries: entries.into(),
+            selected_entries: Arc::new(sftp.selected_entries.clone()),
+            selected_path: sftp.selected_path.as_deref().map(Arc::from),
+            all_selected,
+        }
+    }
+}
+
+fn sftp_tree_render_rows(
+    sftp: &terminal::SftpUiState,
+    show_hidden_files: bool,
+) -> Vec<SftpTreeRenderRow<'_>> {
+    // Tree rows only live while this render function builds elements, so they
+    // can borrow directory data. Each rendered row promotes just its path to
+    // `Arc<str>` for the event listeners that outlive this traversal.
+    #[allow(clippy::too_many_arguments)]
+    fn append_rows<'a>(
+        rows: &mut Vec<SftpTreeRenderRow<'a>>,
+        visited: &mut HashSet<&'a str>,
+        sftp: &'a terminal::SftpUiState,
+        show_hidden_files: bool,
+        path: &'a str,
+        name: &'a str,
+        depth: usize,
+        permissions: Option<u32>,
+    ) {
+        if depth > 32 || !visited.insert(path) {
+            return;
+        }
+        let expanded = path == "/" || sftp.expanded_directories.contains(path);
+        rows.push(SftpTreeRenderRow {
+            path,
+            name,
+            depth,
+            expanded,
+            permissions,
+        });
+
+        if !expanded {
+            return;
+        }
+        if let Some(entries) = sftp.directory_entries.get(path) {
+            for entry in entries
+                .iter()
+                .filter(|entry| entry.is_dir)
+                .filter(|entry| show_hidden_files || !entry.name.starts_with('.'))
+            {
+                append_rows(
+                    rows,
+                    visited,
+                    sftp,
+                    show_hidden_files,
+                    &entry.full_path,
+                    &entry.name,
+                    depth + 1,
+                    Some(entry.permissions),
+                );
+            }
+        }
+    }
+
+    let mut rows = Vec::new();
+    let mut visited = HashSet::new();
+    append_rows(
+        &mut rows,
+        &mut visited,
+        sftp,
+        show_hidden_files,
+        "/",
+        "/",
+        0,
+        None,
+    );
+    rows
+}
 
 impl TinyShell {
     pub(crate) fn toggle_clean_mode(&mut self, cx: &mut Context<Self>) {
@@ -58,25 +180,25 @@ impl TinyShell {
         cx.notify();
     }
 
-    pub(super) fn render_sftp_tree_row(
+    fn render_sftp_tree_row(
         &self,
-        row: crate::sftp::ops::SftpTreeRow,
+        row: SftpTreeRenderRow<'_>,
         current_path: &str,
+        colors: SftpTreeColors,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let path = row.path.clone();
-        let toggle_path = path.clone();
-        let context_path = path.clone();
+        let path: Arc<str> = Arc::from(row.path);
+        let toggle_path = Arc::clone(&path);
+        let context_path = Arc::clone(&path);
         let context_permissions = row.permissions;
         let view = cx.entity();
-        let is_current = current_path == path;
-        let theme = cx.theme().clone();
+        let is_current = current_path == path.as_ref();
         let folder_icon = if row.expanded {
             IconName::FolderOpen
         } else {
             IconName::Folder
         };
-        let tree_toggle = if path == "/" {
+        let tree_toggle = if path.as_ref() == "/" {
             div().w(px(16.)).flex_none().into_any_element()
         } else {
             div()
@@ -88,11 +210,11 @@ impl TinyShell {
                 .justify_center()
                 .cursor_pointer()
                 .text_size(rems(0.78))
-                .text_color(theme.muted_foreground)
+                .text_color(colors.muted_foreground)
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |this, _, _, cx| {
-                        this.toggle_sftp_tree_directory(toggle_path.clone(), cx);
+                        this.toggle_sftp_tree_directory(toggle_path.as_ref().to_owned(), cx);
                         cx.stop_propagation();
                     }),
                 )
@@ -101,7 +223,7 @@ impl TinyShell {
         };
 
         h_flex()
-            .id(format!("sftp-tree-row-{context_path}"))
+            .id(format!("sftp-tree-row-{}", context_path.as_ref()))
             .w_full()
             .h(px(30.))
             .pl(px(5. + row.depth as f32 * 15.))
@@ -111,15 +233,15 @@ impl TinyShell {
             .rounded_sm()
             .cursor_pointer()
             .bg(if is_current {
-                theme.secondary
+                colors.secondary
             } else {
-                theme.background.opacity(0.)
+                colors.background.opacity(0.)
             })
-            .hover(|style| style.bg(theme.muted.opacity(0.85)))
+            .hover(|style| style.bg(colors.muted.opacity(0.85)))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, _, _, cx| {
-                    this.select_sftp_tree_directory(path.clone(), cx);
+                    this.select_sftp_tree_directory(path.as_ref().to_owned(), cx);
                 }),
             )
             .child(tree_toggle)
@@ -127,9 +249,9 @@ impl TinyShell {
                 Icon::new(folder_icon)
                     .with_size(Size::Small)
                     .text_color(if is_current {
-                        theme.primary
+                        colors.primary
                     } else {
-                        theme.muted_foreground
+                        colors.muted_foreground
                     }),
             )
             .child(
@@ -139,18 +261,18 @@ impl TinyShell {
                     .overflow_hidden()
                     .text_size(rems(0.92))
                     .text_color(if is_current {
-                        theme.foreground
+                        colors.foreground
                     } else {
-                        theme.muted_foreground
+                        colors.muted_foreground
                     })
                     .when(is_current, |style| style.font_weight(FontWeight::MEDIUM))
-                    .child(row.name),
+                    .child(row.name.to_string()),
             )
             .context_menu(move |menu, window, cx| {
                 Self::build_sftp_tree_context_menu(
                     menu,
                     view.clone(),
-                    context_path.clone(),
+                    context_path.as_ref().to_owned(),
                     context_permissions,
                     window,
                     cx,
@@ -164,9 +286,20 @@ impl TinyShell {
         sftp: &terminal::SftpUiState,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let rows = crate::sftp::ops::sftp_tree_rows(sftp, self.sftp_panel.show_hidden_files)
+        let colors = {
+            let theme = cx.theme();
+            SftpTreeColors {
+                primary: theme.primary,
+                foreground: theme.foreground,
+                muted_foreground: theme.muted_foreground,
+                secondary: theme.secondary,
+                background: theme.background,
+                muted: theme.muted,
+            }
+        };
+        let rows = sftp_tree_render_rows(sftp, self.sftp_panel.show_hidden_files)
             .into_iter()
-            .map(|row| self.render_sftp_tree_row(row, &sftp.current_path, cx))
+            .map(|row| self.render_sftp_tree_row(row, &sftp.current_path, colors, cx))
             .collect::<Vec<_>>();
         let empty_context_path = sftp.current_path.clone();
         let view = cx.entity();
@@ -864,7 +997,7 @@ impl TinyShell {
                     .then_some(active_sftp)
                     .flatten(),
                 |this, sftp| {
-                    let selected_entries = sftp.selected_entries.clone();
+                    let selected_count = sftp.selected_entries.len();
                     this.when(toolbar_visibility.sync_cwd, |this| {
                         this.child(
                             Checkbox::new("sftp-sync-cwd")
@@ -940,16 +1073,12 @@ impl TinyShell {
                                 .ghost()
                                 .small()
                                 .icon(IconName::Close)
-                                .label(if selected_entries.is_empty() {
+                                .label(if selected_count == 0 {
                                     t!("delete_selected").to_string()
                                 } else {
-                                    format!(
-                                        "{} ({})",
-                                        t!("delete_selected"),
-                                        selected_entries.len()
-                                    )
+                                    format!("{} ({selected_count})", t!("delete_selected"))
                                 })
-                                .disabled(selected_entries.is_empty())
+                                .disabled(selected_count == 0)
                                 .on_click(cx.listener(|this, _, window, cx| {
                                     this.show_delete_confirm_dialog(window, cx);
                                 })),
@@ -985,12 +1114,12 @@ impl TinyShell {
                                 .ghost()
                                 .small()
                                 .icon(IconName::ArrowDown)
-                                .label(if selected_entries.is_empty() {
+                                .label(if selected_count == 0 {
                                     t!("download").to_string()
                                 } else {
-                                    t!("download_count", count = selected_entries.len()).to_string()
+                                    t!("download_count", count = selected_count).to_string()
                                 })
-                                .disabled(selected_entries.is_empty())
+                                .disabled(selected_count == 0)
                                 .on_click(cx.listener(|this, _, window, cx| {
                                     this.download_selected_sftp_entries(window, cx);
                                 })),
@@ -1068,20 +1197,12 @@ impl TinyShell {
                 .into_any_element();
         }
 
-        let selected_path = sftp.selected_path.clone();
-        let entries = sftp
-            .directory_entries
-            .get(&sftp.current_path)
-            .unwrap_or(&sftp.entries)
-            .clone()
-            .into_iter()
-            .filter(|entry| self.sftp_panel.show_hidden_files || !entry.name.starts_with('.'))
-            .collect::<Vec<_>>();
-        let selected_entries = sftp.selected_entries.clone();
-        let all_selected = !entries.is_empty()
-            && entries
-                .iter()
-                .all(|e| selected_entries.contains(&e.full_path));
+        let entries_snapshot =
+            SftpEntriesRenderSnapshot::new(sftp, self.sftp_panel.show_hidden_files);
+        let entries = entries_snapshot.entries;
+        let selected_entries = entries_snapshot.selected_entries;
+        let selected_path = entries_snapshot.selected_path;
+        let all_selected = entries_snapshot.all_selected;
         let parent_path = Self::sftp_parent_path(&sftp.current_path);
         let view = cx.entity();
         let icon_col_width = px(14.);
@@ -1254,9 +1375,6 @@ impl TinyShell {
                                                 .child(t!("sftp_directory_empty"))
                                                 .into_any_element()
                                         } else {
-                                            let entries = entries.clone();
-                                            let selected_entries = selected_entries.clone();
-                                            let selected_path = selected_path.clone();
                                             let view = view.clone();
                                             let theme = cx.theme().clone();
                                             uniform_list(
@@ -1267,7 +1385,6 @@ impl TinyShell {
                                                         .into_iter()
                                                         .filter_map(|ix| {
                                                             let entry = entries.get(ix)?;
-                                                            let entry = entry.clone();
                                                             let is_checked = selected_entries
                                                                 .contains(&entry.full_path);
                                                             let is_selected = selected_path
@@ -1299,11 +1416,14 @@ impl TinyShell {
                                                 .on_mouse_down(
                                                     MouseButton::Left,
                                                     window.listener_for(&view, {
-                                                        let entry = entry.clone();
+                                                        let entries = Arc::clone(&entries);
                                                         move |this, event: &MouseDownEvent, _, cx| {
+                                                            let Some(entry) = entries.get(ix) else {
+                                                                return;
+                                                            };
                                                             this.dismiss_sftp_context_menu(cx);
                                                             this.select_sftp_entry(
-                                                                entry.clone(),
+                                                                (*entry).clone(),
                                                                 cx,
                                                             );
                                                             if event.click_count >= 2 {
@@ -1333,15 +1453,17 @@ impl TinyShell {
                                                 .on_mouse_down(
                                                     MouseButton::Right,
                                                     window.listener_for(&view, {
-                                                        let entry = entry.clone();
-                                                        let remote_path = entry.full_path.clone();
+                                                        let entries = Arc::clone(&entries);
                                                         move |this, event: &MouseDownEvent, _, cx| {
+                                                            let Some(entry) = entries.get(ix) else {
+                                                                return;
+                                                            };
                                                             this.mark_sftp_entry_selected(
                                                                 &entry.full_path,
                                                                 cx,
                                                             );
                                                             this.open_sftp_context_menu(
-                                                                Some(remote_path.clone()),
+                                                                Some(entry.full_path.clone()),
                                                                 entry.is_dir,
                                                                 Some(entry.permissions),
                                                                 event.position,
@@ -1370,13 +1492,17 @@ impl TinyShell {
                                                             ))
                                                             .checked(is_checked)
                                                             .on_click(window.listener_for(&view, {
-                                                                let path = entry.full_path.clone();
+                                                                let entries = Arc::clone(&entries);
                                                                 move |this, checked, _, cx| {
-                                                                    this.toggle_sftp_entry(
-                                                                        path.clone(),
-                                                                        *checked,
-                                                                        cx,
-                                                                    );
+                                                                    if let Some(entry) =
+                                                                        entries.get(ix)
+                                                                    {
+                                                                        this.toggle_sftp_entry(
+                                                                            entry.full_path.clone(),
+                                                                            *checked,
+                                                                            cx,
+                                                                        );
+                                                                    }
                                                                 }
                                                             })),
                                                         ),
@@ -1406,7 +1532,7 @@ impl TinyShell {
                                                                 .overflow_hidden()
                                                                 .text_size(rems(1.0))
                                                                 .text_color(name_color)
-                                                                .child(entry.name),
+                                                                .child(entry.name.clone()),
                                                         ),
                                                 )
                                                 .child(

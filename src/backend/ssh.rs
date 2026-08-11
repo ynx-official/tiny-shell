@@ -12,11 +12,15 @@ use russh::{
     keys::{PrivateKey, decode_secret_key, load_secret_key},
 };
 use rust_i18n::t;
-use tokio::{sync::mpsc, task::JoinSet};
+use tokio::{
+    sync::{mpsc, watch},
+    task::JoinSet,
+};
 
 use crate::{
     session::{
         config::{AuthMethod, ConfigStore, Session},
+        host_key::HostKeyVerifier,
         ssh_keys::{
             authenticate_with_default_keys, normalize_inline_private_key, private_keys_with_algs,
             session_has_explicit_key,
@@ -69,7 +73,10 @@ pub(crate) fn spawn_ssh_terminal(
         generation,
     } = request;
     let events = events.with_generation(generation);
-    let (cmd_tx, cmd_rx) = mpsc::unbounded_channel::<BackendCommand>();
+    let (cmd_tx, cmd_rx) =
+        mpsc::channel::<BackendCommand>(crate::terminal::BACKEND_COMMAND_QUEUE_CAPACITY);
+    let (close_tx, close_rx) = watch::channel(false);
+    let (resize_tx, resize_rx) = watch::channel(None);
     let task_tab = tab_id.clone();
     runtime.spawn(async move {
         if let Err(err) = run_ssh(
@@ -79,6 +86,8 @@ pub(crate) fn spawn_ssh_terminal(
             cols,
             rows,
             cmd_rx,
+            close_rx,
+            resize_rx,
             events.clone(),
         )
         .await
@@ -89,12 +98,24 @@ pub(crate) fn spawn_ssh_terminal(
             });
         }
     });
-    BackendTx::Ssh(cmd_tx)
+    BackendTx::Ssh {
+        commands: cmd_tx,
+        close: close_tx,
+        resize: resize_tx,
+    }
+}
+
+async fn wait_for_close(close: &mut watch::Receiver<bool>) {
+    let already_requested = *close.borrow_and_update();
+    if !already_requested {
+        let _ = close.changed().await;
+    }
 }
 
 async fn sample_remote_system_with_handle(
     handle: Arc<tokio::sync::Mutex<russh::client::Handle<ClientHandler>>>,
 ) -> Result<SystemSnapshot> {
+    const MAX_METRICS_OUTPUT_BYTES: usize = 512 * 1024;
     let mut channel = handle
         .lock()
         .await
@@ -110,9 +131,14 @@ async fn sample_remote_system_with_handle(
     while let Some(msg) = channel.wait().await {
         match msg {
             ChannelMsg::Data { data } | ChannelMsg::ExtendedData { data, ext: _ } => {
+                if stdout.len().saturating_add(data.len()) > MAX_METRICS_OUTPUT_BYTES {
+                    return Err(anyhow!(
+                        "remote metrics output exceeded {MAX_METRICS_OUTPUT_BYTES} bytes"
+                    ));
+                }
                 stdout.extend_from_slice(&data);
             }
-            ChannelMsg::Close => break,
+            ChannelMsg::Eof | ChannelMsg::Close => break,
             _ => {}
         }
     }
@@ -121,13 +147,16 @@ async fn sample_remote_system_with_handle(
     remote_snapshot_from_kv(&output)
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_ssh(
     tab_id: String,
     session: Session,
     proxy_config: ConfigStore,
     cols: u16,
     rows: u16,
-    mut commands: mpsc::UnboundedReceiver<BackendCommand>,
+    mut commands: mpsc::Receiver<BackendCommand>,
+    mut close: watch::Receiver<bool>,
+    mut resize: watch::Receiver<Option<(u16, u16)>>,
     events: BackendEventSender,
 ) -> Result<()> {
     let _ = events.send(BackendEvent::Status {
@@ -138,21 +167,51 @@ async fn run_ssh(
         ),
     });
 
-    let handle = Arc::new(tokio::sync::Mutex::new(
-        connect_and_authenticate(&tab_id, &session, &events, &proxy_config).await?,
-    ));
+    let handle = {
+        let connection = connect_and_authenticate(&tab_id, &session, &events, &proxy_config);
+        tokio::pin!(connection);
+        tokio::select! {
+            biased;
+            _ = wait_for_close(&mut close) => {
+                let _ = events.send(BackendEvent::Closed {
+                    tab_id: tab_id.clone(),
+                    reason: "ssh connection cancelled".to_string(),
+                });
+                return Ok(());
+            }
+            result = &mut connection => result?,
+        }
+    };
+    let handle = Arc::new(tokio::sync::Mutex::new(handle));
 
-    let mut channel = handle
-        .lock()
-        .await
-        .channel_open_session()
-        .await
-        .context("open session")?;
-    channel
-        .request_pty(true, "xterm-256color", cols.into(), rows.into(), 0, 0, &[])
-        .await
-        .context("request pty")?;
-    channel.request_shell(true).await.context("request shell")?;
+    let mut channel = {
+        let open_shell = async {
+            let channel = handle
+                .lock()
+                .await
+                .channel_open_session()
+                .await
+                .context("open session")?;
+            channel
+                .request_pty(true, "xterm-256color", cols.into(), rows.into(), 0, 0, &[])
+                .await
+                .context("request pty")?;
+            channel.request_shell(true).await.context("request shell")?;
+            Ok::<_, anyhow::Error>(channel)
+        };
+        tokio::pin!(open_shell);
+        tokio::select! {
+            biased;
+            _ = wait_for_close(&mut close) => {
+                let _ = events.send(BackendEvent::Closed {
+                    tab_id: tab_id.clone(),
+                    reason: "ssh connection cancelled".to_string(),
+                });
+                return Ok(());
+            }
+            result = &mut open_shell => result?,
+        }
+    };
 
     let _ = events.send(BackendEvent::Status {
         tab_id: tab_id.clone(),
@@ -164,13 +223,48 @@ async fn run_ssh(
 
     let exit_reason;
     let mut is_graceful_close = false;
-    let mut metrics_tasks = JoinSet::new();
+    let mut metrics_tasks: JoinSet<Result<SystemSnapshot>> = JoinSet::new();
+    let mut metrics_in_flight = false;
 
     loop {
         tokio::select! {
+            biased;
+            _ = wait_for_close(&mut close) => {
+                tracing::info!("[ssh] local client cancelled the session for tab {}", tab_id);
+                exit_reason = "ssh session closed".to_string();
+                break;
+            }
+            changed = resize.changed() => {
+                if changed.is_err() {
+                    continue;
+                }
+                let dimensions = resize.borrow_and_update().as_ref().copied();
+                if let Some((cols, rows)) = dimensions {
+                    let _ = channel.window_change(cols.into(), rows.into(), 0, 0).await;
+                }
+            }
             completed = metrics_tasks.join_next(), if !metrics_tasks.is_empty() => {
-                if let Some(Err(error)) = completed {
-                    tracing::debug!("remote metrics task stopped: {error}");
+                metrics_in_flight = false;
+                match completed {
+                    Some(Ok(Ok(snapshot))) => {
+                        let _ = events.send(BackendEvent::RemoteSystem {
+                            tab_id: tab_id.clone(),
+                            snapshot: Box::new(snapshot),
+                        });
+                    }
+                    Some(Ok(Err(error))) => {
+                        let _ = events.send(BackendEvent::RemoteSystemUnavailable {
+                            tab_id: tab_id.clone(),
+                            reason: format!("remote metrics unavailable: {error:#}"),
+                        });
+                    }
+                    Some(Err(error)) => {
+                        let _ = events.send(BackendEvent::RemoteSystemUnavailable {
+                            tab_id: tab_id.clone(),
+                            reason: format!("remote metrics task stopped: {error}"),
+                        });
+                    }
+                    None => {}
                 }
             }
             command = commands.recv() => {
@@ -186,29 +280,23 @@ async fn run_ssh(
                         let _ = channel.window_change(cols.into(), rows.into(), 0, 0).await;
                     }
                     Some(BackendCommand::SampleMetrics) => {
-                        let handle_clone = handle.clone();
-                        let tab_id_clone = tab_id.clone();
-                        let events_clone = events.clone();
-                        metrics_tasks.spawn(async move {
-                            match sample_remote_system_with_handle(handle_clone).await {
-                                Ok(snapshot) => {
-                                    let _ = events_clone.send(BackendEvent::RemoteSystem {
-                                        tab_id: tab_id_clone,
-                                        snapshot: Box::new(snapshot),
-                                    });
-                                }
-                                Err(err) => {
-                                    let _ = events_clone.send(BackendEvent::RemoteSystemUnavailable {
-                                        tab_id: tab_id_clone,
-                                        reason: format!("remote metrics unavailable: {err:#}"),
-                                    });
-                                }
-                            }
-                        });
+                        if !metrics_in_flight {
+                            const METRICS_TIMEOUT: std::time::Duration =
+                                std::time::Duration::from_secs(8);
+                            metrics_in_flight = true;
+                            let handle_clone = handle.clone();
+                            metrics_tasks.spawn(async move {
+                                tokio::time::timeout(
+                                    METRICS_TIMEOUT,
+                                    sample_remote_system_with_handle(handle_clone),
+                                )
+                                .await
+                                .context("remote metrics probe timed out")?
+                            });
+                        }
                     }
                     Some(BackendCommand::Close) | None => {
                         tracing::info!("[ssh] local client closed the session for tab {}", tab_id);
-                        let _ = channel.eof().await;
                         exit_reason = "ssh session closed".to_string();
                         break;
                     }
@@ -217,10 +305,16 @@ async fn run_ssh(
             msg = channel.wait() => {
                 match msg {
                     Some(ChannelMsg::Data { data }) | Some(ChannelMsg::ExtendedData { data, ext: _ }) => {
-                        let _ = events.send(BackendEvent::Output {
-                            tab_id: tab_id.clone(),
-                            bytes: data.to_vec(),
-                        });
+                        if events
+                            .send(BackendEvent::Output {
+                                tab_id: tab_id.clone(),
+                                bytes: data.to_vec(),
+                            })
+                            .is_err()
+                        {
+                            exit_reason = t!("terminal_output_overloaded").to_string();
+                            break;
+                        }
                     }
                     Some(ChannelMsg::ExitStatus { exit_status: _ }) | Some(ChannelMsg::Eof) => {
                         is_graceful_close = true;
@@ -251,11 +345,16 @@ async fn run_ssh(
         }
     }
 
-    let _ = handle
-        .lock()
-        .await
-        .disconnect(Disconnect::ByApplication, "bye", "")
-        .await;
+    metrics_tasks.abort_all();
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(1), channel.eof()).await;
+    let disconnect = async {
+        handle
+            .lock()
+            .await
+            .disconnect(Disconnect::ByApplication, "bye", "")
+            .await
+    };
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(2), disconnect).await;
     let _ = events.send(BackendEvent::Closed {
         tab_id,
         reason: exit_reason,
@@ -306,7 +405,8 @@ async fn connect_and_authenticate(
         text: status_text,
     });
     let stream = crate::session::config::connect_proxy(session, proxy_config).await?;
-    let mut handle = client::connect_stream(config, stream, ClientHandler)
+    let handler = ClientHandler::new(&session.host, session.port)?;
+    let mut handle = client::connect_stream(config, stream, handler)
         .await
         .with_context(|| format!("connect {addr} failed"))?;
 
@@ -746,7 +846,17 @@ echo "NET_TX=0"
 '"#;
 
 #[derive(Clone)]
-struct ClientHandler;
+struct ClientHandler {
+    host_key_verifier: HostKeyVerifier,
+}
+
+impl ClientHandler {
+    fn new(host: &str, port: u16) -> Result<Self> {
+        Ok(Self {
+            host_key_verifier: HostKeyVerifier::new(host, port)?,
+        })
+    }
+}
 
 #[async_trait]
 impl Handler for ClientHandler {
@@ -754,8 +864,8 @@ impl Handler for ClientHandler {
 
     async fn check_server_key(
         &mut self,
-        _server_public_key: &russh::keys::ssh_key::PublicKey,
+        server_public_key: &russh::keys::ssh_key::PublicKey,
     ) -> Result<bool, Self::Error> {
-        Ok(true)
+        self.host_key_verifier.verify(server_public_key).await
     }
 }

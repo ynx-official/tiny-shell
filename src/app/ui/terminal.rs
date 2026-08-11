@@ -1,5 +1,16 @@
 use super::*;
 
+struct TabBarGroupData {
+    id: String,
+    drag_id: u64,
+    ordinal: u64,
+    title: String,
+    pane_ids: Vec<String>,
+    connected: bool,
+    disconnected: bool,
+    status_epoch: u64,
+}
+
 impl TinyShell {
     pub(super) fn render_window_controls(
         &self,
@@ -35,8 +46,7 @@ impl TinyShell {
                             this.window_control_area(gpui::WindowControlArea::Close)
                         })
                         .on_click(cx.listener(|this, _, window, cx| {
-                            this.save_layout_state(window, cx);
-                            window.remove_window();
+                            this.request_main_window_close(window, cx);
                         }))
                         .hover(|s| s.bg(hsla(3.0 / 360.0, 1.0, 0.55, 1.0)))
                         .active(|s| s.bg(hsla(3.0 / 360.0, 1.0, 0.45, 1.0)))
@@ -168,7 +178,7 @@ impl TinyShell {
             } else {
                 active_group_index.or(active_tab_index).unwrap_or(0)
             };
-        let groups_data: Vec<(String, u64, String, Vec<String>)> = self
+        let groups_data: Vec<TabBarGroupData> = self
             .workspace()
             .tab_groups()
             .iter()
@@ -179,7 +189,33 @@ impl TinyShell {
                     .iter()
                     .map(|s| s.to_string())
                     .collect();
-                (g.id.clone(), g.ordinal, g.title.clone(), pane_ids)
+                let first_tab = pane_ids
+                    .first()
+                    .and_then(|tab_id| self.workspace().terminal_tab(tab_id));
+                let connected = first_tab.is_some_and(|tab| tab.connected);
+                let disconnected = first_tab.is_some_and(|tab| tab.disconnected_reason.is_some());
+                let status_epoch = first_tab
+                    .map(|tab| {
+                        tab.backend_generation.wrapping_mul(3)
+                            + if disconnected {
+                                2
+                            } else if connected {
+                                1
+                            } else {
+                                0
+                            }
+                    })
+                    .unwrap_or(0);
+                TabBarGroupData {
+                    id: g.id.clone(),
+                    drag_id: g.drag_id,
+                    ordinal: g.ordinal,
+                    title: g.title.clone(),
+                    pane_ids,
+                    connected,
+                    disconnected,
+                    status_epoch,
+                }
             })
             .collect();
         let system_info_tabs_data: Vec<(String, String, String, Option<String>)> = self
@@ -187,12 +223,7 @@ impl TinyShell {
             .system_info_tabs()
             .iter()
             .map(|tab| {
-                let group_id = self
-                    .workspace()
-                    .tab_groups()
-                    .iter()
-                    .find(|group| group.pane_root.contains(&tab.source_tab_id))
-                    .map(|group| group.id.clone());
+                let group_id = self.workspace().group_id_for_tab(&tab.source_tab_id);
                 (
                     tab.id.clone(),
                     tab.source_tab_id.clone(),
@@ -324,8 +355,11 @@ impl TinyShell {
                         TabBar::new("tiny-shell-tab-bar")
                             .track_scroll(&self.tabs_scroll_handle)
                             .children(groups_data.iter().enumerate().map(
-                                |(ix, (group_id, ordinal, title, pane_ids))| {
-                                    let gid = group_id.clone();
+                                |(ix, group)| {
+                                    let gid = group.id.clone();
+                                    let pane_ids = &group.pane_ids;
+                                    let ordinal = group.ordinal;
+                                    let title = &group.title;
                                     let label = if pane_ids.len() > 1 {
                                         format!("{} {} ({})", ordinal, title, pane_ids.len())
                                     } else {
@@ -346,36 +380,17 @@ impl TinyShell {
                                     // Status is independent of selection: grey means the
                                     // backend is still connecting, green is ready, and red
                                     // means the connection has failed or disconnected.
-                                    let dot_color = pane_ids
-                                        .first()
-                                        .and_then(|id| self.workspace().tabs().iter().find(|t| t.id == *id))
-                                        .map(|tab| {
-                                            if tab.disconnected_reason.is_some() {
-                                                cx.theme().danger
-                                            } else if tab.connected {
-                                                cx.theme().success
-                                            } else {
-                                                cx.theme().muted_foreground
-                                            }
-                                        })
-                                        .unwrap_or(cx.theme().muted_foreground);
-                                    let dot_epoch = pane_ids
-                                        .first()
-                                        .and_then(|id| self.workspace().tabs().iter().find(|tab| tab.id == *id))
-                                        .map(|tab| {
-                                            tab.backend_generation.wrapping_mul(3)
-                                                + if tab.disconnected_reason.is_some() {
-                                                    2
-                                                } else if tab.connected {
-                                                    1
-                                                } else {
-                                                    0
-                                                }
-                                        })
-                                        .unwrap_or(0);
+                                    let dot_color = if group.disconnected {
+                                        cx.theme().danger
+                                    } else if group.connected {
+                                        cx.theme().success
+                                    } else {
+                                        cx.theme().muted_foreground
+                                    };
+                                    let dot_epoch = group.status_epoch;
                                     let drag_gid = gid.clone();
                                     let drag_payload = IncomingTabDrag {
-                                        drag_id: crate::app::next_tab_drag_id(),
+                                        drag_id: group.drag_id,
                                         source_window,
                                         source: view.clone(),
                                         group_id: gid.clone(),
@@ -1267,9 +1282,7 @@ impl TinyShell {
                 let keyword_highlight = this.config.keyword_highlight();
                 let snapshot = this
                     .workspace()
-                    .tabs()
-                    .iter()
-                    .find(|t| &t.id == tab_id)
+                    .terminal_tab(tab_id)
                     .map(|t| t.render_snapshot(keyword_highlight));
                 let Some(snapshot) = snapshot else {
                     return div().into_any_element();
@@ -1333,9 +1346,7 @@ impl TinyShell {
                 // keeping panel size stable in multi-panel layouts.
                 let disconnected_reason = this
                     .workspace()
-                    .tabs()
-                    .iter()
-                    .find(|t| t.id == *tab_id)
+                    .terminal_tab(tab_id)
                     .and_then(|tab| tab.disconnected_reason.clone());
                 if let Some(reason) = disconnected_reason {
                     let tab_id_for_reconnect = tab_id.clone();
@@ -1375,9 +1386,7 @@ impl TinyShell {
 
                 let indicator_color = this
                     .workspace()
-                    .tabs()
-                    .iter()
-                    .find(|t| t.id == *tab_id)
+                    .terminal_tab(tab_id)
                     .map(|tab| {
                         if tab.connected {
                             cx.theme().success
@@ -1967,17 +1976,15 @@ impl TinyShell {
                 .collect();
             let duplicate_session = group_tab_ids.iter().find_map(|tab_id| {
                 this.workspace()
-                    .tabs()
-                    .iter()
-                    .find(|tab| tab.id == *tab_id && tab.kind == TabKind::Ssh)
+                    .terminal_tab(tab_id)
+                    .filter(|tab| tab.kind == TabKind::Ssh)
                     .and_then(|tab| tab.session.clone())
             });
             let reconnect_tab_ids: Vec<String> = group_tab_ids
                 .iter()
                 .filter(|tab_id| {
-                    this.workspace().tabs().iter().any(|tab| {
-                        tab.id == **tab_id
-                            && tab.kind == TabKind::Ssh
+                    this.workspace().terminal_tab(tab_id).is_some_and(|tab| {
+                        tab.kind == TabKind::Ssh
                             && !tab.connected
                             && tab.disconnected_reason.is_some()
                     })
@@ -1995,9 +2002,8 @@ impl TinyShell {
                 .collect();
             let is_connected_ssh = group_tab_ids.iter().any(|tab_id| {
                 this.workspace()
-                    .tabs()
-                    .iter()
-                    .any(|tab| tab.id == *tab_id && tab.kind == TabKind::Ssh && tab.connected)
+                    .terminal_tab(tab_id)
+                    .is_some_and(|tab| tab.kind == TabKind::Ssh && tab.connected)
             });
             (
                 duplicate_session,

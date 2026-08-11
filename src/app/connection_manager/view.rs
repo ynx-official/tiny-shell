@@ -598,8 +598,13 @@ fn render_session_row(
                 if event.click_count >= 2 {
                     this.connect_saved_session(session_id.clone(), window, cx);
                     if needs_prompt {
-                        window.defer(cx, |window, _| window.remove_window());
+                        let handle = window.window_handle();
+                        window.defer(cx, move |window, _| {
+                            crate::app::deregister_auxiliary_window(handle);
+                            window.remove_window();
+                        });
                     } else {
+                        crate::app::deregister_auxiliary_window(window.window_handle());
                         window.remove_window();
                     }
                 } else {
@@ -670,8 +675,13 @@ fn session_menu(
                         move |this, _, window, cx| {
                                     this.connect_saved_session(id.clone(), window, cx);
                             if needs_prompt {
-                                window.defer(cx, |window, _| window.remove_window());
+                                let handle = window.window_handle();
+                                window.defer(cx, move |window, _| {
+                                    crate::app::deregister_auxiliary_window(handle);
+                                    window.remove_window();
+                                });
                             } else {
+                                crate::app::deregister_auxiliary_window(window.window_handle());
                                 window.remove_window();
                             }
                         }
@@ -962,16 +972,25 @@ fn run_manager_action(
 ) {
     let mut staged_config = this.config.clone();
     let mut staged_actions = this.connection_manager_actions.clone();
-    let result = staged_actions
-        .execute(&mut staged_config, action)
-        .and_then(|_| {
-            crate::app::config_persistence::save_full(&this.config_repository, &staged_config)
-        });
-    match result {
-        Ok(()) => {
-            this.config = staged_config;
-            this.connection_manager_actions = staged_actions;
-        }
+    match staged_actions.execute(&mut staged_config, action) {
+        Ok(_) => this.commit_staged_config_async(
+            staged_config,
+            move |this, cx| {
+                this.connection_manager_actions = staged_actions;
+                cx.notify();
+            },
+            |this, error, cx| {
+                tracing::warn!("connection manager action failed: {error:#}");
+                this.status = t!(
+                    "connection_manager_action_failed",
+                    error = error.to_string()
+                )
+                .to_string()
+                .into();
+                cx.notify();
+            },
+            cx,
+        ),
         Err(error) => {
             tracing::warn!("connection manager action failed: {error:#}");
             this.status = t!(
@@ -980,7 +999,7 @@ fn run_manager_action(
             )
             .to_string()
             .into();
+            cx.notify();
         }
     }
-    cx.notify();
 }

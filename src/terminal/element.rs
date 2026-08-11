@@ -453,7 +453,8 @@ impl TerminalElement {
                 if hu.tab_id == self.tab_id
                     && hu
                         .cells
-                        .contains(&(render_cell.row as usize, render_cell.col as usize))
+                        .binary_search(&(render_cell.row as usize, render_cell.col as usize))
+                        .is_ok()
                 {
                     underlines.push(LayoutUnderline {
                         row: render_cell.row,

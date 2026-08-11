@@ -35,6 +35,7 @@ type Reply = mpsc::Sender<anyhow::Result<()>>;
 
 const OPERATION_TIMEOUT: Duration = Duration::from_secs(10);
 const WORKER_JOIN_POLL_INTERVAL: Duration = Duration::from_millis(10);
+const SAVE_QUEUE_CAPACITY: usize = 32;
 
 fn receive_reply(reply: mpsc::Receiver<anyhow::Result<()>>) -> anyhow::Result<()> {
     reply
@@ -47,7 +48,7 @@ fn receive_reply(reply: mpsc::Receiver<anyhow::Result<()>>) -> anyhow::Result<()
 
 enum SaveRequest {
     Preferences(ConfigStore, Reply),
-    Full(ConfigStore, Reply),
+    Full { config: ConfigStore, reply: Reply },
     Flush(Reply),
     Shutdown(Reply),
 }
@@ -59,6 +60,16 @@ pub(crate) struct SaveReceipt {
 impl SaveReceipt {
     pub(crate) fn wait(self) -> anyhow::Result<()> {
         receive_reply(self.reply)
+    }
+
+    pub(crate) fn try_result(&self) -> Option<anyhow::Result<()>> {
+        match self.reply.try_recv() {
+            Ok(result) => Some(result),
+            Err(mpsc::TryRecvError::Empty) => None,
+            Err(mpsc::TryRecvError::Disconnected) => {
+                Some(Err(anyhow::anyhow!("config save worker stopped")))
+            }
+        }
     }
 }
 
@@ -72,7 +83,7 @@ enum RepositoryState {
 pub(crate) type WindowLeaseId = u64;
 
 pub(crate) struct ConfigRepository {
-    sender: mpsc::Sender<SaveRequest>,
+    sender: mpsc::SyncSender<SaveRequest>,
     state: Mutex<RepositoryState>,
     worker: Mutex<Option<JoinHandle<()>>>,
     windows: Mutex<HashSet<WindowLeaseId>>,
@@ -85,7 +96,7 @@ impl ConfigRepository {
     }
 
     pub(crate) fn with_io(io: Arc<dyn ConfigIo>) -> Arc<Self> {
-        let (sender, receiver) = mpsc::channel();
+        let (sender, receiver) = mpsc::sync_channel(SAVE_QUEUE_CAPACITY);
         let worker_io = Arc::clone(&io);
         let worker = match thread::Builder::new()
             .name("tiny-shell-config-save".to_string())
@@ -154,7 +165,7 @@ impl ConfigRepository {
         source: ConfigStore,
     ) -> anyhow::Result<SaveReceipt> {
         let (reply, result) = mpsc::channel();
-        self.enqueue(SaveRequest::Preferences(source, reply))?;
+        self.enqueue_async(SaveRequest::Preferences(source, reply))?;
         Ok(SaveReceipt { reply: result })
     }
 
@@ -163,25 +174,28 @@ impl ConfigRepository {
         config: ConfigStore,
     ) -> anyhow::Result<SaveReceipt> {
         let (reply, result) = mpsc::channel();
-        self.enqueue(SaveRequest::Full(config, reply))?;
+        self.enqueue_async(SaveRequest::Full { config, reply })?;
         Ok(SaveReceipt { reply: result })
     }
 
     pub(crate) fn save_full(&self, config: &ConfigStore) -> anyhow::Result<()> {
         let (reply, result) = mpsc::channel();
-        self.enqueue(SaveRequest::Full(config.clone(), reply))?;
+        self.enqueue_blocking(SaveRequest::Full {
+            config: config.clone(),
+            reply,
+        })?;
         receive_reply(result)
     }
 
     pub(crate) fn persist_sync(&self, source: &ConfigStore) -> anyhow::Result<()> {
         let (reply, result) = mpsc::channel();
-        self.enqueue(SaveRequest::Preferences(source.clone(), reply))?;
+        self.enqueue_blocking(SaveRequest::Preferences(source.clone(), reply))?;
         receive_reply(result)
     }
 
     pub(crate) fn flush(&self) -> anyhow::Result<()> {
         let (reply, result) = mpsc::channel();
-        self.enqueue(SaveRequest::Flush(reply))?;
+        self.enqueue_blocking(SaveRequest::Flush(reply))?;
         receive_reply(result)
     }
 
@@ -205,7 +219,7 @@ impl ConfigRepository {
 
         let operation_result = if should_send_shutdown {
             let (reply, result) = mpsc::channel();
-            self.enqueue_unchecked(SaveRequest::Shutdown(reply))
+            self.enqueue_unchecked_blocking(SaveRequest::Shutdown(reply))
                 .and_then(|()| receive_reply(result))
         } else {
             Ok(())
@@ -219,7 +233,7 @@ impl ConfigRepository {
         operation_result.and(join_result)
     }
 
-    fn enqueue(&self, request: SaveRequest) -> anyhow::Result<()> {
+    fn ensure_running(&self) -> anyhow::Result<()> {
         let state = self
             .state
             .lock()
@@ -227,10 +241,27 @@ impl ConfigRepository {
         if *state != RepositoryState::Running {
             return Err(anyhow::anyhow!("config repository is shut down"));
         }
-        self.enqueue_unchecked(request)
+        Ok(())
     }
 
-    fn enqueue_unchecked(&self, request: SaveRequest) -> anyhow::Result<()> {
+    fn enqueue_async(&self, request: SaveRequest) -> anyhow::Result<()> {
+        self.ensure_running()?;
+        self.sender.try_send(request).map_err(|error| match error {
+            mpsc::TrySendError::Full(_) => {
+                anyhow::anyhow!("config save queue is temporarily full")
+            }
+            mpsc::TrySendError::Disconnected(_) => {
+                anyhow::anyhow!("config save worker is unavailable")
+            }
+        })
+    }
+
+    fn enqueue_blocking(&self, request: SaveRequest) -> anyhow::Result<()> {
+        self.ensure_running()?;
+        self.enqueue_unchecked_blocking(request)
+    }
+
+    fn enqueue_unchecked_blocking(&self, request: SaveRequest) -> anyhow::Result<()> {
         self.sender
             .send(request)
             .map_err(|_| anyhow::anyhow!("config save worker is unavailable"))
@@ -299,8 +330,14 @@ fn save_full_with_revision(
 ) -> anyhow::Result<()> {
     if let Some(previous) = last_saved.as_ref() {
         let current = io.load()?;
-        if config_fingerprint(&current)? != config_fingerprint(previous)?
-            && config_fingerprint(&source)? != config_fingerprint(previous)?
+        let current_fingerprint = config_fingerprint(&current)?;
+        let previous_fingerprint = config_fingerprint(previous)?;
+        let source_fingerprint = config_fingerprint(&source)?;
+        // Optimistic concurrency: if the file changed since the worker's last
+        // write, only an identical snapshot may be committed. In particular,
+        // writer identity must not allow a stale window to overwrite newer
+        // preference changes from another window.
+        if current_fingerprint != previous_fingerprint && current_fingerprint != source_fingerprint
         {
             return Err(anyhow::anyhow!(
                 "config changed in another window; refusing stale full-config overwrite"
@@ -326,7 +363,7 @@ fn worker_loop(io: Io, receiver: mpsc::Receiver<SaveRequest>) {
                 });
                 (result, reply, false, true)
             }
-            SaveRequest::Full(config, reply) => (
+            SaveRequest::Full { config, reply } => (
                 save_full_with_revision(&io, &mut last_saved, config),
                 reply,
                 false,
@@ -362,21 +399,6 @@ fn worker_loop(io: Io, receiver: mpsc::Receiver<SaveRequest>) {
     }
 }
 
-// Compatibility helpers are intentionally explicit-repository APIs. They are
-// kept private to this module while call sites migrate to TinyShell ownership.
-pub(crate) fn persist_async(repository: &Arc<ConfigRepository>, source: ConfigStore) {
-    match repository.persist_async(source) {
-        Ok(receipt) => {
-            thread::spawn(move || {
-                if let Err(error) = receipt.wait() {
-                    tracing::warn!("background preference save failed: {error:#}");
-                }
-            });
-        }
-        Err(error) => tracing::warn!("failed to queue preference save: {error:#}"),
-    }
-}
-
 pub(crate) fn persist_sync(
     repository: &Arc<ConfigRepository>,
     source: &ConfigStore,
@@ -395,12 +417,7 @@ pub(crate) fn save_full_async(
     repository: &Arc<ConfigRepository>,
     config: &ConfigStore,
 ) -> anyhow::Result<()> {
-    let receipt = repository.save_full_async(config.clone())?;
-    thread::spawn(move || {
-        if let Err(error) = receipt.wait() {
-            tracing::warn!("background full config save failed: {error:#}");
-        }
-    });
+    let _receipt = repository.save_full_async(config.clone())?;
     Ok(())
 }
 

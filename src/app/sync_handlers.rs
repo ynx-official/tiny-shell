@@ -35,6 +35,8 @@ impl TinyShell {
         task_id: u64,
         cx: &mut Context<Self>,
     ) {
+        let close_sync_terminal = !matches!(&result, SyncResult::UploadPreflightReady { .. });
+        let close_sync_was_running = self.close_sync_running;
         self.async_runtime
             .supervisor
             .finish("sync-operation", task_id);
@@ -117,6 +119,11 @@ impl TinyShell {
             SyncResult::Failed(error) => {
                 self.handle_sync_failed(error, cx);
             }
+        }
+        if close_sync_was_running && close_sync_terminal && !self.sync_runtime.in_progress {
+            self.complete_close_sync(cx);
+        } else if !close_sync_was_running && !self.sync_runtime.in_progress {
+            self.continue_queued_close_sync(cx);
         }
     }
 
@@ -206,6 +213,9 @@ impl TinyShell {
             )
             .into(),
         };
+        if self.close_sync_running {
+            return;
+        }
         if let Some(handle) = self.auxiliary_windows.settings.handle {
             let owner = cx.entity();
             let form = config_sync::SyncFormSnapshot::from_credentials(credentials);

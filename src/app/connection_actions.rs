@@ -4,7 +4,6 @@ use uuid::Uuid;
 
 use crate::{
     PaneLayout, TabGroup, TinyShell,
-    app::config_persistence,
     backend::{local, ssh},
     session::config::{AuthMethod, Session},
     terminal::{BackendCommand, TerminalTab},
@@ -58,12 +57,21 @@ impl TinyShell {
     }
 
     pub(crate) fn remove_saved_session(&mut self, session_id: String, cx: &mut Context<Self>) {
-        self.config.remove(&session_id);
-        if let Err(err) = config_persistence::save_full(&self.config_repository, &self.config) {
-            tracing::warn!("failed to save config: {err:#}");
-        }
-        self.status = t!("session_removed").into();
-        cx.notify();
+        let mut staged = self.config.clone();
+        staged.remove(&session_id);
+        self.commit_staged_config_async(
+            staged,
+            |this, cx| {
+                this.status = t!("session_removed").into();
+                cx.notify();
+            },
+            |this, error, cx| {
+                tracing::warn!("failed to remove saved session: {error:#}");
+                this.status = t!("config_save_failed", error = format!("{error:#}")).into();
+                cx.notify();
+            },
+            cx,
+        );
     }
 
     pub(crate) fn set_ssh_auth_method(&mut self, method: AuthMethod, cx: &mut Context<Self>) {
@@ -197,12 +205,14 @@ impl TinyShell {
         session.last_used = Some(last_used.clone());
         if let Some(mut saved_session) = self.config.get(&session.id).cloned() {
             saved_session.last_used = Some(last_used);
-            self.config.upsert(saved_session);
-            if let Err(err) =
-                config_persistence::save_full_async(&self.config_repository, &self.config)
-            {
-                tracing::warn!("failed to save session recency: {err:#}");
-            }
+            let mut staged = self.config.clone();
+            staged.upsert(saved_session);
+            self.commit_staged_config_async(
+                staged,
+                |_, _| {},
+                |_, error, _| tracing::warn!("failed to save session recency: {error:#}"),
+                cx,
+            );
         }
 
         // Resolve managed key reference: fill inline content from the
@@ -242,6 +252,7 @@ impl TinyShell {
         let group_id = Uuid::new_v4().to_string();
         let group = TabGroup {
             id: group_id.clone(),
+            drag_id: crate::app::next_tab_drag_id(),
             ordinal,
             title: session.name.clone(),
             pane_root: PaneLayout::Single(id.clone()),
