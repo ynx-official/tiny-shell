@@ -2,7 +2,9 @@ mod backend;
 mod http;
 mod merge;
 mod model;
+pub mod protocol;
 mod secrets;
+pub mod state;
 
 use std::fmt;
 
@@ -19,7 +21,8 @@ use backend::for_credentials;
 use http::{http_client, send_with_retry};
 
 pub use merge::{
-    MergeLocal, MergedConfig, merge_payload_with_deleted, merge_public_payload_with_deleted,
+    MergeLocal, MergedConfig, merge_payload_for_upload_with_deleted, merge_payload_with_deleted,
+    merge_public_payload_with_deleted,
 };
 pub use model::{PrivacyPasswordStatus, SyncPayload, SyncPayloadInput};
 

@@ -153,6 +153,73 @@ pub(crate) fn open_with_hardware_key(ciphertext: &str, hardware_uuid: &str) -> R
     decrypt_field(ciphertext, hardware_uuid)
 }
 
+/// 用硬件 UUID 绑定加密任意字节，供本地同步基线使用。
+#[allow(dead_code)]
+pub(crate) fn seal_bytes_with_hardware_key(
+    plaintext: &[u8],
+    hardware_uuid: &str,
+) -> Result<Vec<u8>> {
+    let mut salt = [0u8; SALT_LEN];
+    let mut nonce = [0u8; NONCE_LEN];
+    OsRng.fill_bytes(&mut salt);
+    OsRng.fill_bytes(&mut nonce);
+    let key = derive_key(hardware_uuid, &salt)?;
+    let ciphertext = XChaCha20Poly1305::new((&key).into())
+        .encrypt(XNonce::from_slice(&nonce), plaintext)
+        .map_err(|_| anyhow!("encrypt hardware-bound bytes"))?;
+    serde_json::to_vec(&serde_json::json!({
+        "format_version": 1,
+        "cipher": "xchacha20poly1305",
+        "kdf": "argon2id",
+        "salt": STANDARD.encode(salt),
+        "nonce": STANDARD.encode(nonce),
+        "payload": STANDARD.encode(ciphertext),
+    }))
+    .context("serialize hardware-bound bytes envelope")
+}
+
+/// 解开 [`seal_bytes_with_hardware_key`] 产生的本地密文。
+#[allow(dead_code)]
+pub(crate) fn open_bytes_with_hardware_key(
+    ciphertext: &[u8],
+    hardware_uuid: &str,
+) -> Result<Vec<u8>> {
+    #[derive(serde::Deserialize)]
+    struct Envelope {
+        format_version: u32,
+        cipher: String,
+        kdf: String,
+        salt: String,
+        nonce: String,
+        payload: String,
+    }
+
+    let envelope: Envelope =
+        serde_json::from_slice(ciphertext).context("parse hardware-bound bytes envelope")?;
+    if envelope.format_version != 1
+        || envelope.cipher != "xchacha20poly1305"
+        || envelope.kdf != "argon2id"
+    {
+        return Err(anyhow!("unsupported hardware-bound bytes format"));
+    }
+    let salt = STANDARD
+        .decode(envelope.salt)
+        .context("decode bytes salt")?;
+    let nonce = STANDARD
+        .decode(envelope.nonce)
+        .context("decode bytes nonce")?;
+    if nonce.len() != NONCE_LEN {
+        return Err(anyhow!("invalid hardware-bound bytes nonce"));
+    }
+    let payload = STANDARD
+        .decode(envelope.payload)
+        .context("decode hardware-bound bytes payload")?;
+    let key = derive_key(hardware_uuid, &salt)?;
+    XChaCha20Poly1305::new((&key).into())
+        .decrypt(XNonce::from_slice(&nonce), payload.as_ref())
+        .map_err(|_| anyhow!("cannot decrypt hardware-bound bytes"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

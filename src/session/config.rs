@@ -253,6 +253,14 @@ impl ConfigStore {
         }
     }
 
+    #[allow(dead_code)]
+    pub(crate) fn config_directory() -> Result<PathBuf> {
+        Self::config_path()?
+            .parent()
+            .map(Path::to_path_buf)
+            .context("configuration path has no parent directory")
+    }
+
     fn config_path() -> Result<PathBuf> {
         let dirs = BaseDirs::new().context("could not determine user home directory")?;
         Ok(dirs

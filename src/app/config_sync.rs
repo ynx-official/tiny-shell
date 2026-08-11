@@ -648,7 +648,7 @@ impl TinyShell {
                         reason: UploadBlockReason::PasswordMismatch,
                     },
                     Ok(PrivacyPasswordStatus::Verified | PrivacyPasswordStatus::NotConfigured) => {
-                        let merged = sync::merge_payload_with_deleted(
+                        let merged = sync::merge_payload_for_upload_with_deleted(
                             sync::MergeLocal {
                                 sessions: &local_sessions,
                                 deleted_sessions: &local_deleted_sessions,
