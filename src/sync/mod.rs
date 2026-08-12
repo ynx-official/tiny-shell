@@ -129,6 +129,8 @@ pub enum UploadBlockReason {
 #[derive(Clone)]
 pub enum SyncResult {
     Uploaded {
+        target: state::SyncTargetKey,
+        payload: SyncPayload,
         etag: Option<String>,
         privacy_password: Option<String>,
         merged: Option<MergedConfig>,
@@ -146,6 +148,8 @@ pub enum SyncResult {
     },
     Downloaded {
         credentials: SyncCredentials,
+        target: state::SyncTargetKey,
+        payload: SyncPayload,
         password_status: PrivacyPasswordStatus,
         sessions: Vec<Session>,
         deleted_sessions: Vec<crate::session::config::DeletedSession>,
@@ -161,6 +165,8 @@ pub enum SyncResult {
     },
     /// 本地强行重置隐私密码成功，需把新密码硬件绑定落盘。
     PrivacyPasswordReset {
+        target: state::SyncTargetKey,
+        payload: SyncPayload,
         new_password: String,
         etag: Option<String>,
     },

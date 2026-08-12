@@ -750,9 +750,12 @@ impl TinyShell {
         self.sync_runtime.status = t!("sync_uploading").into();
         cx.notify();
 
+        let target = sync::state::SyncTargetKey::from_credentials(&credentials.backend);
         self.spawn_sync_operation(async move {
-            match sync::upload(credentials, payload, mode).await {
+            match sync::upload(credentials, payload.clone(), mode).await {
                 Ok(etag) => SyncResult::Uploaded {
+                    target,
+                    payload,
                     etag,
                     privacy_password: uploaded_privacy_password,
                     merged,
@@ -808,7 +811,7 @@ impl TinyShell {
                                         keys: &local_keys,
                                         commands: &local_commands,
                                     },
-                                    payload,
+                                    payload.clone(),
                                     &privacy_password,
                                 )
                             }
@@ -822,12 +825,16 @@ impl TinyShell {
                                         keys: &local_keys,
                                         commands: &local_commands,
                                     },
-                                    payload,
+                                    payload.clone(),
                                 )
                             }
                         };
+                        let target =
+                            sync::state::SyncTargetKey::from_credentials(&credentials.backend);
                         SyncResult::Downloaded {
                             credentials,
+                            target,
+                            payload: payload.clone(),
                             password_status,
                             sessions,
                             deleted_sessions,
@@ -908,8 +915,13 @@ impl TinyShell {
         };
 
         self.spawn_sync_operation(async move {
-            match sync::upload(credentials, payload, UploadMode::Force).await {
-                Ok(etag) => SyncResult::PrivacyPasswordReset { new_password, etag },
+            match sync::upload(credentials.clone(), payload.clone(), UploadMode::Force).await {
+                Ok(etag) => SyncResult::PrivacyPasswordReset {
+                    target: sync::state::SyncTargetKey::from_credentials(&credentials.backend),
+                    payload,
+                    new_password,
+                    etag,
+                },
                 Err(failure) => SyncResult::Failed(failure),
             }
         });

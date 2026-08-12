@@ -14,7 +14,7 @@ use sha2::{Digest, Sha256};
 use crate::{
     crypto::{open_bytes_with_hardware_key, seal_bytes_with_hardware_key},
     session::config::{ConfigStore, hardware_uuid},
-    sync::protocol::V3SyncPayload,
+    sync::{SyncBackendCredentials, SyncPayload, protocol::V3SyncPayload},
 };
 
 const STATE_FILE_NAME: &str = "sync-state.json";
@@ -27,6 +27,19 @@ pub struct SyncTargetKey {
 }
 
 impl SyncTargetKey {
+    pub fn from_credentials(credentials: &SyncBackendCredentials) -> Self {
+        match credentials {
+            SyncBackendCredentials::WebDav { endpoint, .. } => Self::webdav(endpoint),
+            SyncBackendCredentials::S3 {
+                endpoint,
+                region,
+                bucket,
+                object_key,
+                ..
+            } => Self::s3(endpoint, region, bucket, object_key),
+        }
+    }
+
     pub fn webdav(endpoint: &str) -> Self {
         Self {
             backend: "webdav".to_string(),
@@ -69,6 +82,25 @@ pub struct SyncBaseline {
     pub remote_revision: String,
     pub remote_etag: Option<String>,
     pub synced_at: i64,
+}
+
+impl SyncBaseline {
+    pub fn from_remote_payload(
+        target: &SyncTargetKey,
+        payload: SyncPayload,
+        remote_etag: Option<String>,
+        synced_at: i64,
+    ) -> Self {
+        let remote_revision = payload.revision.clone();
+        Self {
+            target_id: target.stable_id(),
+            protocol_version: crate::sync::protocol::V3_FORMAT_VERSION,
+            payload: crate::sync::protocol::migrate_to_v3(payload),
+            remote_revision,
+            remote_etag,
+            synced_at,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

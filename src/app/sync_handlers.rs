@@ -28,6 +28,16 @@ pub(crate) struct SyncDownloadedConfig {
     pub(crate) etag: Option<String>,
 }
 
+struct SyncDownloadSuccess {
+    credentials: SyncCredentials,
+    target: crate::sync::state::SyncTargetKey,
+    payload: crate::sync::SyncPayload,
+    password_status: PrivacyPasswordStatus,
+    config: SyncDownloadedConfig,
+    decrypted_count: u32,
+    unavailable_secret_count: u32,
+}
+
 impl TinyShell {
     pub(crate) fn handle_sync_finished(
         &mut self,
@@ -43,11 +53,13 @@ impl TinyShell {
         self.sync_runtime.in_progress = false;
         match result {
             SyncResult::Uploaded {
+                target,
+                payload,
                 etag,
                 privacy_password,
                 merged,
             } => {
-                self.handle_sync_uploaded(etag, privacy_password, merged, cx);
+                self.handle_sync_uploaded(target, payload, etag, privacy_password, merged, cx);
             }
             SyncResult::UploadPreflightReady {
                 credentials,
@@ -73,6 +85,8 @@ impl TinyShell {
             }
             SyncResult::Downloaded {
                 credentials,
+                target,
+                payload,
                 password_status,
                 sessions,
                 deleted_sessions,
@@ -85,24 +99,33 @@ impl TinyShell {
                 unavailable_secret_count,
             } => {
                 self.handle_sync_downloaded(
-                    credentials,
-                    password_status,
-                    SyncDownloadedConfig {
-                        sessions,
-                        deleted_sessions,
-                        connection_groups,
-                        deleted_connection_groups,
-                        managed_keys,
-                        quick_command_categories,
-                        etag,
+                    SyncDownloadSuccess {
+                        credentials,
+                        target,
+                        payload,
+                        password_status,
+                        config: SyncDownloadedConfig {
+                            sessions,
+                            deleted_sessions,
+                            connection_groups,
+                            deleted_connection_groups,
+                            managed_keys,
+                            quick_command_categories,
+                            etag,
+                        },
+                        decrypted_count,
+                        unavailable_secret_count,
                     },
-                    decrypted_count,
-                    unavailable_secret_count,
                     cx,
                 );
             }
-            SyncResult::PrivacyPasswordReset { new_password, etag } => {
-                self.handle_sync_privacy_password_reset(new_password, etag, cx);
+            SyncResult::PrivacyPasswordReset {
+                target,
+                payload,
+                new_password,
+                etag,
+            } => {
+                self.handle_sync_privacy_password_reset(target, payload, new_password, etag, cx);
             }
             SyncResult::PrivacyPasswordInitializationReady {
                 credentials,
@@ -129,6 +152,8 @@ impl TinyShell {
 
     fn handle_sync_uploaded(
         &mut self,
+        target: crate::sync::state::SyncTargetKey,
+        payload: crate::sync::SyncPayload,
         etag: Option<String>,
         privacy_password: Option<String>,
         merged: Option<MergedConfig>,
@@ -149,7 +174,7 @@ impl TinyShell {
             self.config
                 .set_quick_command_categories(merged.quick_command_categories);
         }
-        self.config.set_sync_etag(etag);
+        self.config.set_sync_etag(etag.clone());
         self.config
             .set_sync_last_synced_at(chrono::Utc::now().timestamp());
         let password_result = privacy_password.map_or(Ok(()), |password| {
@@ -162,9 +187,25 @@ impl TinyShell {
             .and_then(|()| config_persistence::save_full(&self.config_repository, &self.config))
         {
             Ok(()) => {
-                self.sync_runtime.clear_failure();
-                self.sync_runtime.status = t!("sync_upload_complete").into();
-                self.schedule_automatic_sync(false, cx);
+                let baseline = crate::sync::state::SyncBaseline::from_remote_payload(
+                    &target,
+                    payload,
+                    etag.clone(),
+                    chrono::Utc::now().timestamp(),
+                );
+                match crate::sync::state::SyncStateRepository::new()
+                    .and_then(|repository| repository.save(&target, baseline))
+                {
+                    Ok(()) => {
+                        self.sync_runtime.clear_failure();
+                        self.sync_runtime.status = t!("sync_upload_complete").into();
+                        self.schedule_automatic_sync(false, cx);
+                    }
+                    Err(err) => {
+                        self.sync_runtime
+                            .set_failed(t!("sync_failed", error = format!("{err:#}")).into());
+                    }
+                }
             }
             Err(err) => {
                 self.config = previous_config;
@@ -232,15 +273,16 @@ impl TinyShell {
         }
     }
 
-    fn handle_sync_downloaded(
-        &mut self,
-        credentials: SyncCredentials,
-        password_status: PrivacyPasswordStatus,
-        config: SyncDownloadedConfig,
-        decrypted_count: u32,
-        unavailable_secret_count: u32,
-        cx: &mut Context<Self>,
-    ) {
+    fn handle_sync_downloaded(&mut self, result: SyncDownloadSuccess, cx: &mut Context<Self>) {
+        let SyncDownloadSuccess {
+            credentials,
+            target,
+            payload,
+            password_status,
+            config,
+            decrypted_count,
+            unavailable_secret_count,
+        } = result;
         let session_count = config.sessions.len();
         let group_count = config.connection_groups.len();
         let key_count = config.managed_keys.len();
@@ -249,6 +291,7 @@ impl TinyShell {
             .iter()
             .map(|category| category.commands.len())
             .sum::<usize>();
+        let remote_etag = config.etag.clone();
         let (previous_config, previous_managed_keys) = self.apply_sync_downloaded_config(config);
         match config_persistence::save_full(&self.config_repository, &self.config) {
             Ok(()) => {
@@ -295,7 +338,22 @@ impl TinyShell {
                         });
                     });
                 }
-                self.schedule_automatic_sync(false, cx);
+                if let Err(err) =
+                    crate::sync::state::SyncStateRepository::new().and_then(|repository| {
+                        let baseline = crate::sync::state::SyncBaseline::from_remote_payload(
+                            &target,
+                            payload.clone(),
+                            remote_etag.clone(),
+                            chrono::Utc::now().timestamp(),
+                        );
+                        repository.save(&target, baseline)
+                    })
+                {
+                    self.sync_runtime
+                        .set_failed(t!("sync_failed", error = format!("{err:#}")).into());
+                } else {
+                    self.schedule_automatic_sync(false, cx);
+                }
             }
             Err(err) => {
                 self.config = previous_config;
@@ -331,6 +389,8 @@ impl TinyShell {
 
     fn handle_sync_privacy_password_reset(
         &mut self,
+        target: crate::sync::state::SyncTargetKey,
+        payload: crate::sync::SyncPayload,
         new_password: String,
         etag: Option<String>,
         cx: &mut Context<Self>,
@@ -339,14 +399,31 @@ impl TinyShell {
             Ok((sealed, hash)) => {
                 self.config.set_sync_secrets_password_sealed(sealed);
                 self.config.set_sync_secrets_password_hash(hash);
-                self.config.set_sync_etag(etag);
+                self.config.set_sync_etag(etag.clone());
                 let previous_synced_at = self.config.sync_last_synced_at();
                 self.config
                     .set_sync_last_synced_at(chrono::Utc::now().timestamp());
                 match config_persistence::save_full(&self.config_repository, &self.config) {
                     Ok(()) => {
-                        self.sync_runtime.status = t!("sync_reset_complete").into();
-                        self.schedule_automatic_sync(false, cx);
+                        let baseline = crate::sync::state::SyncBaseline::from_remote_payload(
+                            &target,
+                            payload,
+                            etag.clone(),
+                            chrono::Utc::now().timestamp(),
+                        );
+                        match crate::sync::state::SyncStateRepository::new()
+                            .and_then(|repository| repository.save(&target, baseline))
+                        {
+                            Ok(()) => {
+                                self.sync_runtime.status = t!("sync_reset_complete").into();
+                                self.schedule_automatic_sync(false, cx);
+                            }
+                            Err(err) => {
+                                self.sync_runtime.set_failed(
+                                    t!("sync_failed", error = format!("{err:#}")).into(),
+                                );
+                            }
+                        }
                     }
                     Err(err) => {
                         self.config.set_sync_last_synced_at(previous_synced_at);
