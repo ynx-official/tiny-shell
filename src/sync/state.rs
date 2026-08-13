@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use std::{
     fs::{self, OpenOptions},
     io::Write,
@@ -14,7 +12,7 @@ use sha2::{Digest, Sha256};
 use crate::{
     crypto::{open_bytes_with_hardware_key, seal_bytes_with_hardware_key},
     session::config::{ConfigStore, hardware_uuid},
-    sync::{SyncBackendCredentials, SyncPayload, protocol::V3SyncPayload},
+    sync::{SyncBackendCredentials, protocol::V3SyncPayload},
 };
 
 const STATE_FILE_NAME: &str = "sync-state.json";
@@ -87,7 +85,7 @@ pub struct SyncBaseline {
 impl SyncBaseline {
     pub fn from_remote_payload(
         target: &SyncTargetKey,
-        payload: SyncPayload,
+        payload: V3SyncPayload,
         remote_etag: Option<String>,
         synced_at: i64,
     ) -> Self {
@@ -95,7 +93,7 @@ impl SyncBaseline {
         Self {
             target_id: target.stable_id(),
             protocol_version: crate::sync::protocol::V3_FORMAT_VERSION,
-            payload: crate::sync::protocol::migrate_to_v3(payload),
+            payload,
             remote_revision,
             remote_etag,
             synced_at,
@@ -113,7 +111,6 @@ struct SyncStateFile {
 trait SyncStateIo: Send + Sync {
     fn read(&self, path: &Path) -> Result<Option<Vec<u8>>>;
     fn write_atomic(&self, path: &Path, bytes: &[u8]) -> Result<()>;
-    fn remove(&self, path: &Path) -> Result<()>;
 }
 
 #[derive(Debug, Default)]
@@ -175,16 +172,6 @@ impl SyncStateIo for FileSyncStateIo {
         }
         result
     }
-
-    fn remove(&self, path: &Path) -> Result<()> {
-        match fs::remove_file(path) {
-            Ok(()) => Ok(()),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(error) => {
-                Err(error).with_context(|| format!("remove sync state {}", path.display()))
-            }
-        }
-    }
 }
 
 pub struct SyncStateRepository {
@@ -200,6 +187,7 @@ impl SyncStateRepository {
         })
     }
 
+    #[cfg(test)]
     fn with_io(path: PathBuf, io: Arc<dyn SyncStateIo>) -> Self {
         Self { path, io }
     }
@@ -225,16 +213,6 @@ impl SyncStateRepository {
             *existing = baseline;
         } else {
             state.baselines.push(baseline);
-        }
-        self.save_file(&state)
-    }
-
-    pub fn remove(&self, target: &SyncTargetKey) -> Result<()> {
-        let mut state = self.load_file()?;
-        let target_id = target.stable_id();
-        state.baselines.retain(|item| item.target_id != target_id);
-        if state.baselines.is_empty() {
-            return self.io.remove(&self.path);
         }
         self.save_file(&state)
     }
@@ -314,13 +292,6 @@ mod tests {
                 .map(|mut current| *current = Some(bytes.to_vec()))
                 .map_err(|_| anyhow!("memory state lock poisoned"))
         }
-
-        fn remove(&self, _path: &Path) -> Result<()> {
-            self.bytes
-                .lock()
-                .map(|mut current| *current = None)
-                .map_err(|_| anyhow!("memory state lock poisoned"))
-        }
     }
 
     #[derive(Default)]
@@ -333,10 +304,6 @@ mod tests {
 
         fn write_atomic(&self, _path: &Path, _bytes: &[u8]) -> Result<()> {
             Err(anyhow!("injected sync state write failure"))
-        }
-
-        fn remove(&self, _path: &Path) -> Result<()> {
-            Ok(())
         }
     }
 
@@ -387,7 +354,7 @@ mod tests {
     }
 
     #[test]
-    fn save_load_and_remove_are_target_scoped() {
+    fn save_and_load_are_target_scoped() {
         let io = Arc::new(MemoryIo::default());
         let io_for_repository: Arc<dyn SyncStateIo> = io.clone();
         let repository = SyncStateRepository::with_io(PathBuf::from("memory"), io_for_repository);
@@ -415,8 +382,7 @@ mod tests {
                 .remote_revision,
             "revision-2"
         );
-        repository.remove(&target_a).unwrap();
-        assert!(repository.load_for(&target_a).unwrap().is_none());
+        assert!(repository.load_for(&target_a).unwrap().is_some());
         assert!(repository.load_for(&target_b).unwrap().is_some());
     }
 

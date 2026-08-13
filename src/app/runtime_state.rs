@@ -7,6 +7,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+use tokio::task::JoinHandle;
+
 use gpui::{AnyWindowHandle, SharedString};
 
 use crate::app::{SyncSecretsPasswordDialogState, config_persistence::SaveReceipt, updater};
@@ -44,8 +46,13 @@ impl TaskCancellation {
 
 #[derive(Default)]
 pub(crate) struct TaskSupervisor {
-    tasks: HashMap<String, TaskCancellation>,
+    tasks: HashMap<String, TaskEntry>,
     next_id: u64,
+}
+
+struct TaskEntry {
+    cancellation: TaskCancellation,
+    handle: Option<JoinHandle<()>>,
 }
 
 pub(crate) struct AsyncRuntimeState {
@@ -69,15 +76,37 @@ impl TaskSupervisor {
         let name = name.into();
         self.next_id = self.next_id.wrapping_add(1);
         let task = TaskCancellation::new(self.next_id);
-        if let Some(previous) = self.tasks.insert(name, task.clone()) {
-            previous.cancel();
+        if let Some(previous) = self.tasks.insert(
+            name,
+            TaskEntry {
+                cancellation: task.clone(),
+                handle: None,
+            },
+        ) {
+            previous.cancellation.cancel();
+            if let Some(handle) = previous.handle {
+                handle.abort();
+            }
         }
         task
     }
 
+    pub(crate) fn track_handle(&mut self, name: &str, id: u64, handle: JoinHandle<()>) {
+        if let Some(entry) = self.tasks.get_mut(name)
+            && entry.cancellation.id() == id
+        {
+            entry.handle = Some(handle);
+        } else {
+            handle.abort();
+        }
+    }
+
     pub(crate) fn cancel(&mut self, name: &str) -> bool {
-        if let Some(task) = self.tasks.remove(name) {
-            task.cancel();
+        if let Some(entry) = self.tasks.remove(name) {
+            entry.cancellation.cancel();
+            if let Some(handle) = entry.handle {
+                handle.abort();
+            }
             true
         } else {
             false
@@ -85,7 +114,11 @@ impl TaskSupervisor {
     }
 
     pub(crate) fn finish(&mut self, name: &str, id: u64) -> bool {
-        if self.tasks.get(name).is_some_and(|task| task.id() == id) {
+        if self
+            .tasks
+            .get(name)
+            .is_some_and(|entry| entry.cancellation.id() == id)
+        {
             self.tasks.remove(name);
             true
         } else {
@@ -93,10 +126,16 @@ impl TaskSupervisor {
         }
     }
 
-    pub(crate) fn cancel_all(&mut self) {
-        for task in self.tasks.drain().map(|(_, task)| task) {
-            task.cancel();
-        }
+    pub(crate) fn cancel_all(&mut self) -> Vec<JoinHandle<()>> {
+        self.tasks
+            .drain()
+            .filter_map(|(_, entry)| {
+                entry.cancellation.cancel();
+                let handle = entry.handle?;
+                handle.abort();
+                Some(handle)
+            })
+            .collect()
     }
 }
 

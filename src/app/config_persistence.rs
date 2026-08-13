@@ -416,9 +416,8 @@ pub(crate) fn save_full(
 pub(crate) fn save_full_async(
     repository: &Arc<ConfigRepository>,
     config: &ConfigStore,
-) -> anyhow::Result<()> {
-    let _receipt = repository.save_full_async(config.clone())?;
-    Ok(())
+) -> anyhow::Result<SaveReceipt> {
+    repository.save_full_async(config.clone())
 }
 
 #[cfg(test)]

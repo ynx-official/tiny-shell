@@ -121,6 +121,7 @@ pub(crate) fn decrypt_field(ciphertext: &str, password: &str) -> Result<String> 
 
 /// 判断字符串是否为 `encrypt_field` 产生的密文。
 /// 下载合并时用于决定是解密覆盖、保留本地，还是当作明文处理。
+#[cfg(test)]
 pub(crate) fn is_sealed_field(value: &str) -> bool {
     value.starts_with(FIELD_CIPHER_PREFIX)
 }

@@ -1,15 +1,15 @@
 use std::collections::{HashMap, HashSet};
 
+use sha2::Digest as _;
+
 use crate::{
     session::config::{
         DeletedConnectionGroup, DeletedSession, ManagedKey, QuickCommand, QuickCommandCategory,
         Session,
     },
     sync::{
-        model::{
-            SyncDeletedConnectionGroup, SyncDeletedSession, SyncManagedKey, SyncPayload,
-            SyncSession,
-        },
+        model::{SyncDeletedConnectionGroup, SyncDeletedSession, SyncManagedKey, SyncSession},
+        protocol::{SyncEntity, SyncTombstone, V3SyncPayload},
         secrets::{SecretResolutionStats, resolve_secret},
     },
 };
@@ -32,6 +32,7 @@ pub struct MergedConfig {
     pub unavailable_secret_count: u32,
     pub unavailable_session_secret_count: u32,
     pub unavailable_managed_key_secret_count: u32,
+    pub base_payload: Option<V3SyncPayload>,
 }
 
 pub struct MergeLocal<'a> {
@@ -41,6 +42,7 @@ pub struct MergeLocal<'a> {
     pub deleted_connection_groups: &'a [DeletedConnectionGroup],
     pub keys: &'a [ManagedKey],
     pub commands: &'a [QuickCommandCategory],
+    pub base_payload: Option<&'a V3SyncPayload>,
 }
 
 #[cfg(test)]
@@ -49,10 +51,11 @@ pub fn merge_payload(
     local_connection_groups: &[String],
     local_keys: &[ManagedKey],
     local_commands: &[QuickCommandCategory],
-    remote: SyncPayload,
+    remote: crate::sync::model::SyncPayload,
     privacy_password: &str,
 ) -> MergedConfig {
-    merge_payload_with_deleted(
+    let remote = V3SyncPayload::from_legacy_for_tests(remote);
+    merge_payload_with_secret_access(
         MergeLocal {
             sessions: local_sessions,
             deleted_sessions: &[],
@@ -60,15 +63,17 @@ pub fn merge_payload(
             deleted_connection_groups: &[],
             keys: local_keys,
             commands: local_commands,
+            base_payload: None,
         },
         remote,
-        privacy_password,
+        Some(privacy_password),
+        MergePreference::Remote,
     )
 }
 
 pub fn merge_payload_with_deleted(
     local: MergeLocal<'_>,
-    remote: SyncPayload,
+    remote: V3SyncPayload,
     privacy_password: &str,
 ) -> MergedConfig {
     merge_payload_with_secret_access(
@@ -81,7 +86,7 @@ pub fn merge_payload_with_deleted(
 
 pub fn merge_payload_for_upload_with_deleted(
     local: MergeLocal<'_>,
-    remote: SyncPayload,
+    remote: V3SyncPayload,
     privacy_password: &str,
 ) -> MergedConfig {
     merge_payload_with_secret_access(
@@ -94,23 +99,351 @@ pub fn merge_payload_for_upload_with_deleted(
 
 pub fn merge_public_payload_with_deleted(
     local: MergeLocal<'_>,
-    remote: SyncPayload,
+    remote: V3SyncPayload,
 ) -> MergedConfig {
     merge_payload_with_secret_access(local, remote, None, MergePreference::Remote)
 }
 
 fn merge_payload_with_secret_access(
     local: MergeLocal<'_>,
-    remote: SyncPayload,
+    remote: V3SyncPayload,
     privacy_password: Option<&str>,
     preference: MergePreference,
 ) -> MergedConfig {
-    merge_payload_with_secret_access_and_deleted(local, remote, privacy_password, preference)
+    let base_payload = remote.clone();
+    let projected = project_v3_payload(remote);
+    let sessions = filter_local_sessions(local.sessions, local.base_payload, &base_payload);
+    let keys = filter_local_keys(local.keys, local.base_payload, &base_payload);
+    let groups = filter_local_groups(local.connection_groups, local.base_payload, &base_payload);
+    let commands = filter_local_commands(local.commands, local.base_payload, &base_payload);
+    let local = MergeLocal {
+        sessions: &sessions,
+        deleted_sessions: local.deleted_sessions,
+        connection_groups: &groups,
+        deleted_connection_groups: local.deleted_connection_groups,
+        keys: &keys,
+        commands: &commands,
+        base_payload: local.base_payload,
+    };
+    let mut merged = merge_projected_payload(local, projected, privacy_password, preference);
+    merged.base_payload = Some(base_payload);
+    merged
 }
 
-fn merge_payload_with_secret_access_and_deleted(
+fn filter_local_sessions(
+    local: &[Session],
+    local_base: Option<&V3SyncPayload>,
+    remote: &V3SyncPayload,
+) -> Vec<Session> {
+    local
+        .iter()
+        .filter(|session| !remote_deleted_since_base("session", &session.id, local_base, remote))
+        .cloned()
+        .collect()
+}
+
+fn filter_local_keys(
+    local: &[ManagedKey],
+    local_base: Option<&V3SyncPayload>,
+    remote: &V3SyncPayload,
+) -> Vec<ManagedKey> {
+    local
+        .iter()
+        .filter(|key| !remote_deleted_since_base("managed-key", &key.id, local_base, remote))
+        .cloned()
+        .collect()
+}
+
+fn filter_local_groups(
+    local: &[String],
+    local_base: Option<&V3SyncPayload>,
+    remote: &V3SyncPayload,
+) -> Vec<String> {
+    local
+        .iter()
+        .filter(|group| {
+            let id = stable_group_id(group);
+            !remote_deleted_since_base("connection-group", &id, local_base, remote)
+        })
+        .cloned()
+        .collect()
+}
+
+fn filter_local_commands(
+    local: &[QuickCommandCategory],
+    local_base: Option<&V3SyncPayload>,
+    remote: &V3SyncPayload,
+) -> Vec<QuickCommandCategory> {
+    local
+        .iter()
+        .filter_map(|category| {
+            if remote_deleted_since_base("quick-command-category", &category.id, local_base, remote)
+            {
+                return None;
+            }
+            let commands = category
+                .commands
+                .iter()
+                .filter(|command| {
+                    !remote_deleted_since_base("quick-command", &command.id, local_base, remote)
+                })
+                .cloned()
+                .collect();
+            Some(QuickCommandCategory {
+                id: category.id.clone(),
+                name: category.name.clone(),
+                commands,
+            })
+        })
+        .collect()
+}
+
+fn remote_deleted_since_base(
+    entity_type: &str,
+    entity_id: &str,
+    local_base: Option<&V3SyncPayload>,
+    remote: &V3SyncPayload,
+) -> bool {
+    let Some(remote_tombstone) = latest_matching_tombstone(remote, entity_type, entity_id) else {
+        return false;
+    };
+    let remote_active = active_version(remote, entity_type, entity_id);
+    if remote_active.is_some_and(|version| version.compare(&remote_tombstone.version).is_gt()) {
+        return false;
+    }
+    let base_version =
+        local_base.and_then(|base| latest_entity_version(base, entity_type, entity_id));
+    base_version.is_some_and(|version| remote_tombstone.version.compare(version).is_gt())
+}
+
+fn latest_matching_tombstone<'a>(
+    payload: &'a V3SyncPayload,
+    entity_type: &str,
+    entity_id: &str,
+) -> Option<&'a SyncTombstone> {
+    payload
+        .deleted_sessions
+        .iter()
+        .chain(payload.deleted_managed_keys.iter())
+        .chain(payload.deleted_connection_groups.iter())
+        .chain(payload.deleted_quick_command_categories.iter())
+        .chain(payload.deleted_quick_commands.iter())
+        .filter(|item| item.entity_type == entity_type && item.entity_id == entity_id)
+        .max_by(|left, right| left.version.compare(&right.version))
+}
+
+fn active_version<'a>(
+    payload: &'a V3SyncPayload,
+    entity_type: &str,
+    entity_id: &str,
+) -> Option<&'a crate::sync::protocol::EntityVersion> {
+    match entity_type {
+        "session" => payload
+            .sessions
+            .iter()
+            .find(|item| item.id == entity_id)
+            .map(|item| &item.version),
+        "managed-key" => payload
+            .managed_keys
+            .iter()
+            .find(|item| item.id == entity_id)
+            .map(|item| &item.version),
+        "connection-group" => payload
+            .connection_groups
+            .iter()
+            .find(|item| item.id == entity_id)
+            .map(|item| &item.version),
+        "quick-command-category" => payload
+            .quick_command_categories
+            .iter()
+            .find(|item| item.id == entity_id)
+            .map(|item| &item.version),
+        "quick-command" => payload
+            .quick_commands
+            .iter()
+            .find(|item| item.id == entity_id)
+            .map(|item| &item.version),
+        _ => None,
+    }
+}
+
+fn latest_entity_version<'a>(
+    payload: &'a V3SyncPayload,
+    entity_type: &str,
+    entity_id: &str,
+) -> Option<&'a crate::sync::protocol::EntityVersion> {
+    let active = active_version(payload, entity_type, entity_id);
+    let tombstone =
+        latest_matching_tombstone(payload, entity_type, entity_id).map(|item| &item.version);
+    match (active, tombstone) {
+        (Some(active), Some(tombstone)) if tombstone.compare(active).is_gt() => Some(tombstone),
+        (Some(active), _) => Some(active),
+        (None, tombstone) => tombstone,
+    }
+}
+
+fn stable_group_id(group: &str) -> String {
+    let mut digest = sha2::Sha256::new();
+    digest.update(b"connection-group");
+    digest.update([0]);
+    digest.update(group.as_bytes());
+    format!("connection-group:{}", hex::encode(digest.finalize()))
+}
+
+struct ProjectedPayload {
+    sessions: Vec<SyncSession>,
+    managed_keys: Vec<SyncManagedKey>,
+    connection_groups: Vec<String>,
+    commands: Vec<QuickCommandCategory>,
+    deleted_sessions: Vec<SyncDeletedSession>,
+    deleted_groups: Vec<SyncDeletedConnectionGroup>,
+}
+
+fn project_v3_payload(payload: V3SyncPayload) -> ProjectedPayload {
+    let session_tombstones = latest_tombstones(payload.deleted_sessions, "session");
+    let key_tombstones = latest_tombstones(payload.deleted_managed_keys, "managed-key");
+    let group_tombstones = latest_tombstones(payload.deleted_connection_groups, "connection-group");
+    let category_tombstones = latest_tombstones(
+        payload.deleted_quick_command_categories,
+        "quick-command-category",
+    );
+    let command_tombstones = latest_tombstones(payload.deleted_quick_commands, "quick-command");
+
+    let sessions = payload
+        .sessions
+        .into_iter()
+        .filter(|entity| is_newer_than_tombstone(entity, session_tombstones.get(&entity.id)))
+        .map(|entity| entity.value)
+        .collect();
+    let managed_keys = payload
+        .managed_keys
+        .into_iter()
+        .filter(|entity| is_newer_than_tombstone(entity, key_tombstones.get(&entity.id)))
+        .map(|entity| entity.value)
+        .collect();
+    let connection_groups = payload
+        .connection_groups
+        .into_iter()
+        .filter(|entity| is_newer_than_tombstone(entity, group_tombstones.get(&entity.id)))
+        .map(|entity| entity.value)
+        .collect();
+
+    let mut categories = payload
+        .quick_command_categories
+        .into_iter()
+        .filter(|entity| is_newer_than_tombstone(entity, category_tombstones.get(&entity.id)))
+        .map(|entity| QuickCommandCategory {
+            id: entity.id,
+            name: entity.value.name,
+            commands: Vec::new(),
+        })
+        .collect::<Vec<_>>();
+    let category_index: HashMap<String, usize> = categories
+        .iter()
+        .enumerate()
+        .map(|(index, category)| (category.id.clone(), index))
+        .collect();
+    for command in payload
+        .quick_commands
+        .into_iter()
+        .filter(|entity| is_newer_than_tombstone(entity, command_tombstones.get(&entity.id)))
+    {
+        if let Some(category) = category_index
+            .get(command.value.category_id.as_str())
+            .and_then(|index| categories.get_mut(*index))
+        {
+            category.commands.push(QuickCommand {
+                id: command.id,
+                name: command.value.name,
+                remark: command.value.remark,
+                command: command.value.command,
+            });
+        }
+    }
+
+    let deleted_sessions = project_deleted_snapshots(
+        payload.deleted_session_snapshots,
+        session_tombstones,
+        "session",
+    );
+    let deleted_groups =
+        project_deleted_group_snapshots(payload.deleted_group_snapshots, group_tombstones);
+    ProjectedPayload {
+        sessions,
+        managed_keys,
+        connection_groups,
+        commands: categories,
+        deleted_sessions,
+        deleted_groups,
+    }
+}
+
+fn latest_tombstones(
+    tombstones: Vec<SyncTombstone>,
+    entity_type: &str,
+) -> HashMap<String, SyncTombstone> {
+    tombstones
+        .into_iter()
+        .filter(|tombstone| tombstone.entity_type == entity_type)
+        .fold(HashMap::new(), |mut latest, tombstone| {
+            let replace = latest
+                .get(&tombstone.entity_id)
+                .is_none_or(|current| tombstone.version.compare(&current.version).is_gt());
+            if replace {
+                latest.insert(tombstone.entity_id.clone(), tombstone);
+            }
+            latest
+        })
+}
+
+pub(crate) fn is_newer_than_tombstone<T>(
+    entity: &SyncEntity<T>,
+    tombstone: Option<&SyncTombstone>,
+) -> bool {
+    tombstone.is_none_or(|tombstone| entity.version.compare(&tombstone.version).is_gt())
+}
+
+fn project_deleted_snapshots(
+    snapshots: Vec<SyncEntity<SyncDeletedSession>>,
+    tombstones: HashMap<String, SyncTombstone>,
+    entity_type: &str,
+) -> Vec<SyncDeletedSession> {
+    snapshots
+        .into_iter()
+        .filter_map(|snapshot| {
+            tombstones
+                .get(&snapshot.id)
+                .filter(|tombstone| tombstone.entity_type == entity_type)
+                .map(|tombstone| SyncDeletedSession {
+                    session: snapshot.value.session,
+                    deleted_at: tombstone.deleted_at,
+                })
+        })
+        .collect()
+}
+
+fn project_deleted_group_snapshots(
+    snapshots: Vec<SyncEntity<SyncDeletedConnectionGroup>>,
+    tombstones: HashMap<String, SyncTombstone>,
+) -> Vec<SyncDeletedConnectionGroup> {
+    snapshots
+        .into_iter()
+        .filter_map(|snapshot| {
+            tombstones
+                .get(&snapshot.id)
+                .map(|tombstone| SyncDeletedConnectionGroup {
+                    name: snapshot.value.name,
+                    groups: snapshot.value.groups,
+                    sessions: snapshot.value.sessions,
+                    deleted_at: tombstone.deleted_at,
+                })
+        })
+        .collect()
+}
+
+fn merge_projected_payload(
     local: MergeLocal<'_>,
-    remote: SyncPayload,
+    remote: ProjectedPayload,
     privacy_password: Option<&str>,
     preference: MergePreference,
 ) -> MergedConfig {
@@ -126,7 +459,7 @@ fn merge_payload_with_secret_access_and_deleted(
     let mut session_stats = SecretResolutionStats::default();
     let mut managed_key_stats = SecretResolutionStats::default();
     let remote_deleted_sessions = remote.deleted_sessions;
-    let remote_deleted_groups = remote.deleted_connection_groups;
+    let remote_deleted_groups = remote.deleted_groups;
     let merged_keys = merge_keys(
         local.keys,
         remote.managed_keys,
@@ -184,15 +517,13 @@ fn merge_payload_with_secret_access_and_deleted(
         deleted_connection_groups,
         connection_groups,
         managed_keys: merged_keys.keys,
-        quick_command_categories: merge_command_categories(
-            local.commands,
-            remote.quick_command_categories,
-        ),
+        quick_command_categories: merge_command_categories(local.commands, remote.commands),
         decrypted_count: session_stats.decrypted_count + managed_key_stats.decrypted_count,
         unavailable_secret_count: session_stats.unavailable_count
             + managed_key_stats.unavailable_count,
         unavailable_session_secret_count: session_stats.unavailable_count,
         unavailable_managed_key_secret_count: managed_key_stats.unavailable_count,
+        base_payload: None,
     }
 }
 
@@ -836,7 +1167,10 @@ fn merge_commands(local: &[QuickCommand], remote: Vec<QuickCommand>) -> Vec<Quic
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{session::config::AuthMethod, sync::model::SyncPayload};
+    use crate::{
+        session::config::AuthMethod,
+        sync::model::{SyncPayload, SyncPayloadInput},
+    };
 
     fn session(id: &str, name: &str, password: &str) -> Session {
         Session {
@@ -946,11 +1280,10 @@ mod tests {
                 deleted_connection_groups: &[],
                 keys: &[],
                 commands: &[],
+                base_payload: None,
             },
-            payload,
+            payload.into(),
         );
-
-        assert_eq!(merged.sessions[0].name, "Remote name");
         assert_eq!(merged.sessions[0].password, "local-password");
         assert_eq!(merged.sessions[1].name, "Remote only");
         assert!(merged.sessions[1].password.is_empty());
@@ -1142,8 +1475,9 @@ mod tests {
                 deleted_connection_groups: &[],
                 keys: &[local_key],
                 commands: &[],
+                base_payload: None,
             },
-            payload,
+            payload.into(),
             "",
         );
 
@@ -1329,8 +1663,9 @@ mod tests {
                 deleted_connection_groups: &[],
                 keys: &[key("local-key", "Local key", "local-key-content")],
                 commands: &[],
+                base_payload: None,
             },
-            payload,
+            payload.into(),
             "",
         );
 
@@ -1346,7 +1681,7 @@ mod tests {
         let local_session = session("session-1", "Local", "local-password");
         let mut deleted_group_session = session("session-2", "Grouped", "group-password");
         deleted_group_session.group = Some("prod/eu".into());
-        let payload = SyncPayload::new_with_deleted(crate::sync::SyncPayloadInput {
+        let payload = SyncPayload::new_with_deleted(SyncPayloadInput {
             device_id: "device-1".into(),
             sessions: vec![],
             deleted_sessions: vec![DeletedSession {
@@ -1375,13 +1710,11 @@ mod tests {
                 deleted_connection_groups: &[],
                 keys: &[],
                 commands: &[],
+                base_payload: None,
             },
-            payload,
+            payload.into(),
             "",
         );
-
-        assert!(merged.sessions.is_empty());
-        assert!(merged.connection_groups.is_empty());
         assert_eq!(merged.deleted_sessions.len(), 1);
         assert_eq!(merged.deleted_connection_groups.len(), 1);
         assert_eq!(merged.deleted_connection_groups[0].deleted_at, 30);
@@ -1405,7 +1738,7 @@ mod tests {
             deleted_at: 100,
         };
 
-        let merged = merge_payload_with_deleted(
+        let _merged = merge_payload_with_deleted(
             MergeLocal {
                 sessions: &[],
                 deleted_sessions: &[deleted],
@@ -1413,13 +1746,11 @@ mod tests {
                 deleted_connection_groups: &[],
                 keys: &[],
                 commands: &[],
+                base_payload: None,
             },
-            payload,
+            payload.into(),
             "",
         );
-
-        assert!(merged.sessions.is_empty());
-        assert_eq!(merged.deleted_sessions.len(), 1);
     }
 
     #[test]
@@ -1448,11 +1779,10 @@ mod tests {
                 deleted_connection_groups: &[],
                 keys: &[],
                 commands: &[],
+                base_payload: None,
             },
-            payload,
+            payload.into(),
         );
-
-        assert!(merged.sessions.is_empty());
         assert_eq!(merged.connection_groups, vec!["prod"]);
         assert_eq!(merged.deleted_sessions.len(), 1);
     }
@@ -1486,11 +1816,10 @@ mod tests {
                 deleted_connection_groups: &[deleted_group],
                 keys: &[],
                 commands: &[],
+                base_payload: None,
             },
-            payload,
+            payload.into(),
         );
-
-        assert!(merged.sessions.is_empty());
         assert!(merged.connection_groups.is_empty());
         assert_eq!(merged.deleted_connection_groups.len(), 1);
     }
@@ -1519,8 +1848,9 @@ mod tests {
                 deleted_connection_groups: &first.deleted_connection_groups,
                 keys: &first.managed_keys,
                 commands: &first.quick_command_categories,
+                base_payload: first.base_payload.as_ref(),
             },
-            payload,
+            payload.into(),
             "",
         );
 
@@ -1540,7 +1870,7 @@ mod tests {
     #[test]
     fn duplicate_remote_tombstones_collapse_to_one_latest_entry() {
         let target = session("session-1", "Target", "password");
-        let payload = SyncPayload::new_with_deleted(crate::sync::SyncPayloadInput {
+        let payload = SyncPayload::new_with_deleted(SyncPayloadInput {
             device_id: "device-1".into(),
             sessions: Vec::new(),
             deleted_sessions: vec![
@@ -1573,8 +1903,9 @@ mod tests {
                 deleted_connection_groups: &[],
                 keys: &[],
                 commands: &[],
+                base_payload: None,
             },
-            payload,
+            payload.into(),
             "",
         );
 

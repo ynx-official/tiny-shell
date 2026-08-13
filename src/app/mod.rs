@@ -2539,7 +2539,14 @@ impl TinyShell {
 
     /// Clean up all SSH sessions and SFTP handles when the window is closing.
     pub(crate) fn cleanup_on_window_close(&mut self) {
-        self.async_runtime.supervisor.cancel_all();
+        let sync_handles = self.async_runtime.supervisor.cancel_all();
+        if !sync_handles.is_empty() {
+            self.runtime.spawn(async move {
+                for handle in sync_handles {
+                    let _ = handle.await;
+                }
+            });
+        }
         tracing::info!(
             "[ui] cleaning up {} tabs and {} sftp handles on window close",
             self.workspace().tab_count(),

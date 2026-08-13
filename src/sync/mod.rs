@@ -20,11 +20,15 @@ use crate::session::config::{ManagedKey, QuickCommandCategory, Session};
 use backend::for_credentials;
 use http::{http_client, send_with_retry};
 
+#[cfg(test)]
+pub use model::SyncPayload;
+pub use protocol::{V3SyncPayload, parse_payload, serialize_payload};
+
 pub use merge::{
     MergeLocal, MergedConfig, merge_payload_for_upload_with_deleted, merge_payload_with_deleted,
     merge_public_payload_with_deleted,
 };
-pub use model::{PrivacyPasswordStatus, SyncPayload, SyncPayloadInput};
+pub use model::PrivacyPasswordStatus;
 
 const SYNC_FILE_NAME: &str = "tiny-shell-sync.json";
 const MAX_SYNC_PAYLOAD_BYTES: usize = 16 * 1024 * 1024;
@@ -127,10 +131,11 @@ pub enum UploadBlockReason {
 }
 
 #[derive(Clone)]
+#[allow(clippy::large_enum_variant)]
 pub enum SyncResult {
     Uploaded {
         target: state::SyncTargetKey,
-        payload: SyncPayload,
+        payload: protocol::V3SyncPayload,
         etag: Option<String>,
         privacy_password: Option<String>,
         merged: Option<MergedConfig>,
@@ -149,7 +154,7 @@ pub enum SyncResult {
     Downloaded {
         credentials: SyncCredentials,
         target: state::SyncTargetKey,
-        payload: SyncPayload,
+        payload: protocol::V3SyncPayload,
         password_status: PrivacyPasswordStatus,
         sessions: Vec<Session>,
         deleted_sessions: Vec<crate::session::config::DeletedSession>,
@@ -166,7 +171,7 @@ pub enum SyncResult {
     /// 本地强行重置隐私密码成功，需把新密码硬件绑定落盘。
     PrivacyPasswordReset {
         target: state::SyncTargetKey,
-        payload: SyncPayload,
+        payload: protocol::V3SyncPayload,
         new_password: String,
         etag: Option<String>,
     },
@@ -294,7 +299,7 @@ impl UploadMode {
 
 pub async fn upload(
     credentials: SyncCredentials,
-    payload: SyncPayload,
+    payload: V3SyncPayload,
     mode: UploadMode,
 ) -> SyncOperationResult<Option<String>> {
     validate_credentials(&credentials)?;
@@ -366,14 +371,14 @@ pub(super) async fn upload_webdav(
 
 pub async fn download(
     credentials: SyncCredentials,
-    legacy_password: &str,
-) -> SyncOperationResult<(SyncPayload, Option<String>)> {
+    _privacy_password: &str,
+) -> SyncOperationResult<(V3SyncPayload, Option<String>)> {
     validate_credentials(&credentials)?;
     let backend = credentials.backend.kind();
     let (body, etag) = for_credentials(&credentials.backend)
         .download(&credentials.backend)
         .await?;
-    let payload = parse_payload(&body, legacy_password)
+    let payload = parse_payload(&body)
         .map_err(|error| SyncFailure::other(Some(backend), format!("{error:#}")))?;
     Ok((payload, etag))
 }
@@ -789,14 +794,6 @@ fn aws_uri_encode(value: &str, encode_slash: bool) -> String {
     encoded
 }
 
-fn serialize_payload(payload: &SyncPayload) -> Result<Vec<u8>> {
-    model::serialize_payload(payload)
-}
-
-fn parse_payload(raw: &[u8], legacy_password: &str) -> Result<SyncPayload> {
-    model::parse_payload(raw, legacy_password)
-}
-
 /// 对上传到同步后端的快照做敏感字段处理。
 ///
 /// - `include_secrets=false`：把所有敏感字段清空，远端只保留连接骨架。
@@ -1019,6 +1016,7 @@ fn merge_secret_field(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sync::{SyncPayload, protocol::V3SyncPayload};
     use uuid::Uuid;
 
     #[test]
@@ -1037,19 +1035,20 @@ mod tests {
         )
         .unwrap();
 
+        let payload: V3SyncPayload = payload.into();
         let serialized = serialize_payload(&payload).unwrap();
         let json: serde_json::Value = serde_json::from_slice(&serialized).unwrap();
 
         assert_eq!(json["device_id"], "test-device");
-        assert_eq!(json["sessions"][0]["host"], "example.test");
-        assert_eq!(json["sessions"][0]["user"], "alice");
+        assert_eq!(json["sessions"][0]["value"]["host"], "example.test");
+        assert_eq!(json["sessions"][0]["value"]["user"], "alice");
         assert!(
-            json["sessions"][0]["password"]["value"]
+            json["sessions"][0]["value"]["password"]["value"]
                 .as_str()
                 .is_some_and(crypto::is_sealed_field)
         );
         assert_eq!(
-            parse_payload(&serialized, "").unwrap().revision,
+            parse_payload(&serialized).unwrap().revision,
             payload.revision
         );
     }

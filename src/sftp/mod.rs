@@ -350,6 +350,36 @@ impl Drop for TransferCleanup {
     }
 }
 
+fn report_transfer_failure(
+    events: &BackendEventSender,
+    tab_id: &str,
+    id: &str,
+    error: impl Into<String>,
+) {
+    let _ = events.send(BackendEvent::TransferProgress {
+        tab_id: tab_id.to_string(),
+        id: id.to_string(),
+        transferred: 0,
+        total: None,
+        state: crate::terminal::TransferState::Failed(error.into()),
+    });
+}
+
+fn report_transfer_interrupted(
+    events: &BackendEventSender,
+    tab_id: &str,
+    id: &str,
+    reason: impl Into<String>,
+) {
+    let _ = events.send(BackendEvent::TransferProgress {
+        tab_id: tab_id.to_string(),
+        id: id.to_string(),
+        transferred: 0,
+        total: None,
+        state: crate::terminal::TransferState::Interrupted(reason.into()),
+    });
+}
+
 pub fn spawn_sftp(
     runtime: &tokio::runtime::Handle,
     tab_id: String,
@@ -495,8 +525,10 @@ impl SftpRuntime<'_> {
     }
 
     async fn handle_close(&mut self) -> bool {
-        for flag in self.active_transfers.values() {
-            flag.cancel();
+        let active_ids: Vec<String> = self.active_transfers.keys().cloned().collect();
+        self.active_transfers.clear();
+        for id in active_ids {
+            report_transfer_interrupted(self.events, self.tab_id, &id, "SFTP session closed");
         }
         for (_, task) in self.active_tasks.drain() {
             task.abort();
@@ -651,16 +683,46 @@ impl SftpRuntime<'_> {
             let _cleanup = TransferCleanup::new(controls_tx_clone, id.clone());
 
             let Ok(_channel_permit) = channel_slots_clone.acquire_owned().await else {
+                report_transfer_failure(
+                    &events_clone,
+                    &tab_id_clone,
+                    &id,
+                    "SFTP transfer channel limit closed",
+                );
                 return;
             };
-            let Ok(channel) = handle_clone.channel_open_session().await else {
-                return;
+            let channel = match handle_clone.channel_open_session().await {
+                Ok(channel) => channel,
+                Err(error) => {
+                    report_transfer_failure(
+                        &events_clone,
+                        &tab_id_clone,
+                        &id,
+                        format!("open SFTP transfer channel: {error:#}"),
+                    );
+                    return;
+                }
             };
-            let Ok(_) = channel.request_subsystem(true, "sftp").await else {
+            if let Err(error) = channel.request_subsystem(true, "sftp").await {
+                report_transfer_failure(
+                    &events_clone,
+                    &tab_id_clone,
+                    &id,
+                    format!("request SFTP transfer subsystem: {error:#}"),
+                );
                 return;
-            };
-            let Ok(sftp_session) = SftpSession::new(channel.into_stream()).await else {
-                return;
+            }
+            let sftp_session = match SftpSession::new(channel.into_stream()).await {
+                Ok(session) => session,
+                Err(error) => {
+                    report_transfer_failure(
+                        &events_clone,
+                        &tab_id_clone,
+                        &id,
+                        format!("complete SFTP transfer handshake: {error:#}"),
+                    );
+                    return;
+                }
             };
 
             let _ = events_clone.send(BackendEvent::SftpStatus {
@@ -697,7 +759,7 @@ impl SftpRuntime<'_> {
                     let state = if is_cancelled {
                         crate::terminal::TransferState::Interrupted("User cancelled".to_string())
                     } else {
-                        crate::terminal::TransferState::Recoverable(err_msg.clone())
+                        crate::terminal::TransferState::Failed(err_msg.clone())
                     };
                     let _ = events_clone.send(BackendEvent::SftpStatus {
                         tab_id: tab_id_clone.clone(),
@@ -815,16 +877,46 @@ impl SftpRuntime<'_> {
             let _cleanup = TransferCleanup::new(controls_tx_clone, id.clone());
 
             let Ok(_channel_permit) = channel_slots_clone.acquire_owned().await else {
+                report_transfer_failure(
+                    &events_clone,
+                    &tab_id_clone,
+                    &id,
+                    "SFTP transfer channel limit closed",
+                );
                 return;
             };
-            let Ok(channel) = handle_clone.channel_open_session().await else {
-                return;
+            let channel = match handle_clone.channel_open_session().await {
+                Ok(channel) => channel,
+                Err(error) => {
+                    report_transfer_failure(
+                        &events_clone,
+                        &tab_id_clone,
+                        &id,
+                        format!("open SFTP transfer channel: {error:#}"),
+                    );
+                    return;
+                }
             };
-            let Ok(_) = channel.request_subsystem(true, "sftp").await else {
+            if let Err(error) = channel.request_subsystem(true, "sftp").await {
+                report_transfer_failure(
+                    &events_clone,
+                    &tab_id_clone,
+                    &id,
+                    format!("request SFTP transfer subsystem: {error:#}"),
+                );
                 return;
-            };
-            let Ok(sftp_session) = SftpSession::new(channel.into_stream()).await else {
-                return;
+            }
+            let sftp_session = match SftpSession::new(channel.into_stream()).await {
+                Ok(session) => session,
+                Err(error) => {
+                    report_transfer_failure(
+                        &events_clone,
+                        &tab_id_clone,
+                        &id,
+                        format!("complete SFTP transfer handshake: {error:#}"),
+                    );
+                    return;
+                }
             };
 
             let _ = events_clone.send(BackendEvent::SftpStatus {
@@ -868,7 +960,7 @@ impl SftpRuntime<'_> {
                     let state = if is_cancelled {
                         crate::terminal::TransferState::Interrupted("User cancelled".to_string())
                     } else {
-                        crate::terminal::TransferState::Recoverable(err_msg.clone())
+                        crate::terminal::TransferState::Failed(err_msg.clone())
                     };
                     let _ = events_clone.send(BackendEvent::SftpStatus {
                         tab_id: tab_id_clone.clone(),
@@ -1441,8 +1533,19 @@ impl SftpRuntime<'_> {
         let task = tokio::spawn(async move {
             let _temp_directory = temp_directory;
             let _cleanup = TransferCleanup::new(controls_tx_clone, id.clone());
-
             let Ok(_channel_permit) = channel_slots_clone.acquire_owned().await else {
+                let message = "SFTP channel semaphore closed".to_string();
+                let _ = events_clone.send(BackendEvent::SftpStatus {
+                    tab_id: tab_id_clone.clone(),
+                    text: t!("sftp_pack_download_failed", err = message.clone()).to_string(),
+                });
+                let _ = events_clone.send(BackendEvent::TransferProgress {
+                    tab_id: tab_id_clone,
+                    id,
+                    transferred: 0,
+                    total: None,
+                    state: crate::terminal::TransferState::Failed(message),
+                });
                 return;
             };
             let ctx = TransferContext {
@@ -2421,28 +2524,28 @@ async fn upload_paths_impl(
                     continue;
                 }
 
-                if let Ok(meta) = tokio::fs::metadata(&path).await {
-                    let relative = path.strip_prefix(&p)?;
-                    let remote_path = if relative.as_os_str().is_empty() {
-                        remote_root.clone()
-                    } else {
-                        let rel = relative
-                            .components()
-                            .map(|c| c.as_os_str().to_string_lossy().to_string())
-                            .collect::<Vec<_>>()
-                            .join("/");
-                        join_remote(&remote_root, &rel)
-                    };
+                let meta = tokio::fs::metadata(&path).await?;
+                let relative = path.strip_prefix(&p)?;
+                let remote_path = if relative.as_os_str().is_empty() {
+                    remote_root.clone()
+                } else {
+                    let rel = relative
+                        .components()
+                        .map(|c| c.as_os_str().to_string_lossy().to_string())
+                        .collect::<Vec<_>>()
+                        .join("/");
+                    join_remote(&remote_root, &rel)
+                };
 
-                    if path.is_dir() {
-                        dirs_to_create.push(remote_path);
-                    } else {
-                        total_bytes += meta.len();
-                        files_to_upload.push((path.to_path_buf(), remote_path));
-                    }
+                if path.is_dir() {
+                    dirs_to_create.push(remote_path);
+                } else {
+                    total_bytes += meta.len();
+                    files_to_upload.push((path.to_path_buf(), remote_path));
                 }
             }
-        } else if let Ok(meta) = tokio::fs::metadata(&p).await {
+        } else {
+            let meta = tokio::fs::metadata(&p).await?;
             total_bytes += meta.len();
             let file_name = p.file_name().and_then(|n| n.to_str()).unwrap_or("file");
             files_to_upload.push((p.clone(), join_remote(remote_dir, file_name)));
@@ -2637,7 +2740,12 @@ async fn create_remote_dir_all(sftp: &SftpSession, remote_dir: &str) -> Result<(
     let mut current = String::from("/");
     for segment in remote_dir.split('/').filter(|segment| !segment.is_empty()) {
         current = join_remote(&current, segment);
-        let _ = sftp.create_dir(&current).await;
+        if sftp.metadata(&current).await.is_ok() {
+            continue;
+        }
+        sftp.create_dir(&current)
+            .await
+            .with_context(|| format!("create remote directory {current}"))?;
     }
     Ok(())
 }

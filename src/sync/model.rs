@@ -1,20 +1,25 @@
-use anyhow::{Context, Result, anyhow};
+use anyhow::Result;
+#[cfg(test)]
+use anyhow::{Context, anyhow};
+#[cfg(test)]
 use base64::{Engine as _, engine::general_purpose::STANDARD};
+#[cfg(test)]
 use chacha20poly1305::{
     XChaCha20Poly1305, XNonce,
     aead::{Aead, KeyInit},
 };
 use serde::{Deserialize, Serialize};
+#[cfg(test)]
 use uuid::Uuid;
 
+#[cfg(test)]
+use crate::session::config::QuickCommandCategory;
 use crate::{
     crypto,
-    session::config::{
-        AuthMethod, DeletedConnectionGroup, DeletedSession, ManagedKey, QuickCommandCategory,
-        Session,
-    },
+    session::config::{AuthMethod, DeletedConnectionGroup, DeletedSession, ManagedKey, Session},
 };
 
+#[cfg(test)]
 pub const FORMAT_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -37,6 +42,7 @@ impl SyncSecret {
         crypto::encrypt_field(value, password).map(Self::Encrypted)
     }
 
+    #[cfg(test)]
     fn from_legacy(value: String) -> Self {
         if value.is_empty() {
             Self::Omitted
@@ -98,6 +104,7 @@ impl SyncSession {
         })
     }
 
+    #[cfg(test)]
     fn from_legacy(session: Session) -> Self {
         Self {
             id: session.id,
@@ -139,7 +146,11 @@ pub struct SyncDeletedConnectionGroup {
 }
 
 impl SyncDeletedSession {
-    fn export(value: DeletedSession, include_secrets: bool, password: &str) -> Result<Self> {
+    pub(crate) fn export(
+        value: DeletedSession,
+        include_secrets: bool,
+        password: &str,
+    ) -> Result<Self> {
         Ok(Self {
             session: SyncSession::export(value.session, include_secrets, password)?,
             deleted_at: value.deleted_at,
@@ -148,7 +159,7 @@ impl SyncDeletedSession {
 }
 
 impl SyncDeletedConnectionGroup {
-    fn export(
+    pub(crate) fn export(
         value: DeletedConnectionGroup,
         include_secrets: bool,
         password: &str,
@@ -190,6 +201,7 @@ impl SyncManagedKey {
         })
     }
 
+    #[cfg(test)]
     fn from_legacy(key: ManagedKey) -> Self {
         Self {
             id: key.id,
@@ -211,6 +223,7 @@ pub enum PrivacyPasswordStatus {
     Mismatch,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SyncPayload {
     pub schema_version: u32,
@@ -233,6 +246,7 @@ pub struct SyncPayload {
     pub quick_command_categories: Vec<QuickCommandCategory>,
 }
 
+#[cfg(test)]
 /// Input bundle for constructing an encrypted sync payload.
 pub struct SyncPayloadInput {
     pub device_id: String,
@@ -246,6 +260,7 @@ pub struct SyncPayloadInput {
     pub privacy_password: String,
 }
 
+#[cfg(test)]
 impl SyncPayloadInput {
     /// Convenience constructor for payloads without deleted records.
     #[cfg(test)]
@@ -272,6 +287,7 @@ impl SyncPayloadInput {
     }
 }
 
+#[cfg(test)]
 impl SyncPayload {
     #[cfg(test)]
     pub fn new(
@@ -294,6 +310,7 @@ impl SyncPayload {
         ))
     }
 
+    #[cfg(test)]
     pub fn new_with_deleted(input: SyncPayloadInput) -> Result<Self> {
         if input.include_secrets && input.privacy_password.chars().count() < 8 {
             return Err(anyhow!(
@@ -349,6 +366,7 @@ impl SyncPayload {
         })
     }
 
+    #[cfg(test)]
     pub fn privacy_password_status(&self, password: &str) -> Result<PrivacyPasswordStatus> {
         let Some(verifier) = self.privacy_password_verifier.as_deref() else {
             return Ok(PrivacyPasswordStatus::NotConfigured);
@@ -364,11 +382,13 @@ impl SyncPayload {
     }
 }
 
+#[cfg(test)]
 #[derive(Deserialize)]
 struct PayloadVersion {
     schema_version: u32,
 }
 
+#[cfg(test)]
 #[derive(Deserialize)]
 struct LegacyEncryptedEnvelope {
     format_version: u32,
@@ -379,6 +399,7 @@ struct LegacyEncryptedEnvelope {
     payload: String,
 }
 
+#[cfg(test)]
 #[derive(Deserialize)]
 struct LegacyPayloadV1 {
     revision: String,
@@ -390,10 +411,12 @@ struct LegacyPayloadV1 {
     managed_keys: Vec<ManagedKey>,
 }
 
+#[cfg(test)]
 pub fn serialize_payload(payload: &SyncPayload) -> Result<Vec<u8>> {
     serde_json::to_vec_pretty(payload).context("serialize sync payload")
 }
 
+#[cfg(test)]
 pub fn parse_payload(raw: &[u8], legacy_password: &str) -> Result<SyncPayload> {
     if let Ok(version) = serde_json::from_slice::<PayloadVersion>(raw) {
         return parse_versioned_payload(raw, version.schema_version);
@@ -405,6 +428,7 @@ pub fn parse_payload(raw: &[u8], legacy_password: &str) -> Result<SyncPayload> {
     parse_versioned_payload(&plaintext, version.schema_version)
 }
 
+#[cfg(test)]
 fn parse_versioned_payload(raw: &[u8], version: u32) -> Result<SyncPayload> {
     match version {
         FORMAT_VERSION => {
@@ -441,6 +465,7 @@ fn parse_versioned_payload(raw: &[u8], version: u32) -> Result<SyncPayload> {
     }
 }
 
+#[cfg(test)]
 fn decrypt_legacy_envelope(raw: &[u8], password: &str) -> Result<Vec<u8>> {
     let envelope: LegacyEncryptedEnvelope =
         serde_json::from_slice(raw).context("parse synchronized configuration JSON")?;

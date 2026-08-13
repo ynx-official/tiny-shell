@@ -31,7 +31,7 @@ pub(crate) struct SyncDownloadedConfig {
 struct SyncDownloadSuccess {
     credentials: SyncCredentials,
     target: crate::sync::state::SyncTargetKey,
-    payload: crate::sync::SyncPayload,
+    payload: crate::sync::protocol::V3SyncPayload,
     password_status: PrivacyPasswordStatus,
     config: SyncDownloadedConfig,
     decrypted_count: u32,
@@ -45,11 +45,16 @@ impl TinyShell {
         task_id: u64,
         cx: &mut Context<Self>,
     ) {
+        if !self
+            .async_runtime
+            .supervisor
+            .finish("sync-operation", task_id)
+        {
+            tracing::debug!(task_id, "ignoring stale sync result");
+            return;
+        }
         let close_sync_terminal = !matches!(&result, SyncResult::UploadPreflightReady { .. });
         let close_sync_was_running = self.close_sync_running;
-        self.async_runtime
-            .supervisor
-            .finish("sync-operation", task_id);
         self.sync_runtime.in_progress = false;
         match result {
             SyncResult::Uploaded {
@@ -153,7 +158,7 @@ impl TinyShell {
     fn handle_sync_uploaded(
         &mut self,
         target: crate::sync::state::SyncTargetKey,
-        payload: crate::sync::SyncPayload,
+        payload: crate::sync::protocol::V3SyncPayload,
         etag: Option<String>,
         privacy_password: Option<String>,
         merged: Option<MergedConfig>,
@@ -390,7 +395,7 @@ impl TinyShell {
     fn handle_sync_privacy_password_reset(
         &mut self,
         target: crate::sync::state::SyncTargetKey,
-        payload: crate::sync::SyncPayload,
+        payload: crate::sync::protocol::V3SyncPayload,
         new_password: String,
         etag: Option<String>,
         cx: &mut Context<Self>,

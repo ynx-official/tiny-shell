@@ -8,8 +8,7 @@ use crate::{
     session::config::hardware_uuid,
     sync::{
         self, MergedConfig, PrivacyPasswordStatus, SyncBackendCredentials, SyncBackendKind,
-        SyncCredentials, SyncErrorCategory, SyncFailure, SyncPayload, SyncResult,
-        UploadBlockReason, UploadMode,
+        SyncCredentials, SyncErrorCategory, SyncFailure, SyncResult, UploadBlockReason, UploadMode,
     },
     terminal::BackendEvent,
 };
@@ -126,7 +125,7 @@ pub(crate) fn sync_failure_status(failure: &SyncFailure) -> String {
 fn privacy_password_verification_result(
     credentials: SyncCredentials,
     password: String,
-    downloaded: sync::SyncOperationResult<(SyncPayload, Option<String>)>,
+    downloaded: sync::SyncOperationResult<(crate::sync::protocol::V3SyncPayload, Option<String>)>,
 ) -> SyncResult {
     match downloaded {
         Ok((payload, _)) => match payload.privacy_password_status(&password) {
@@ -240,16 +239,20 @@ impl TinyShell {
         F: Future<Output = SyncResult> + Send + 'static,
     {
         let cancellation = self.async_runtime.supervisor.start("sync-operation");
+        let task_id = cancellation.id();
         let events = self.async_runtime.events_tx.clone();
-        self.runtime.spawn(async move {
+        let task = self.runtime.spawn(async move {
             let result = operation.await;
             if !cancellation.is_cancelled() {
                 let _ = events.send(BackendEvent::SyncFinished {
                     result: Box::new(result),
-                    task_id: cancellation.id(),
+                    task_id,
                 });
             }
         });
+        self.async_runtime
+            .supervisor
+            .track_handle("sync-operation", task_id, task);
     }
 
     fn begin_sync(
@@ -636,6 +639,11 @@ impl TinyShell {
             .quick_command_categories()
             .unwrap_or_default()
             .to_vec();
+        let target = sync::state::SyncTargetKey::from_credentials(&credentials.backend);
+        let local_base_payload = sync::state::SyncStateRepository::new()
+            .ok()
+            .and_then(|repository| repository.load_for(&target).ok().flatten())
+            .map(|baseline| baseline.payload);
         self.spawn_sync_operation(async move {
             match sync::download(credentials.clone(), &privacy_password).await {
                 Ok((payload, etag)) => match payload.privacy_password_status(&privacy_password) {
@@ -656,6 +664,7 @@ impl TinyShell {
                                 deleted_connection_groups: &local_deleted_connection_groups,
                                 keys: &local_keys,
                                 commands: &local_commands,
+                                base_payload: local_base_payload.as_ref(),
                             },
                             payload,
                             &privacy_password,
@@ -698,32 +707,36 @@ impl TinyShell {
     ) {
         let remote_exists = merged.is_some();
         let payload = match merged.as_ref() {
-            Some(merged) => SyncPayload::new_with_deleted(crate::sync::SyncPayloadInput {
-                device_id: self.config.sync_device_id().to_string(),
-                sessions: merged.sessions.clone(),
-                deleted_sessions: merged.deleted_sessions.clone(),
-                connection_groups: merged.connection_groups.clone(),
-                deleted_connection_groups: merged.deleted_connection_groups.clone(),
-                managed_keys: merged.managed_keys.clone(),
-                quick_command_categories: merged.quick_command_categories.clone(),
+            Some(merged) => crate::sync::protocol::V3SyncPayload::from_config(
+                self.config.sync_device_id().to_string(),
+                merged,
                 include_secrets,
-                privacy_password: privacy_password.clone(),
-            }),
-            None => SyncPayload::new_with_deleted(crate::sync::SyncPayloadInput {
-                device_id: self.config.sync_device_id().to_string(),
-                sessions: self.config.sessions().to_vec(),
-                deleted_sessions: self.config.deleted_sessions().to_vec(),
-                connection_groups: self.config.connection_groups().to_vec(),
-                deleted_connection_groups: self.config.deleted_connection_groups().to_vec(),
-                managed_keys: self.config.managed_keys().to_vec(),
-                quick_command_categories: self
-                    .config
-                    .quick_command_categories()
-                    .unwrap_or_default()
-                    .to_vec(),
+                &privacy_password,
+                merged.base_payload.as_ref(),
+            ),
+            None => crate::sync::protocol::V3SyncPayload::from_config(
+                self.config.sync_device_id().to_string(),
+                &MergedConfig {
+                    sessions: self.config.sessions().to_vec(),
+                    deleted_sessions: self.config.deleted_sessions().to_vec(),
+                    connection_groups: self.config.connection_groups().to_vec(),
+                    deleted_connection_groups: self.config.deleted_connection_groups().to_vec(),
+                    managed_keys: self.config.managed_keys().to_vec(),
+                    quick_command_categories: self
+                        .config
+                        .quick_command_categories()
+                        .unwrap_or_default()
+                        .to_vec(),
+                    decrypted_count: 0,
+                    unavailable_secret_count: 0,
+                    unavailable_session_secret_count: 0,
+                    unavailable_managed_key_secret_count: 0,
+                    base_payload: None,
+                },
                 include_secrets,
-                privacy_password: privacy_password.clone(),
-            }),
+                &privacy_password,
+                None,
+            ),
         };
         let payload = match payload {
             Ok(payload) => payload,
@@ -785,6 +798,11 @@ impl TinyShell {
             .quick_command_categories()
             .unwrap_or_default()
             .to_vec();
+        let target = sync::state::SyncTargetKey::from_credentials(&credentials.backend);
+        let local_base_payload = sync::state::SyncStateRepository::new()
+            .ok()
+            .and_then(|repository| repository.load_for(&target).ok().flatten())
+            .map(|baseline| baseline.payload);
         self.spawn_sync_operation(async move {
             match sync::download(credentials.clone(), &privacy_password).await {
                 Ok((payload, etag)) => match payload.privacy_password_status(&privacy_password) {
@@ -810,6 +828,7 @@ impl TinyShell {
                                         deleted_connection_groups: &local_deleted_connection_groups,
                                         keys: &local_keys,
                                         commands: &local_commands,
+                                        base_payload: local_base_payload.as_ref(),
                                     },
                                     payload.clone(),
                                     &privacy_password,
@@ -824,6 +843,7 @@ impl TinyShell {
                                         deleted_connection_groups: &local_deleted_connection_groups,
                                         keys: &local_keys,
                                         commands: &local_commands,
+                                        base_payload: local_base_payload.as_ref(),
                                     },
                                     payload.clone(),
                                 )
@@ -890,21 +910,29 @@ impl TinyShell {
             return;
         }
 
-        let payload = match SyncPayload::new_with_deleted(crate::sync::SyncPayloadInput {
-            device_id: self.config.sync_device_id().to_string(),
-            sessions: self.config.sessions().to_vec(),
-            deleted_sessions: self.config.deleted_sessions().to_vec(),
-            connection_groups: self.config.connection_groups().to_vec(),
-            deleted_connection_groups: self.config.deleted_connection_groups().to_vec(),
-            managed_keys: self.config.managed_keys().to_vec(),
-            quick_command_categories: self
-                .config
-                .quick_command_categories()
-                .unwrap_or_default()
-                .to_vec(),
-            include_secrets: true,
-            privacy_password: new_password.clone(),
-        }) {
+        let payload = match crate::sync::protocol::V3SyncPayload::from_config(
+            self.config.sync_device_id().to_string(),
+            &MergedConfig {
+                sessions: self.config.sessions().to_vec(),
+                deleted_sessions: self.config.deleted_sessions().to_vec(),
+                connection_groups: self.config.connection_groups().to_vec(),
+                deleted_connection_groups: self.config.deleted_connection_groups().to_vec(),
+                managed_keys: self.config.managed_keys().to_vec(),
+                quick_command_categories: self
+                    .config
+                    .quick_command_categories()
+                    .unwrap_or_default()
+                    .to_vec(),
+                decrypted_count: 0,
+                unavailable_secret_count: 0,
+                unavailable_session_secret_count: 0,
+                unavailable_managed_key_secret_count: 0,
+                base_payload: None,
+            },
+            true,
+            &new_password,
+            None,
+        ) {
             Ok(payload) => payload,
             Err(err) => {
                 self.sync_runtime.in_progress = false;
@@ -946,6 +974,7 @@ pub(crate) fn seal_privacy_password(privacy_password: &str) -> anyhow::Result<(S
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sync::SyncPayload;
 
     #[test]
     fn automatic_sync_delay_runs_immediately_without_previous_success() {
@@ -995,6 +1024,7 @@ mod tests {
                 unavailable_secret_count: 3,
                 unavailable_session_secret_count: 1,
                 unavailable_managed_key_secret_count: 2,
+                base_payload: None,
             },
             Some("etag-1".into()),
         );
@@ -1028,6 +1058,7 @@ mod tests {
                 unavailable_secret_count: 0,
                 unavailable_session_secret_count: 0,
                 unavailable_managed_key_secret_count: 0,
+                base_payload: None,
             },
             Some("etag-2".into()),
         );
@@ -1078,6 +1109,7 @@ mod tests {
         ) else {
             panic!("public-only sync payload should be constructible");
         };
+        let payload: crate::sync::protocol::V3SyncPayload = payload.into();
         let result = privacy_password_verification_result(
             webdav_credentials(),
             "privacy-password".into(),
