@@ -65,7 +65,7 @@ impl TinyShell {
         let view = cx.entity();
         window.defer(cx, move |window, cx| {
             view.update(cx, |this, cx| {
-                this.show_managed_key_selector_dialog(window, cx);
+                crate::managed_key_dialogs::show_managed_key_selector_dialog(this, window, cx);
             });
         });
     }
@@ -83,7 +83,7 @@ impl TinyShell {
         let view = cx.entity();
         window.defer(cx, move |window, cx| {
             view.update(cx, |this, cx| {
-                this.show_managed_key_selector_dialog(window, cx);
+                crate::managed_key_dialogs::show_managed_key_selector_dialog(this, window, cx);
             });
         });
     }
@@ -203,7 +203,7 @@ impl TinyShell {
         let view = cx.entity();
         window.defer(cx, move |window, cx| {
             view.update(cx, |this, cx| {
-                this.show_managed_key_import_dialog(window, cx);
+                crate::managed_key_dialogs::show_managed_key_import_dialog(this, window, cx);
             });
         });
     }
@@ -228,7 +228,7 @@ impl TinyShell {
         let view = cx.entity();
         window.defer(cx, move |window, cx| {
             view.update(cx, |this, cx| {
-                this.show_managed_key_selector_dialog(window, cx);
+                crate::managed_key_dialogs::show_managed_key_selector_dialog(this, window, cx);
             });
         });
     }
