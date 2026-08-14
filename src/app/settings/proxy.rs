@@ -127,9 +127,9 @@ pub(crate) fn page(view: &Entity<TinyShell>, inputs: ProxySettingsInputs) -> Set
                                     .on_click({
                                         let view = view.clone();
                                         let inputs = inputs.clone();
-                                        move |_, _, cx| {
+                                        move |_, window, cx| {
                                             view.update(cx, |this, cx| {
-                                                this.save_proxy_settings(&inputs, cx);
+                                                this.save_proxy_settings(&inputs, window, cx);
                                             });
                                         }
                                     }),
