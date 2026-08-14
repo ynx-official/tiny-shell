@@ -44,14 +44,21 @@ impl TinyShell {
             window,
             move |this, window, cx| {
                 this.connection_group_filter = next_filter;
+                crate::feedback::Feedback::success(
+                    window,
+                    cx,
+                    format!("{} · {}", t!("connection_group_dialog_title"), t!("save")),
+                );
                 this.dismiss_modal_dialog(token, window, cx);
                 this.editing_connection_group = None;
                 this.connection_group_parent = None;
                 cx.notify();
             },
-            |this, error, _, cx| {
+            |this, error, window, cx| {
                 tracing::warn!("failed to save connection group: {error:#}");
-                this.status = t!("config_save_failed", error = format!("{error:#}")).into();
+                let message = t!("config_save_failed", error = format!("{error:#}")).to_string();
+                this.status = message.clone().into();
+                crate::feedback::Feedback::error(window, cx, message);
                 cx.notify();
             },
             cx,
