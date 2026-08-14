@@ -327,7 +327,7 @@ impl TinyShell {
         };
 
         let view = cx.entity();
-        self.replace_dialog(
+        self.replace_modal_dialog(
             crate::app::DialogKind::Updater,
             window,
             cx,
@@ -342,9 +342,9 @@ impl TinyShell {
                     .w(px(440.))
                     .on_close({
                         let view = view.clone();
-                        move |_, _, cx| {
+                        move |_, window, cx| {
                             view.update(cx, |this, cx| {
-                                this.dialog_closed(token);
+                                this.modal_dialog_closed(token, window, cx);
                                 cx.notify();
                             });
                         }
@@ -373,7 +373,7 @@ impl TinyShell {
                                         let view = view.clone();
                                         move |_, window, cx| {
                                             view.update(cx, |this, cx| {
-                                                this.dismiss_dialog(token, window, cx);
+                                                this.dismiss_modal_dialog(token, window, cx);
                                             });
                                         }
                                     }),
@@ -421,7 +421,7 @@ impl TinyShell {
 
         let view = cx.entity();
         let notes_scroll_handle = gpui::ScrollHandle::new();
-        self.open_dialog(crate::app::DialogKind::Updater, window, cx, move |dialog: Dialog, token, _window, _| {
+        self.open_modal_dialog(crate::app::DialogKind::Updater, window, cx, move |dialog: Dialog, token, _window, _| {
             dialog
                 .title(t!("update_dialog_title").to_string())
                 .w(px(600.))
@@ -429,9 +429,9 @@ impl TinyShell {
                 .overlay_closable(true)
                 .on_close({
                     let view = view.clone();
-                    move |_, _, cx| {
+                    move |_, window, cx| {
                         view.update(cx, |this, cx| {
-                            this.dialog_closed(token);
+                            this.modal_dialog_closed(token, window, cx);
                             cx.notify();
                         });
                     }
