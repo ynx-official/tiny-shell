@@ -64,30 +64,13 @@ impl Render for ConnectionManagerWindow {
     }
 }
 
-pub(crate) fn window_options(cx: &App) -> WindowOptions {
-    let mut options = WindowOptions {
-        is_movable: true,
-        is_resizable: true,
-        is_minimizable: true,
-        window_min_size: Some(size(px(560.), px(360.))),
-        ..Default::default()
-    };
-
-    options.window_bounds = crate::app::platform::centered_child_window_bounds(
+pub(crate) fn window_options(cx: &mut App) -> WindowOptions {
+    crate::app::platform::auxiliary_window_options(
         cx,
-        size(px(600.), px(400.)),
-        0.72,
-        0.62,
-    );
-
-    #[cfg(not(target_os = "macos"))]
-    if let Ok(image) =
-        image::load_from_memory(include_bytes!("../../../assets/icons/tiny-shell.png"))
-    {
-        options.icon = Some(std::sync::Arc::new(image.into_rgba8()));
-    }
-
-    options
+        crate::app::platform::AuxiliaryWindowSpec::new(size(px(600.), px(400.)))
+            .with_min_size(size(px(560.), px(360.)))
+            .with_max_ratio(0.72, 0.62),
+    )
 }
 
 pub(crate) fn open(owner: Entity<TinyShell>, cx: &mut App) -> Option<AnyWindowHandle> {
