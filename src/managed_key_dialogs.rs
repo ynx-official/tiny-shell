@@ -1,6 +1,6 @@
 use gpui::{
     AppContext as _, Context, InteractiveElement as _, ParentElement as _,
-    StatefulInteractiveElement as _, Styled as _, Window, div, px,
+    StatefulInteractiveElement as _, Styled as _, Window, div, prelude::FluentBuilder as _, px,
 };
 use gpui_component::{
     ActiveTheme as _, Disableable as _, Sizable as _,
