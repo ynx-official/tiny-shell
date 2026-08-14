@@ -44,7 +44,7 @@ impl TinyShell {
             window,
             move |this, window, cx| {
                 this.connection_group_filter = next_filter;
-                this.dismiss_dialog(token, window, cx);
+                this.dismiss_modal_dialog(token, window, cx);
                 this.editing_connection_group = None;
                 this.connection_group_parent = None;
                 cx.notify();
