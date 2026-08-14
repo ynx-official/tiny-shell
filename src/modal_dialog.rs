@@ -150,6 +150,32 @@ fn activate_pending(window: AnyWindowHandle) -> Option<PendingModal> {
 }
 
 impl TinyShell {
+    fn record_modal_token(&mut self, kind: DialogKind, token: DialogToken) {
+        match kind {
+            DialogKind::ManagedKeySelector | DialogKind::ManagedKeyImport => {
+                self.managed_key_dialog_token = Some(token);
+            }
+            DialogKind::SessionSelector => self.selector_dialog_token = Some(token),
+            DialogKind::ConnectionGroup => self.connection_group_dialog_token = Some(token),
+            DialogKind::VerifySyncSecretsPassword => {
+                if let Some(state) = self.sync_runtime.secrets_password_dialog.as_mut() {
+                    state.token = token;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn activate_modal_request(
+        &mut self,
+        request: PendingModal,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.record_modal_token(request.kind, request.token);
+        open_request(request, window, cx);
+    }
+
     /// Open a modal owned by the exact native window that initiated the action.
     ///
     /// Each native window has an independent active + latest-pending slot, so a modal opened from
@@ -172,7 +198,7 @@ impl TinyShell {
         };
         let (result, request, _) = queue_request(window.window_handle(), request, false);
         if let Some(request) = request {
-            open_request(request, window, cx);
+            self.activate_modal_request(request, window, cx);
         }
         result
     }
@@ -197,14 +223,13 @@ impl TinyShell {
         };
         let (result, request, should_close) = queue_request(handle, request, true);
         if let Some(request) = request {
-            open_request(request, window, cx);
+            self.activate_modal_request(request, window, cx);
         } else if should_close {
             window.close_dialog(cx);
-            window.defer(cx, move |window, cx| {
-                if let Some(request) = activate_pending(handle) {
-                    open_request(request, window, cx);
-                }
-            });
+            if let Some(request) = activate_pending(handle) {
+                self.record_modal_token(request.kind, request.token);
+                window.defer(cx, move |window, cx| open_request(request, window, cx));
+            }
         }
         result
     }
@@ -219,6 +244,7 @@ impl TinyShell {
     ) -> bool {
         let (closed, next) = close_active(window.window_handle(), token);
         if let Some(request) = next {
+            self.record_modal_token(request.kind, request.token);
             window.defer(cx, move |window, cx| open_request(request, window, cx));
         }
         closed
