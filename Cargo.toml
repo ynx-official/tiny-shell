@@ -34,7 +34,7 @@ ssh-key = "0.6"
 sysinfo = "0.33"
 tar = "0.4"
 thiserror = "1"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "io-util", "net", "time", "fs"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "io-util", "net", "time", "fs", "process"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "local-time", "time"] }
 uuid = { version = "1", features = ["v4", "serde"] }

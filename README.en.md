@@ -90,6 +90,13 @@ After an SSH connection is established, the built-in SFTP manager can handle rem
 - **Process viewer**: Inspect remote processes and perform supported management actions.
 - **Workspace integration**: Monitoring data follows the active session, making resource changes visible while terminal work is in progress.
 
+### Docker Tool Panel
+
+- **Active-session targeting**: Local terminals manage local Docker, while SSH terminals manage Docker on the active remote host without injecting commands into the user terminal.
+- **Container actions**: View all containers and start, stop, or restart them when their state allows it; stop and restart actions confirm the target first.
+- **Image inspection**: View image repositories, tags, sizes, and creation times on the target host.
+- **Non-disruptive layout**: The window expands to the right when space is available to preserve terminal width, with an overlay fallback when space is limited.
+
 ### Configuration Sync and Migration
 
 - **WebDAV and S3**: Synchronize connection and application settings through widely available storage backends.

@@ -6,6 +6,7 @@ use gpui_component_assets::Assets;
 mod app;
 mod backend;
 mod crypto;
+mod docker;
 mod session;
 mod sftp;
 mod sync;

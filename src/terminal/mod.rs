@@ -45,6 +45,7 @@ pub(crate) enum BackendCommand {
     Input(Vec<u8>),
     Resize { cols: u16, rows: u16 },
     SampleMetrics,
+    Docker(crate::docker::DockerRequest),
     Close,
 }
 
@@ -54,6 +55,7 @@ impl BackendCommand {
             Self::Input(_) => "input",
             Self::Resize { .. } => "resize",
             Self::SampleMetrics => "sample-metrics",
+            Self::Docker(_) => "docker",
             Self::Close => "close",
         }
     }
@@ -129,6 +131,10 @@ pub(crate) enum BackendEvent {
         tab_id: String,
         reason: String,
     },
+    DockerResult {
+        tab_id: String,
+        response: crate::docker::DockerResponse,
+    },
     SftpHome {
         tab_id: String,
         home: String,
@@ -174,6 +180,7 @@ impl BackendEvent {
             | Self::SftpContentUploadFailed { tab_id, .. }
             | Self::RemoteSystem { tab_id, .. }
             | Self::RemoteSystemUnavailable { tab_id, .. }
+            | Self::DockerResult { tab_id, .. }
             | Self::SftpHome { tab_id, .. }
             | Self::TransferProgress { tab_id, .. }
             | Self::TransferStarted { tab_id, .. }
@@ -195,6 +202,7 @@ impl BackendEvent {
                 | Self::SftpHome { .. }
                 | Self::RemoteSystem { .. }
                 | Self::RemoteSystemUnavailable { .. }
+                | Self::DockerResult { .. }
                 | Self::TransferStarted { .. }
                 | Self::SyncFinished { .. }
                 | Self::TransferProgress {

@@ -527,6 +527,7 @@ fn event_route_id(event: &BackendEventEnvelope) -> Option<&str> {
         | BackendEvent::SftpContentUploadFailed { tab_id, .. }
         | BackendEvent::RemoteSystem { tab_id, .. }
         | BackendEvent::RemoteSystemUnavailable { tab_id, .. }
+        | BackendEvent::DockerResult { tab_id, .. }
         | BackendEvent::SftpHome { tab_id, .. }
         | BackendEvent::TransferProgress { tab_id, .. }
         | BackendEvent::TransferStarted { tab_id, .. }

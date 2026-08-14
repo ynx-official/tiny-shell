@@ -185,6 +185,30 @@ pub(crate) fn spawn_local_terminal(
                         break "local shell closed".to_string();
                     }
                     BackendCommand::SampleMetrics => {}
+                    BackendCommand::Docker(request) => {
+                        let docker_events = write_events.clone();
+                        let docker_tab = write_tab.clone();
+                        match crate::app::shared_runtime() {
+                            Ok(runtime) => {
+                                runtime.spawn(async move {
+                                    let response = crate::docker::execute_local(request).await;
+                                    let _ = docker_events.send(BackendEvent::DockerResult {
+                                        tab_id: docker_tab,
+                                        response,
+                                    });
+                                });
+                            }
+                            Err(error) => {
+                                let _ = write_events.send(BackendEvent::DockerResult {
+                                    tab_id: write_tab.clone(),
+                                    response: crate::docker::DockerResponse {
+                                        request_id: request.request_id,
+                                        result: Err(error),
+                                    },
+                                });
+                            }
+                        }
+                    }
                 },
                 Err(mpsc::RecvTimeoutError::Timeout) => {
                     if let Ok(Some(status)) = child.try_wait() {

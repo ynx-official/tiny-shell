@@ -683,17 +683,39 @@ impl TinyShell {
                             })),
                     )
                     .child(
-                        Button::new("tab-bar-settings")
+                        Button::new("tab-bar-more")
                             .secondary()
                             .small()
                             .rounded(px(999.))
-                            .icon(IconName::Settings)
-                            .tooltip(t!("settings_open_settings").to_string())
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                window.prevent_default();
-                                cx.stop_propagation();
-                                this.show_settings_window(window, cx);
-                            })),
+                            .icon(IconName::Ellipsis)
+                            .tooltip(t!("more").to_string())
+                            .dropdown_menu({
+                                let view = view.clone();
+                                move |menu, window, cx| {
+                                    menu.min_w(150.)
+                                        .item(
+                                            PopupMenuItem::new(
+                                                t!("settings_open_settings").to_string(),
+                                            )
+                                            .on_click(window.listener_for(
+                                                &view,
+                                                |this, _, window, cx| {
+                                                    this.show_settings_window(window, cx)
+                                                },
+                                            )),
+                                        )
+                                        .item(
+                                            PopupMenuItem::new(t!("tool_panel").to_string())
+                                                .checked(view.read(cx).tool_panel.open)
+                                                .on_click(window.listener_for(
+                                                    &view,
+                                                    |this, _, window, cx| {
+                                                        this.toggle_tool_panel(window, cx)
+                                                    },
+                                                )),
+                                        )
+                                }
+                            }),
                     ),
             )
     }

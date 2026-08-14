@@ -120,8 +120,33 @@ fn lerp_hsla(from: Hsla, to: Hsla, delta: f32) -> Hsla {
     }
 }
 
-impl Render for TinyShell {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WorkspaceShellLayout {
+    Hidden,
+    Collapsed,
+    Resizable,
+}
+
+fn workspace_shell_layout(show_sidebar: bool, sidebar_collapsed: bool) -> WorkspaceShellLayout {
+    if !show_sidebar {
+        WorkspaceShellLayout::Hidden
+    } else if sidebar_collapsed {
+        WorkspaceShellLayout::Collapsed
+    } else {
+        WorkspaceShellLayout::Resizable
+    }
+}
+
+impl TinyShell {
+    /// Erases the deeply nested workspace element before it reaches the native
+    /// window shell. On Windows, keeping the complete GPUI tree in one debug
+    /// stack frame can overflow while resize or window-detach triggers a
+    /// synchronous redraw.
+    fn render_workspace_shell(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         // Rendering only derives elements; state synchronization runs in prepaint.
 
         // The file-transfer panel belongs to an active terminal session. Keeping it
@@ -214,8 +239,8 @@ impl Render for TinyShell {
                 |this, delta| this.opacity(delta * delta),
             );
 
-        let workspace = if !presentation.show_sidebar {
-            v_flex()
+        match workspace_shell_layout(presentation.show_sidebar, self.sidebar_collapsed) {
+            WorkspaceShellLayout::Hidden => v_flex()
                 .size_full()
                 .relative()
                 .overflow_hidden()
@@ -235,9 +260,8 @@ impl Render for TinyShell {
                     },
                 )
                 .child(main_content)
-                .into_any_element()
-        } else if self.sidebar_collapsed {
-            h_flex()
+                .into_any_element(),
+            WorkspaceShellLayout::Collapsed => h_flex()
                 .size_full()
                 .child(
                     div()
@@ -271,59 +295,73 @@ impl Render for TinyShell {
                             .child(main_content),
                     ),
                 )
-                .into_any_element()
-        } else {
-            let sidebar_content =
-                if self.workspace().active_tab_id().is_some() && !self.home_page_open {
-                    self.sidebar(cx).into_any_element()
-                } else {
-                    self.render_overview_sidebar(cx).into_any_element()
-                };
+                .into_any_element(),
+            WorkspaceShellLayout::Resizable => {
+                let sidebar_content =
+                    if self.workspace().active_tab_id().is_some() && !self.home_page_open {
+                        self.sidebar(cx).into_any_element()
+                    } else {
+                        self.render_overview_sidebar(cx).into_any_element()
+                    };
 
-            let sidebar_area = resizable_panel()
-                .size(px(self
-                    .config
-                    .workspace_panels()
-                    .and_then(|s| s.first().copied())
-                    .unwrap_or(SIDEBAR_WIDTH)))
-                .size_range(px(190.)..px(360.))
-                .flex_none()
-                .child(sidebar_content);
+                let sidebar_area = resizable_panel()
+                    .size(px(self
+                        .config
+                        .workspace_panels()
+                        .and_then(|s| s.first().copied())
+                        .unwrap_or(SIDEBAR_WIDTH)))
+                    .size_range(px(190.)..px(360.))
+                    .flex_none()
+                    .child(sidebar_content);
 
-            let main_area = resizable_panel().child(
-                v_flex()
-                    .size_full()
-                    .relative()
-                    .overflow_hidden()
-                    .when(
-                        self.active_title_bar_style
-                            == crate::session::config::TitleBarStyle::Native,
-                        |this| {
-                            this.child(
-                                div()
-                                    .flex_none()
-                                    .h(px(32.))
-                                    .w_full()
-                                    .bg(cx.theme().tab_bar)
-                                    .border_b_1()
-                                    .border_color(cx.theme().border)
-                                    .child(self.render_tab_bar(window.window_handle(), cx)),
-                            )
-                        },
-                    )
-                    .child(main_content),
-            );
+                let main_area = resizable_panel().child(
+                    v_flex()
+                        .size_full()
+                        .relative()
+                        .overflow_hidden()
+                        .when(
+                            self.active_title_bar_style
+                                == crate::session::config::TitleBarStyle::Native,
+                            |this| {
+                                this.child(
+                                    div()
+                                        .flex_none()
+                                        .h(px(32.))
+                                        .w_full()
+                                        .bg(cx.theme().tab_bar)
+                                        .border_b_1()
+                                        .border_color(cx.theme().border)
+                                        .child(self.render_tab_bar(window.window_handle(), cx)),
+                                )
+                            },
+                        )
+                        .child(main_content),
+                );
 
-            h_resizable("tiny-shell-workspace")
-                .lock(self.config.lock_layout())
-                .with_state(&self.workspace_panels)
-                .child(sidebar_area)
-                .child(main_area)
-                .into_any_element()
-        };
+                h_resizable("tiny-shell-workspace")
+                    .lock(self.config.lock_layout())
+                    .with_state(&self.workspace_panels)
+                    .child(sidebar_area)
+                    .child(main_area)
+                    .into_any_element()
+            }
+        }
+    }
+}
 
+impl TinyShell {
+    /// Builds the native window shell behind a second type-erased boundary so
+    /// resize and the first detached-window frame do not retain workspace
+    /// construction locals on the same Windows UI-thread stack.
+    fn render_root_shell(
+        &mut self,
+        workspace: AnyElement,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let drag_move_view = cx.entity();
         let drop_view = drag_move_view.clone();
+        let workspace_with_tool_panel = self.render_workspace_with_tool_panel(workspace, cx);
 
         v_flex()
             .id("tiny-shell-root")
@@ -547,7 +585,7 @@ impl Render for TinyShell {
                     )
                 },
             )
-            .child(div().flex_1().min_h_0().child(workspace))
+            .child(div().flex_1().min_h_0().child(workspace_with_tool_panel))
             .children(Root::render_dialog_layer(window, cx))
             .children(Root::render_sheet_layer(window, cx))
             .on_prepaint({
@@ -575,6 +613,7 @@ impl Render for TinyShell {
                         this.was_window_active = is_window_active;
 
                         this.open_pending_dialog(window, cx);
+                        this.sync_tool_panel_target(cx);
                         this.sync_sftp_path_input(window, cx);
                         this.sync_sftp_tree_scroll();
 
@@ -626,6 +665,14 @@ impl Render for TinyShell {
                     });
                 }
             })
+            .into_any_element()
+    }
+}
+
+impl Render for TinyShell {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let workspace = self.render_workspace_shell(window, cx);
+        self.render_root_shell(workspace, window, cx)
     }
 }
 mod home;
@@ -634,3 +681,29 @@ mod sftp;
 mod sidebar;
 #[path = "ui/terminal.rs"]
 mod terminal_ui;
+mod tool_panel;
+
+#[cfg(test)]
+mod tests {
+    use super::{WorkspaceShellLayout, workspace_shell_layout};
+
+    #[test]
+    fn workspace_shell_layout_follows_sidebar_visibility_and_collapse_state() {
+        assert_eq!(
+            workspace_shell_layout(false, false),
+            WorkspaceShellLayout::Hidden
+        );
+        assert_eq!(
+            workspace_shell_layout(false, true),
+            WorkspaceShellLayout::Hidden
+        );
+        assert_eq!(
+            workspace_shell_layout(true, true),
+            WorkspaceShellLayout::Collapsed
+        );
+        assert_eq!(
+            workspace_shell_layout(true, false),
+            WorkspaceShellLayout::Resizable
+        );
+    }
+}

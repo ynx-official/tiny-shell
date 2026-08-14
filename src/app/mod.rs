@@ -30,6 +30,7 @@ pub(crate) mod terminal_completion;
 pub(crate) mod terminal_settings;
 pub(crate) mod terminal_workspace;
 pub(crate) mod theme;
+pub(crate) mod tool_panel;
 pub(crate) mod transfer_manager;
 pub(crate) mod ui;
 pub(crate) mod updater;
@@ -995,6 +996,7 @@ pub(crate) struct TinyShell {
     /// Error message when a recorded keybinding conflicts with another
     pub(crate) keybind_error: Option<(String, String)>, // (action_id, error_message)
     pub(crate) monitoring: MonitoringState,
+    pub(crate) tool_panel: tool_panel::ToolPanelState,
     pub(crate) connection_manager_state: Entity<ConnectionManagerState>,
     pub(crate) connection_manager_actions: ConnectionManagerActions,
     pub(crate) search_input: Entity<InputState>,
@@ -1522,6 +1524,7 @@ impl TinyShell {
                 remote_sample_in_flight: None,
                 prev_monitoring_size: None,
             },
+            tool_panel: tool_panel::ToolPanelState::default(),
             recording_action: None,
             auxiliary_windows: AuxiliaryWindowsState::default(),
             update_runtime: UpdateRuntimeState::default(),
@@ -1986,6 +1989,9 @@ impl TinyShell {
                 }
                 BackendEvent::RemoteSystemUnavailable { tab_id, reason } => {
                     self.handle_remote_system_unavailable(tab_id, reason, cx);
+                }
+                BackendEvent::DockerResult { tab_id, response } => {
+                    self.handle_docker_response(tab_id, response, cx);
                 }
                 BackendEvent::TransferStarted { tab_id, info } => {
                     transfers_changed |= self.handle_transfer_started(tab_id, *info, cx);
@@ -2875,7 +2881,9 @@ impl TinyShell {
             tracing::info!("[ui] layout was reset, skipping save layout state.");
             return Ok(());
         }
-        let current_bounds = window.window_bounds();
+        let current_bounds = self
+            .tool_panel
+            .persisted_window_bounds(window.window_bounds());
         let bounds = match current_bounds {
             gpui::WindowBounds::Fullscreen(b) => b,
             gpui::WindowBounds::Maximized(b) => b,

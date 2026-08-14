@@ -147,6 +147,85 @@ async fn sample_remote_system_with_handle(
     remote_snapshot_from_kv(&output)
 }
 
+async fn execute_remote_docker(
+    handle: Arc<tokio::sync::Mutex<russh::client::Handle<ClientHandler>>>,
+    request: crate::docker::DockerRequest,
+) -> crate::docker::DockerResponse {
+    let result = async {
+        let spec = crate::docker::command_spec(&request.operation)?;
+        let command = crate::docker::shell_command(&request.operation)?;
+        let execute = async {
+            let mut channel = handle
+                .lock()
+                .await
+                .channel_open_session()
+                .await
+                .context("open Docker command session")?;
+            channel
+                .exec(true, command)
+                .await
+                .context("execute remote Docker command")?;
+
+            let mut stdout = Vec::new();
+            let mut stderr = Vec::new();
+            let mut exit_status = None;
+            while let Some(message) = channel.wait().await {
+                match message {
+                    ChannelMsg::Data { data } => {
+                        if stdout
+                            .len()
+                            .saturating_add(stderr.len())
+                            .saturating_add(data.len())
+                            > crate::docker::MAX_OUTPUT_BYTES
+                        {
+                            return Err(anyhow!("Docker command output exceeded limit"));
+                        }
+                        stdout.extend_from_slice(&data);
+                    }
+                    ChannelMsg::ExtendedData { data, ext: _ } => {
+                        if stdout
+                            .len()
+                            .saturating_add(stderr.len())
+                            .saturating_add(data.len())
+                            > crate::docker::MAX_OUTPUT_BYTES
+                        {
+                            return Err(anyhow!("Docker command error output exceeded limit"));
+                        }
+                        stderr.extend_from_slice(&data);
+                    }
+                    ChannelMsg::ExitStatus {
+                        exit_status: status,
+                    } => {
+                        exit_status = Some(status);
+                    }
+                    ChannelMsg::Close => break,
+                    ChannelMsg::Eof => {}
+                    _ => {}
+                }
+            }
+            if exit_status.unwrap_or(1) != 0 {
+                let message = String::from_utf8_lossy(&stderr).trim().to_owned();
+                return Err(if message.is_empty() {
+                    anyhow!("remote Docker command failed")
+                } else {
+                    anyhow!(message)
+                });
+            }
+            crate::docker::parse_output(&request.operation, &String::from_utf8_lossy(&stdout))
+        };
+        tokio::time::timeout(spec.timeout, execute)
+            .await
+            .map_err(|_| anyhow!("Docker command timed out after {}s", spec.timeout.as_secs()))?
+    }
+    .await
+    .map_err(|error: anyhow::Error| format!("{error:#}"));
+
+    crate::docker::DockerResponse {
+        request_id: request.request_id,
+        result,
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn run_ssh(
     tab_id: String,
@@ -225,6 +304,7 @@ async fn run_ssh(
     let mut is_graceful_close = false;
     let mut metrics_tasks: JoinSet<Result<SystemSnapshot>> = JoinSet::new();
     let mut metrics_in_flight = false;
+    let mut docker_tasks: JoinSet<crate::docker::DockerResponse> = JoinSet::new();
 
     loop {
         tokio::select! {
@@ -267,6 +347,14 @@ async fn run_ssh(
                     None => {}
                 }
             }
+            completed = docker_tasks.join_next(), if !docker_tasks.is_empty() => {
+                if let Some(Ok(response)) = completed {
+                    let _ = events.send(BackendEvent::DockerResult {
+                        tab_id: tab_id.clone(),
+                        response,
+                    });
+                }
+            }
             command = commands.recv() => {
                 match command {
                     Some(BackendCommand::Input(bytes)) => {
@@ -294,6 +382,9 @@ async fn run_ssh(
                                 .context("remote metrics probe timed out")?
                             });
                         }
+                    }
+                    Some(BackendCommand::Docker(request)) => {
+                        docker_tasks.spawn(execute_remote_docker(handle.clone(), request));
                     }
                     Some(BackendCommand::Close) | None => {
                         tracing::info!("[ssh] local client closed the session for tab {}", tab_id);
