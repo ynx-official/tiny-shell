@@ -206,10 +206,9 @@ impl ConnectionOperationWindow {
         &self,
         path: &PathBuf,
         password: &str,
-        window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> bool {
-        let result = self.owner.update(cx, |owner, cx| {
+    ) -> Result<gpui::SharedString, String> {
+        self.owner.update(cx, |owner, cx| {
             let result = match self.operation {
                 ConnectionOperation::Archive {
                     importing: true, ..
@@ -229,24 +228,7 @@ impl ConnectionOperationWindow {
                 cx.notify();
                 Ok(message)
             }
-        });
-        match result {
-            Ok(message) => {
-                crate::feedback::Feedback::show_for_owner(
-                    &self.owner,
-                    cx,
-                    crate::feedback::FeedbackKind::Success,
-                    message,
-                );
-                true
-            }
-            Err(message) => {
-                if !message.is_empty() {
-                    crate::feedback::Feedback::error(window, cx, message);
-                }
-                false
-            }
-        }
+        })
     }
 
     fn submit_archive(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -267,8 +249,20 @@ impl ConnectionOperationWindow {
             return;
         };
         if !path.as_os_str().is_empty() {
-            if self.run_archive(path, &password, window, cx) {
-                Self::close_window(window);
+            match self.run_archive(path, &password, cx) {
+                Ok(message) => {
+                    crate::feedback::Feedback::show_for_owner(
+                        &self.owner,
+                        cx,
+                        crate::feedback::FeedbackKind::Success,
+                        message,
+                    );
+                    Self::close_window(window);
+                }
+                Err(message) if !message.is_empty() => {
+                    crate::feedback::Feedback::error(window, cx, message);
+                }
+                Err(_) => {}
             }
             return;
         }
@@ -298,17 +292,29 @@ impl ConnectionOperationWindow {
                         } else {
                             path.join("tiny-shell-connections.json")
                         };
-                        let succeeded = this.update(cx, |this, cx| {
-                            let mut succeeded = false;
-                            let _ = window_handle.update(cx, |_, window, cx| {
-                                succeeded = this.run_archive(&path, &password, window, cx);
-                            });
-                            succeeded
+                        let result = this.update(cx, |this, cx| {
+                            this.run_archive(&path, &password, cx)
                         })?;
-                        if succeeded {
-                            let _ = window_handle.update(cx, |_, window, _| {
-                                Self::close_window(window);
-                            });
+                        match result {
+                            Ok(message) => {
+                                this.update(cx, |this, cx| {
+                                    crate::feedback::Feedback::show_for_owner(
+                                        &this.owner,
+                                        cx,
+                                        crate::feedback::FeedbackKind::Success,
+                                        message,
+                                    );
+                                })?;
+                                let _ = window_handle.update(cx, |_, window, _| {
+                                    Self::close_window(window);
+                                });
+                            }
+                            Err(message) if !message.is_empty() => {
+                                let _ = window_handle.update(cx, |_, window, cx| {
+                                    crate::feedback::Feedback::error(window, cx, message);
+                                });
+                            }
+                            Err(_) => {}
                         }
                     }
                 }
