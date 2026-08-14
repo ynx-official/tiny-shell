@@ -472,7 +472,7 @@ fn build_window_options(
                 ))
             }
         });
-    } else if let Some(display) = cx.displays().first().cloned() {
+    } else if let Some(display) = cx.primary_display() {
         let display_bounds = display.bounds();
         let width = display_bounds.size.width * 0.8;
         let height = display_bounds.size.height * 0.9;
