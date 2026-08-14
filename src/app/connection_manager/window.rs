@@ -108,6 +108,12 @@ pub(crate) fn open(owner: Entity<TinyShell>, cx: &mut App) -> Option<AnyWindowHa
         Ok(handle) => Some(handle.into()),
         Err(error) => {
             tracing::error!("failed to open connection manager window: {error:?}");
+            crate::feedback::Feedback::show_for_owner(
+                &owner,
+                cx,
+                crate::feedback::FeedbackKind::Error,
+                t!("connection_manager_action_failed", error = format!("{error:?}")).to_string(),
+            );
             None
         }
     }
