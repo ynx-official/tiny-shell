@@ -149,29 +149,12 @@ fn activate_pending(window: AnyWindowHandle) -> Option<PendingModal> {
     })
 }
 
-/// Drop modal state when a native window is being torn down. This prevents a pending builder from
-/// retaining UI entities after its owning window no longer exists.
-pub(crate) fn clear_window_modal_state(window: AnyWindowHandle) {
-    WINDOW_MODALS.with(|registry| {
-        registry.borrow_mut().retain(|state| state.window != window);
-    });
-}
-
 impl TinyShell {
     fn record_modal_token(&mut self, kind: DialogKind, token: DialogToken) {
         match kind {
-            // Some historical SFTP dialogs reuse these DialogKind values. Only treat the token as
-            // managed-key state when the corresponding managed-key workflow is actually active.
-            DialogKind::ManagedKeySelector
-                if self.managed_key_editor_target.is_some()
-                    || self.managed_key_dialog_selection.is_some()
-                    || self.editing_managed_key_id.is_some() =>
-            {
-                self.managed_key_dialog_token = Some(token);
-            }
-            DialogKind::ManagedKeyImport if self.key_import.open => {
-                self.managed_key_dialog_token = Some(token);
-            }
+            // Managed-key modals record their token explicitly in managed_key_dialogs.rs. Keeping
+            // that ownership local prevents unrelated SFTP dialogs that historically reuse these
+            // enum values from mutating managed-key state.
             DialogKind::SessionSelector => self.selector_dialog_token = Some(token),
             DialogKind::ConnectionGroup => self.connection_group_dialog_token = Some(token),
             DialogKind::VerifySyncSecretsPassword => {
