@@ -1,7 +1,9 @@
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use gpui::{App, Bounds, Pixels, Point, Size, WindowBounds, point, px, size};
+use gpui::{
+    AnyWindowHandle, App, Bounds, Pixels, Point, Size, WindowBounds, WindowOptions, point, px, size,
+};
 
 /// Opens a URL in the user's default browser.
 pub(crate) fn open_url(url: &str) -> Result<()> {
@@ -19,11 +21,115 @@ pub(crate) fn open_documentation() -> Result<()> {
     open_path("README.md")
 }
 
+#[derive(Clone, Copy)]
+pub(crate) enum AuxiliaryWindowPlacement {
+    Centered,
+    Near {
+        position: Point<Pixels>,
+        offset_x: Pixels,
+        offset_y: Pixels,
+    },
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct AuxiliaryWindowSpec {
+    preferred_size: Size<Pixels>,
+    min_size: Option<Size<Pixels>>,
+    max_width_ratio: f32,
+    max_height_ratio: f32,
+    resizable: bool,
+    placement: AuxiliaryWindowPlacement,
+}
+
+impl AuxiliaryWindowSpec {
+    pub(crate) fn new(preferred_size: Size<Pixels>) -> Self {
+        Self {
+            preferred_size,
+            min_size: None,
+            max_width_ratio: 0.9,
+            max_height_ratio: 0.9,
+            resizable: true,
+            placement: AuxiliaryWindowPlacement::Centered,
+        }
+    }
+
+    pub(crate) fn with_min_size(mut self, min_size: Size<Pixels>) -> Self {
+        self.min_size = Some(min_size);
+        self
+    }
+
+    pub(crate) fn with_max_ratio(mut self, width: f32, height: f32) -> Self {
+        self.max_width_ratio = width;
+        self.max_height_ratio = height;
+        self
+    }
+
+    pub(crate) fn resizable(mut self, resizable: bool) -> Self {
+        self.resizable = resizable;
+        self
+    }
+
+    pub(crate) fn near(
+        mut self,
+        position: Point<Pixels>,
+        offset_x: Pixels,
+        offset_y: Pixels,
+    ) -> Self {
+        self.placement = AuxiliaryWindowPlacement::Near {
+            position,
+            offset_x,
+            offset_y,
+        };
+        self
+    }
+}
+
+fn window_bounds_for_handle(
+    handle: AnyWindowHandle,
+    cx: &mut App,
+) -> Option<Bounds<Pixels>> {
+    handle
+        .update(cx, |_, window, _| {
+            match window.window_bounds() {
+                WindowBounds::Fullscreen(bounds)
+                | WindowBounds::Maximized(bounds)
+                | WindowBounds::Windowed(bounds) => bounds,
+            }
+        })
+        .ok()
+}
+
+/// Prefer the native window that currently owns keyboard/mouse focus.
+///
+/// This includes auxiliary windows, so a child opened from Connection Manager or Settings stays
+/// anchored to that exact UI context instead of jumping to whichever TinyShell workspace happened
+/// to be activated most recently.
+fn active_native_window_bounds(cx: &mut App) -> Option<Bounds<Pixels>> {
+    for handle in cx.windows() {
+        let bounds = handle
+            .update(cx, |_, window, _| {
+                if !window.is_window_active() {
+                    return None;
+                }
+                Some(match window.window_bounds() {
+                    WindowBounds::Fullscreen(bounds)
+                    | WindowBounds::Maximized(bounds)
+                    | WindowBounds::Windowed(bounds) => bounds,
+                })
+            })
+            .ok()
+            .flatten();
+        if bounds.is_some() {
+            return bounds;
+        }
+    }
+    None
+}
+
 /// Returns the bounds of the most recently active TinyShell workspace window.
 ///
-/// Auxiliary windows are intentionally centered relative to the owning workspace instead of
-/// `displays().first()`. This keeps dialogs/editors on the same monitor as the user's current
-/// workspace and makes multi-monitor placement deterministic.
+/// This is a fallback for background-triggered auxiliary windows where no native window is active
+/// at the instant placement is calculated.
 fn active_workspace_bounds() -> Option<Bounds<Pixels>> {
     let registry = crate::app::window_registry();
     let guard = match registry.lock() {
@@ -60,21 +166,19 @@ fn display_bounds_for_point(cx: &App, position: Point<Pixels>) -> Option<Bounds<
         .or_else(|| cx.primary_display().map(|display| display.bounds()))
 }
 
-fn constrained_window_size(
-    preferred_size: Size<Pixels>,
+fn effective_window_size(
+    spec: AuxiliaryWindowSpec,
     display_bounds: Bounds<Pixels>,
-    max_width_ratio: f32,
-    max_height_ratio: f32,
 ) -> Size<Pixels> {
-    let max_width_ratio = max_width_ratio.clamp(0.1, 1.0);
-    let max_height_ratio = max_height_ratio.clamp(0.1, 1.0);
+    let max_width_ratio = spec.max_width_ratio.clamp(0.1, 1.0);
+    let max_height_ratio = spec.max_height_ratio.clamp(0.1, 1.0);
+    let max_width = display_bounds.size.width * max_width_ratio;
+    let max_height = display_bounds.size.height * max_height_ratio;
+    let min_size = spec.min_size.unwrap_or(size(px(0.), px(0.)));
+
     size(
-        preferred_size
-            .width
-            .min(display_bounds.size.width * max_width_ratio),
-        preferred_size
-            .height
-            .min(display_bounds.size.height * max_height_ratio),
+        spec.preferred_size.width.max(min_size.width).min(max_width),
+        spec.preferred_size.height.max(min_size.height).min(max_height),
     )
 }
 
@@ -91,48 +195,114 @@ fn clamp_window_origin(
     )
 }
 
-/// Standard placement for auxiliary windows such as settings, connection management and editors.
+fn centered_bounds(
+    spec: AuxiliaryWindowSpec,
+    anchor_bounds: Bounds<Pixels>,
+    display_bounds: Bounds<Pixels>,
+) -> WindowBounds {
+    let window_size = effective_window_size(spec, display_bounds);
+    let origin = point(
+        anchor_bounds.origin.x + (anchor_bounds.size.width - window_size.width) / 2.,
+        anchor_bounds.origin.y + (anchor_bounds.size.height - window_size.height) / 2.,
+    );
+    let origin = clamp_window_origin(origin, window_size, display_bounds);
+    WindowBounds::Windowed(Bounds::new(origin, window_size))
+}
+
+fn near_bounds(
+    spec: AuxiliaryWindowSpec,
+    position: Point<Pixels>,
+    offset_x: Pixels,
+    offset_y: Pixels,
+    display_bounds: Bounds<Pixels>,
+) -> WindowBounds {
+    let window_size = effective_window_size(spec, display_bounds);
+    let origin = clamp_window_origin(
+        point(position.x - offset_x, position.y - offset_y),
+        window_size,
+        display_bounds,
+    );
+    WindowBounds::Windowed(Bounds::new(origin, window_size))
+}
+
+/// Builds the canonical `WindowOptions` for every non-primary TinyShell window.
 ///
-/// Placement priority:
-/// 1. Center on the most recently active TinyShell workspace window.
-/// 2. Use the display containing that workspace.
-/// 3. Fall back to the primary display only when no workspace bounds are available.
-///
-/// The final bounds are clamped to the target display, so a child window cannot spill off-screen
-/// when the parent is close to a monitor edge or spans multiple displays.
+/// Ordinary auxiliary windows center on the currently active native parent, then fall back to the
+/// latest active TinyShell workspace and finally the primary display. Drag-detached windows use
+/// their drop position instead. Size limits and minimum size are resolved together so the OS cannot
+/// silently enlarge a window after the centering calculation and make it appear offset.
+pub(crate) fn auxiliary_window_options(cx: &mut App, spec: AuxiliaryWindowSpec) -> WindowOptions {
+    let active_bounds = match spec.placement {
+        AuxiliaryWindowPlacement::Centered => active_native_window_bounds(cx)
+            .or_else(active_workspace_bounds),
+        AuxiliaryWindowPlacement::Near { .. } => None,
+    };
+
+    let window_bounds = match spec.placement {
+        AuxiliaryWindowPlacement::Centered => {
+            let anchor_bounds = active_bounds.or_else(|| {
+                cx.primary_display().map(|display| display.bounds())
+            });
+            anchor_bounds.and_then(|anchor_bounds| {
+                let display_bounds = display_bounds_for_point(cx, bounds_center(anchor_bounds))?;
+                Some(centered_bounds(spec, anchor_bounds, display_bounds))
+            })
+        }
+        AuxiliaryWindowPlacement::Near {
+            position,
+            offset_x,
+            offset_y,
+        } => display_bounds_for_point(cx, position)
+            .map(|display_bounds| near_bounds(spec, position, offset_x, offset_y, display_bounds)),
+    };
+
+    let effective_min_size = spec.min_size.map(|minimum| {
+        if let Some(WindowBounds::Windowed(bounds)) = window_bounds {
+            size(
+                minimum.width.min(bounds.size.width),
+                minimum.height.min(bounds.size.height),
+            )
+        } else {
+            minimum
+        }
+    });
+
+    let mut options = WindowOptions {
+        is_movable: true,
+        is_resizable: spec.resizable,
+        is_minimizable: true,
+        window_min_size: effective_min_size,
+        window_bounds,
+        ..Default::default()
+    };
+
+    #[cfg(not(target_os = "macos"))]
+    if let Ok(image) = image::load_from_memory(include_bytes!("../../assets/icons/tiny-shell.png"))
+    {
+        options.icon = Some(std::sync::Arc::new(image.into_rgba8()));
+    }
+
+    options
+}
+
+/// Backward-compatible bounds helper for code that only needs a centered rectangle.
 pub(crate) fn centered_child_window_bounds(
-    cx: &App,
+    cx: &mut App,
     preferred_size: Size<Pixels>,
     max_width_ratio: f32,
     max_height_ratio: f32,
 ) -> Option<WindowBounds> {
-    let workspace_bounds = active_workspace_bounds();
-    let anchor = workspace_bounds.map(bounds_center);
-    let display_bounds = anchor
-        .and_then(|position| display_bounds_for_point(cx, position))
-        .or_else(|| cx.primary_display().map(|display| display.bounds()))?;
-    let window_size = constrained_window_size(
-        preferred_size,
-        display_bounds,
-        max_width_ratio,
-        max_height_ratio,
-    );
-    let center_bounds = workspace_bounds.unwrap_or(display_bounds);
-    let origin = point(
-        center_bounds.origin.x + (center_bounds.size.width - window_size.width) / 2.,
-        center_bounds.origin.y + (center_bounds.size.height - window_size.height) / 2.,
-    );
-    let origin = clamp_window_origin(origin, window_size, display_bounds);
-
-    Some(WindowBounds::Windowed(Bounds::new(origin, window_size)))
+    auxiliary_window_options(
+        cx,
+        AuxiliaryWindowSpec::new(preferred_size)
+            .with_max_ratio(max_width_ratio, max_height_ratio),
+    )
+    .window_bounds
 }
 
-/// Placement for drag-detached windows.
-///
-/// Unlike ordinary auxiliary windows these should stay near the user's drop point. The display
-/// under the drop position is selected first, then the resulting bounds are clamped to it.
+/// Backward-compatible placement helper for drag-detached windows.
 pub(crate) fn window_bounds_near_position(
-    cx: &App,
+    cx: &mut App,
     preferred_size: Size<Pixels>,
     max_width_ratio: f32,
     max_height_ratio: f32,
@@ -140,18 +310,36 @@ pub(crate) fn window_bounds_near_position(
     offset_x: Pixels,
     offset_y: Pixels,
 ) -> Option<WindowBounds> {
-    let display_bounds = display_bounds_for_point(cx, position)?;
-    let window_size = constrained_window_size(
-        preferred_size,
-        display_bounds,
-        max_width_ratio,
-        max_height_ratio,
-    );
-    let origin = clamp_window_origin(
-        point(position.x - offset_x, position.y - offset_y),
-        window_size,
-        display_bounds,
-    );
+    auxiliary_window_options(
+        cx,
+        AuxiliaryWindowSpec::new(preferred_size)
+            .with_max_ratio(max_width_ratio, max_height_ratio)
+            .near(position, offset_x, offset_y),
+    )
+    .window_bounds
+}
 
-    Some(WindowBounds::Windowed(Bounds::new(origin, window_size)))
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn minimum_size_is_applied_before_display_cap() {
+        let spec = AuxiliaryWindowSpec::new(size(px(420.), px(220.)))
+            .with_min_size(size(px(560.), px(360.)))
+            .with_max_ratio(0.9, 0.9);
+        let display = Bounds::new(point(px(0.), px(0.)), size(px(1000.), px(700.)));
+
+        assert_eq!(effective_window_size(spec, display), size(px(560.), px(360.)));
+    }
+
+    #[test]
+    fn display_cap_wins_when_minimum_cannot_fit() {
+        let spec = AuxiliaryWindowSpec::new(size(px(600.), px(400.)))
+            .with_min_size(size(px(560.), px(360.)))
+            .with_max_ratio(0.5, 0.5);
+        let display = Bounds::new(point(px(0.), px(0.)), size(px(800.), px(600.)));
+
+        assert_eq!(effective_window_size(spec, display), size(px(400.), px(300.)));
+    }
 }
