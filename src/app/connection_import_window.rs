@@ -89,32 +89,61 @@ impl FinalShellImportWindow {
                             .background_executor()
                             .spawn(async move { parse_finalshell_zip(&path) })
                             .await;
-                        this.update(cx, |this, cx| {
-                            match parsed {
+                        let feedback = this.update(cx, |this, cx| {
+                            let feedback = match parsed {
                                 Ok(preview) => {
-                                    this.selected = vec![true; preview.sessions.len()];
+                                    let connection_count = preview.sessions.len();
+                                    let skipped = preview.skipped_entries;
+                                    this.selected = vec![true; connection_count];
                                     this.preview = Some(preview);
                                     this.error = None;
+                                    Ok((connection_count, skipped))
                                 }
                                 Err(error) => {
                                     tracing::warn!(error = ?error, "failed to parse FinalShell backup");
+                                    let message = localized_import_error(&error);
                                     this.preview = None;
-                                    this.error = Some(localized_import_error(&error));
+                                    this.error = Some(message.clone());
+                                    Err(message)
+                                }
+                            };
+                            cx.notify();
+                            feedback
+                        })?;
+                        let _ = window_handle.update(cx, |_, window, cx| {
+                            window.activate_window();
+                            match feedback {
+                                Ok((count, skipped)) => {
+                                    crate::feedback::Feedback::info(
+                                        window,
+                                        cx,
+                                        t!("finalshell_import_connections", count = count).to_string(),
+                                    );
+                                    if skipped > 0 {
+                                        crate::feedback::Feedback::warning(
+                                            window,
+                                            cx,
+                                            t!("finalshell_import_skipped", count = skipped).to_string(),
+                                        );
+                                    }
+                                }
+                                Err(message) => {
+                                    crate::feedback::Feedback::error(window, cx, message);
                                 }
                             }
-                            cx.notify();
-                        })?;
-                        let _ = window_handle.update(cx, |_, window, _| window.activate_window());
+                        });
                     }
                 }
                 Ok(Err(error)) => {
+                    let message =
+                        t!("finalshell_import_picker_failed", error = error.to_string()).to_string();
                     this.update(cx, |this, cx| {
-                        this.error = Some(
-                            t!("finalshell_import_picker_failed", error = error.to_string())
-                                .to_string(),
-                        );
+                        this.error = Some(message.clone());
                         cx.notify();
                     })?;
+                    let _ = window_handle.update(cx, |_, window, cx| {
+                        crate::feedback::Feedback::error(window, cx, message);
+                    });
                 }
                 _ => {}
             }
@@ -130,6 +159,7 @@ impl FinalShellImportWindow {
         let selected = self.selected.clone();
         let import_window = cx.entity();
         let owner_for_credentials = self.owner.clone();
+        let owner_for_feedback = self.owner.clone();
         self.owner.update(cx, move |owner, cx| {
             let mut staged = owner.config.clone();
             let summary = apply_finalshell_import_selected(&mut staged, preview.clone(), &selected);
@@ -150,20 +180,32 @@ impl FinalShellImportWindow {
                 staged,
                 window,
                 move |owner, window, cx| {
-                    owner.status = t!(
+                    let message = t!(
                         "finalshell_imported",
                         count = summary.imported_sessions,
                         skipped = summary.skipped_sessions
                     )
-                    .to_string()
-                    .into();
+                    .to_string();
+                    owner.status = message.clone().into();
                     cx.notify();
-                    if let Some(session_id) = pending_credentials {
-                        let owner = owner_for_credentials.clone();
-                        window.defer(cx, move |window, cx| {
-                            if let Some(session) = owner.read(cx).config.get(&session_id).cloned() {
+                    let owner_for_feedback = owner_for_feedback.clone();
+                    let owner_for_credentials = owner_for_credentials.clone();
+                    window.defer(cx, move |window, cx| {
+                        crate::feedback::Feedback::show_for_owner(
+                            &owner_for_feedback,
+                            cx,
+                            crate::feedback::FeedbackKind::Success,
+                            message,
+                        );
+                        if let Some(session_id) = pending_credentials {
+                            if let Some(session) = owner_for_credentials
+                                .read(cx)
+                                .config
+                                .get(&session_id)
+                                .cloned()
+                            {
                                 crate::app::connection_manager::ssh_editor_window::open(
-                                    owner,
+                                    owner_for_credentials,
                                     crate::app::connection_manager::ssh_editor_window::SshEditorRequest::Credentials {
                                         session,
                                     },
@@ -172,19 +214,18 @@ impl FinalShellImportWindow {
                             } else {
                                 window.activate_window();
                             }
-                            crate::app::deregister_auxiliary_window(window.window_handle());
-                            window.remove_window();
-                        });
-                    } else {
+                        }
                         crate::app::deregister_auxiliary_window(window.window_handle());
                         window.remove_window();
-                    }
+                    });
                 },
-                move |_, error, _, cx| {
+                move |_, error, window, cx| {
+                    let message = error.to_string();
                     import_window.update(cx, |this, cx| {
-                        this.error = Some(error.to_string());
+                        this.error = Some(message.clone());
                         cx.notify();
                     });
+                    crate::feedback::Feedback::error(window, cx, message);
                 },
                 cx,
             );
@@ -425,11 +466,12 @@ pub(crate) fn open(owner: Entity<TinyShell>, cx: &mut App) {
             .with_min_size(gpui::size(gpui::px(420.), gpui::px(300.)))
             .with_max_ratio(0.72, 0.62),
     );
+    let owner_for_window = owner.clone();
     let opened = cx.open_window(options, move |window, cx| {
         window.set_window_title(t!("finalshell_import_title").as_ref());
         let window_handle = window.window_handle();
         crate::app::register_auxiliary_window(window_handle, owner_id);
-        let view = cx.new(|cx| FinalShellImportWindow::new(owner, cx));
+        let view = cx.new(|cx| FinalShellImportWindow::new(owner_for_window, cx));
         let focus_handle = view.read(cx).focus_handle.clone();
         window.defer(cx, move |window, cx| {
             window.activate_window();
@@ -443,6 +485,12 @@ pub(crate) fn open(owner: Entity<TinyShell>, cx: &mut App) {
     });
     if let Err(error) = opened {
         tracing::error!("failed to open FinalShell import window: {error:#}");
+        crate::feedback::Feedback::show_for_owner(
+            &owner,
+            cx,
+            crate::feedback::FeedbackKind::Error,
+            t!("finalshell_import_picker_failed", error = format!("{error:#}")).to_string(),
+        );
     }
 }
 
