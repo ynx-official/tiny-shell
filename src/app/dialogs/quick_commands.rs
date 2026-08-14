@@ -24,7 +24,7 @@ impl TinyShell {
         let view = cx.entity();
         let submit_input = input.clone();
         let focus_input = input.clone();
-        self.open_dialog(
+        self.open_modal_dialog(
             crate::app::DialogKind::QuickCommandCategory,
             window,
             cx,
@@ -37,9 +37,9 @@ impl TinyShell {
                     .w(px(420.))
                     .on_close({
                         let view = view.clone();
-                        move |_, _, cx| {
+                        move |_, window, cx| {
                             view.update(cx, |this, cx| {
-                                this.dialog_closed(token);
+                                this.modal_dialog_closed(token, window, cx);
                                 cx.notify();
                             });
                         }
@@ -66,7 +66,7 @@ impl TinyShell {
                                 this.command_category_filter = Some(category.id.clone());
                                 this.config.upsert_quick_command_category(category);
                                 this.mark_config_preferences_dirty();
-                                this.dismiss_dialog(token, window, cx);
+                                this.dismiss_modal_dialog(token, window, cx);
                                 cx.notify();
                             });
                             true
@@ -202,7 +202,7 @@ impl TinyShell {
         let source_category_id = category_id.clone();
         let submit_inputs = dialog_inputs.clone();
         let focus_name_input = name_input.clone();
-        self.open_dialog(crate::app::DialogKind::QuickCommand, window, cx, move |dialog: Dialog, token, _window, _| {
+        self.open_modal_dialog(crate::app::DialogKind::QuickCommand, window, cx, move |dialog: Dialog, token, _window, _| {
             let submit_inputs = submit_inputs.clone();
             let content_name = name_input.clone();
             let content_remark = remark_input.clone();
@@ -216,9 +216,9 @@ impl TinyShell {
                 .h(px(620.))
                 .on_close({
                     let view = view.clone();
-                    move |_, _, cx| {
+                    move |_, window, cx| {
                         view.update(cx, |this, cx| {
-                            this.dialog_closed(token);
+                            this.modal_dialog_closed(token, window, cx);
                             this.editing_quick_command_category = None;
                             cx.notify();
                         });
@@ -297,8 +297,7 @@ impl TinyShell {
                                                                     .editing_quick_command_category
                                                                     .clone();
                                                                 for category in &categories {
-                                                                    let category_id =
-                                                                        category.id.clone();
+                                                                    let category_id = category.id.clone();
                                                                     menu = menu.item(
                                                                         PopupMenuItem::new(
                                                                             category.name.clone(),
@@ -406,7 +405,7 @@ impl TinyShell {
                                                 &view,
                                                 move |this, _, window, cx| {
                                                     cx.stop_propagation();
-                                                    this.dismiss_dialog(token, window, cx);
+                                                    this.dismiss_modal_dialog(token, window, cx);
                                                 },
                                             )),
                                     )
@@ -431,7 +430,7 @@ impl TinyShell {
                                                         &inputs,
                                                         cx,
                                                     ) {
-                                                        this.dismiss_dialog(token, window, cx);
+                                                        this.dismiss_modal_dialog(token, window, cx);
                                                     }
                                                 }
                                             })),
