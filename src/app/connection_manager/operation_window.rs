@@ -525,36 +525,19 @@ fn commit_catalog_change(
     })
 }
 
-fn window_options(cx: &App, compact: bool) -> WindowOptions {
-    let mut options = WindowOptions {
-        is_movable: true,
-        is_resizable: !compact,
-        is_minimizable: true,
-        window_min_size: Some(if compact {
-            size(px(380.), px(180.))
-        } else {
-            size(px(440.), px(420.))
-        }),
-        ..Default::default()
-    };
-    let preferred_size = if compact {
-        size(px(420.), px(220.))
+fn window_options(cx: &mut App, compact: bool) -> WindowOptions {
+    let (preferred_size, min_size) = if compact {
+        (size(px(420.), px(220.)), size(px(380.), px(180.)))
     } else {
-        size(px(480.), px(560.))
+        (size(px(480.), px(560.)), size(px(440.), px(420.)))
     };
-    options.window_bounds = crate::app::platform::centered_child_window_bounds(
+    crate::app::platform::auxiliary_window_options(
         cx,
-        preferred_size,
-        0.9,
-        0.9,
-    );
-    #[cfg(not(target_os = "macos"))]
-    if let Ok(image) =
-        image::load_from_memory(include_bytes!("../../../assets/icons/tiny-shell.png"))
-    {
-        options.icon = Some(std::sync::Arc::new(image.into_rgba8()));
-    }
-    options
+        crate::app::platform::AuxiliaryWindowSpec::new(preferred_size)
+            .with_min_size(min_size)
+            .with_max_ratio(0.9, 0.9)
+            .resizable(!compact),
+    )
 }
 
 impl TinyShell {
