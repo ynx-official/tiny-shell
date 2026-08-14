@@ -39,7 +39,7 @@ impl TinyShell {
         let view = cx.entity();
         let focus_input = password_input.clone();
         let danger_color = cx.theme().danger;
-        let open_result = self.open_dialog(crate::app::DialogKind::VerifySyncSecretsPassword, window, cx, move |dialog: Dialog, token, _window, _cx| {
+        let open_result = self.open_modal_dialog(crate::app::DialogKind::VerifySyncSecretsPassword, window, cx, move |dialog: Dialog, token, _window, _cx| {
             dialog
                 .title(t!("sync_secret_toggle_dialog_title").to_string())
                 .w(px(440.))
@@ -47,9 +47,9 @@ impl TinyShell {
                 .overlay_closable(false)
                 .on_close({
                     let view = view.clone();
-                    move |_, _, cx| {
+                    move |_, window, cx| {
                         view.update(cx, |this, cx| {
-                            this.dialog_closed(token);
+                            this.modal_dialog_closed(token, window, cx);
                             this.sync_runtime.secrets_password_dialog = None;
                             cx.notify();
                         });
@@ -109,7 +109,7 @@ impl TinyShell {
                                     move |_, window, cx| {
                                         view.update(cx, |this, cx| {
                                             this.sync_runtime.secrets_password_dialog = None;
-                                            this.dismiss_dialog(token, window, cx);
+                                            this.dismiss_modal_dialog(token, window, cx);
                                         });
                                     }
                                 }),
@@ -171,7 +171,7 @@ impl TinyShell {
         };
         let view = cx.entity();
         let danger_color = cx.theme().danger;
-        self.open_dialog(
+        self.open_modal_dialog(
             crate::app::DialogKind::SyncUploadSecretsBlocked,
             window,
             cx,
@@ -183,9 +183,9 @@ impl TinyShell {
                     .overlay_closable(false)
                     .on_close({
                         let view = view.clone();
-                        move |_, _, cx| {
+                        move |_, window, cx| {
                             view.update(cx, |this, cx| {
-                                this.dialog_closed(token);
+                                this.modal_dialog_closed(token, window, cx);
                                 cx.notify();
                             });
                         }
@@ -224,7 +224,7 @@ impl TinyShell {
                                         let view = view.clone();
                                         move |_, window, cx| {
                                             view.update(cx, |this, cx| {
-                                                this.dismiss_dialog(token, window, cx);
+                                                this.dismiss_modal_dialog(token, window, cx);
                                                 cx.notify();
                                             });
                                         }
@@ -239,7 +239,7 @@ impl TinyShell {
                                         let form = form.clone();
                                         move |_, window, cx| {
                                             view.update(cx, |this, cx| {
-                                                this.dismiss_dialog(token, window, cx);
+                                                this.dismiss_modal_dialog(token, window, cx);
                                                 cx.notify();
                                             });
                                             let view = view.clone();
@@ -284,7 +284,7 @@ impl TinyShell {
         let view = cx.entity();
         let focus_input = new_pw_input.clone();
         let danger_color = cx.theme().danger;
-        self.open_dialog(
+        self.open_modal_dialog(
             crate::app::DialogKind::ResetPrivacyPassword,
             window,
             cx,
@@ -296,9 +296,9 @@ impl TinyShell {
                     .overlay_closable(true)
                     .on_close({
                         let view = view.clone();
-                        move |_, _, cx| {
+                        move |_, window, cx| {
                             view.update(cx, |this, cx| {
-                                this.dialog_closed(token);
+                                this.modal_dialog_closed(token, window, cx);
                                 cx.notify();
                             });
                         }
@@ -389,7 +389,7 @@ impl TinyShell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.dismiss_dialog(token, window, cx);
+        self.dismiss_modal_dialog(token, window, cx);
         self.reset_sync_privacy_password(new_password, form, cx);
     }
 }
