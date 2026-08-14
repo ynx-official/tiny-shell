@@ -1,6 +1,6 @@
 use gpui::{
-    AnyWindowHandle, App, AppContext as _, Bounds, Context, Entity, FocusHandle, Render, Window,
-    WindowOptions, point, px, size,
+    AnyWindowHandle, App, AppContext as _, Context, Entity, FocusHandle, Render, Window,
+    WindowOptions, px, size,
 };
 use gpui_component::{Root, input::InputEvent};
 use rust_i18n::t;
@@ -141,21 +141,12 @@ fn window_options(cx: &App) -> WindowOptions {
         ..Default::default()
     };
 
-    if let Some(display) = cx.displays().first().cloned() {
-        let display_bounds = display.bounds();
-        let window_size = size(
-            px(980.).min(display_bounds.size.width * 0.9),
-            px(700.).min(display_bounds.size.height * 0.9),
-        );
-        let origin = point(
-            display_bounds.origin.x + (display_bounds.size.width - window_size.width) / 2.,
-            display_bounds.origin.y + (display_bounds.size.height - window_size.height) / 2.,
-        );
-        options.window_bounds = Some(gpui::WindowBounds::Windowed(Bounds::new(
-            origin,
-            window_size,
-        )));
-    }
+    options.window_bounds = crate::app::platform::centered_child_window_bounds(
+        cx,
+        size(px(980.), px(700.)),
+        0.9,
+        0.9,
+    );
 
     #[cfg(not(target_os = "macos"))]
     if let Ok(image) = image::load_from_memory(include_bytes!("../../assets/icons/tiny-shell.png"))
