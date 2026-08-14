@@ -334,7 +334,7 @@ impl TinyShell {
         });
         let submit_input = input.clone();
         let focus_input = input.clone();
-        self.open_dialog(
+        self.open_modal_dialog(
             crate::app::DialogKind::QuickCommandCategory,
             window,
             cx,
@@ -352,9 +352,9 @@ impl TinyShell {
                         t!("sftp_new_file").to_string()
                     })
                     .w(px(420.))
-                    .on_close(move |_, _, cx| {
+                    .on_close(move |_, window, cx| {
                         on_close_view.update(cx, |this, cx| {
-                            this.dialog_closed(token);
+                            this.modal_dialog_closed(token, window, cx);
                             cx.notify();
                         });
                     })
@@ -378,7 +378,7 @@ impl TinyShell {
                                     .on_click(window.listener_for(
                                         &view,
                                         move |this, _, window, cx| {
-                                            this.dismiss_dialog(token, window, cx);
+                                            this.dismiss_modal_dialog(token, window, cx);
                                         },
                                     )),
                             )
@@ -395,7 +395,7 @@ impl TinyShell {
                                                 is_dir,
                                                 cx,
                                             ) {
-                                                this.dismiss_dialog(token, window, cx);
+                                                this.dismiss_modal_dialog(token, window, cx);
                                             }
                                         },
                                     )),
@@ -450,7 +450,7 @@ impl TinyShell {
             cx.new(|cx| gpui_component::input::InputState::new(window, cx).default_value(old_name));
         let submit_input = input.clone();
         let focus_input = input.clone();
-        self.open_dialog(
+        self.open_modal_dialog(
             crate::app::DialogKind::QuickCommand,
             window,
             cx,
@@ -464,9 +464,9 @@ impl TinyShell {
                 dialog
                     .title(t!("sftp_rename").to_string())
                     .w(px(420.))
-                    .on_close(move |_, _, cx| {
+                    .on_close(move |_, window, cx| {
                         on_close_view.update(cx, |this, cx| {
-                            this.dialog_closed(token);
+                            this.modal_dialog_closed(token, window, cx);
                             cx.notify();
                         });
                     })
@@ -496,7 +496,7 @@ impl TinyShell {
                                     .on_click(window.listener_for(
                                         &view,
                                         move |this, _, window, cx| {
-                                            this.dismiss_dialog(token, window, cx);
+                                            this.dismiss_modal_dialog(token, window, cx);
                                         },
                                     )),
                             )
@@ -513,7 +513,7 @@ impl TinyShell {
                                                 &confirm_parent,
                                                 cx,
                                             ) {
-                                                this.dismiss_dialog(token, window, cx);
+                                                this.dismiss_modal_dialog(token, window, cx);
                                             }
                                         },
                                     )),
@@ -578,7 +578,7 @@ impl TinyShell {
         });
         let focus_input = form.read(cx).input.clone();
         let submit_form = form.clone();
-        self.open_dialog(
+        self.open_modal_dialog(
             crate::app::DialogKind::ManagedKeySelector,
             window,
             cx,
@@ -594,9 +594,9 @@ impl TinyShell {
                 dialog
                     .title(t!("sftp_file_permissions").to_string())
                     .w(px(560.))
-                    .on_close(move |_, _, cx| {
+                    .on_close(move |_, window, cx| {
                         on_close_view.update(cx, |this, cx| {
-                            this.dialog_closed(token);
+                            this.modal_dialog_closed(token, window, cx);
                             cx.notify();
                         });
                     })
@@ -620,7 +620,7 @@ impl TinyShell {
                                     .on_click(window.listener_for(
                                         &view,
                                         move |this, _, window, cx| {
-                                            this.dismiss_dialog(token, window, cx);
+                                            this.dismiss_modal_dialog(token, window, cx);
                                         },
                                     )),
                             )
@@ -636,7 +636,7 @@ impl TinyShell {
                                                 &confirm_path,
                                                 cx,
                                             ) {
-                                                this.dismiss_dialog(token, window, cx);
+                                                this.dismiss_modal_dialog(token, window, cx);
                                             }
                                         },
                                     )),
@@ -680,7 +680,7 @@ impl TinyShell {
     ) {
         let view = cx.entity();
         let submit_paths = paths.clone();
-        self.open_dialog(
+        self.open_modal_dialog(
             crate::app::DialogKind::ManagedKeyImport,
             window,
             cx,
@@ -697,9 +697,9 @@ impl TinyShell {
                         t!("confirm_delete").to_string()
                     })
                     .w(px(520.))
-                    .on_close(move |_, _, cx| {
+                    .on_close(move |_, window, cx| {
                         on_close_view.update(cx, |this, cx| {
-                            this.dialog_closed(token);
+                            this.modal_dialog_closed(token, window, cx);
                             cx.notify();
                         });
                     })
@@ -728,7 +728,7 @@ impl TinyShell {
                                 .on_click(window.listener_for(
                                     &view,
                                     move |this, _, window, cx| {
-                                        this.dismiss_dialog(token, window, cx);
+                                        this.dismiss_modal_dialog(token, window, cx);
                                     },
                                 )),
                             )
@@ -744,7 +744,7 @@ impl TinyShell {
                                     &view,
                                     move |this, _, window, cx| {
                                         this.apply_sftp_delete_paths(&confirm_paths, quick, cx);
-                                        this.dismiss_dialog(token, window, cx);
+                                        this.dismiss_modal_dialog(token, window, cx);
                                     },
                                 )),
                             ),
