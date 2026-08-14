@@ -28,7 +28,6 @@ use rust_i18n::t;
 
 use crate::{
     TinyShell,
-    app::ssh_key_import::KeyImportValidation,
     session::config::{AuthMethod, QuickCommand, QuickCommandCategory},
     system::format_bytes,
 };
