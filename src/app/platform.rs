@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use gpui::{App, Bounds, Pixels, Point, Size, WindowBounds, point, px, size};
+use gpui::{App, AppContext as _, Bounds, Pixels, Point, Size, WindowBounds, point, px, size};
 
 /// Opens a URL in the user's default browser.
 pub(crate) fn open_url(url: &str) -> Result<()> {
