@@ -29,7 +29,10 @@ pub(crate) fn show_managed_key_selector_dialog(
         crate::app::DialogKind::ManagedKeySelector,
         window,
         cx,
-        move |dialog: Dialog, token, window, _cx| {
+        move |dialog: Dialog, token, window, cx| {
+            view.update(cx, |this, _| {
+                this.managed_key_dialog_token = Some(token);
+            });
             let dialog_width = px(760.).min(window.viewport_size().width - px(24.));
             dialog
                 .title(t!("select_private_key").to_string())
@@ -298,7 +301,10 @@ pub(crate) fn show_managed_key_import_dialog(
         crate::app::DialogKind::ManagedKeyImport,
         window,
         cx,
-        move |dialog: Dialog, token, _window, _cx| {
+        move |dialog: Dialog, token, _window, cx| {
+            view.update(cx, |this, _| {
+                this.managed_key_dialog_token = Some(token);
+            });
             dialog
                 .title(t!("key_import_dialog_title").to_string())
                 .w(px(440.))
