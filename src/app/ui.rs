@@ -615,7 +615,7 @@ impl TinyShell {
                         this.open_pending_dialog(window, cx);
                         this.sync_tool_panel_target(cx);
                         this.sync_sftp_path_input(window, cx);
-                        this.sync_sftp_tree_scroll();
+                        this.sync_sftp_tree_scroll(window, cx);
 
                         if let Some(active_id) = this.workspace().active_tab_id().map(str::to_owned)
                         {

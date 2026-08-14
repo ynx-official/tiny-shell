@@ -119,7 +119,7 @@ impl TinyShell {
                 let mut tab = TerminalTab::new_local(id.clone(), title.clone(), backend, events);
                 tab.resize(DEFAULT_COLS, DEFAULT_ROWS);
                 let group_id = Uuid::new_v4().to_string();
-                self.workspace_state_mut().install_terminal_tab(
+                self.install_terminal_tab(
                     tab,
                     TabGroup {
                         id: group_id.clone(),
@@ -809,8 +809,13 @@ impl TinyShell {
                     .find(|g| g.pane_root.contains(&new_id))
                     .map(|g| (g.id.clone(), g.pane_root.clone()));
                 if let Some((group_id, pane_root)) = next_group {
+                    let is_group_switch =
+                        self.workspace().active_group_id() != Some(group_id.as_str());
                     self.workspace_state_mut().set_active_group(Some(group_id));
                     self.workspace_state_mut().set_pane_root(pane_root);
+                    if is_group_switch {
+                        self.reset_sftp_tree_for_active_group();
+                    }
                 }
                 self.focus_pane_with_id(new_id);
             }
@@ -1194,6 +1199,7 @@ impl TinyShell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let is_group_switch = self.workspace().active_group_id() != Some(group_id.as_str());
         self.home_page_open = false;
         self.workspace_state_mut().clear_active_system_info_tab();
         // The active group owns its layout; switching the active id is enough
@@ -1217,6 +1223,9 @@ impl TinyShell {
                 self.focus_pane_with_id(first_id.clone());
             }
             self.focus_handle.focus(window, cx);
+            if is_group_switch {
+                self.reset_sftp_tree_for_active_group();
+            }
         }
         self.sync_system_tab_to_active_group();
         cx.notify();
@@ -2129,6 +2138,7 @@ impl TinyShell {
             self.workspace_state_mut().clear_focused_pane_path();
             self.workspace_state_mut().set_active_tab(None);
             self.workspace_state_mut().set_active_group(None);
+            self.reset_sftp_tree_for_active_group();
             self.home_page_open = true;
             self.sync_system_tab_to_active_group();
             return;
@@ -2147,6 +2157,7 @@ impl TinyShell {
         if let Some(tab_id) = next_tab {
             self.focus_pane_with_id(tab_id);
         }
+        self.reset_sftp_tree_for_active_group();
         self.sync_system_tab_to_active_group();
     }
 
@@ -2200,6 +2211,7 @@ impl TinyShell {
             if let Some(tab_id) = self.workspace_state_mut().active_tab_value() {
                 self.focus_pane_with_id(tab_id);
             }
+            self.reset_sftp_tree_for_active_group();
         }
         self.sync_system_tab_to_active_group();
         cx.notify();
@@ -2353,6 +2365,7 @@ impl TinyShell {
             .set_active_group(Some(group_id.clone()));
         self.workspace_state_mut().set_pane_root(pane_root);
         self.workspace_state_mut().clear_focused_pane_path();
+        self.reset_sftp_tree_for_active_group();
         group_id
     }
 

@@ -1,5 +1,6 @@
 use gpui::{
-    Context, ParentElement as _, PathPromptOptions, Pixels, Point, Styled as _, Window, div, px,
+    Bounds, Context, ParentElement as _, PathPromptOptions, Pixels, Point, Styled as _, Window,
+    div, px,
 };
 use gpui_component::{
     ActiveTheme as _,
@@ -28,6 +29,22 @@ use crate::{
     sftp::{RemoteEntry, SftpHandle},
     terminal,
 };
+
+pub(crate) fn minimal_sftp_tree_scroll_offset_y(
+    current_offset_y: Pixels,
+    viewport: Bounds<Pixels>,
+    target: Bounds<Pixels>,
+    bottom_inset: Pixels,
+) -> Pixels {
+    if target.bottom() <= viewport.top() {
+        current_offset_y + viewport.top() - target.top()
+    } else if target.top() >= viewport.bottom() {
+        let visible_bottom = (viewport.bottom() - bottom_inset).max(viewport.top());
+        current_offset_y + visible_bottom - target.bottom()
+    } else {
+        current_offset_y
+    }
+}
 
 pub(crate) fn is_editable_text_file(filename: &str) -> bool {
     let lower = filename.to_lowercase();
@@ -114,6 +131,17 @@ impl TinyShell {
             .and_then(|id| self.sftp_handles.get(id))
     }
 
+    pub(crate) fn reset_sftp_tree_for_active_group(&mut self) {
+        let current_path = self.active_sftp().map(|sftp| sftp.current_path.clone());
+        let tree_offset = self.sftp_workspace.tree_scroll_handle.offset();
+        self.sftp_workspace.tree_scroll_handle.set_offset(Point {
+            x: px(0.),
+            y: tree_offset.y,
+        });
+        self.sftp_workspace.tree_scroll_target_bounds = None;
+        self.sftp_workspace.pending_tree_scroll_path = current_path;
+    }
+
     /// 双击文本文件时调用:下载文件内容到内存,打开独立编辑器窗口。
     /// 若同一会话的编辑器已打开该文件,则直接激活窗口并切换 tab。
     pub(crate) fn open_file_in_editor(&mut self, remote_path: String, cx: &mut Context<Self>) {
@@ -173,6 +201,12 @@ impl TinyShell {
         sftp.selected_path = None;
         sftp.selected_entries.clear();
         if self.workspace().active_group_id() == Some(group_id) {
+            let tree_offset = self.sftp_workspace.tree_scroll_handle.offset();
+            self.sftp_workspace.tree_scroll_handle.set_offset(Point {
+                x: px(0.),
+                y: tree_offset.y,
+            });
+            self.sftp_workspace.tree_scroll_target_bounds = None;
             self.sftp_workspace.pending_path_sync = Some(path.clone());
             self.sftp_workspace.pending_tree_scroll_path = Some(path.clone());
         }
@@ -184,21 +218,56 @@ impl TinyShell {
         true
     }
 
-    pub(crate) fn sync_sftp_tree_scroll(&mut self) {
+    pub(crate) fn sync_sftp_tree_scroll(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         let Some(path) = self.sftp_workspace.pending_tree_scroll_path.clone() else {
             return;
         };
         let Some(sftp) = self.active_sftp() else {
             return;
         };
-        let Some(index) = sftp_tree_paths(sftp, self.sftp_panel.show_hidden_files)
+        if !sftp_tree_paths(sftp, self.sftp_panel.show_hidden_files)
             .iter()
-            .position(|row| row == &path)
+            .any(|row| row == &path)
+        {
+            return;
+        }
+        let Some((target_path, target_bounds)) =
+            self.sftp_workspace.tree_scroll_target_bounds.clone()
         else {
             return;
         };
-        self.sftp_workspace.tree_scroll_handle.scroll_to_item(index);
+        if target_path != path {
+            self.sftp_workspace.tree_scroll_target_bounds = None;
+            return;
+        }
+
+        let scroll_handle = &self.sftp_workspace.tree_scroll_handle;
+        let viewport = scroll_handle.bounds();
+        if viewport.size.height <= px(0.) {
+            return;
+        }
+        let max_offset = scroll_handle.max_offset();
+        let bottom_inset = if max_offset.x > px(0.) {
+            px(16.)
+        } else {
+            px(0.)
+        };
+        let current_offset = scroll_handle.offset();
+        let next_offset_y = minimal_sftp_tree_scroll_offset_y(
+            current_offset.y,
+            viewport,
+            target_bounds,
+            bottom_inset,
+        )
+        .clamp(-max_offset.y, px(0.));
+
+        scroll_handle.set_offset(Point {
+            x: px(0.),
+            y: next_offset_y,
+        });
         self.sftp_workspace.pending_tree_scroll_path = None;
+        self.sftp_workspace.tree_scroll_target_bounds = None;
+        cx.notify();
     }
 
     pub(crate) fn toggle_sftp_tree_directory(&mut self, path: String, cx: &mut Context<Self>) {

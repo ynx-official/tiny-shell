@@ -1,6 +1,12 @@
 use super::*;
 use std::sync::Arc;
 
+const SFTP_TREE_MAX_DEPTH: usize = 32;
+const SFTP_TREE_INDENT_PX: f32 = 15.;
+const SFTP_TREE_ROW_PADDING_LEFT_PX: f32 = 9.;
+const SFTP_TREE_GUIDE_CENTER_PX: f32 = 7.;
+const SFTP_TREE_SCROLLBAR_SIZE_PX: f32 = 16.;
+
 #[derive(Clone, Copy)]
 struct SftpTreeColors {
     primary: Hsla,
@@ -8,7 +14,6 @@ struct SftpTreeColors {
     muted_foreground: Hsla,
     secondary: Hsla,
     background: Hsla,
-    muted: Hsla,
 }
 
 #[derive(Clone, Copy)]
@@ -16,6 +21,8 @@ struct SftpTreeRenderRow<'a> {
     path: &'a str,
     name: &'a str,
     depth: usize,
+    ancestor_continuation_mask: u64,
+    is_last_sibling: bool,
     expanded: bool,
     permissions: Option<u32>,
 }
@@ -70,9 +77,11 @@ fn sftp_tree_render_rows(
         path: &'a str,
         name: &'a str,
         depth: usize,
+        ancestor_continuation_mask: u64,
+        is_last_sibling: bool,
         permissions: Option<u32>,
     ) {
-        if depth > 32 || !visited.insert(path) {
+        if depth > SFTP_TREE_MAX_DEPTH || !visited.insert(path) {
             return;
         }
         let expanded = path == "/" || sftp.expanded_directories.contains(path);
@@ -80,19 +89,29 @@ fn sftp_tree_render_rows(
             path,
             name,
             depth,
+            ancestor_continuation_mask,
+            is_last_sibling,
             expanded,
             permissions,
         });
 
-        if !expanded {
+        if !expanded || depth == SFTP_TREE_MAX_DEPTH {
             return;
         }
         if let Some(entries) = sftp.directory_entries.get(path) {
-            for entry in entries
+            let visible_directories = entries
                 .iter()
                 .filter(|entry| entry.is_dir)
                 .filter(|entry| show_hidden_files || !entry.name.starts_with('.'))
-            {
+                .collect::<Vec<_>>();
+            let child_ancestor_continuation_mask = if depth > 0 && !is_last_sibling {
+                ancestor_continuation_mask | (1 << (depth - 1))
+            } else {
+                ancestor_continuation_mask
+            };
+            let child_count = visible_directories.len();
+
+            for (index, entry) in visible_directories.into_iter().enumerate() {
                 append_rows(
                     rows,
                     visited,
@@ -101,6 +120,8 @@ fn sftp_tree_render_rows(
                     &entry.full_path,
                     &entry.name,
                     depth + 1,
+                    child_ancestor_continuation_mask,
+                    index + 1 == child_count,
                     Some(entry.permissions),
                 );
             }
@@ -117,9 +138,67 @@ fn sftp_tree_render_rows(
         "/",
         "/",
         0,
+        0,
+        true,
         None,
     );
     rows
+}
+
+fn sftp_tree_branch_guides(
+    row: SftpTreeRenderRow<'_>,
+    ancestor_color: Hsla,
+    branch_color: Hsla,
+) -> Vec<AnyElement> {
+    if row.depth == 0 {
+        return Vec::new();
+    }
+
+    let mut guides = Vec::with_capacity(row.depth + 1);
+    for level in 0..row.depth.saturating_sub(1) {
+        if row.ancestor_continuation_mask & (1 << level) == 0 {
+            continue;
+        }
+        let left = SFTP_TREE_ROW_PADDING_LEFT_PX
+            + level as f32 * SFTP_TREE_INDENT_PX
+            + SFTP_TREE_GUIDE_CENTER_PX;
+        guides.push(
+            div()
+                .absolute()
+                .left(px(left))
+                .top(px(-1.))
+                .bottom(px(-1.))
+                .w(px(1.))
+                .bg(ancestor_color)
+                .into_any_element(),
+        );
+    }
+
+    let branch_left = SFTP_TREE_ROW_PADDING_LEFT_PX
+        + (row.depth - 1) as f32 * SFTP_TREE_INDENT_PX
+        + SFTP_TREE_GUIDE_CENTER_PX;
+    guides.push(
+        div()
+            .absolute()
+            .left(px(branch_left))
+            .top(px(-1.))
+            .w(px(1.))
+            .when(row.is_last_sibling, |this| this.bottom(relative(0.5)))
+            .when(!row.is_last_sibling, |this| this.bottom(px(-1.)))
+            .bg(branch_color)
+            .into_any_element(),
+    );
+    guides.push(
+        div()
+            .absolute()
+            .left(px(branch_left))
+            .top(relative(0.5))
+            .w(px(SFTP_TREE_INDENT_PX - SFTP_TREE_GUIDE_CENTER_PX))
+            .h(px(1.))
+            .bg(branch_color)
+            .into_any_element(),
+    );
+    guides
 }
 
 impl TinyShell {
@@ -185,6 +264,7 @@ impl TinyShell {
         row: SftpTreeRenderRow<'_>,
         current_path: &str,
         colors: SftpTreeColors,
+        capture_scroll_target: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let path: Arc<str> = Arc::from(row.path);
@@ -192,12 +272,19 @@ impl TinyShell {
         let context_path = Arc::clone(&path);
         let context_permissions = row.permissions;
         let view = cx.entity();
+        let scroll_target_view = view.clone();
+        let scroll_target_path = Arc::clone(&context_path);
         let is_current = current_path == path.as_ref();
         let folder_icon = if row.expanded {
             IconName::FolderOpen
         } else {
             IconName::Folder
         };
+        let branch_guides = sftp_tree_branch_guides(
+            row,
+            colors.muted_foreground.opacity(0.14),
+            colors.muted_foreground.opacity(0.24),
+        );
         let tree_toggle = if path.as_ref() == "/" {
             div().w(px(16.)).flex_none().into_any_element()
         } else {
@@ -209,7 +296,6 @@ impl TinyShell {
                 .items_center()
                 .justify_center()
                 .cursor_pointer()
-                .text_size(rems(0.78))
                 .text_color(colors.muted_foreground)
                 .on_mouse_down(
                     MouseButton::Left,
@@ -218,32 +304,58 @@ impl TinyShell {
                         cx.stop_propagation();
                     }),
                 )
-                .child(if row.expanded { "▾" } else { "▸" })
+                .child(
+                    Icon::new(if row.expanded {
+                        IconName::ChevronDown
+                    } else {
+                        IconName::ChevronRight
+                    })
+                    .with_size(Size::Small),
+                )
                 .into_any_element()
         };
 
         h_flex()
             .id(format!("sftp-tree-row-{}", context_path.as_ref()))
-            .w_full()
+            .relative()
+            .when(capture_scroll_target, move |this| {
+                this.on_prepaint(move |bounds, _, cx| {
+                    scroll_target_view.update(cx, |this, _| {
+                        if this.sftp_workspace.pending_tree_scroll_path.as_deref()
+                            == Some(scroll_target_path.as_ref())
+                        {
+                            this.sftp_workspace.tree_scroll_target_bounds =
+                                Some((scroll_target_path.to_string(), bounds));
+                        }
+                    });
+                })
+            })
+            .min_w_full()
             .h(px(30.))
-            .pl(px(5. + row.depth as f32 * 15.))
-            .pr_2()
+            .flex_shrink_0()
+            .pl(px(
+                SFTP_TREE_ROW_PADDING_LEFT_PX + row.depth as f32 * SFTP_TREE_INDENT_PX
+            ))
+            .pr(px(SFTP_TREE_SCROLLBAR_SIZE_PX + 8.))
             .items_center()
             .gap(px(5.))
             .rounded_sm()
             .cursor_pointer()
             .bg(if is_current {
-                colors.secondary
+                colors.secondary.opacity(0.62)
             } else {
                 colors.background.opacity(0.)
             })
-            .hover(|style| style.bg(colors.muted.opacity(0.85)))
+            .when(!is_current, |this| {
+                this.hover(|style| style.bg(colors.secondary.opacity(0.38)))
+            })
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, _, _, cx| {
                     this.select_sftp_tree_directory(path.as_ref().to_owned(), cx);
                 }),
             )
+            .children(branch_guides)
             .child(tree_toggle)
             .child(
                 Icon::new(folder_icon)
@@ -256,9 +368,8 @@ impl TinyShell {
             )
             .child(
                 div()
-                    .flex_1()
-                    .min_w(px(0.))
-                    .overflow_hidden()
+                    .flex_none()
+                    .whitespace_nowrap()
                     .text_size(rems(0.92))
                     .text_color(if is_current {
                         colors.foreground
@@ -294,79 +405,101 @@ impl TinyShell {
                 muted_foreground: theme.muted_foreground,
                 secondary: theme.secondary,
                 background: theme.background,
-                muted: theme.muted,
             }
         };
         let rows = sftp_tree_render_rows(sftp, self.sftp_panel.show_hidden_files)
             .into_iter()
-            .map(|row| self.render_sftp_tree_row(row, &sftp.current_path, colors, cx))
+            .map(|row| {
+                let capture_scroll_target =
+                    self.sftp_workspace.pending_tree_scroll_path.as_deref() == Some(row.path);
+                self.render_sftp_tree_row(
+                    row,
+                    &sftp.current_path,
+                    colors,
+                    capture_scroll_target,
+                    cx,
+                )
+            })
             .collect::<Vec<_>>();
         let empty_context_path = sftp.current_path.clone();
         let view = cx.entity();
 
         v_flex()
-            .w(px(236.))
-            .max_w(relative(0.4))
-            .min_w(px(120.))
+            .w_full()
             .h_full()
-            .flex_shrink_1()
+            .min_w(px(0.))
             .min_h(px(0.))
             .bg(cx.theme().background)
             .child(
                 h_flex()
-                    .h(px(28.))
-                    .px_2()
+                    .h(px(26.))
+                    .px_3()
                     .flex_none()
                     .items_center()
-                    .gap_1()
-                    .text_size(rems(0.85))
+                    .gap_2()
+                    .border_b_1()
+                    .border_color(cx.theme().border)
+                    .bg(cx.theme().muted.opacity(0.8))
+                    .text_size(rems(0.917))
                     .text_color(cx.theme().muted_foreground)
                     .child(Icon::new(IconName::FolderOpen).with_size(Size::Small))
                     .child(t!("remote_files")),
             )
             .child(
-                div()
-                    .relative()
-                    .flex_1()
-                    .min_h(px(0.))
-                    .child(
-                        v_flex()
-                            .id("sftp-directory-tree")
-                            .size_full()
-                            .track_scroll(&self.sftp_workspace.tree_scroll_handle)
-                            .overflow_y_scroll()
-                            .p_1()
-                            .gap(px(1.))
-                            .children(rows)
-                            .child(
-                                div()
-                                    .id("sftp-tree-empty-area")
-                                    .w_full()
-                                    .min_h(px(36.))
-                                    .flex_1()
-                                    .context_menu(move |menu, window, cx| {
-                                        Self::build_sftp_tree_empty_context_menu(
-                                            menu,
-                                            view.clone(),
-                                            empty_context_path.clone(),
-                                            window,
-                                            cx,
-                                        )
-                                    }),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .absolute()
-                            .top_0()
-                            .right_0()
-                            .bottom_0()
-                            .w(px(8.))
-                            .child(
-                                Scrollbar::vertical(&self.sftp_workspace.tree_scroll_handle)
-                                    .scrollbar_show(ScrollbarShow::Scrolling),
-                            ),
-                    ),
+                div().relative().flex_1().min_h(px(0.)).child(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .right(px(4.))
+                        .bottom_0()
+                        .child(
+                            v_flex()
+                                .id("sftp-directory-tree")
+                                .size_full()
+                                .items_start()
+                                .track_scroll(&self.sftp_workspace.tree_scroll_handle)
+                                .overflow_scroll()
+                                .child(
+                                    v_flex()
+                                        .min_w_full()
+                                        .min_h(relative(1.))
+                                        .flex_shrink_0()
+                                        .items_stretch()
+                                        .pt_1()
+                                        .gap(px(1.))
+                                        .children(rows)
+                                        .child(
+                                            div()
+                                                .id("sftp-tree-empty-area")
+                                                .w_full()
+                                                .min_h(px(36.))
+                                                .flex_1()
+                                                .context_menu(move |menu, window, cx| {
+                                                    Self::build_sftp_tree_empty_context_menu(
+                                                        menu,
+                                                        view.clone(),
+                                                        empty_context_path.clone(),
+                                                        window,
+                                                        cx,
+                                                    )
+                                                }),
+                                        ),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .absolute()
+                                .top_0()
+                                .left_0()
+                                .right_0()
+                                .bottom_0()
+                                .child(
+                                    Scrollbar::new(&self.sftp_workspace.tree_scroll_handle)
+                                        .scrollbar_show(ScrollbarShow::Scrolling),
+                                ),
+                        ),
+                ),
             )
             .into_any_element()
     }
@@ -1207,7 +1340,10 @@ impl TinyShell {
         let view = cx.entity();
         let icon_col_width = px(14.);
         let size_col_width = px(96.);
+        let size_col_min_width = px(56.);
         let modified_col_width = px(152.);
+        let modified_col_min_width = px(112.);
+        let name_col_min_width = px(56.);
 
         let mut outer = v_flex()
             .gap_0()
@@ -1260,149 +1396,156 @@ impl TinyShell {
                         .child(div().flex_none()),
                 )
                 .child(
-                    h_flex()
-                        .w_full()
-                        .flex_1()
-                        .min_w(px(0.))
-                        .min_h(px(0.))
-                        .overflow_hidden()
-                        .child(self.render_sftp_directory_tree(sftp, cx))
+                    h_resizable("sftp-files-split")
+                        .with_state(&self.sftp_workspace.file_panels)
                         .child(
-                            v_flex()
-                                .w_full()
-                                .flex_1()
-                                .flex_shrink_1()
-                                .h_full()
-                                .min_w(px(0.))
-                                .min_h(px(0.))
-                                .child(
-                                    h_flex()
-                                        .h(px(26.))
-                                        .px_3()
-                                        .items_center()
-                                        .gap_2()
-                                        .border_b_1()
-                                        .border_color(cx.theme().border)
-                                        .bg(cx.theme().muted.opacity(0.8))
-                                        .child(
-                                            h_flex()
-                                                .w(px(24.))
-                                                .flex_none()
-                                                .items_center()
-                                                .justify_center()
-                                                .child(
-                                                    Checkbox::new("sftp-select-all")
-                                                        .checked(all_selected)
-                                                        .on_click(cx.listener(
-                                                            move |this, checked, _, cx| {
-                                                                this.toggle_all_sftp_entries(
-                                                                    *checked, cx,
-                                                                );
-                                                            },
-                                                        )),
+                            resizable_panel()
+                                .size(px(236.))
+                                .size_range(px(120.)..Pixels::MAX)
+                                .child(self.render_sftp_directory_tree(sftp, cx)),
+                        )
+                        .child(
+                            resizable_panel().size_range(px(320.)..Pixels::MAX).child(
+                                v_flex()
+                                    .w_full()
+                                    .h_full()
+                                    .min_w(px(0.))
+                                    .min_h(px(0.))
+                                    .child(
+                                        h_flex()
+                                            .h(px(26.))
+                                            .px_3()
+                                            .items_center()
+                                            .gap_2()
+                                            .border_b_1()
+                                            .border_color(cx.theme().border)
+                                            .bg(cx.theme().muted.opacity(0.8))
+                                            .child(
+                                                h_flex()
+                                                    .w(px(24.))
+                                                    .flex_none()
+                                                    .items_center()
+                                                    .justify_center()
+                                                    .child(
+                                                        Checkbox::new("sftp-select-all")
+                                                            .checked(all_selected)
+                                                            .on_click(cx.listener(
+                                                                move |this, checked, _, cx| {
+                                                                    this.toggle_all_sftp_entries(
+                                                                        *checked, cx,
+                                                                    );
+                                                                },
+                                                            )),
+                                                    ),
+                                            )
+                                            .child(
+                                                h_flex()
+                                                    .flex_1()
+                                                    .min_w(name_col_min_width)
+                                                    .items_center()
+                                                    .gap_2()
+                                                    .child(div().w(icon_col_width).flex_none())
+                                                    .child(
+                                                        div()
+                                                            .flex_1()
+                                                            .text_size(rems(0.917))
+                                                            .text_color(cx.theme().muted_foreground)
+                                                            .child(t!("name")),
+                                                    ),
+                                            )
+                                            .child(
+                                                div()
+                                                    .w(size_col_width)
+                                                    .min_w(size_col_min_width)
+                                                    .flex_shrink_1()
+                                                    .text_size(rems(0.917))
+                                                    .text_color(cx.theme().muted_foreground)
+                                                    .child(t!("size")),
+                                            )
+                                            .child(
+                                                div()
+                                                    .w(modified_col_width)
+                                                    .min_w(modified_col_min_width)
+                                                    .flex_shrink_1()
+                                                    .text_size(rems(0.917))
+                                                    .text_color(cx.theme().muted_foreground)
+                                                    .child(t!("modified")),
+                                            )
+                                            .child(div().w(px(12.)).flex_none()),
+                                    )
+                                    .child(
+                                        div()
+                                            .w_full()
+                                            .flex_1()
+                                            .relative()
+                                            .min_h(px(0.))
+                                            .on_mouse_down(
+                                                MouseButton::Right,
+                                                cx.listener(
+                                                    |this, event: &MouseDownEvent, _, cx| {
+                                                        let target_was_set_by_row = this
+                                                            .sftp_workspace
+                                                            .context_menu
+                                                            .as_ref()
+                                                            .is_some_and(|menu| {
+                                                                menu.position == event.position
+                                                            });
+                                                        if !target_was_set_by_row {
+                                                            this.open_sftp_context_menu(
+                                                                None,
+                                                                false,
+                                                                None,
+                                                                event.position,
+                                                                cx,
+                                                            );
+                                                        }
+                                                    },
                                                 ),
-                                        )
-                                        .child(
-                                            h_flex()
-                                                .flex_1()
-                                                .min_w(px(0.))
-                                                .items_center()
-                                                .gap_2()
-                                                .child(div().w(icon_col_width).flex_none())
-                                                .child(
-                                                    div()
-                                                        .flex_1()
-                                                        .text_size(rems(0.917))
-                                                        .text_color(cx.theme().muted_foreground)
-                                                        .child(t!("name")),
-                                                ),
-                                        )
-                                        .child(
-                                            div()
-                                                .w(size_col_width)
-                                                .flex_none()
-                                                .text_size(rems(0.917))
-                                                .text_color(cx.theme().muted_foreground)
-                                                .child(t!("size")),
-                                        )
-                                        .child(
-                                            div()
-                                                .w(modified_col_width)
-                                                .flex_none()
-                                                .text_size(rems(0.917))
-                                                .text_color(cx.theme().muted_foreground)
-                                                .child(t!("modified")),
-                                        ),
-                                )
-                                .child(
-                                    div()
-                                        .w_full()
-                                        .flex_1()
-                                        .relative()
-                                        .min_h(px(0.))
-                                        .on_mouse_down(
-                                            MouseButton::Right,
-                                            cx.listener(|this, event: &MouseDownEvent, _, cx| {
-                                                let target_was_set_by_row = this
-                                                    .sftp_workspace
-                                                    .context_menu
-                                                    .as_ref()
-                                                    .is_some_and(|menu| {
-                                                        menu.position == event.position
-                                                    });
-                                                if !target_was_set_by_row {
-                                                    this.open_sftp_context_menu(
-                                                        None,
-                                                        false,
-                                                        None,
-                                                        event.position,
-                                                        cx,
-                                                    );
-                                                }
-                                            }),
-                                        )
-                                        .child(if entries.is_empty() {
-                                            v_flex()
-                                                .size_full()
-                                                .items_center()
-                                                .justify_center()
-                                                .gap_3()
-                                                .text_color(cx.theme().muted_foreground)
-                                                .child(
-                                                    Icon::new(IconName::FolderOpen)
-                                                        .with_size(Size::Large),
-                                                )
-                                                .child(t!("sftp_directory_empty"))
-                                                .into_any_element()
-                                        } else {
-                                            let view = view.clone();
-                                            let theme = cx.theme().clone();
-                                            uniform_list(
-                                                "sftp-entries-list",
-                                                entries.len(),
-                                                move |range, window, _cx| {
-                                                    range
-                                                        .into_iter()
-                                                        .filter_map(|ix| {
-                                                            let entry = entries.get(ix)?;
-                                                            let is_checked = selected_entries
-                                                                .contains(&entry.full_path);
-                                                            let is_selected = selected_path
-                                                                .as_deref()
-                                                                == Some(entry.full_path.as_str());
-                                                            let name_color = if entry.is_dir {
-                                                                theme.primary
-                                                            } else {
-                                                                theme.foreground
-                                                            };
-                                                            let bg = if is_selected {
-                                                                theme.secondary
-                                                            } else if ix % 2 == 0 {
-                                                                theme.background
-                                                            } else {
-                                                                theme.muted.opacity(0.5)
-                                                            };
-                                                            Some(
+                                            )
+                                            .child(if entries.is_empty() {
+                                                v_flex()
+                                                    .size_full()
+                                                    .items_center()
+                                                    .justify_center()
+                                                    .gap_3()
+                                                    .text_color(cx.theme().muted_foreground)
+                                                    .child(
+                                                        Icon::new(IconName::FolderOpen)
+                                                            .with_size(Size::Large),
+                                                    )
+                                                    .child(t!("sftp_directory_empty"))
+                                                    .into_any_element()
+                                            } else {
+                                                let view = view.clone();
+                                                let theme = cx.theme().clone();
+                                                uniform_list(
+                                                    "sftp-entries-list",
+                                                    entries.len(),
+                                                    move |range, window, _cx| {
+                                                        range
+                                                            .into_iter()
+                                                            .filter_map(|ix| {
+                                                                let entry = entries.get(ix)?;
+                                                                let is_checked = selected_entries
+                                                                    .contains(&entry.full_path);
+                                                                let is_selected = selected_path
+                                                                    .as_deref()
+                                                                    == Some(
+                                                                        entry.full_path.as_str(),
+                                                                    );
+                                                                let name_color = if entry.is_dir {
+                                                                    theme.primary
+                                                                } else {
+                                                                    theme.foreground
+                                                                };
+                                                                let bg = if is_selected {
+                                                                    theme.secondary
+                                                                } else if ix % 2 == 0 {
+                                                                    theme.background
+                                                                } else {
+                                                                    theme.muted.opacity(0.5)
+                                                                };
+                                                                Some(
                                             h_flex()
                                                 .w_full()
                                                 .h(px(28.))
@@ -1510,7 +1653,7 @@ impl TinyShell {
                                                 .child(
                                                     h_flex()
                                                         .flex_1()
-                                                        .min_w(px(0.))
+                                                        .min_w(name_col_min_width)
                                                         .items_center()
                                                         .gap_2()
                                                         .child(
@@ -1529,7 +1672,7 @@ impl TinyShell {
                                                             div()
                                                                 .flex_1()
                                                                 .min_w(px(0.))
-                                                                .overflow_hidden()
+                                                                .truncate()
                                                                 .text_size(rems(1.0))
                                                                 .text_color(name_color)
                                                                 .child(entry.name.clone()),
@@ -1538,7 +1681,8 @@ impl TinyShell {
                                                 .child(
                                                     div()
                                                         .w(size_col_width)
-                                                        .flex_none()
+                                                        .min_w(size_col_min_width)
+                                                        .flex_shrink_1()
                                                         .text_size(rems(0.917))
                                                         .text_color(theme.muted_foreground)
                                                         .child(if entry.is_dir {
@@ -1550,7 +1694,8 @@ impl TinyShell {
                                                 .child(
                                                     div()
                                                         .w(modified_col_width)
-                                                        .flex_none()
+                                                        .min_w(modified_col_min_width)
+                                                        .flex_shrink_1()
                                                         .text_size(rems(0.917))
                                                         .text_color(theme.muted_foreground)
                                                         .child(format_mtime(entry.modified)),
@@ -1558,44 +1703,45 @@ impl TinyShell {
                                                 .child(div().w(px(12.)).flex_none())
                                                 .into_any_element(),
                                         )
-                                                        })
-                                                        .collect::<Vec<_>>()
-                                                },
-                                            )
-                                            .size_full()
-                                            .track_scroll(
-                                                &self.sftp_workspace.remote_files_scroll_handle,
-                                            )
-                                            .into_any_element()
-                                        })
-                                        .child(
-                                            div()
-                                                .absolute()
-                                                .top_0()
-                                                .right_0()
-                                                .bottom_0()
-                                                .w(px(16.))
-                                                .child(
-                                                    Scrollbar::vertical(
-                                                        &self
-                                                            .sftp_workspace
-                                                            .remote_files_scroll_handle,
-                                                    )
-                                                    .scrollbar_show(ScrollbarShow::Always),
-                                                ),
-                                        )
-                                        .context_menu({
-                                            let view = view.clone();
-                                            move |menu, window, cx| {
-                                                Self::build_sftp_context_menu(
-                                                    menu,
-                                                    view.clone(),
-                                                    window,
-                                                    cx,
+                                                            })
+                                                            .collect::<Vec<_>>()
+                                                    },
                                                 )
-                                            }
-                                        }),
-                                ),
+                                                .size_full()
+                                                .track_scroll(
+                                                    &self.sftp_workspace.remote_files_scroll_handle,
+                                                )
+                                                .into_any_element()
+                                            })
+                                            .child(
+                                                div()
+                                                    .absolute()
+                                                    .top_0()
+                                                    .right_0()
+                                                    .bottom_0()
+                                                    .w(px(16.))
+                                                    .child(
+                                                        Scrollbar::vertical(
+                                                            &self
+                                                                .sftp_workspace
+                                                                .remote_files_scroll_handle,
+                                                        )
+                                                        .scrollbar_show(ScrollbarShow::Always),
+                                                    ),
+                                            )
+                                            .context_menu({
+                                                let view = view.clone();
+                                                move |menu, window, cx| {
+                                                    Self::build_sftp_context_menu(
+                                                        menu,
+                                                        view.clone(),
+                                                        window,
+                                                        cx,
+                                                    )
+                                                }
+                                            }),
+                                    ),
+                            ),
                         ),
                 ),
         );
@@ -1606,5 +1752,273 @@ impl TinyShell {
                 |this, delta| this.opacity(delta * delta),
             )
             .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod sftp_tree_tests {
+    use super::*;
+
+    fn directory(name: &str, full_path: &str) -> crate::sftp::RemoteEntry {
+        crate::sftp::RemoteEntry {
+            name: name.into(),
+            full_path: full_path.into(),
+            is_dir: true,
+            size: 0,
+            modified: 0,
+            permissions: 0o755,
+        }
+    }
+
+    fn file(name: &str, full_path: &str) -> crate::sftp::RemoteEntry {
+        crate::sftp::RemoteEntry {
+            name: name.into(),
+            full_path: full_path.into(),
+            is_dir: false,
+            size: 0,
+            modified: 0,
+            permissions: 0o644,
+        }
+    }
+
+    fn tree_state() -> terminal::SftpUiState {
+        terminal::SftpUiState {
+            current_path: "/".into(),
+            status: String::new(),
+            entries: Vec::new(),
+            directory_entries: HashMap::new(),
+            expanded_directories: HashSet::new(),
+            selected_path: None,
+            selected_entries: HashSet::new(),
+            home_dir: "/".into(),
+            follow_terminal_cwd: false,
+            initial_terminal_cwd_synced: false,
+            latency_ms: None,
+        }
+    }
+
+    fn row_metadata(rows: &[SftpTreeRenderRow<'_>]) -> Vec<(String, usize, u64, bool)> {
+        rows.iter()
+            .map(|row| {
+                (
+                    row.path.to_string(),
+                    row.depth,
+                    row.ancestor_continuation_mask,
+                    row.is_last_sibling,
+                )
+            })
+            .collect()
+    }
+
+    fn vertical_bounds(top: f32, height: f32) -> gpui::Bounds<Pixels> {
+        gpui::Bounds::new(point(px(0.), px(top)), gpui::size(px(100.), px(height)))
+    }
+
+    #[test]
+    fn visible_tree_target_keeps_the_current_scroll_position() {
+        let viewport = vertical_bounds(100., 200.);
+        let target = vertical_bounds(150., 30.);
+
+        assert_eq!(
+            crate::sftp::ops::minimal_sftp_tree_scroll_offset_y(
+                px(-300.),
+                viewport,
+                target,
+                px(0.),
+            ),
+            px(-300.)
+        );
+    }
+
+    #[test]
+    fn offscreen_tree_target_moves_only_to_the_nearest_viewport_edge() {
+        let viewport = vertical_bounds(100., 200.);
+
+        assert_eq!(
+            crate::sftp::ops::minimal_sftp_tree_scroll_offset_y(
+                px(-300.),
+                viewport,
+                vertical_bounds(70., 30.),
+                px(0.),
+            ),
+            px(-270.)
+        );
+        assert_eq!(
+            crate::sftp::ops::minimal_sftp_tree_scroll_offset_y(
+                px(-300.),
+                viewport,
+                vertical_bounds(300., 30.),
+                px(0.),
+            ),
+            px(-330.)
+        );
+    }
+
+    #[test]
+    fn partially_visible_tree_target_does_not_jump() {
+        let viewport = vertical_bounds(100., 200.);
+
+        assert_eq!(
+            crate::sftp::ops::minimal_sftp_tree_scroll_offset_y(
+                px(-300.),
+                viewport,
+                vertical_bounds(90., 30.),
+                px(0.),
+            ),
+            px(-300.)
+        );
+        assert_eq!(
+            crate::sftp::ops::minimal_sftp_tree_scroll_offset_y(
+                px(-300.),
+                viewport,
+                vertical_bounds(290., 30.),
+                px(0.),
+            ),
+            px(-300.)
+        );
+    }
+
+    #[test]
+    fn scrollbar_inset_only_affects_a_fully_offscreen_target() {
+        let viewport = vertical_bounds(100., 200.);
+
+        assert_eq!(
+            crate::sftp::ops::minimal_sftp_tree_scroll_offset_y(
+                px(-300.),
+                viewport,
+                vertical_bounds(295., 30.),
+                px(16.),
+            ),
+            px(-300.)
+        );
+        assert_eq!(
+            crate::sftp::ops::minimal_sftp_tree_scroll_offset_y(
+                px(-300.),
+                viewport,
+                vertical_bounds(300., 30.),
+                px(16.),
+            ),
+            px(-346.)
+        );
+    }
+
+    #[test]
+    fn tree_rows_mark_siblings_and_nested_branch_continuations() {
+        let mut sftp = tree_state();
+        sftp.directory_entries.insert(
+            "/".into(),
+            vec![directory("alpha", "/alpha"), directory("beta", "/beta")],
+        );
+        sftp.directory_entries.insert(
+            "/alpha".into(),
+            vec![
+                directory("first", "/alpha/first"),
+                directory("last", "/alpha/last"),
+            ],
+        );
+        sftp.directory_entries.insert(
+            "/alpha/first".into(),
+            vec![directory("leaf", "/alpha/first/leaf")],
+        );
+        sftp.expanded_directories.insert("/alpha".into());
+        sftp.expanded_directories.insert("/alpha/first".into());
+
+        let rows = sftp_tree_render_rows(&sftp, false);
+
+        assert_eq!(
+            row_metadata(&rows),
+            vec![
+                ("/".into(), 0, 0, true),
+                ("/alpha".into(), 1, 0, false),
+                ("/alpha/first".into(), 2, 1, false),
+                ("/alpha/first/leaf".into(), 3, 3, true),
+                ("/alpha/last".into(), 2, 1, true),
+                ("/beta".into(), 1, 0, true),
+            ]
+        );
+    }
+
+    #[test]
+    fn tree_rows_respect_collapsed_nodes_and_hidden_directory_filtering() {
+        let mut sftp = tree_state();
+        sftp.directory_entries.insert(
+            "/".into(),
+            vec![
+                directory("visible", "/visible"),
+                directory(".hidden", "/.hidden"),
+                file("plain.txt", "/plain.txt"),
+            ],
+        );
+        sftp.directory_entries.insert(
+            "/visible".into(),
+            vec![directory("nested", "/visible/nested")],
+        );
+
+        let hidden_rows = sftp_tree_render_rows(&sftp, false);
+        assert_eq!(
+            row_metadata(&hidden_rows),
+            vec![("/".into(), 0, 0, true), ("/visible".into(), 1, 0, true),]
+        );
+
+        let all_rows = sftp_tree_render_rows(&sftp, true);
+        assert_eq!(
+            row_metadata(&all_rows),
+            vec![
+                ("/".into(), 0, 0, true),
+                ("/visible".into(), 1, 0, false),
+                ("/.hidden".into(), 1, 0, true),
+            ]
+        );
+    }
+
+    #[test]
+    fn tree_rows_keep_branch_mask_within_depth_guard() {
+        let mut sftp = tree_state();
+        sftp.directory_entries.insert(
+            "/".into(),
+            vec![directory("branch", "/branch"), directory("tail", "/tail")],
+        );
+        sftp.expanded_directories.insert("/branch".into());
+
+        let mut parent = "/branch".to_string();
+        let mut chain_at_depth_32 = String::new();
+        let mut tail_at_depth_32 = String::new();
+        for depth in 2..=33 {
+            let child = format!("{parent}/level-{depth}");
+            let tail = format!("{parent}/tail-{depth}");
+            sftp.directory_entries.insert(
+                parent.clone(),
+                vec![
+                    directory(&format!("level-{depth}"), &child),
+                    directory(&format!("tail-{depth}"), &tail),
+                ],
+            );
+            sftp.expanded_directories.insert(child.clone());
+            if depth == 32 {
+                chain_at_depth_32.clone_from(&child);
+                tail_at_depth_32 = tail;
+            }
+            parent = child;
+        }
+
+        let rows = sftp_tree_render_rows(&sftp, false);
+        let deepest_chain = rows
+            .iter()
+            .find(|row| row.path == chain_at_depth_32)
+            .unwrap();
+        let deepest_tail = rows
+            .iter()
+            .find(|row| row.path == tail_at_depth_32)
+            .unwrap();
+
+        assert!(rows.iter().all(|row| row.depth <= SFTP_TREE_MAX_DEPTH));
+        assert_eq!(deepest_chain.depth, SFTP_TREE_MAX_DEPTH);
+        assert_eq!(deepest_chain.ancestor_continuation_mask, 0x7fff_ffff);
+        assert!(!deepest_chain.is_last_sibling);
+        assert_eq!(deepest_tail.depth, SFTP_TREE_MAX_DEPTH);
+        assert_eq!(deepest_tail.ancestor_continuation_mask, 0x7fff_ffff);
+        assert!(deepest_tail.is_last_sibling);
+        assert!(!rows.iter().any(|row| row.path.ends_with("level-33")));
+        assert_eq!(rows.last().map(|row| row.path), Some("/tail"));
     }
 }

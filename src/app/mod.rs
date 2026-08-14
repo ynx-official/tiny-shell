@@ -728,6 +728,8 @@ pub(crate) struct SftpWorkspaceState {
     pub(crate) new_folder_input: Entity<InputState>,
     pub(crate) remote_files_scroll_handle: UniformListScrollHandle,
     pub(crate) tree_scroll_handle: gpui::ScrollHandle,
+    pub(crate) tree_scroll_target_bounds: Option<(String, Bounds<Pixels>)>,
+    pub(crate) file_panels: Entity<ResizableState>,
     pub(crate) delete_scroll_handle: gpui::ScrollHandle,
     pub(crate) pending_path_sync: Option<String>,
     pub(crate) pending_tree_scroll_path: Option<String>,
@@ -1217,6 +1219,7 @@ impl TinyShell {
         self.window_state
             .workspace_state_mut()
             .install_terminal_tab(tab, group);
+        self.reset_sftp_tree_for_active_group();
     }
 
     pub(crate) fn terminal_tab_count(&self) -> usize {
@@ -1463,6 +1466,8 @@ impl TinyShell {
                 new_folder_input: sftp_new_folder_input,
                 remote_files_scroll_handle: UniformListScrollHandle::new(),
                 tree_scroll_handle: gpui::ScrollHandle::new(),
+                tree_scroll_target_bounds: None,
+                file_panels: cx.new(|_| ResizableState::default()),
                 delete_scroll_handle: gpui::ScrollHandle::new(),
                 pending_path_sync: Some("/".into()),
                 pending_tree_scroll_path: None,
@@ -2199,6 +2204,7 @@ impl TinyShell {
                 Self::expand_sftp_tree_to_path(sftp, &home);
                 if self.workspace().active_group_id() == Some(tab_id.as_str()) {
                     self.sftp_workspace.pending_path_sync = Some(home.clone());
+                    self.sftp_workspace.tree_scroll_target_bounds = None;
                     self.sftp_workspace.pending_tree_scroll_path = Some(home);
                 }
             }

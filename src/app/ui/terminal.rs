@@ -1,5 +1,8 @@
 use super::*;
 
+const NATIVE_TAB_MIN_WIDTH: f32 = 96.;
+const NATIVE_TAB_TITLE_MAX_WIDTH: f32 = 192.;
+
 struct TabBarGroupData {
     id: String,
     drag_id: u64,
@@ -234,6 +237,7 @@ impl TinyShell {
             .collect();
         let is_integrated =
             self.active_title_bar_style == crate::session::config::TitleBarStyle::Integrated;
+        let native_tab_title_max_width = px(NATIVE_TAB_TITLE_MAX_WIDTH);
         let selected_tab_color = Hsla::from(gpui::rgb(0x1586F5));
         let tab_selection_epoch = self.main_view_key();
 
@@ -396,6 +400,7 @@ impl TinyShell {
                                         group_id: gid.clone(),
                                     };
                                     let drag_preview_label = label.clone();
+                                    let tooltip_label = label.clone();
                                     let context_gid = gid.clone();
                                     let bounds_gid = gid.clone();
                                     let bounds_view = view.clone();
@@ -407,6 +412,9 @@ impl TinyShell {
                                             });
                                         })
                                         .min_w(px(112.))
+                                        .when(!is_integrated, |this| {
+                                            this.min_w(px(NATIVE_TAB_MIN_WIDTH))
+                                        })
                                         .when(tab_selected, |this| {
                                             this.prefix(
                                                 div()
@@ -457,6 +465,9 @@ impl TinyShell {
                                                 .items_center()
                                                 .gap_2()
                                                 .px_2()
+                                                .when(!is_integrated, |this| {
+                                                    this.gap_1().px_1()
+                                                })
                                                 .rounded_tl(px(8.))
                                                 .rounded_tr(px(8.))
                                                 .when(!tab_selected, |this| {
@@ -499,7 +510,23 @@ impl TinyShell {
                                                             |this, delta| this.opacity(delta * delta),
                                                         ),
                                                 )
-                                                .child(div().min_w(px(0.)).child(label))
+                                                .child(
+                                                    div()
+                                                        .id(("native-tab-title", ix))
+                                                        .min_w(px(0.))
+                                                        .when(!is_integrated, move |this| {
+                                                            this.flex_none()
+                                                                .max_w(native_tab_title_max_width)
+                                                                .truncate()
+                                                                .tooltip(move |window, cx| {
+                                                                    gpui_component::tooltip::Tooltip::new(
+                                                                        tooltip_label.clone(),
+                                                                    )
+                                                                    .build(window, cx)
+                                                                })
+                                                        })
+                                                        .child(label),
+                                                )
                                                 .context_menu({
                                                     let view = view.clone();
                                                     move |menu, window, cx| {
@@ -522,6 +549,7 @@ impl TinyShell {
                                                 .xsmall()
                                                 .icon(IconName::Close)
                                                 .mr(px(4.))
+                                                .when(!is_integrated, |this| this.mr(px(0.)))
                                                 .on_mouse_down(
                                                     MouseButton::Left,
                                                     |_, window, cx| {
@@ -2116,5 +2144,16 @@ impl TinyShell {
                 }),
             ),
         )
+    }
+}
+
+#[cfg(test)]
+mod native_tab_width_tests {
+    use super::*;
+
+    #[test]
+    fn native_title_can_grow_beyond_the_compact_tab_minimum() {
+        assert_eq!(NATIVE_TAB_MIN_WIDTH, 96.);
+        assert_eq!(NATIVE_TAB_TITLE_MAX_WIDTH, 192.);
     }
 }
