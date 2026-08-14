@@ -7,6 +7,7 @@ mod app;
 mod backend;
 mod crypto;
 mod docker;
+mod managed_key_dialogs;
 mod modal_dialog;
 mod session;
 mod sftp;
