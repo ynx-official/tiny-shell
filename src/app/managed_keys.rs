@@ -60,7 +60,7 @@ impl TinyShell {
         self.managed_key_editor_target = Some(editor);
         self.managed_key_dialog_selection = selected;
         if let Some(token) = self.managed_key_dialog_token.take() {
-            self.dismiss_dialog(token, window, cx);
+            self.dismiss_modal_dialog(token, window, cx);
         }
         let view = cx.entity();
         window.defer(cx, move |window, cx| {
@@ -78,7 +78,7 @@ impl TinyShell {
         self.managed_key_editor_target = None;
         self.managed_key_dialog_selection = self.managed_key_selected.clone();
         if let Some(token) = self.managed_key_dialog_token.take() {
-            self.dismiss_dialog(token, window, cx);
+            self.dismiss_modal_dialog(token, window, cx);
         }
         let view = cx.entity();
         window.defer(cx, move |window, cx| {
@@ -146,7 +146,7 @@ impl TinyShell {
             let selected = self.managed_key_dialog_selection.take();
             self.editing_managed_key_id = None;
             if let Some(token) = self.managed_key_dialog_token.take() {
-                self.dismiss_dialog(token, window, cx);
+                self.dismiss_modal_dialog(token, window, cx);
             }
             editor.update(cx, |editor, cx| {
                 editor.apply_managed_key_selection(selected, cx);
@@ -165,7 +165,7 @@ impl TinyShell {
             self.editing_managed_key_id = None;
             self.managed_key_dialog_selection = None;
             if let Some(token) = self.managed_key_dialog_token.take() {
-                self.dismiss_dialog(token, window, cx);
+                self.dismiss_modal_dialog(token, window, cx);
             }
             cx.notify();
             return;
@@ -174,7 +174,7 @@ impl TinyShell {
         self.editing_managed_key_id = None;
         self.managed_key_dialog_selection = None;
         if let Some(token) = self.managed_key_dialog_token.take() {
-            self.dismiss_dialog(token, window, cx);
+            self.dismiss_modal_dialog(token, window, cx);
         }
         let view = cx.entity();
         window.defer(cx, move |window, cx| {
@@ -198,7 +198,7 @@ impl TinyShell {
             cx,
         );
         if let Some(token) = self.managed_key_dialog_token.take() {
-            self.dismiss_dialog(token, window, cx);
+            self.dismiss_modal_dialog(token, window, cx);
         }
         let view = cx.entity();
         window.defer(cx, move |window, cx| {
@@ -223,7 +223,7 @@ impl TinyShell {
             cx,
         );
         if let Some(token) = self.managed_key_dialog_token.take() {
-            self.dismiss_dialog(token, window, cx);
+            self.dismiss_modal_dialog(token, window, cx);
         }
         let view = cx.entity();
         window.defer(cx, move |window, cx| {
