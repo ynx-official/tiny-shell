@@ -77,7 +77,7 @@ pub(crate) fn installation_kind() -> InstallationKind {
 
     #[cfg(target_os = "macos")]
     {
-        return if std::env::current_exe().ok().is_some_and(|path| {
+        if std::env::current_exe().ok().is_some_and(|path| {
             path.ancestors()
                 .any(|ancestor| ancestor.extension().is_some_and(|ext| ext == "app"))
         }) {
@@ -88,7 +88,7 @@ pub(crate) fn installation_kind() -> InstallationKind {
             }
         } else {
             InstallationKind::Portable
-        };
+        }
     }
 
     #[cfg(target_os = "linux")]

@@ -2117,44 +2117,6 @@ impl TinyShell {
         cx.notify();
     }
 
-    fn reorder_tab_group(
-        &mut self,
-        group_id: &str,
-        index: usize,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(current_index) = self
-            .workspace()
-            .tab_groups()
-            .iter()
-            .position(|group| group.id == group_id)
-        else {
-            self.status = t!("cannot_reorder_tab_group").into();
-            cx.notify();
-            return;
-        };
-
-        let Some(group) = self.workspace_state_mut().remove_group_at(current_index) else {
-            return;
-        };
-        let target_index = index.min(self.workspace().tab_groups().len());
-        let group_id = group.id.clone();
-        let next_ordinal = self
-            .workspace()
-            .next_tab_group_ordinal()
-            .max(group.ordinal + 1);
-        self.workspace_state_mut()
-            .set_next_tab_group_ordinal(next_ordinal);
-        self.workspace_state_mut().insert_group(target_index, group);
-        self.activate_group(group_id, window, cx);
-        self.tabs_scroll_handle.scroll_to_item(target_index);
-        self.status = t!("tab_group_reordered").into();
-        window.activate_window();
-        self.focus_handle.focus(window, cx);
-        cx.notify();
-    }
-
     fn take_group_transfer(&mut self, group_id: &str) -> Result<GroupTransfer, String> {
         let transfer = self.prepare_group_for_transfer(group_id)?;
         self.clear_transferred_group(transfer.group_index);

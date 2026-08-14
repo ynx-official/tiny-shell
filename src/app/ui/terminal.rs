@@ -1433,10 +1433,10 @@ impl TinyShell {
                     let pane_label = this.tab_title(tab_id);
                     wrapper = wrapper.relative().child(
                         div()
+                            .id((gpui::ElementId::from("pane-drag-handle"), tab_id.clone()))
                             .absolute()
                             .top(px(6.))
                             .right(px(8.))
-                            .z_index(10)
                             .cursor_move()
                             .opacity(0.35)
                             .hover(|this| this.opacity(0.95))
@@ -1447,7 +1447,7 @@ impl TinyShell {
                                 })
                             })
                             .child(
-                                Button::new(("pane-drag", tab_id.clone()))
+                                Button::new((gpui::ElementId::from("pane-drag"), tab_id.clone()))
                                     .ghost()
                                     .xsmall()
                                     .icon(IconName::ArrowRight)

@@ -1121,7 +1121,8 @@ pub(crate) fn open(owner: Entity<TinyShell>, request: SshEditorRequest, cx: &mut
     } else {
         t!("new_ssh_connection").to_string()
     };
-    let opened = cx.open_window(window_options(cx, credentials_only), move |window, cx| {
+    let options = window_options(cx, credentials_only);
+    let opened = cx.open_window(options, move |window, cx| {
         window.set_window_title(&title);
         let window_handle = window.window_handle();
         crate::app::register_auxiliary_window(window_handle, owner_id);

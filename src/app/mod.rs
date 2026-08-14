@@ -1095,34 +1095,6 @@ impl TinyShell {
         }
     }
 
-    pub(crate) fn replace_dialog<F>(
-        &mut self,
-        kind: DialogKind,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-        builder: F,
-    ) -> DialogOpenResult
-    where
-        F: Fn(Dialog, DialogToken, &mut Window, &mut App) -> Dialog + 'static,
-    {
-        let active = self.window_state.active_request();
-        let token = self.window_state.request_dialog(kind);
-        self.pending_dialog = Some(PendingDialog {
-            kind,
-            token,
-            builder: Box::new(builder),
-        });
-        if let Some(active) = active {
-            self.dialog_closed(active.token);
-            window.close_dialog(cx);
-            DialogOpenResult::Queued
-        } else if self.open_pending_dialog(window, cx) {
-            DialogOpenResult::Opened
-        } else {
-            DialogOpenResult::Queued
-        }
-    }
-
     pub(crate) fn open_pending_dialog(
         &mut self,
         window: &mut Window,

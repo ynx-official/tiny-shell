@@ -248,7 +248,7 @@ pub(crate) fn auxiliary_window_options(cx: &mut App, spec: AuxiliaryWindowSpec) 
         }
     });
 
-    let mut options = WindowOptions {
+    let options = WindowOptions {
         is_movable: true,
         is_resizable: spec.resizable,
         is_minimizable: true,
@@ -258,10 +258,15 @@ pub(crate) fn auxiliary_window_options(cx: &mut App, spec: AuxiliaryWindowSpec) 
     };
 
     #[cfg(not(target_os = "macos"))]
-    if let Ok(image) = image::load_from_memory(include_bytes!("../../assets/icons/tiny-shell.png"))
-    {
-        options.icon = Some(std::sync::Arc::new(image.into_rgba8()));
-    }
+    let options = {
+        let mut options = options;
+        if let Ok(image) =
+            image::load_from_memory(include_bytes!("../../assets/icons/tiny-shell.png"))
+        {
+            options.icon = Some(std::sync::Arc::new(image.into_rgba8()));
+        }
+        options
+    };
 
     options
 }

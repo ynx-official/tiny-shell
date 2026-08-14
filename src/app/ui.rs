@@ -363,6 +363,7 @@ impl TinyShell {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let drag_move_view = cx.entity();
+        let pane_drag_move_view = drag_move_view.clone();
         let drop_view = drag_move_view.clone();
         let workspace_with_tool_panel = self.render_workspace_with_tool_panel(workspace, cx);
 
@@ -422,7 +423,7 @@ impl TinyShell {
                 }
             })
             .on_drop::<IncomingPaneDrag>({
-                let pane_drop_view = drag_move_view.clone();
+                let pane_drop_view = pane_drag_move_view;
                 move |drag, window, cx| {
                     let drag = drag.clone();
                     let position = window.mouse_position();

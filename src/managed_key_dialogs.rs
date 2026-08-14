@@ -1,9 +1,9 @@
 use gpui::{
-    AppContext as _, Context, InteractiveElement as _, ParentElement as _,
-    StatefulInteractiveElement as _, Styled as _, Window, div, prelude::FluentBuilder as _, px,
+    Context, InteractiveElement as _, ParentElement as _, StatefulInteractiveElement as _,
+    Styled as _, Window, div, prelude::FluentBuilder as _, px,
 };
 use gpui_component::{
-    ActiveTheme as _, Disableable as _, Sizable as _,
+    ActiveTheme as _, Disableable as _,
     button::{Button, ButtonVariants as _},
     dialog::Dialog,
     h_flex,

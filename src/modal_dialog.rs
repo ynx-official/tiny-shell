@@ -115,12 +115,11 @@ fn close_active(window: AnyWindowHandle, token: DialogToken) -> (bool, Option<Pe
         }
 
         state.active = None;
-        let next = state.pending.take().map(|request| {
+        let next = state.pending.take().inspect(|request| {
             state.active = Some(ActiveModal {
                 kind: request.kind,
                 token: request.token,
             });
-            request
         });
 
         if state.active.is_none() && state.pending.is_none() {

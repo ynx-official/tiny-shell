@@ -36,6 +36,7 @@ pub(crate) struct TabDragState {
 }
 
 impl TabDragState {
+    #[cfg(test)]
     pub(crate) fn begin(&mut self, group_id: String, position: Point<Pixels>) {
         self.begin_with_selection(group_id, position, false);
     }
@@ -94,6 +95,7 @@ impl TabDragState {
         self.selected_groups.iter().any(|id| id == group_id)
     }
 
+    #[cfg(test)]
     pub(crate) fn selected_count(&self) -> usize {
         self.selected_groups.len()
     }
@@ -158,10 +160,6 @@ impl TabDragState {
     /// Cancel the current gesture while intentionally preserving multi-selection.
     pub(crate) fn cancel(&mut self) {
         self.reset_drag_target();
-    }
-
-    pub(crate) fn clear_selection(&mut self) {
-        self.selected_groups.clear();
     }
 
     fn reset_drag_target(&mut self) {
