@@ -103,10 +103,7 @@ fn queue_request(
     })
 }
 
-fn close_active(
-    window: AnyWindowHandle,
-    token: DialogToken,
-) -> (bool, Option<PendingModal>) {
+fn close_active(window: AnyWindowHandle, token: DialogToken) -> (bool, Option<PendingModal>) {
     WINDOW_MODALS.with(|registry| {
         let mut registry = registry.borrow_mut();
         let Some(index) = registry.iter().position(|state| state.window == window) else {

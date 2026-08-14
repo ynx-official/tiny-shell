@@ -1,5 +1,23 @@
 use gpui::{Bounds, Pixels, Point, Size, px};
 
+pub(crate) const TAB_DRAG_THRESHOLD: f32 = 10.0;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum DockZone {
+    #[default]
+    Center,
+    Left,
+    Right,
+    Up,
+    Down,
+}
+
+impl DockZone {
+    pub(crate) fn is_split(self) -> bool {
+        !matches!(self, Self::Center)
+    }
+}
+
 pub(crate) enum DropIntent {
     None,
     Cancelled,
@@ -14,11 +32,31 @@ pub(crate) struct TabDragState {
     dragging_group: Option<String>,
     reorder_index: Option<usize>,
     outside: bool,
+    selected_groups: Vec<String>,
 }
 
 impl TabDragState {
     pub(crate) fn begin(&mut self, group_id: String, position: Point<Pixels>) {
-        self.cancel();
+        self.begin_with_selection(group_id, position, false);
+    }
+
+    pub(crate) fn begin_with_selection(
+        &mut self,
+        group_id: String,
+        position: Point<Pixels>,
+        additive: bool,
+    ) {
+        self.reset_drag_target();
+        if additive {
+            if self.selected_groups.iter().any(|id| id == &group_id) {
+                // Keep an already selected group selected so it can be the drag anchor.
+            } else {
+                self.selected_groups.push(group_id.clone());
+            }
+        } else {
+            self.selected_groups.clear();
+            self.selected_groups.push(group_id.clone());
+        }
         self.pending_group = Some(group_id);
         self.start = Some(position);
     }
@@ -52,6 +90,29 @@ impl TabDragState {
         self.pending_group.is_some()
     }
 
+    pub(crate) fn is_selected(&self, group_id: &str) -> bool {
+        self.selected_groups.iter().any(|id| id == group_id)
+    }
+
+    pub(crate) fn selected_count(&self) -> usize {
+        self.selected_groups.len()
+    }
+
+    pub(crate) fn ordered_drag_groups(
+        &self,
+        anchor: &str,
+        ordered_groups: impl IntoIterator<Item = String>,
+    ) -> Vec<String> {
+        let mut groups = ordered_groups
+            .into_iter()
+            .filter(|id| self.selected_groups.iter().any(|selected| selected == id))
+            .collect::<Vec<_>>();
+        if groups.is_empty() {
+            groups.push(anchor.to_string());
+        }
+        groups
+    }
+
     pub(crate) fn set_reorder_index(&mut self, index: Option<usize>) -> bool {
         if self.reorder_index == index {
             return false;
@@ -78,12 +139,12 @@ impl TabDragState {
 
     pub(crate) fn finish(&mut self) -> DropIntent {
         let Some(group_id) = self.dragging_group.take() else {
-            self.reset_without_target();
+            self.reset_drag_target();
             return DropIntent::None;
         };
         let reorder_index = self.reorder_index;
         let outside = self.outside;
-        self.reset_without_target();
+        self.reset_drag_target();
 
         if let Some(index) = reorder_index {
             return DropIntent::Reorder { group_id, index };
@@ -94,16 +155,49 @@ impl TabDragState {
         DropIntent::Cancelled
     }
 
+    /// Cancel the current gesture while intentionally preserving multi-selection.
     pub(crate) fn cancel(&mut self) {
-        self.reset_without_target();
+        self.reset_drag_target();
     }
 
-    fn reset_without_target(&mut self) {
+    pub(crate) fn clear_selection(&mut self) {
+        self.selected_groups.clear();
+    }
+
+    fn reset_drag_target(&mut self) {
         self.pending_group = None;
         self.start = None;
         self.dragging_group = None;
         self.reorder_index = None;
         self.outside = false;
+    }
+}
+
+pub(crate) fn dock_zone_at(
+    cursor: Point<Pixels>,
+    bounds: Bounds<Pixels>,
+    tab_bar_bounds: Option<Bounds<Pixels>>,
+) -> Option<DockZone> {
+    if tab_bar_bounds.is_some_and(|tab_bar| tab_bar.contains(&cursor)) {
+        return Some(DockZone::Center);
+    }
+    if !bounds.contains(&cursor) {
+        return None;
+    }
+
+    let x = (cursor.x - bounds.origin.x).as_f32() / bounds.size.width.as_f32().max(1.0);
+    let y = (cursor.y - bounds.origin.y).as_f32() / bounds.size.height.as_f32().max(1.0);
+    const EDGE: f32 = 0.28;
+    if x < EDGE {
+        Some(DockZone::Left)
+    } else if x > 1.0 - EDGE {
+        Some(DockZone::Right)
+    } else if y < EDGE {
+        Some(DockZone::Up)
+    } else if y > 1.0 - EDGE {
+        Some(DockZone::Down)
+    } else {
+        Some(DockZone::Center)
     }
 }
 
@@ -130,7 +224,6 @@ pub(crate) fn should_offer_detach(
     has_merge_target: bool,
 ) -> bool {
     let inside_tab_bar = tab_bar_bounds.is_some_and(|bounds| bounds.contains(&cursor));
-
     group_count > 1 && !inside_tab_bar && !has_merge_target
 }
 
@@ -163,18 +256,40 @@ mod tests {
     use gpui::{Bounds, point, px, size};
 
     use super::{
-        DropIntent, TabDragState, cursor_inside_viewport, reorder_index_at_x,
-        should_close_empty_source, should_offer_detach,
+        DockZone, DropIntent, TabDragState, cursor_inside_viewport, dock_zone_at,
+        reorder_index_at_x, should_close_empty_source, should_offer_detach,
     };
 
     #[test]
     fn drag_starts_only_after_threshold() {
         let mut state = TabDragState::default();
         state.begin("group-a".into(), point(px(10.), px(10.)));
-
         assert!(!state.promote_if_needed(point(px(13.), px(14.)), 5.0));
         assert!(state.promote_if_needed(point(px(16.), px(10.)), 5.0));
         assert!(state.is_dragging());
+    }
+
+    #[test]
+    fn additive_selection_is_preserved_in_visual_order() {
+        let mut state = TabDragState::default();
+        state.begin_with_selection("group-b".into(), point(px(0.), px(0.)), false);
+        state.begin_with_selection("group-a".into(), point(px(0.), px(0.)), true);
+        assert_eq!(
+            state.ordered_drag_groups(
+                "group-a",
+                ["group-a", "group-b", "group-c"].map(str::to_string),
+            ),
+            vec!["group-a".to_string(), "group-b".to_string()]
+        );
+    }
+
+    #[test]
+    fn cancelling_drag_keeps_multi_selection() {
+        let mut state = TabDragState::default();
+        state.begin_with_selection("a".into(), point(px(0.), px(0.)), false);
+        state.begin_with_selection("b".into(), point(px(0.), px(0.)), true);
+        state.cancel();
+        assert_eq!(state.selected_count(), 2);
     }
 
     #[test]
@@ -182,7 +297,6 @@ mod tests {
         let mut state = TabDragState::default();
         state.begin("group-a".into(), point(px(0.), px(0.)));
         state.promote_if_needed(point(px(10.), px(0.)), 5.0);
-
         assert!(matches!(state.finish(), DropIntent::Cancelled));
     }
 
@@ -193,11 +307,40 @@ mod tests {
         state.promote_if_needed(point(px(10.), px(0.)), 5.0);
         state.set_reorder_index(Some(0));
         state.set_outside(true);
-
         assert!(matches!(
             state.finish(),
             DropIntent::Reorder { group_id, index: 0 } if group_id == "group-c"
         ));
+    }
+
+    #[test]
+    fn docking_zone_prefers_edges_and_tab_bar() {
+        let bounds = Bounds::new(point(px(0.), px(40.)), size(px(1000.), px(600.)));
+        let tab_bar = Bounds::new(point(px(0.), px(0.)), size(px(1000.), px(40.)));
+        assert_eq!(
+            dock_zone_at(point(px(10.), px(300.)), bounds, Some(tab_bar)),
+            Some(DockZone::Left)
+        );
+        assert_eq!(
+            dock_zone_at(point(px(990.), px(300.)), bounds, Some(tab_bar)),
+            Some(DockZone::Right)
+        );
+        assert_eq!(
+            dock_zone_at(point(px(500.), px(60.)), bounds, Some(tab_bar)),
+            Some(DockZone::Up)
+        );
+        assert_eq!(
+            dock_zone_at(point(px(500.), px(630.)), bounds, Some(tab_bar)),
+            Some(DockZone::Down)
+        );
+        assert_eq!(
+            dock_zone_at(point(px(500.), px(300.)), bounds, Some(tab_bar)),
+            Some(DockZone::Center)
+        );
+        assert_eq!(
+            dock_zone_at(point(px(500.), px(20.)), bounds, Some(tab_bar)),
+            Some(DockZone::Center)
+        );
     }
 
     #[test]
@@ -216,7 +359,6 @@ mod tests {
                 Bounds::new(point(px(200.), px(0.)), size(px(100.), px(32.))),
             ),
         ];
-
         assert_eq!(reorder_index_at_x("group-c", px(20.), &bounds), Some(0));
         assert_eq!(reorder_index_at_x("group-a", px(280.), &bounds), Some(2));
         assert_eq!(reorder_index_at_x("missing", px(20.), &bounds), None);
@@ -228,7 +370,6 @@ mod tests {
         state.begin("group-a".into(), point(px(0.), px(0.)));
         state.promote_if_needed(point(px(10.), px(0.)), 5.0);
         state.set_outside(true);
-
         assert!(matches!(state.finish(), DropIntent::Detach { .. }));
         assert!(matches!(state.finish(), DropIntent::None));
     }
@@ -239,7 +380,6 @@ mod tests {
         state.begin("group-b".into(), point(px(0.), px(0.)));
         state.promote_if_needed(point(px(10.), px(0.)), 5.0);
         state.set_reorder_index(Some(0));
-
         state.cancel();
         assert!(matches!(state.finish(), DropIntent::None));
     }
@@ -255,7 +395,6 @@ mod tests {
     #[test]
     fn viewport_hit_test_rejects_positions_outside_source_window() {
         let viewport = size(px(800.), px(600.));
-
         assert!(cursor_inside_viewport(point(px(400.), px(300.)), viewport));
         assert!(!cursor_inside_viewport(point(px(801.), px(300.)), viewport));
         assert!(!cursor_inside_viewport(point(px(-1.), px(300.)), viewport));
@@ -264,36 +403,29 @@ mod tests {
     #[test]
     fn detach_is_offered_away_from_the_source_tab_bar_with_multiple_groups() {
         let tab_bar = Bounds::new(point(px(0.), px(0.)), size(px(800.), px(40.)));
-
         assert!(should_offer_detach(
             2,
             point(px(300.), px(300.)),
             Some(tab_bar),
-            false,
+            false
         ));
         assert!(!should_offer_detach(
             1,
             point(px(300.), px(300.)),
             Some(tab_bar),
-            false,
-        ));
-        assert!(should_offer_detach(
-            2,
-            point(px(900.), px(300.)),
-            Some(tab_bar),
-            false,
+            false
         ));
         assert!(!should_offer_detach(
             2,
             point(px(300.), px(20.)),
             Some(tab_bar),
-            false,
+            false
         ));
         assert!(!should_offer_detach(
             2,
             point(px(300.), px(300.)),
             Some(tab_bar),
-            true,
+            true
         ));
     }
 
@@ -303,7 +435,6 @@ mod tests {
         state.begin("group-a".into(), point(px(0.), px(0.)));
         state.promote_if_needed(point(px(10.), px(0.)), 5.0);
         state.set_outside(true);
-
         assert!(matches!(
             state.finish(),
             DropIntent::Detach { group_id } if group_id == "group-a"

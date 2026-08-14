@@ -84,10 +84,7 @@ impl AuxiliaryWindowSpec {
     }
 }
 
-fn window_bounds_for_handle(
-    handle: AnyWindowHandle,
-    cx: &mut App,
-) -> Option<Bounds<Pixels>> {
+fn window_bounds_for_handle(handle: AnyWindowHandle, cx: &mut App) -> Option<Bounds<Pixels>> {
     handle
         .update(cx, |_, window, _| match window.window_bounds() {
             WindowBounds::Fullscreen(bounds)
@@ -159,7 +156,10 @@ fn effective_window_size(
 
     size(
         spec.preferred_size.width.max(min_size.width).min(max_width),
-        spec.preferred_size.height.max(min_size.height).min(max_height),
+        spec.preferred_size
+            .height
+            .max(min_size.height)
+            .min(max_height),
     )
 }
 
@@ -222,8 +222,8 @@ pub(crate) fn auxiliary_window_options(cx: &mut App, spec: AuxiliaryWindowSpec) 
 
     let window_bounds = match spec.placement {
         AuxiliaryWindowPlacement::Centered => {
-            let anchor_bounds = active_bounds
-                .or_else(|| cx.primary_display().map(|display| display.bounds()));
+            let anchor_bounds =
+                active_bounds.or_else(|| cx.primary_display().map(|display| display.bounds()));
             anchor_bounds.and_then(|anchor_bounds| {
                 let display_bounds = display_bounds_for_point(cx, bounds_center(anchor_bounds))?;
                 Some(centered_bounds(spec, anchor_bounds, display_bounds))
@@ -277,7 +277,10 @@ mod tests {
             .with_max_ratio(0.9, 0.9);
         let display = Bounds::new(point(px(0.), px(0.)), size(px(1000.), px(700.)));
 
-        assert_eq!(effective_window_size(spec, display), size(px(560.), px(360.)));
+        assert_eq!(
+            effective_window_size(spec, display),
+            size(px(560.), px(360.))
+        );
     }
 
     #[test]
@@ -287,6 +290,9 @@ mod tests {
             .with_max_ratio(0.5, 0.5);
         let display = Bounds::new(point(px(0.), px(0.)), size(px(800.), px(600.)));
 
-        assert_eq!(effective_window_size(spec, display), size(px(400.), px(300.)));
+        assert_eq!(
+            effective_window_size(spec, display),
+            size(px(400.), px(300.))
+        );
     }
 }

@@ -22,8 +22,9 @@ gpui::actions!(tiny_shell_terminal, [TerminalTabKey, TerminalBacktabKey]);
 
 pub(crate) use app::keybinding_recorder::{
     ClosePane, Copy, DetachTabToWindow, FocusPaneDown, FocusPaneLeft, FocusPaneRight, FocusPaneUp,
-    NewSsh, NewWindow, OpenSearch, OpenSession, OpenSettings, OpenTransfers, Paste, SplitPaneDown,
-    SplitPaneLeft, SplitPaneRight, SplitPaneUp, ToggleSftpZoom, ToggleSidebar,
+    MoveTabNextWindow, MoveTabPreviousWindow, NewSsh, NewWindow, OpenSearch, OpenSession,
+    OpenSettings, OpenTransfers, Paste, SplitPaneDown, SplitPaneLeft, SplitPaneRight, SplitPaneUp,
+    ToggleSftpZoom, ToggleSidebar,
 };
 
 pub(crate) use app::{PaneLayout, SelectorEntry, SftpContextMenuState, TabGroup, TinyShell};

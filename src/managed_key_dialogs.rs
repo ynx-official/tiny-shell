@@ -441,9 +441,7 @@ pub(crate) fn show_managed_key_import_dialog(
                                                 .child(t!("key_passphrase").to_string()),
                                         )
                                         .child(
-                                            Input::new(&passphrase_input)
-                                                .flex_1()
-                                                .mask_toggle(),
+                                            Input::new(&passphrase_input).flex_1().mask_toggle(),
                                         ),
                                 )
                                 .child(
@@ -465,9 +463,7 @@ pub(crate) fn show_managed_key_import_dialog(
                                                 .on_click(window.listener_for(
                                                     &view,
                                                     |this, _, window, cx| {
-                                                        this.confirm_managed_key_import(
-                                                            window, cx,
-                                                        );
+                                                        this.confirm_managed_key_import(window, cx);
                                                     },
                                                 )),
                                         )

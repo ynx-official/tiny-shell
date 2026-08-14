@@ -40,35 +40,19 @@ impl Feedback {
         window.push_notification(notification, cx);
     }
 
-    pub(crate) fn success(
-        window: &mut Window,
-        cx: &mut App,
-        message: impl Into<SharedString>,
-    ) {
+    pub(crate) fn success(window: &mut Window, cx: &mut App, message: impl Into<SharedString>) {
         Self::show(window, cx, FeedbackKind::Success, message);
     }
 
-    pub(crate) fn info(
-        window: &mut Window,
-        cx: &mut App,
-        message: impl Into<SharedString>,
-    ) {
+    pub(crate) fn info(window: &mut Window, cx: &mut App, message: impl Into<SharedString>) {
         Self::show(window, cx, FeedbackKind::Info, message);
     }
 
-    pub(crate) fn warning(
-        window: &mut Window,
-        cx: &mut App,
-        message: impl Into<SharedString>,
-    ) {
+    pub(crate) fn warning(window: &mut Window, cx: &mut App, message: impl Into<SharedString>) {
         Self::show(window, cx, FeedbackKind::Warning, message);
     }
 
-    pub(crate) fn error(
-        window: &mut Window,
-        cx: &mut App,
-        message: impl Into<SharedString>,
-    ) {
+    pub(crate) fn error(window: &mut Window, cx: &mut App, message: impl Into<SharedString>) {
         Self::show(window, cx, FeedbackKind::Error, message);
     }
 

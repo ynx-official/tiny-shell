@@ -21,6 +21,8 @@ gpui::actions!(
         NewSsh,
         NewWindow,
         DetachTabToWindow,
+        MoveTabNextWindow,
+        MoveTabPreviousWindow,
         OpenSearch,
         ToggleSidebar,
         ToggleSftpZoom,
@@ -77,6 +79,16 @@ pub(crate) const WORKSPACE_ACTIONS: &[WorkspaceAction] = &[
         id: "DetachTabToWindow",
         label_key: "settings_detach_tab",
         default_suffix: "shift-w",
+    },
+    WorkspaceAction {
+        id: "MoveTabNextWindow",
+        label_key: "settings_move_tab_next_window",
+        default_suffix: "alt-right",
+    },
+    WorkspaceAction {
+        id: "MoveTabPreviousWindow",
+        label_key: "settings_move_tab_previous_window",
+        default_suffix: "alt-left",
     },
     WorkspaceAction {
         id: "OpenSearch",
@@ -243,6 +255,8 @@ pub(crate) fn unbind_workspace_keys_from_config(cx: &mut App, config: &ConfigSto
     unbind_action!("OpenSession", crate::OpenSession);
     unbind_action!("OpenTransfers", crate::OpenTransfers);
     unbind_action!("NewSsh", crate::NewSsh);
+    unbind_action!("MoveTabNextWindow", crate::MoveTabNextWindow);
+    unbind_action!("MoveTabPreviousWindow", crate::MoveTabPreviousWindow);
     unbind_action!("OpenSearch", crate::OpenSearch);
     unbind_action!("ToggleSidebar", crate::ToggleSidebar);
     unbind_action!("ToggleSftpZoom", crate::ToggleSftpZoom);
@@ -301,6 +315,8 @@ fn bind_workspace_actions(cx: &mut App, config: &ConfigStore) {
     bind_action!("OpenSession", crate::OpenSession);
     bind_action!("OpenTransfers", crate::OpenTransfers);
     bind_action!("NewSsh", crate::NewSsh);
+    bind_action!("MoveTabNextWindow", crate::MoveTabNextWindow);
+    bind_action!("MoveTabPreviousWindow", crate::MoveTabPreviousWindow);
     bind_action!("OpenSearch", crate::OpenSearch);
     bind_action!("ToggleSidebar", crate::ToggleSidebar);
     bind_action!("ToggleSftpZoom", crate::ToggleSftpZoom);
@@ -335,6 +351,8 @@ impl KeybindingsPage {
                     "NewSsh",
                     "NewWindow",
                     "DetachTabToWindow",
+                    "MoveTabNextWindow",
+                    "MoveTabPreviousWindow",
                     "OpenSearch",
                     "Copy",
                     "Paste",

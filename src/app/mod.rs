@@ -140,6 +140,12 @@ pub(crate) struct IncomingTabDrag {
     pub(crate) group_id: String,
 }
 
+#[derive(Clone)]
+pub(crate) struct IncomingPaneDrag {
+    pub(crate) group_id: String,
+    pub(crate) tab_id: String,
+}
+
 static WINDOW_REGISTRY: OnceLock<Arc<Mutex<Vec<WindowEntry>>>> = OnceLock::new();
 static AUXILIARY_WINDOW_REGISTRY: OnceLock<Arc<Mutex<Vec<AuxiliaryWindowEntry>>>> = OnceLock::new();
 static TAB_DRAG_HOVER: OnceLock<Mutex<Option<(u64, AnyWindowHandle, u64)>>> = OnceLock::new();
@@ -411,6 +417,29 @@ pub(crate) fn find_window_at_screen_pos(
         })
 }
 
+pub(crate) fn other_main_windows(
+    exclude: AnyWindowHandle,
+) -> Vec<(AnyWindowHandle, Entity<TinyShell>)> {
+    let registry = window_registry();
+    let guard = lock_recover(&registry, "window registry");
+    let mut entries = guard
+        .iter()
+        .filter(|entry| entry.window_handle != exclude)
+        .map(|entry| {
+            (
+                entry.activation_seq,
+                entry.window_handle,
+                entry.entity.clone(),
+            )
+        })
+        .collect::<Vec<_>>();
+    entries.sort_by_key(|(activation_seq, _, _)| std::cmp::Reverse(*activation_seq));
+    entries
+        .into_iter()
+        .map(|(_, handle, entity)| (handle, entity))
+        .collect()
+}
+
 pub(crate) fn clear_incoming_tab_drag_except(
     drag_id: u64,
     keep_window: Option<AnyWindowHandle>,
@@ -434,6 +463,7 @@ pub(crate) fn clear_incoming_tab_drag_except(
                 .is_some_and(|drag| drag.drag_id == drag_id)
             {
                 target.incoming_tab_drag = None;
+                target.incoming_tab_drop_zone = None;
                 cx.notify();
             }
         });
@@ -454,6 +484,7 @@ pub(crate) fn clear_all_incoming_tab_drags(cx: &mut App) {
     for target in targets {
         target.update(cx, |target, cx| {
             if target.incoming_tab_drag.take().is_some() {
+                target.incoming_tab_drop_zone = None;
                 cx.notify();
             }
         });
@@ -981,6 +1012,7 @@ pub(crate) struct TinyShell {
     pub(crate) tab_drag: tab_drag::TabDragState,
     /// Source drag currently hovering over this window.
     pub(crate) incoming_tab_drag: Option<IncomingTabDrag>,
+    pub(crate) incoming_tab_drop_zone: Option<tab_drag::DockZone>,
     pub(crate) terminal_marked_text: Option<String>,
     pub(crate) quick_command_category: usize,
     pub(crate) workspace_mode: WorkspaceMode,
@@ -1509,6 +1541,7 @@ impl TinyShell {
             drag_split_origin: None,
             tab_drag: tab_drag::TabDragState::default(),
             incoming_tab_drag: None,
+            incoming_tab_drop_zone: None,
             quick_command_category: 0,
             workspace_mode: WorkspaceMode::default(),
             sidebar_collapsed: config.sidebar_collapsed(),

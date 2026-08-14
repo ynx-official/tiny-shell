@@ -219,7 +219,8 @@ impl ConnectionOperationWindow {
                 _ => return Err(String::new()),
             };
             if let Err(error) = result {
-                let message = t!("connection_archive_failed", error = error.to_string()).to_string();
+                let message =
+                    t!("connection_archive_failed", error = error.to_string()).to_string();
                 owner.status = message.clone().into();
                 cx.notify();
                 Err(message)
@@ -292,9 +293,8 @@ impl ConnectionOperationWindow {
                         } else {
                             path.join("tiny-shell-connections.json")
                         };
-                        let result = this.update(cx, |this, cx| {
-                            this.run_archive(&path, &password, cx)
-                        })?;
+                        let result =
+                            this.update(cx, |this, cx| this.run_archive(&path, &password, cx))?;
                         match result {
                             Ok(message) => {
                                 this.update(cx, |this, cx| {
@@ -669,7 +669,11 @@ pub(crate) fn open(owner: Entity<TinyShell>, operation: ConnectionOperation, cx:
             &owner,
             cx,
             crate::feedback::FeedbackKind::Error,
-            t!("connection_manager_action_failed", error = format!("{error:?}")).to_string(),
+            t!(
+                "connection_manager_action_failed",
+                error = format!("{error:?}")
+            )
+            .to_string(),
         );
     }
 }

@@ -489,7 +489,11 @@ pub(crate) fn open(owner: Entity<TinyShell>, cx: &mut App) {
             &owner,
             cx,
             crate::feedback::FeedbackKind::Error,
-            t!("finalshell_import_picker_failed", error = format!("{error:#}")).to_string(),
+            t!(
+                "finalshell_import_picker_failed",
+                error = format!("{error:#}")
+            )
+            .to_string(),
         );
     }
 }

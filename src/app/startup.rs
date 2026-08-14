@@ -419,6 +419,40 @@ pub(crate) fn open_new_window(
     );
 }
 
+fn recover_visible_bounds(bounds: Bounds<gpui::Pixels>, cx: &App) -> Bounds<gpui::Pixels> {
+    let visible = cx.displays().into_iter().any(|display| {
+        let display = display.bounds();
+        bounds.right() > display.left() + px(48.)
+            && bounds.left() < display.right() - px(48.)
+            && bounds.bottom() > display.top() + px(48.)
+            && bounds.top() < display.bottom() - px(48.)
+    });
+    if visible {
+        return bounds;
+    }
+    let Some(display) = cx.primary_display() else {
+        return bounds;
+    };
+    let display = display.bounds();
+    let width = px(bounds
+        .size
+        .width
+        .as_f32()
+        .min((display.size.width * 0.92).as_f32()));
+    let height = px(bounds
+        .size
+        .height
+        .as_f32()
+        .min((display.size.height * 0.92).as_f32()));
+    Bounds::new(
+        point(
+            display.origin.x + (display.size.width - width) / 2.0,
+            display.origin.y + (display.size.height - height) / 2.0,
+        ),
+        size(width, height),
+    )
+}
+
 fn build_window_options(
     config: &ConfigStore,
     cx: &App,
@@ -446,18 +480,18 @@ fn build_window_options(
                 y,
                 width,
                 height,
-            } => gpui::WindowBounds::Fullscreen(Bounds::new(
-                point(px(*x), px(*y)),
-                size(px(*width), px(*height)),
+            } => gpui::WindowBounds::Fullscreen(recover_visible_bounds(
+                Bounds::new(point(px(*x), px(*y)), size(px(*width), px(*height))),
+                cx,
             )),
             crate::session::config::SavedWindowBounds::Maximized {
                 x,
                 y,
                 width,
                 height,
-            } => gpui::WindowBounds::Maximized(Bounds::new(
-                point(px(*x), px(*y)),
-                size(px(*width), px(*height)),
+            } => gpui::WindowBounds::Maximized(recover_visible_bounds(
+                Bounds::new(point(px(*x), px(*y)), size(px(*width), px(*height))),
+                cx,
             )),
             crate::session::config::SavedWindowBounds::Windowed {
                 x,
@@ -466,9 +500,12 @@ fn build_window_options(
                 height,
             } => {
                 let (mx, my) = offset.unwrap_or((px(0.), px(0.)));
-                gpui::WindowBounds::Windowed(Bounds::new(
-                    point(px(*x) + mx, px(*y) + my),
-                    size(px(*width), px(*height)),
+                gpui::WindowBounds::Windowed(recover_visible_bounds(
+                    Bounds::new(
+                        point(px(*x) + mx, px(*y) + my),
+                        size(px(*width), px(*height)),
+                    ),
+                    cx,
                 ))
             }
         });
@@ -515,6 +552,44 @@ fn open_window_with_options(
     ) {
         tracing::error!(%error, "failed to open window");
     }
+}
+
+pub(crate) fn open_new_window_with_groups(
+    transfers: Vec<GroupTransfer>,
+    source_owner_id: WindowOwnerId,
+    session_store: Entity<SessionStore>,
+    config_repository: Arc<crate::app::config_persistence::ConfigRepository>,
+    cx: &mut App,
+) -> Result<(), (String, Vec<GroupTransfer>)> {
+    if transfers.is_empty() {
+        return Ok(());
+    }
+    let config = ConfigStore::load().unwrap_or_else(|_| ConfigStore::in_memory());
+    let window_options = build_window_options(&config, cx, Some((px(40.), px(40.))));
+    let (target_window, target) = match open_window_with_initializer(
+        window_options,
+        session_store,
+        config_repository,
+        |_view, _cx| false,
+        cx,
+    ) {
+        Ok(opened) => opened,
+        Err(message) => return Err((message, transfers)),
+    };
+
+    let mut remaining = transfers.into_iter();
+    while let Some(transfer) = remaining.next() {
+        if let Err((message, transfer)) = target.update(cx, |this, cx| {
+            this.receive_group_transfer(transfer, source_owner_id, cx)
+        }) {
+            let mut failed = vec![*transfer];
+            failed.extend(remaining);
+            return Err((message, failed));
+        }
+    }
+    let focus_handle = target.read(cx).focus_handle.clone();
+    crate::app::activate_window_with_retry(target_window, focus_handle, cx);
+    Ok(())
 }
 
 pub(crate) fn open_new_window_with_group(

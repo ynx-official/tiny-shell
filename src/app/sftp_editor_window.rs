@@ -1,8 +1,6 @@
 use std::sync::{Arc, Mutex, OnceLock};
 
-use gpui::{
-    AnyWindowHandle, App, AppContext as _, Entity, Pixels, Point, WindowOptions, px, size,
-};
+use gpui::{AnyWindowHandle, App, AppContext as _, Entity, Pixels, Point, WindowOptions, px, size};
 use gpui_component::Root;
 use rust_i18n::t;
 

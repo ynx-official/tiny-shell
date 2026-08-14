@@ -98,7 +98,11 @@ impl TinyShell {
             crate::feedback::Feedback::info(
                 window,
                 cx,
-                format!("{} · {}", rust_i18n::t!("settings_key_bindings"), rust_i18n::t!("cancel")),
+                format!(
+                    "{} · {}",
+                    rust_i18n::t!("settings_key_bindings"),
+                    rust_i18n::t!("cancel")
+                ),
             );
             return;
         }
@@ -112,8 +116,9 @@ impl TinyShell {
             crate::app::keybinding_recorder::find_conflict(&self.config, &action, &new_key)
         {
             let formatted = crate::app::keybinding_recorder::format_keystroke(&new_key);
-            let message = rust_i18n::t!("keybind_conflict", key = formatted, action = conflict_label)
-                .to_string();
+            let message =
+                rust_i18n::t!("keybind_conflict", key = formatted, action = conflict_label)
+                    .to_string();
             self.recording_action = None;
             self.keybind_error = Some((action, message.clone()));
             crate::feedback::Feedback::warning(window, cx, message);
@@ -183,7 +188,11 @@ impl TinyShell {
     ) -> bool {
         let kind = ProxyKind::from_config(&self.global_proxy_type);
         let Some(values) = ProxyFormValues::capture(kind, inputs, cx) else {
-            crate::feedback::Feedback::warning(window, cx, rust_i18n::t!("ssh_editor_proxy_required"));
+            crate::feedback::Feedback::warning(
+                window,
+                cx,
+                rust_i18n::t!("ssh_editor_proxy_required"),
+            );
             return false;
         };
 

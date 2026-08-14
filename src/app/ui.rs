@@ -30,7 +30,10 @@ use std::{
 use crate::{
     PaneLayout, TinyShell,
     app::constants::{COLLAPSED_SIDEBAR_WIDTH, SIDEBAR_WIDTH, TERMINAL_KEY_CONTEXT},
-    app::{HomePage, IncomingTabDrag, ProcessView, SftpPanelView, settings::MonitoringPosition},
+    app::{
+        HomePage, IncomingPaneDrag, IncomingTabDrag, ProcessView, SftpPanelView,
+        settings::MonitoringPosition,
+    },
     sftp::format_mtime,
     sftp::ops::is_editable_text_file,
     system::format_bytes,
@@ -378,14 +381,26 @@ impl TinyShell {
                 }
 
                 let changed = drag_move_view.update(cx, |target, cx| {
-                    if target
+                    let zone = target
+                        .terminal_panel_bounds
+                        .and_then(|bounds| {
+                            crate::app::tab_drag::dock_zone_at(
+                                window.mouse_position(),
+                                bounds,
+                                target.tab_bar_bounds,
+                            )
+                        })
+                        .unwrap_or_default();
+                    let same_drag = target
                         .incoming_tab_drag
                         .as_ref()
-                        .is_some_and(|current| current.drag_id == drag.drag_id)
-                    {
+                        .is_some_and(|current| current.drag_id == drag.drag_id);
+                    let unchanged = same_drag && target.incoming_tab_drop_zone == Some(zone);
+                    if unchanged {
                         return false;
                     }
                     target.incoming_tab_drag = Some(drag.clone());
+                    target.incoming_tab_drop_zone = Some(zone);
                     cx.notify();
                     true
                 });
@@ -406,6 +421,26 @@ impl TinyShell {
                     });
                 }
             })
+            .on_drop::<IncomingPaneDrag>({
+                let pane_drop_view = drag_move_view.clone();
+                move |drag, window, cx| {
+                    let drag = drag.clone();
+                    let position = window.mouse_position();
+                    pane_drop_view.update(cx, |this, cx| {
+                        let Some((target_tab_id, bounds)) = this
+                            .terminal_bounds
+                            .iter()
+                            .find(|(_, bounds)| bounds.contains(&position))
+                            .map(|(id, bounds)| (id.clone(), *bounds))
+                        else {
+                            return;
+                        };
+                        let zone = crate::app::tab_drag::dock_zone_at(position, bounds, None)
+                            .unwrap_or_default();
+                        this.dock_pane(&drag.group_id, &drag.tab_id, &target_tab_id, zone, cx);
+                    });
+                }
+            })
             .on_drop::<IncomingTabDrag>(move |drag, window, cx| {
                 let drag = drag.clone();
                 let target_window = window.window_handle();
@@ -423,9 +458,10 @@ impl TinyShell {
                     return;
                 }
 
+                let zone = target.read(cx).incoming_tab_drop_zone.unwrap_or_default();
                 window.defer(cx, move |_window, cx| {
                     crate::app::clear_incoming_tab_drag_except(drag.drag_id, None, cx);
-                    TinyShell::finish_native_tab_drop(drag, target_window, target, cx);
+                    TinyShell::finish_native_tab_drop(drag, target_window, target, zone, cx);
                 });
             })
             // Keep tab-drag tracking on the root element. Registering a window
@@ -452,6 +488,16 @@ impl TinyShell {
             .on_action(
                 cx.listener(|this, _: &crate::DetachTabToWindow, window, cx| {
                     this.detach_tab_to_new_window(window, cx)
+                }),
+            )
+            .on_action(
+                cx.listener(|this, _: &crate::MoveTabNextWindow, window, cx| {
+                    this.move_active_group_to_adjacent_window(window.window_handle(), false, cx)
+                }),
+            )
+            .on_action(
+                cx.listener(|this, _: &crate::MoveTabPreviousWindow, window, cx| {
+                    this.move_active_group_to_adjacent_window(window.window_handle(), true, cx)
                 }),
             )
             .on_action(

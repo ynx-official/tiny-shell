@@ -13,8 +13,8 @@ use crate::{
         AuxiliaryWindowsState, IncomingTabDrag, PaneDirection, SystemInfoTab,
         constants::{DEFAULT_COLS, DEFAULT_ROWS},
         tab_drag::{
-            DropIntent, cursor_inside_viewport, reorder_index_at_x, should_close_empty_source,
-            should_offer_detach,
+            DockZone, DropIntent, TAB_DRAG_THRESHOLD, cursor_inside_viewport, reorder_index_at_x,
+            should_close_empty_source, should_offer_detach,
         },
     },
     backend::{local, ssh},
@@ -1474,6 +1474,80 @@ impl TinyShell {
         });
     }
 
+    pub(crate) fn defer_groups_detach(
+        &mut self,
+        group_ids: Vec<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if group_ids.len() <= 1 {
+            if let Some(group_id) = group_ids.into_iter().next() {
+                self.defer_group_detach(group_id, window, cx);
+            }
+            return;
+        }
+        let source = cx.entity();
+        window.defer(cx, move |_window, cx| {
+            Self::detach_groups_to_new_window(source, group_ids, cx);
+        });
+    }
+
+    fn detach_groups_to_new_window(source: Entity<Self>, group_ids: Vec<String>, cx: &mut App) {
+        let prepared = source.update(cx, |this, _| {
+            let mut transfers = Vec::new();
+            for group_id in &group_ids {
+                match this.take_group_transfer(group_id) {
+                    Ok(transfer) => transfers.push(transfer),
+                    Err(message) => return Err((message, transfers)),
+                }
+            }
+            Ok((
+                transfers,
+                this.session_owner_id,
+                this.session_store.clone(),
+                this.config_repository.clone(),
+            ))
+        });
+
+        let (transfers, source_owner_id, session_store, config_repository) = match prepared {
+            Ok(prepared) => prepared,
+            Err((message, transfers)) => {
+                source.update(cx, |this, cx| {
+                    for transfer in transfers.into_iter().rev() {
+                        this.restore_group_transfer(transfer, cx);
+                    }
+                    this.status = message.into();
+                    cx.notify();
+                });
+                return;
+            }
+        };
+
+        match crate::app::startup::open_new_window_with_groups(
+            transfers,
+            source_owner_id,
+            session_store,
+            config_repository,
+            cx,
+        ) {
+            Ok(()) => {
+                source.update(cx, |this, cx| {
+                    this.status = t!("tab_groups_detached").into();
+                    cx.notify();
+                });
+            }
+            Err((message, transfers)) => {
+                source.update(cx, |this, cx| {
+                    for transfer in transfers.into_iter().rev() {
+                        this.restore_group_transfer(transfer, cx);
+                    }
+                    this.status = t!("tab_group_detach_failed", error = message).into();
+                    cx.notify();
+                });
+            }
+        }
+    }
+
     /// Detach a complete tab group to a new window without recreating its
     /// terminal or SFTP backends. Window creation and route handoff form the
     /// prepare step; any failure restores the original group in place.
@@ -1645,7 +1719,10 @@ impl TinyShell {
         cx: &mut Context<Self>,
     ) {
         self.on_connection_group_drag_mouse_move(event, cx);
-        if self.tab_drag.promote_if_needed(event.position, 5.0) {
+        if self
+            .tab_drag
+            .promote_if_needed(event.position, TAB_DRAG_THRESHOLD)
+        {
             cx.notify();
         }
         if !self.tab_drag.is_dragging() {
@@ -1687,6 +1764,16 @@ impl TinyShell {
         if reorder_changed || detach_changed {
             cx.notify();
         }
+    }
+
+    fn selected_drag_group_ids(&self, anchor: &str) -> Vec<String> {
+        self.tab_drag.ordered_drag_groups(
+            anchor,
+            self.workspace()
+                .tab_groups()
+                .iter()
+                .map(|group| group.id.clone()),
+        )
     }
 
     fn prepare_tab_drag_release(
@@ -1781,10 +1868,12 @@ impl TinyShell {
         });
         match intent {
             DropIntent::Reorder { group_id, index } => {
-                self.reorder_tab_group(&group_id, index, window, cx);
+                let group_ids = self.selected_drag_group_ids(&group_id);
+                self.reorder_tab_groups(&group_ids, index, window, cx);
             }
             DropIntent::Detach { group_id } => {
-                self.defer_group_detach(group_id, window, cx);
+                let group_ids = self.selected_drag_group_ids(&group_id);
+                self.defer_groups_detach(group_ids, window, cx);
             }
             DropIntent::None | DropIntent::Cancelled => cx.notify(),
         }
@@ -1821,7 +1910,8 @@ impl TinyShell {
         });
         match intent {
             DropIntent::Detach { group_id } => {
-                self.defer_group_detach(group_id, window, cx);
+                let group_ids = self.selected_drag_group_ids(&group_id);
+                self.defer_groups_detach(group_ids, window, cx);
             }
             DropIntent::Reorder { .. } | DropIntent::None | DropIntent::Cancelled => cx.notify(),
         }
@@ -1831,23 +1921,20 @@ impl TinyShell {
         drag: IncomingTabDrag,
         target_window: AnyWindowHandle,
         target: Entity<TinyShell>,
+        zone: DockZone,
         cx: &mut App,
     ) {
         if drag.source_window == target_window {
             return;
         }
 
-        tracing::info!(
-            drag_id = drag.drag_id,
-            group_id = drag.group_id,
-            "[tab-drag] committing cross-window merge"
-        );
         let source_window = drag.source_window;
         let source = drag.source;
-        let group_id = drag.group_id;
+        let anchor = drag.group_id;
         let should_close_source = source.update(cx, |source, cx| {
+            let group_ids = source.selected_drag_group_ids(&anchor);
             source.tab_drag.cancel();
-            let merged = source.commit_group_merge(group_id, target_window, target, cx);
+            let merged = source.commit_groups_merge(group_ids, target_window, target, zone, cx);
             should_close_empty_source(
                 merged,
                 source.workspace().tab_groups().is_empty(),
@@ -1876,6 +1963,7 @@ impl TinyShell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let group_ids = self.selected_drag_group_ids(&group_id);
         self.tab_drag.cancel();
         if !self
             .workspace_state_mut()
@@ -1904,15 +1992,33 @@ impl TinyShell {
                 })
                 .collect::<Vec<_>>();
             if let Some(index) = reorder_index_at_x(&group_id, position.x, &ordered_bounds) {
-                self.reorder_tab_group(&group_id, index, window, cx);
+                self.reorder_tab_groups(&group_ids, index, window, cx);
                 return;
             }
-        } else if self.workspace_state_mut().tab_groups().len() > 1 {
-            self.defer_group_detach(group_id, window, cx);
+        } else if self.workspace_state_mut().tab_groups().len() > group_ids.len() {
+            self.defer_groups_detach(group_ids, window, cx);
             return;
         }
 
         cx.notify();
+    }
+
+    fn commit_groups_merge(
+        &mut self,
+        group_ids: Vec<String>,
+        target_window: AnyWindowHandle,
+        target: Entity<TinyShell>,
+        zone: DockZone,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let mut moved_any = false;
+        for group_id in group_ids {
+            if !self.commit_group_merge(group_id, target_window, target.clone(), zone, cx) {
+                return false;
+            }
+            moved_any = true;
+        }
+        moved_any
     }
 
     fn commit_group_merge(
@@ -1920,6 +2026,7 @@ impl TinyShell {
         group_id: String,
         target_window: AnyWindowHandle,
         target: Entity<TinyShell>,
+        zone: DockZone,
         cx: &mut Context<Self>,
     ) -> bool {
         target.update(cx, |target, cx| {
@@ -1933,7 +2040,11 @@ impl TinyShell {
                     self.window_state.search_target_tab.as_deref() == Some(tab.id.as_str())
                 });
                 let result = target.update(cx, |target, cx| {
-                    target.receive_group_transfer(transfer, source_owner_id, cx)
+                    if zone.is_split() {
+                        target.receive_group_transfer_docked(transfer, source_owner_id, zone, cx)
+                    } else {
+                        target.receive_group_transfer(transfer, source_owner_id, cx)
+                    }
                 });
                 match result {
                     Ok(()) => {
@@ -1962,6 +2073,48 @@ impl TinyShell {
         };
         cx.notify();
         merged
+    }
+
+    fn reorder_tab_groups(
+        &mut self,
+        group_ids: &[String],
+        index: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let selected = group_ids.iter().cloned().collect::<HashSet<_>>();
+        if selected.is_empty() {
+            return;
+        }
+        let original = self.workspace().tab_groups().to_vec();
+        let mut moving = original
+            .iter()
+            .filter(|group| selected.contains(&group.id))
+            .cloned()
+            .collect::<Vec<_>>();
+        if moving.is_empty() {
+            self.status = t!("cannot_reorder_tab_group").into();
+            cx.notify();
+            return;
+        }
+        let mut remaining = original
+            .into_iter()
+            .filter(|group| !selected.contains(&group.id))
+            .collect::<Vec<_>>();
+        let insert_at = index.min(remaining.len());
+        let active_id = moving.first().map(|group| group.id.clone());
+        for (offset, group) in moving.drain(..).enumerate() {
+            remaining.insert(insert_at + offset, group);
+        }
+        *self.workspace_state_mut().tab_groups_mut() = remaining;
+        if let Some(group_id) = active_id {
+            self.activate_group(group_id, window, cx);
+        }
+        self.tabs_scroll_handle.scroll_to_item(insert_at);
+        self.status = t!("tab_group_reordered").into();
+        window.activate_window();
+        self.focus_handle.focus(window, cx);
+        cx.notify();
     }
 
     fn reorder_tab_group(
@@ -2337,6 +2490,257 @@ impl TinyShell {
             cx,
         );
         Ok(())
+    }
+
+    fn receive_group_transfer_docked(
+        &mut self,
+        transfer: GroupTransfer,
+        source_owner_id: crate::session::store::WindowOwnerId,
+        zone: DockZone,
+        cx: &mut Context<Self>,
+    ) -> Result<(), (String, Box<GroupTransfer>)> {
+        if !zone.is_split() || self.workspace().active_group_id().is_none() {
+            return self.receive_group_transfer(transfer, source_owner_id, cx);
+        }
+        let tab_ids = transfer
+            .tabs
+            .iter()
+            .map(|(_, tab)| tab.id.as_str())
+            .collect::<HashSet<_>>();
+        if tab_ids.len() != transfer.tabs.len()
+            || transfer
+                .group
+                .pane_root
+                .tab_ids()
+                .iter()
+                .any(|tab_id| !tab_ids.contains(*tab_id))
+        {
+            return Err((
+                "transfer payload does not match the group layout".to_string(),
+                Box::new(transfer),
+            ));
+        }
+        if self
+            .workspace()
+            .tabs()
+            .iter()
+            .any(|tab| tab_ids.contains(tab.id.as_str()))
+        {
+            return Err((
+                "target already contains one of the transferred terminals".to_string(),
+                Box::new(transfer),
+            ));
+        }
+        if transfer
+            .sftp_handles
+            .keys()
+            .any(|id| self.sftp_handles.contains_key(id))
+        {
+            return Err((
+                "target already contains one of the transferred SFTP handles".to_string(),
+                Box::new(transfer),
+            ));
+        }
+
+        let target_owner_id = self.session_owner_id;
+        if !self.session_store.update(cx, |store, _| {
+            store.move_event_routes(&transfer.route_ids, source_owner_id, target_owner_id)
+        }) {
+            return Err((
+                "backend event routes changed before the move could commit".to_string(),
+                Box::new(transfer),
+            ));
+        }
+
+        let GroupTransfer {
+            group,
+            tabs,
+            sftp_handles,
+            active_tab,
+            system_info_tabs,
+            active_system_info_tab,
+            ..
+        } = transfer;
+        let incoming_layout = group.pane_root;
+        let existing_layout = self.workspace().pane_root().clone();
+        let merged = match zone {
+            DockZone::Left => PaneLayout::Vertical(vec![incoming_layout, existing_layout], 0.5),
+            DockZone::Right => PaneLayout::Vertical(vec![existing_layout, incoming_layout], 0.5),
+            DockZone::Up => PaneLayout::Horizontal(vec![incoming_layout, existing_layout], 0.5),
+            DockZone::Down => PaneLayout::Horizontal(vec![existing_layout, incoming_layout], 0.5),
+            DockZone::Center => unreachable!("center docking handled as a tab merge"),
+        };
+        self.workspace_state_mut().set_pane_root(merged.clone());
+        if let Some(group_id) = self.workspace().active_group_id().map(str::to_owned)
+            && let Some(target_group) = self.tab_group_mut(&group_id)
+        {
+            target_group.pane_root = merged;
+        }
+        self.workspace_state_mut()
+            .append_tabs(tabs.into_iter().map(|(_, tab)| tab).collect());
+        self.sftp_handles.extend(sftp_handles);
+        let restored_info = crate::app::terminal_workspace::restore_system_info_transfer(
+            self.workspace_state_mut().system_info_tabs_mut(),
+            system_info_tabs,
+            active_system_info_tab,
+        );
+        self.workspace_state_mut()
+            .set_active_system_info_tab(restored_info);
+        if let Some(active_tab) = active_tab {
+            self.workspace_state_mut()
+                .set_active_tab(Some(active_tab.clone()));
+            self.focus_pane_with_id(active_tab);
+        }
+        self.home_page_open = false;
+        self.reset_sftp_tree_for_active_group();
+        self.sync_system_tab_to_active_group();
+        cx.notify();
+        Ok(())
+    }
+
+    pub(crate) fn move_group_to_window(
+        &mut self,
+        group_id: String,
+        target_window: AnyWindowHandle,
+        target: Entity<TinyShell>,
+        source_window: AnyWindowHandle,
+        cx: &mut Context<Self>,
+    ) {
+        let merged =
+            self.commit_groups_merge(vec![group_id], target_window, target, DockZone::Center, cx);
+        if should_close_empty_source(
+            merged,
+            self.workspace().tab_groups().is_empty(),
+            &source_window,
+            &target_window,
+        ) {
+            let source = cx.entity();
+            if let Err(error) = source_window.update(cx, |_, window, cx| {
+                source.update(cx, |this, cx| this.finalize_main_window_close(window, cx));
+                window.remove_window();
+            }) {
+                tracing::warn!("failed to close empty source window: {error:?}");
+            }
+        }
+    }
+
+    pub(crate) fn move_active_group_to_adjacent_window(
+        &mut self,
+        source_window: AnyWindowHandle,
+        reverse: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(group_id) = self.workspace().active_group_id().map(str::to_owned) else {
+            return;
+        };
+        let mut targets = crate::app::other_main_windows(source_window);
+        if reverse {
+            targets.reverse();
+        }
+        let Some((target_window, target)) = targets.into_iter().next() else {
+            self.status = t!("tab_move_no_target_window").into();
+            cx.notify();
+            return;
+        };
+        self.move_group_to_window(group_id, target_window, target, source_window, cx);
+    }
+
+    pub(crate) fn merge_window_into(
+        &mut self,
+        source_window: AnyWindowHandle,
+        target_window: AnyWindowHandle,
+        target: Entity<TinyShell>,
+        cx: &mut Context<Self>,
+    ) {
+        let group_ids = self
+            .workspace()
+            .tab_groups()
+            .iter()
+            .map(|group| group.id.clone())
+            .collect::<Vec<_>>();
+        if group_ids.is_empty() {
+            return;
+        }
+        let merged =
+            self.commit_groups_merge(group_ids, target_window, target, DockZone::Center, cx);
+        if merged && self.workspace().tab_groups().is_empty() {
+            let source = cx.entity();
+            if let Err(error) = source_window.update(cx, |_, window, cx| {
+                source.update(cx, |this, cx| this.finalize_main_window_close(window, cx));
+                window.remove_window();
+            }) {
+                tracing::warn!("failed to close merged source window: {error:?}");
+            }
+        }
+    }
+
+    pub(crate) fn dock_pane(
+        &mut self,
+        group_id: &str,
+        source_tab_id: &str,
+        target_tab_id: &str,
+        zone: DockZone,
+        cx: &mut Context<Self>,
+    ) {
+        if source_tab_id == target_tab_id || !zone.is_split() {
+            return;
+        }
+        if self.workspace().active_group_id() != Some(group_id) {
+            return;
+        }
+        let mut layout = self.workspace().pane_root().clone();
+        if !layout.contains(source_tab_id) || !layout.contains(target_tab_id) {
+            return;
+        }
+        if !layout.remove_tab(source_tab_id) {
+            return;
+        }
+
+        fn dock_at(
+            layout: &mut PaneLayout,
+            target: &str,
+            source: PaneLayout,
+            zone: DockZone,
+        ) -> bool {
+            match layout {
+                PaneLayout::Single(id) if id == target => {
+                    let current = PaneLayout::Single(id.clone());
+                    *layout = match zone {
+                        DockZone::Left => PaneLayout::Vertical(vec![source, current], 0.5),
+                        DockZone::Right => PaneLayout::Vertical(vec![current, source], 0.5),
+                        DockZone::Up => PaneLayout::Horizontal(vec![source, current], 0.5),
+                        DockZone::Down => PaneLayout::Horizontal(vec![current, source], 0.5),
+                        DockZone::Center => return false,
+                    };
+                    true
+                }
+                PaneLayout::Horizontal(children, _) | PaneLayout::Vertical(children, _) => {
+                    for child in children {
+                        if dock_at(child, target, source.clone(), zone) {
+                            return true;
+                        }
+                    }
+                    false
+                }
+                PaneLayout::Empty | PaneLayout::Single(_) => false,
+            }
+        }
+
+        if dock_at(
+            &mut layout,
+            target_tab_id,
+            PaneLayout::Single(source_tab_id.to_string()),
+            zone,
+        ) {
+            self.workspace_state_mut().set_pane_root(layout.clone());
+            if let Some(group) = self.tab_group_mut(group_id) {
+                group.pane_root = layout;
+            }
+            self.workspace_state_mut()
+                .set_active_tab(Some(source_tab_id.to_string()));
+            self.focus_pane_with_id(source_tab_id.to_string());
+            cx.notify();
+        }
     }
 
     fn create_group_for_transfer(

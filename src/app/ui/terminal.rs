@@ -380,6 +380,7 @@ impl TinyShell {
                                         pane_ids.first().cloned().unwrap_or_default()
                                     };
                                     let tab_selected = ix == selected;
+                                    let tab_multi_selected = self.tab_drag.is_selected(&gid);
 
                                     // Status is independent of selection: grey means the
                                     // backend is still connecting, green is ready, and red
@@ -478,9 +479,18 @@ impl TinyShell {
                                                 .on_mouse_down(
                                                     MouseButton::Left,
                                                     cx.listener(move |this, event: &MouseDownEvent, _, _| {
-                                                        this.tab_drag.begin(drag_gid.clone(), event.position);
+                                                        let additive = event.modifiers.platform
+                                                            || event.modifiers.control;
+                                                        this.tab_drag.begin_with_selection(
+                                                            drag_gid.clone(),
+                                                            event.position,
+                                                            additive,
+                                                        );
                                                     }),
                                                 )
+                                                .when(tab_multi_selected && !tab_selected, |this| {
+                                                    this.bg(cx.theme().primary.opacity(0.10))
+                                                })
                                                 .on_drag(
                                                     drag_payload,
                                                     move |_, offset, _, cx| {
@@ -959,15 +969,38 @@ impl TinyShell {
             )
     }
 
-    pub(super) fn render_tab_drag_overlay(&self, _cx: &mut Context<Self>) -> impl IntoElement {
-        let scrim = hsla(220. / 360., 0.25, 0.08, 0.28);
-        let card_bg = hsla(217. / 360., 0.88, 0.40, 0.98);
-        let card_border = hsla(199. / 360., 0.95, 0.72, 1.0);
-        let card_text = hsla(0., 0., 1.0, 1.0);
-        let neutral_bg = hsla(32. / 360., 0.82, 0.34, 0.98);
-        let neutral_border = hsla(42. / 360., 0.95, 0.68, 1.0);
-        let reorder_bg = hsla(150. / 360., 0.72, 0.30, 0.98);
-        let reorder_border = hsla(145. / 360., 0.72, 0.66, 1.0);
+    pub(super) fn render_tab_drag_overlay(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let scrim = hsla(220. / 360., 0.25, 0.08, 0.22);
+        let active = self.incoming_tab_drop_zone;
+        let card = |zone: crate::app::tab_drag::DockZone, label: String| {
+            let selected = active == Some(zone);
+            div()
+                .w(px(118.))
+                .h(px(70.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(px(10.))
+                .border_2()
+                .border_color(if selected {
+                    cx.theme().primary
+                } else {
+                    cx.theme().border
+                })
+                .bg(if selected {
+                    cx.theme().primary.opacity(0.28)
+                } else {
+                    cx.theme().background.opacity(0.94)
+                })
+                .shadow_lg()
+                .text_sm()
+                .font_weight(if selected {
+                    FontWeight::BOLD
+                } else {
+                    FontWeight::NORMAL
+                })
+                .child(label)
+        };
 
         div()
             .absolute()
@@ -976,206 +1009,93 @@ impl TinyShell {
             .right_0()
             .bottom_0()
             .bg(scrim)
-            .when(
-                self.tab_drag.reorder_index().is_some() && self.incoming_tab_drag.is_none(),
-                |this| {
-                    this.child(
-                        div()
-                            .absolute()
-                            .top_0()
-                            .left_0()
-                            .right_0()
-                            .bottom_0()
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .child(
-                                h_flex()
-                                    .gap_3()
-                                    .max_w(px(420.))
-                                    .px(px(20.))
-                                    .py(px(12.))
-                                    .rounded(px(8.))
-                                    .border_2()
-                                    .border_color(reorder_border)
-                                    .bg(reorder_bg)
-                                    .shadow_lg()
-                                    .text_color(card_text)
-                                    .child(
-                                        Icon::new(IconName::ArrowRight)
-                                            .with_size(Size::Medium)
-                                            .text_color(card_text),
-                                    )
-                                    .child(
-                                        v_flex()
-                                            .gap_1()
-                                            .child(
-                                                div()
-                                                    .text_base()
-                                                    .font_weight(FontWeight::BOLD)
-                                                    .child(t!("drag_reorder_title").to_string()),
-                                            )
-                                            .child(
-                                                div()
-                                                    .text_sm()
-                                                    .text_color(card_text.opacity(0.82))
-                                                    .child(t!("drag_reorder_hint").to_string()),
-                                            ),
-                                    ),
-                            ),
-                    )
-                },
-            )
-            .when(
-                self.tab_drag.outside() && self.incoming_tab_drag.is_none(),
-                |this| {
-                    this.child(
-                        div()
-                            .absolute()
-                            .top_0()
-                            .left_0()
-                            .right_0()
-                            .bottom_0()
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .child(
-                                h_flex()
-                                    .gap_3()
-                                    .max_w(px(420.))
-                                    .px(px(20.))
-                                    .py(px(12.))
-                                    .rounded(px(8.))
-                                    .border_2()
-                                    .border_color(card_border)
-                                    .bg(card_bg)
-                                    .shadow_lg()
-                                    .text_color(card_text)
-                                    .child(
-                                        Icon::new(IconName::ExternalLink)
-                                            .with_size(Size::Medium)
-                                            .text_color(card_text),
-                                    )
-                                    .child(
-                                        v_flex()
-                                            .gap_1()
-                                            .child(
-                                                div()
-                                                    .text_base()
-                                                    .font_weight(FontWeight::BOLD)
-                                                    .child(t!("drag_detach_title").to_string()),
-                                            )
-                                            .child(
-                                                div()
-                                                    .text_sm()
-                                                    .text_color(card_text.opacity(0.82))
-                                                    .child(t!("drag_detach_hint").to_string()),
-                                            ),
-                                    ),
-                            ),
-                    )
-                },
-            )
-            .when(
-                self.tab_drag.is_dragging()
-                    && !self.tab_drag.outside()
-                    && self.tab_drag.reorder_index().is_none()
-                    && self.incoming_tab_drag.is_none(),
-                |this| {
-                    this.child(
-                        div()
-                            .absolute()
-                            .top_0()
-                            .left_0()
-                            .right_0()
-                            .bottom_0()
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .child(
-                                h_flex()
-                                    .gap_3()
-                                    .max_w(px(420.))
-                                    .px(px(20.))
-                                    .py(px(12.))
-                                    .rounded(px(8.))
-                                    .border_2()
-                                    .border_color(neutral_border)
-                                    .bg(neutral_bg)
-                                    .shadow_lg()
-                                    .text_color(card_text)
-                                    .child(
-                                        Icon::new(IconName::Close)
-                                            .with_size(Size::Medium)
-                                            .text_color(card_text),
-                                    )
-                                    .child(
-                                        v_flex()
-                                            .gap_1()
-                                            .child(
-                                                div()
-                                                    .text_base()
-                                                    .font_weight(FontWeight::BOLD)
-                                                    .child(t!("drag_cancel_title").to_string()),
-                                            )
-                                            .child(
-                                                div()
-                                                    .text_sm()
-                                                    .text_color(card_text.opacity(0.82))
-                                                    .child(t!("drag_cancel_hint").to_string()),
-                                            ),
-                                    ),
-                            ),
-                    )
-                },
-            )
             .when(self.incoming_tab_drag.is_some(), |this| {
                 this.child(
-                    div()
+                    v_flex()
                         .absolute()
                         .top_0()
                         .left_0()
                         .right_0()
                         .bottom_0()
-                        .flex()
                         .items_center()
                         .justify_center()
+                        .gap_2()
+                        .child(card(
+                            crate::app::tab_drag::DockZone::Up,
+                            t!("drag_dock_up").to_string(),
+                        ))
                         .child(
                             h_flex()
-                                .gap_3()
-                                .max_w(px(420.))
-                                .px(px(20.))
-                                .py(px(12.))
-                                .rounded(px(8.))
-                                .border_2()
-                                .border_color(card_border)
-                                .bg(card_bg)
-                                .shadow_lg()
-                                .text_color(card_text)
-                                .child(
-                                    Icon::new(IconName::ArrowDown)
-                                        .with_size(Size::Medium)
-                                        .text_color(card_text),
-                                )
-                                .child(
-                                    v_flex()
-                                        .gap_1()
-                                        .child(
-                                            div()
-                                                .text_base()
-                                                .font_weight(FontWeight::BOLD)
-                                                .child(t!("drag_merge_title").to_string()),
-                                        )
-                                        .child(
-                                            div()
-                                                .text_sm()
-                                                .text_color(card_text.opacity(0.82))
-                                                .child(t!("drag_merge_hint").to_string()),
-                                        ),
-                                ),
-                        ),
+                                .gap_2()
+                                .child(card(
+                                    crate::app::tab_drag::DockZone::Left,
+                                    t!("drag_dock_left").to_string(),
+                                ))
+                                .child(card(
+                                    crate::app::tab_drag::DockZone::Center,
+                                    t!("drag_merge_title").to_string(),
+                                ))
+                                .child(card(
+                                    crate::app::tab_drag::DockZone::Right,
+                                    t!("drag_dock_right").to_string(),
+                                )),
+                        )
+                        .child(card(
+                            crate::app::tab_drag::DockZone::Down,
+                            t!("drag_dock_down").to_string(),
+                        )),
                 )
             })
+            .when(
+                self.incoming_tab_drag.is_none() && self.tab_drag.reorder_index().is_some(),
+                |this| {
+                    this.child(
+                        div()
+                            .absolute()
+                            .top_0()
+                            .left_0()
+                            .right_0()
+                            .bottom_0()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(
+                                div()
+                                    .px_5()
+                                    .py_3()
+                                    .rounded(px(9.))
+                                    .bg(cx.theme().success.opacity(0.92))
+                                    .text_color(hsla(0., 0., 1., 1.))
+                                    .child(t!("drag_reorder_title").to_string()),
+                            ),
+                    )
+                },
+            )
+            .when(
+                self.incoming_tab_drag.is_none() && self.tab_drag.outside(),
+                |this| {
+                    this.child(
+                        div()
+                            .absolute()
+                            .top_0()
+                            .left_0()
+                            .right_0()
+                            .bottom_0()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(
+                                div()
+                                    .px_5()
+                                    .py_3()
+                                    .rounded(px(9.))
+                                    .bg(cx.theme().primary.opacity(0.92))
+                                    .text_color(hsla(0., 0., 1., 1.))
+                                    .child(t!("drag_detach_title").to_string()),
+                            ),
+                    )
+                },
+            )
     }
 
     pub(super) fn render_terminal_completion_popup(
@@ -1499,6 +1419,41 @@ impl TinyShell {
                     }
                 } else {
                     wrapper = wrapper.child(el);
+                }
+
+                if has_multiple_panes {
+                    let pane_drag = IncomingPaneDrag {
+                        group_id: this
+                            .workspace()
+                            .active_group_id()
+                            .unwrap_or_default()
+                            .to_string(),
+                        tab_id: tab_id.clone(),
+                    };
+                    let pane_label = this.tab_title(tab_id);
+                    wrapper = wrapper.relative().child(
+                        div()
+                            .absolute()
+                            .top(px(6.))
+                            .right(px(8.))
+                            .z_index(10)
+                            .cursor_move()
+                            .opacity(0.35)
+                            .hover(|this| this.opacity(0.95))
+                            .on_drag(pane_drag, move |_, offset, _, cx| {
+                                cx.new(|_| TabDragPreview {
+                                    label: pane_label.clone(),
+                                    offset,
+                                })
+                            })
+                            .child(
+                                Button::new(("pane-drag", tab_id.clone()))
+                                    .ghost()
+                                    .xsmall()
+                                    .icon(IconName::ArrowRight)
+                                    .tooltip(t!("pane_drag_hint").to_string()),
+                            ),
+                    );
                 }
 
                 wrapper.into_any_element()
@@ -2066,78 +2021,106 @@ impl TinyShell {
             )
         };
 
+        let mut menu = menu
+            .item(
+                PopupMenuItem::new(t!("tab_copy_label").to_string())
+                    .disabled(duplicate_session.is_none())
+                    .on_click(window.listener_for(&view, move |this, _, _, cx| {
+                        if let Some(session) = duplicate_session.clone() {
+                            this.open_ssh_session(session, cx);
+                        }
+                    })),
+            )
+            .item(
+                PopupMenuItem::new(t!("tab_connect").to_string())
+                    .disabled(reconnect_tab_ids.is_empty())
+                    .on_click(window.listener_for(&view, move |this, _, _, cx| {
+                        for tab_id in &reconnect_tab_ids {
+                            this.retry_disconnected_tab(tab_id, cx);
+                        }
+                        cx.notify();
+                    })),
+            )
+            .item(
+                PopupMenuItem::new(t!("tab_connect_all").to_string())
+                    .disabled(reconnect_all_tab_ids.is_empty())
+                    .on_click(window.listener_for(&view, move |this, _, _, cx| {
+                        for tab_id in &reconnect_all_tab_ids {
+                            this.retry_disconnected_tab(tab_id, cx);
+                        }
+                        cx.notify();
+                    })),
+            )
+            .separator()
+            .item(
+                PopupMenuItem::new(t!("tab_disconnect").to_string())
+                    .disabled(!is_connected_ssh)
+                    .on_click(window.listener_for(&view, {
+                        let group_id = group_id.clone();
+                        move |this, _, _, cx| {
+                            this.disconnect_tab_group(&group_id, cx);
+                        }
+                    })),
+            )
+            .separator()
+            .item(
+                PopupMenuItem::new(t!("tab_close").to_string())
+                    .disabled(close_tab_id.is_none())
+                    .on_click(window.listener_for(&view, move |this, _, _, cx| {
+                        if let Some(tab_id) = close_tab_id.clone() {
+                            this.close_tab(tab_id, cx);
+                        }
+                    })),
+            )
+            .item(
+                PopupMenuItem::new(t!("tab_close_others").to_string())
+                    .disabled(close_other_tab_ids.is_empty())
+                    .on_click(window.listener_for(&view, move |this, _, _, cx| {
+                        for tab_id in &close_other_tab_ids {
+                            this.close_tab(tab_id.clone(), cx);
+                        }
+                        cx.notify();
+                    })),
+            )
+            .item(
+                PopupMenuItem::new(t!("tab_close_all").to_string())
+                    .disabled(close_all_tab_ids.is_empty())
+                    .on_click(window.listener_for(&view, move |this, _, _, cx| {
+                        for tab_id in &close_all_tab_ids {
+                            this.close_tab(tab_id.clone(), cx);
+                        }
+                        cx.notify();
+                    })),
+            )
+            .separator();
+
+        let source_window = window.window_handle();
+        let targets = crate::app::other_main_windows(source_window);
+        for (index, (target_window, target)) in targets.iter().cloned().enumerate() {
+            let move_group_id = group_id.clone();
+            menu = menu.item(
+                PopupMenuItem::new(t!("tab_move_to_window", index = index + 1).to_string())
+                    .on_click(window.listener_for(&view, move |this, _, _, cx| {
+                        this.move_group_to_window(
+                            move_group_id.clone(),
+                            target_window,
+                            target.clone(),
+                            source_window,
+                            cx,
+                        );
+                    })),
+            );
+        }
+        if let Some((target_window, target)) = targets.into_iter().next() {
+            menu = menu.item(
+                PopupMenuItem::new(t!("tab_merge_whole_window").to_string()).on_click(
+                    window.listener_for(&view, move |this, _, _, cx| {
+                        this.merge_window_into(source_window, target_window, target.clone(), cx);
+                    }),
+                ),
+            );
+        }
         menu.item(
-            PopupMenuItem::new(t!("tab_copy_label").to_string())
-                .disabled(duplicate_session.is_none())
-                .on_click(window.listener_for(&view, move |this, _, _, cx| {
-                    if let Some(session) = duplicate_session.clone() {
-                        this.open_ssh_session(session, cx);
-                    }
-                })),
-        )
-        .item(
-            PopupMenuItem::new(t!("tab_connect").to_string())
-                .disabled(reconnect_tab_ids.is_empty())
-                .on_click(window.listener_for(&view, move |this, _, _, cx| {
-                    for tab_id in &reconnect_tab_ids {
-                        this.retry_disconnected_tab(tab_id, cx);
-                    }
-                    cx.notify();
-                })),
-        )
-        .item(
-            PopupMenuItem::new(t!("tab_connect_all").to_string())
-                .disabled(reconnect_all_tab_ids.is_empty())
-                .on_click(window.listener_for(&view, move |this, _, _, cx| {
-                    for tab_id in &reconnect_all_tab_ids {
-                        this.retry_disconnected_tab(tab_id, cx);
-                    }
-                    cx.notify();
-                })),
-        )
-        .separator()
-        .item(
-            PopupMenuItem::new(t!("tab_disconnect").to_string())
-                .disabled(!is_connected_ssh)
-                .on_click(window.listener_for(&view, {
-                    let group_id = group_id.clone();
-                    move |this, _, _, cx| {
-                        this.disconnect_tab_group(&group_id, cx);
-                    }
-                })),
-        )
-        .separator()
-        .item(
-            PopupMenuItem::new(t!("tab_close").to_string())
-                .disabled(close_tab_id.is_none())
-                .on_click(window.listener_for(&view, move |this, _, _, cx| {
-                    if let Some(tab_id) = close_tab_id.clone() {
-                        this.close_tab(tab_id, cx);
-                    }
-                })),
-        )
-        .item(
-            PopupMenuItem::new(t!("tab_close_others").to_string())
-                .disabled(close_other_tab_ids.is_empty())
-                .on_click(window.listener_for(&view, move |this, _, _, cx| {
-                    for tab_id in &close_other_tab_ids {
-                        this.close_tab(tab_id.clone(), cx);
-                    }
-                    cx.notify();
-                })),
-        )
-        .item(
-            PopupMenuItem::new(t!("tab_close_all").to_string())
-                .disabled(close_all_tab_ids.is_empty())
-                .on_click(window.listener_for(&view, move |this, _, _, cx| {
-                    for tab_id in &close_all_tab_ids {
-                        this.close_tab(tab_id.clone(), cx);
-                    }
-                    cx.notify();
-                })),
-        )
-        .separator()
-        .item(
             PopupMenuItem::new(t!("settings_detach_tab").to_string()).on_click(
                 window.listener_for(&view, move |this, _, window, cx| {
                     this.defer_group_detach(group_id.clone(), window, cx);
