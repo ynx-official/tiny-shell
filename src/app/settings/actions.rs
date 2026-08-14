@@ -95,6 +95,11 @@ impl TinyShell {
 
         if event.keystroke.key == "escape" {
             self.cancel_settings_keybinding_recording(cx);
+            crate::feedback::Feedback::info(
+                window,
+                cx,
+                format!("{} · {}", rust_i18n::t!("settings_key_bindings"), rust_i18n::t!("cancel")),
+            );
             return;
         }
 
