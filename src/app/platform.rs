@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use gpui::{App, AppContext as _, Bounds, Pixels, Point, Size, WindowBounds, point, px, size};
+use gpui::{App, Bounds, Pixels, Point, Size, WindowBounds, point, px, size};
 
 /// Opens a URL in the user's default browser.
 pub(crate) fn open_url(url: &str) -> Result<()> {
@@ -57,7 +57,7 @@ fn display_bounds_for_point(cx: &App, position: Point<Pixels>) -> Option<Bounds<
             let bounds = display.bounds();
             bounds.contains(&position).then_some(bounds)
         })
-        .or_else(|| cx.displays().first().map(|display| display.bounds()))
+        .or_else(|| cx.primary_display().map(|display| display.bounds()))
 }
 
 fn constrained_window_size(
@@ -96,7 +96,7 @@ fn clamp_window_origin(
 /// Placement priority:
 /// 1. Center on the most recently active TinyShell workspace window.
 /// 2. Use the display containing that workspace.
-/// 3. Fall back to the first display only when no workspace bounds are available.
+/// 3. Fall back to the primary display only when no workspace bounds are available.
 ///
 /// The final bounds are clamped to the target display, so a child window cannot spill off-screen
 /// when the parent is close to a monitor edge or spans multiple displays.
@@ -110,7 +110,7 @@ pub(crate) fn centered_child_window_bounds(
     let anchor = workspace_bounds.map(bounds_center);
     let display_bounds = anchor
         .and_then(|position| display_bounds_for_point(cx, position))
-        .or_else(|| cx.displays().first().map(|display| display.bounds()))?;
+        .or_else(|| cx.primary_display().map(|display| display.bounds()))?;
     let window_size = constrained_window_size(
         preferred_size,
         display_bounds,
