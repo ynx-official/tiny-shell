@@ -43,11 +43,12 @@ pub(crate) fn show_managed_key_selector_dialog(
                     let view = view.clone();
                     move |_, window, cx| {
                         view.update(cx, |this, cx| {
-                            this.modal_dialog_closed(token, window, cx);
-                            this.managed_key_dialog_token = None;
-                            this.managed_key_editor_target = None;
-                            this.managed_key_dialog_selection = None;
-                            this.editing_managed_key_id = None;
+                            if this.modal_dialog_closed(token, window, cx) {
+                                this.managed_key_dialog_token = None;
+                                this.managed_key_editor_target = None;
+                                this.managed_key_dialog_selection = None;
+                                this.editing_managed_key_id = None;
+                            }
                             cx.notify();
                         });
                     }
@@ -314,10 +315,11 @@ pub(crate) fn show_managed_key_import_dialog(
                     let view = view.clone();
                     move |_, window, cx| {
                         view.update(cx, |this, cx| {
-                            this.modal_dialog_closed(token, window, cx);
-                            this.managed_key_dialog_token = None;
-                            this.key_import.close();
-                            this.managed_key_dialog_selection = None;
+                            if this.modal_dialog_closed(token, window, cx) {
+                                this.managed_key_dialog_token = None;
+                                this.key_import.close();
+                                this.managed_key_dialog_selection = None;
+                            }
                             cx.notify();
                         });
                     }
