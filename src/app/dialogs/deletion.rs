@@ -100,8 +100,9 @@ impl TinyShell {
             return;
         }
 
+        let restore_selector = self.managed_key_dialog_token.is_some();
         let view = cx.entity();
-        self.open_modal_dialog(
+        self.replace_modal_dialog(
             crate::app::DialogKind::DeleteConfirmation,
             window,
             cx,
@@ -109,6 +110,8 @@ impl TinyShell {
                 dialog
                     .title(t!("confirm_delete").to_string())
                     .w(px(420.))
+                    .close_button(false)
+                    .overlay_closable(false)
                     .on_close({
                         let view = view.clone();
                         move |_, window, cx| {
@@ -136,6 +139,16 @@ impl TinyShell {
                                             view.update(cx, |this, cx| {
                                                 this.dismiss_modal_dialog(token, window, cx);
                                             });
+                                            if restore_selector {
+                                                let view = view.clone();
+                                                window.defer(cx, move |window, cx| {
+                                                    view.update(cx, |this, cx| {
+                                                        crate::managed_key_dialogs::show_managed_key_selector_dialog(
+                                                            this, window, cx,
+                                                        );
+                                                    });
+                                                });
+                                            }
                                         }
                                     }),
                             )
@@ -151,6 +164,16 @@ impl TinyShell {
                                                 this.delete_managed_key(key_id.clone(), cx);
                                                 this.dismiss_modal_dialog(token, window, cx);
                                             });
+                                            if restore_selector {
+                                                let view = view.clone();
+                                                window.defer(cx, move |window, cx| {
+                                                    view.update(cx, |this, cx| {
+                                                        crate::managed_key_dialogs::show_managed_key_selector_dialog(
+                                                            this, window, cx,
+                                                        );
+                                                    });
+                                                });
+                                            }
                                         }
                                     }),
                             ),
