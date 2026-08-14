@@ -1,8 +1,7 @@
 use std::sync::{Arc, Mutex, OnceLock};
 
 use gpui::{
-    AnyWindowHandle, App, AppContext as _, Bounds, Entity, Pixels, Point, WindowOptions, point, px,
-    size,
+    AnyWindowHandle, App, AppContext as _, Entity, Pixels, Point, WindowOptions, px, size,
 };
 use gpui_component::Root;
 use rust_i18n::t;
@@ -72,33 +71,25 @@ pub(crate) fn deregister_window(window: AnyWindowHandle) {
 
 fn window_options(cx: &App, position_hint: Option<Point<Pixels>>) -> WindowOptions {
     let mut options = WindowOptions::default();
+    let preferred_size = size(px(1000.), px(760.));
 
-    if let Some(display) = cx.displays().first().cloned() {
-        let display_bounds = display.bounds();
-        let editor_size = size(
-            px(1000.).min(display_bounds.size.width * 0.9),
-            px(760.).min(display_bounds.size.height * 0.9),
-        );
-        let centered = point(
-            display_bounds.origin.x + (display_bounds.size.width - editor_size.width) / 2.,
-            display_bounds.origin.y + (display_bounds.size.height - editor_size.height) / 2.,
-        );
-        let origin = position_hint
-            .map(|position| {
-                let max_x = display_bounds.origin.x + display_bounds.size.width - editor_size.width;
-                let max_y =
-                    display_bounds.origin.y + display_bounds.size.height - editor_size.height;
-                point(
-                    (position.x - px(80.)).clamp(display_bounds.origin.x, max_x),
-                    (position.y - px(24.)).clamp(display_bounds.origin.y, max_y),
-                )
-            })
-            .unwrap_or(centered);
-        options.window_bounds = Some(gpui::WindowBounds::Windowed(Bounds::new(
-            origin,
-            editor_size,
-        )));
-    }
+    options.window_bounds = match position_hint {
+        Some(position) => crate::app::platform::window_bounds_near_position(
+            cx,
+            preferred_size,
+            0.9,
+            0.9,
+            position,
+            px(80.),
+            px(24.),
+        ),
+        None => crate::app::platform::centered_child_window_bounds(
+            cx,
+            preferred_size,
+            0.9,
+            0.9,
+        ),
+    };
 
     #[cfg(not(target_os = "macos"))]
     if let Ok(image) = image::load_from_memory(include_bytes!("../../assets/icons/tiny-shell.png"))
