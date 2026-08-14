@@ -615,6 +615,7 @@ impl TinyShell {
             .child(div().flex_1().min_h_0().child(workspace_with_tool_panel))
             .children(Root::render_dialog_layer(window, cx))
             .children(Root::render_sheet_layer(window, cx))
+            .children(Root::render_notification_layer(window, cx))
             .on_prepaint({
                 let view = cx.entity().clone();
                 move |_, window, cx| {

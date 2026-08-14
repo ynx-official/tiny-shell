@@ -1,6 +1,6 @@
 use gpui::{
-    AnyWindowHandle, App, AppContext as _, Context, Entity, FocusHandle, Render, Window,
-    WindowOptions, px, size,
+    AnyWindowHandle, App, AppContext as _, Context, Entity, FocusHandle, ParentElement as _,
+    Render, Styled as _, Window, WindowOptions, px, size,
 };
 use gpui_component::{Root, input::InputEvent};
 use rust_i18n::t;
@@ -120,15 +120,18 @@ impl SettingsWindow {
 }
 
 impl Render for SettingsWindow {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl gpui::IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl gpui::IntoElement {
         let owner = self.owner.clone();
-        owner.read(cx).render_settings_content(
-            &owner,
-            "settings-window",
-            &self.focus_handle,
-            &self.inputs,
-            cx,
-        )
+        gpui::div()
+            .size_full()
+            .child(owner.read(cx).render_settings_content(
+                &owner,
+                "settings-window",
+                &self.focus_handle,
+                &self.inputs,
+                cx,
+            ))
+            .children(Root::render_notification_layer(window, cx))
     }
 }
 

@@ -61,6 +61,7 @@ impl Render for ConnectionManagerWindow {
                 window,
                 cx,
             ))
+            .children(Root::render_notification_layer(window, cx))
     }
 }
 

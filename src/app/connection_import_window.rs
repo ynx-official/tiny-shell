@@ -234,7 +234,7 @@ impl FinalShellImportWindow {
 }
 
 impl Render for FinalShellImportWindow {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let content = if let Some(preview) = &self.preview {
             let password_count = preview
                 .sessions
@@ -455,6 +455,7 @@ impl Render for FinalShellImportWindow {
                         .child(error),
                 )
             })
+            .children(Root::render_notification_layer(window, cx))
     }
 }
 

@@ -373,7 +373,9 @@ impl SshEditorWindow {
         let mut session = match self.build_session(cx) {
             Ok(session) => session,
             Err(error) => {
-                self.error = Some(error.to_string().into());
+                let message = error.to_string();
+                self.error = Some(message.clone().into());
+                crate::feedback::Feedback::warning(window, cx, message);
                 cx.notify();
                 return;
             }
@@ -382,6 +384,7 @@ impl SshEditorWindow {
         let baseline = self.baseline.clone();
         let connect_after_save = self.connect_after_save;
         let editor = cx.entity();
+        let feedback_owner = self.owner.clone();
         let result = self.owner.update(cx, |owner, cx| {
             let mut staged = owner.config.clone();
             if let Some(id) = &editing_id {
@@ -405,14 +408,22 @@ impl SshEditorWindow {
                         owner.open_ssh_session(session, cx);
                     }
                     cx.notify();
+                    crate::feedback::Feedback::show_for_owner(
+                        &feedback_owner,
+                        cx,
+                        crate::feedback::FeedbackKind::Success,
+                        t!("saved"),
+                    );
                     crate::app::deregister_auxiliary_window(window.window_handle());
                     window.remove_window();
                 },
-                move |_, error, _, cx| {
+                move |_, error, window, cx| {
+                    let message = error.to_string();
                     editor.update(cx, |editor, cx| {
-                        editor.error = Some(error.to_string().into());
+                        editor.error = Some(message.clone().into());
                         cx.notify();
                     });
+                    crate::feedback::Feedback::error(window, cx, message);
                 },
                 cx,
             );
@@ -421,7 +432,9 @@ impl SshEditorWindow {
         match result {
             Ok(()) => {}
             Err(error) => {
-                self.error = Some(error.to_string().into());
+                let message = error.to_string();
+                self.error = Some(message.clone().into());
+                crate::feedback::Feedback::error(window, cx, message);
                 cx.notify();
             }
         }
@@ -1070,6 +1083,7 @@ impl Render for SshEditorWindow {
                     ),
             )
             .children(Root::render_dialog_layer(window, cx))
+            .children(Root::render_notification_layer(window, cx))
     }
 }
 
@@ -1121,12 +1135,13 @@ pub(crate) fn open(owner: Entity<TinyShell>, request: SshEditorRequest, cx: &mut
     } else {
         t!("new_ssh_connection").to_string()
     };
+    let owner_for_window = owner.clone();
     let options = window_options(cx, credentials_only);
     let opened = cx.open_window(options, move |window, cx| {
         window.set_window_title(&title);
         let window_handle = window.window_handle();
         crate::app::register_auxiliary_window(window_handle, owner_id);
-        let editor = cx.new(|cx| SshEditorWindow::new(owner, request, window, cx));
+        let editor = cx.new(|cx| SshEditorWindow::new(owner_for_window, request, window, cx));
         let focus_input =
             if editor.read(cx).connect_after_save && editor.read(cx).auth == AuthMethod::Password {
                 editor.read(cx).inputs.password.clone()
@@ -1145,6 +1160,16 @@ pub(crate) fn open(owner: Entity<TinyShell>, request: SshEditorRequest, cx: &mut
     });
     if let Err(error) = opened {
         tracing::error!("failed to open SSH editor window: {error:?}");
+        crate::feedback::Feedback::show_for_owner(
+            &owner,
+            cx,
+            crate::feedback::FeedbackKind::Error,
+            t!(
+                "connection_manager_action_failed",
+                error = format!("{error:?}")
+            )
+            .to_string(),
+        );
     }
 }
 

@@ -66,7 +66,31 @@ impl Feedback {
         message: impl Into<SharedString>,
     ) {
         let message = message.into();
-        let owner_id = owner.read(cx).session_owner_id;
+        let owner = owner.clone();
+        cx.defer(move |cx| Self::show_for_owner_now(&owner, cx, kind, message));
+    }
+
+    /// Resolve the target after the current entity update has completed. GPUI forbids reading an
+    /// entity while it is already being updated, and save callbacks commonly run in that state.
+    fn show_for_owner_now(
+        owner: &Entity<TinyShell>,
+        cx: &mut App,
+        kind: FeedbackKind,
+        message: SharedString,
+    ) {
+        let owner_state = owner.read(cx);
+        let owner_id = owner_state.session_owner_id;
+        let connection_manager = owner_state.auxiliary_windows.connection_manager.handle;
+        if let Some(target) = connection_manager
+            && cx.windows().contains(&target)
+            && target
+                .update(cx, |_, window, cx| {
+                    Self::show(window, cx, kind, message.clone());
+                })
+                .is_ok()
+        {
+            return;
+        }
         let target = {
             let registry = crate::app::window_registry();
             let guard = match registry.lock() {

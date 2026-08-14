@@ -517,6 +517,7 @@ impl Render for ConnectionOperationWindow {
             .bg(cx.theme().background)
             .p_4()
             .child(content)
+            .children(Root::render_notification_layer(window, cx))
     }
 }
 
