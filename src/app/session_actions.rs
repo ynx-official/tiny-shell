@@ -13,8 +13,9 @@ use crate::{
         AuxiliaryWindowsState, IncomingTabDrag, PaneDirection, SystemInfoTab,
         constants::{DEFAULT_COLS, DEFAULT_ROWS},
         tab_drag::{
-            DockZone, DropIntent, TAB_DRAG_THRESHOLD, cursor_inside_viewport, reorder_index_at_x,
-            should_close_empty_source, should_offer_detach,
+            DockZone, DropIntent, TAB_DRAG_THRESHOLD, cursor_inside_viewport, dock_zone_at,
+            local_position_in_window, reorder_index_at_x, should_close_empty_source,
+            should_offer_detach,
         },
     },
     backend::{local, ssh},
@@ -32,6 +33,12 @@ pub(crate) struct GroupTransfer {
     system_info_tabs: Vec<SystemInfoTab>,
     active_system_info_tab: Option<String>,
     was_active_group: bool,
+}
+
+struct NativeTabDropTarget {
+    window: AnyWindowHandle,
+    entity: Entity<TinyShell>,
+    zone: DockZone,
 }
 
 impl TinyShell {
@@ -1776,6 +1783,57 @@ impl TinyShell {
         )
     }
 
+    fn native_tab_drag_payload(
+        &self,
+        source_window: AnyWindowHandle,
+        source: Entity<Self>,
+    ) -> Option<IncomingTabDrag> {
+        let group_id = self.tab_drag.dragging_group()?.to_string();
+        let drag_id = self
+            .workspace()
+            .tab_groups()
+            .iter()
+            .find(|group| group.id == group_id)?
+            .drag_id;
+        Some(IncomingTabDrag {
+            drag_id,
+            source_window,
+            source,
+            group_id,
+        })
+    }
+
+    fn native_tab_drop_target(
+        &self,
+        source_position: Point<Pixels>,
+        source_window: &Window,
+        cx: &App,
+    ) -> Option<NativeTabDropTarget> {
+        if cursor_inside_viewport(source_position, source_window.viewport_size()) {
+            return None;
+        }
+
+        let source_handle = source_window.window_handle();
+        let screen_position = Self::screen_position(source_window, source_position);
+        let (target_window, target, target_bounds) =
+            crate::app::find_window_at_screen_pos(&source_handle, screen_position)?;
+        let target_position = local_position_in_window(screen_position, target_bounds);
+        let zone = {
+            let target_state = target.read(cx);
+            let terminal_bounds = target_state.terminal_panel_bounds?;
+            dock_zone_at(
+                target_position,
+                terminal_bounds,
+                target_state.tab_bar_bounds,
+            )?
+        };
+        Some(NativeTabDropTarget {
+            window: target_window,
+            entity: target,
+            zone,
+        })
+    }
+
     fn prepare_tab_drag_release(
         &mut self,
         event: &MouseUpEvent,
@@ -1894,11 +1952,31 @@ impl TinyShell {
             return;
         }
 
-        // A desktop release has no drop target to consume GPUI's process-wide
-        // active drag. Clear it before opening another native window so the new
-        // window cannot paint the source window's drag preview while mouse-up
-        // dispatch is still unwinding.
+        let fallback_merge = self
+            .native_tab_drag_payload(window.window_handle(), cx.entity())
+            .zip(self.native_tab_drop_target(event.position, window, cx));
+
+        // A source-window release has no reliable target drop callback. Clear
+        // GPUI's process-wide drag before either merging into an existing
+        // window or opening a detached one while mouse-up dispatch unwinds.
         cx.stop_active_drag(window);
+        if let Some((drag, target)) = fallback_merge {
+            self.tab_drag.set_outside(false);
+            tracing::info!(
+                zone = ?target.zone,
+                "[tab-drag] committing source-window cross-window drop fallback"
+            );
+            Self::defer_native_cross_window_tab_drop(
+                drag,
+                target.window,
+                target.entity,
+                target.zone,
+                window,
+                cx,
+            );
+            return;
+        }
+
         self.prepare_tab_drag_release(event, window, cx);
         let intent = self.tab_drag.finish();
         tracing::info!(
@@ -1917,6 +1995,24 @@ impl TinyShell {
         }
     }
 
+    pub(crate) fn defer_native_cross_window_tab_drop(
+        drag: IncomingTabDrag,
+        target_window: AnyWindowHandle,
+        target: Entity<TinyShell>,
+        zone: DockZone,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        if drag.source_window == target_window {
+            return;
+        }
+        crate::app::clear_tab_drag_hover();
+        window.defer(cx, move |_window, cx| {
+            crate::app::clear_incoming_tab_drag_except(drag.drag_id, None, cx);
+            Self::finish_native_tab_drop(drag, target_window, target, zone, cx);
+        });
+    }
+
     pub(crate) fn finish_native_tab_drop(
         drag: IncomingTabDrag,
         target_window: AnyWindowHandle,
@@ -1932,8 +2028,17 @@ impl TinyShell {
         let source = drag.source;
         let anchor = drag.group_id;
         let should_close_source = source.update(cx, |source, cx| {
-            let group_ids = source.selected_drag_group_ids(&anchor);
             source.tab_drag.cancel();
+            if !source
+                .workspace()
+                .tab_groups()
+                .iter()
+                .any(|group| group.id == anchor)
+            {
+                cx.notify();
+                return false;
+            }
+            let group_ids = source.selected_drag_group_ids(&anchor);
             let merged = source.commit_groups_merge(group_ids, target_window, target, zone, cx);
             should_close_empty_source(
                 merged,

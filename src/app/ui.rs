@@ -460,10 +460,14 @@ impl TinyShell {
                 }
 
                 let zone = target.read(cx).incoming_tab_drop_zone.unwrap_or_default();
-                window.defer(cx, move |_window, cx| {
-                    crate::app::clear_incoming_tab_drag_except(drag.drag_id, None, cx);
-                    TinyShell::finish_native_tab_drop(drag, target_window, target, zone, cx);
-                });
+                TinyShell::defer_native_cross_window_tab_drop(
+                    drag,
+                    target_window,
+                    target,
+                    zone,
+                    window,
+                    cx,
+                );
             })
             // Keep tab-drag tracking on the root element. Registering a window
             // listener from Render is invalid during GPUI's layout phase.

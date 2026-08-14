@@ -185,7 +185,10 @@ pub(crate) fn dock_zone_at(
 
     let x = (cursor.x - bounds.origin.x).as_f32() / bounds.size.width.as_f32().max(1.0);
     let y = (cursor.y - bounds.origin.y).as_f32() / bounds.size.height.as_f32().max(1.0);
-    const EDGE: f32 = 0.28;
+    // Keep the center merge target deliberately generous. Cross-window drops
+    // are less precise than pointer interactions inside a single window, and
+    // the previous 28% edge bands left only 19% of the panel for merging.
+    const EDGE: f32 = 0.20;
     if x < EDGE {
         Some(DockZone::Left)
     } else if x > 1.0 - EDGE {
@@ -197,6 +200,16 @@ pub(crate) fn dock_zone_at(
     } else {
         Some(DockZone::Center)
     }
+}
+
+pub(crate) fn local_position_in_window(
+    screen_position: Point<Pixels>,
+    window_bounds: Bounds<Pixels>,
+) -> Point<Pixels> {
+    Point::new(
+        screen_position.x - window_bounds.origin.x,
+        screen_position.y - window_bounds.origin.y,
+    )
 }
 
 pub(crate) fn should_close_empty_source<I: PartialEq>(
@@ -255,7 +268,8 @@ mod tests {
 
     use super::{
         DockZone, DropIntent, TabDragState, cursor_inside_viewport, dock_zone_at,
-        reorder_index_at_x, should_close_empty_source, should_offer_detach,
+        local_position_in_window, reorder_index_at_x, should_close_empty_source,
+        should_offer_detach,
     };
 
     #[test]
@@ -338,6 +352,28 @@ mod tests {
         assert_eq!(
             dock_zone_at(point(px(500.), px(20.)), bounds, Some(tab_bar)),
             Some(DockZone::Center)
+        );
+    }
+
+    #[test]
+    fn docking_center_uses_a_forgiving_cross_window_hit_area() {
+        let bounds = Bounds::new(point(px(0.), px(40.)), size(px(1000.), px(600.)));
+        assert_eq!(
+            dock_zone_at(point(px(210.), px(300.)), bounds, None),
+            Some(DockZone::Center)
+        );
+        assert_eq!(
+            dock_zone_at(point(px(190.), px(300.)), bounds, None),
+            Some(DockZone::Left)
+        );
+    }
+
+    #[test]
+    fn screen_position_is_translated_into_target_window_coordinates() {
+        let bounds = Bounds::new(point(px(-500.), px(120.)), size(px(800.), px(600.)));
+        assert_eq!(
+            local_position_in_window(point(px(-250.), px(420.)), bounds),
+            point(px(250.), px(300.))
         );
     }
 

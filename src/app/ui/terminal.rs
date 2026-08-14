@@ -972,8 +972,10 @@ impl TinyShell {
     pub(super) fn render_tab_drag_overlay(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let scrim = hsla(220. / 360., 0.25, 0.08, 0.22);
         let active = self.incoming_tab_drop_zone;
+        let target = cx.entity();
         let card = |zone: crate::app::tab_drag::DockZone, label: String| {
             let selected = active == Some(zone);
+            let drop_target = target.clone();
             div()
                 .w(px(118.))
                 .h(px(70.))
@@ -998,6 +1000,26 @@ impl TinyShell {
                     FontWeight::BOLD
                 } else {
                     FontWeight::NORMAL
+                })
+                .drag_over::<IncomingTabDrag>(|this, _, _, cx| {
+                    this.border_color(cx.theme().primary)
+                        .bg(cx.theme().primary.opacity(0.34))
+                })
+                .on_drop::<IncomingTabDrag>(move |drag, window, cx| {
+                    let drag = drag.clone();
+                    let target_window = window.window_handle();
+                    if drag.source_window == target_window {
+                        return;
+                    }
+                    let target = drop_target.clone();
+                    TinyShell::defer_native_cross_window_tab_drop(
+                        drag,
+                        target_window,
+                        target,
+                        zone,
+                        window,
+                        cx,
+                    );
                 })
                 .child(label)
         };
