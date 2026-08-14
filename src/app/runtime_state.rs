@@ -423,7 +423,15 @@ pub(crate) struct SyncRuntimeState {
     pub(crate) status: SharedString,
     pub(crate) failed: bool,
     pub(crate) secrets_password_dialog: Option<SyncSecretsPasswordDialogState>,
+    pub(crate) pending_conflicts: Option<crate::sync::PendingSyncConflicts>,
+    pending_automatic: bool,
+    retry_attempt: u32,
+    local_change_generation: u64,
+    reconciled_generation: u64,
+    active_reconciliation_generation: Option<u64>,
+    last_activation_check: Option<Instant>,
     schedule_generation: TaskGeneration,
+    debounce_generation: TaskGeneration,
 }
 
 impl SyncRuntimeState {
@@ -433,8 +441,90 @@ impl SyncRuntimeState {
             status,
             failed: false,
             secrets_password_dialog: None,
+            pending_conflicts: None,
+            pending_automatic: false,
+            retry_attempt: 0,
+            local_change_generation: 0,
+            reconciled_generation: 0,
+            active_reconciliation_generation: None,
+            last_activation_check: None,
             schedule_generation: TaskGeneration::default(),
+            debounce_generation: TaskGeneration::default(),
         }
+    }
+
+    pub(crate) fn mark_local_change(&mut self) {
+        self.local_change_generation = self.local_change_generation.wrapping_add(1);
+        if self.in_progress {
+            self.pending_automatic = true;
+        }
+    }
+
+    pub(crate) fn has_unsynced_local_changes(&self) -> bool {
+        self.local_change_generation != self.reconciled_generation
+    }
+
+    pub(crate) fn begin_reconciliation(&mut self) {
+        self.active_reconciliation_generation = Some(self.local_change_generation);
+    }
+
+    pub(crate) fn reconciliation_is_stale(&self) -> bool {
+        self.active_reconciliation_generation
+            .is_some_and(|generation| generation != self.local_change_generation)
+    }
+
+    pub(crate) fn abandon_reconciliation(&mut self) {
+        self.active_reconciliation_generation = None;
+        self.pending_automatic = true;
+    }
+
+    pub(crate) fn request_automatic(&mut self) -> bool {
+        if self.in_progress {
+            self.pending_automatic = true;
+            false
+        } else {
+            true
+        }
+    }
+
+    pub(crate) fn take_pending_automatic(&mut self) -> bool {
+        std::mem::take(&mut self.pending_automatic)
+    }
+
+    pub(crate) fn record_success(&mut self) {
+        if let Some(generation) = self.active_reconciliation_generation.take() {
+            self.reconciled_generation = generation;
+        }
+        self.retry_attempt = 0;
+        self.clear_failure();
+        if self.has_unsynced_local_changes() {
+            self.pending_automatic = true;
+        }
+    }
+
+    pub(crate) fn record_failure(&mut self) {
+        self.active_reconciliation_generation = None;
+        self.retry_attempt = self.retry_attempt.saturating_add(1).min(8);
+    }
+
+    pub(crate) fn retry_delay(&self) -> Duration {
+        let multiplier = 1_u64 << self.retry_attempt.min(6);
+        Duration::from_secs(5_u64.saturating_mul(multiplier).min(300))
+    }
+
+    pub(crate) fn should_reconcile_on_activation(
+        &mut self,
+        now: Instant,
+        throttle: Duration,
+    ) -> bool {
+        if self
+            .last_activation_check
+            .is_some_and(|last| now.saturating_duration_since(last) < throttle)
+        {
+            return false;
+        }
+        self.last_activation_check = Some(now);
+        true
     }
 
     pub(crate) fn set_status(&mut self, status: SharedString, failed: bool) {
@@ -457,13 +547,23 @@ impl SyncRuntimeState {
     pub(crate) fn is_current_schedule(&self, generation: u64) -> bool {
         self.schedule_generation.is_current(generation)
     }
+
+    pub(crate) fn start_debounce(&mut self) -> u64 {
+        self.debounce_generation.next()
+    }
+
+    pub(crate) fn is_current_debounce(&self, generation: u64) -> bool {
+        self.debounce_generation.is_current(generation)
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{ConfigPersistenceState, DialogCoordinator, TaskGeneration, TaskSupervisor};
+    use super::{
+        ConfigPersistenceState, DialogCoordinator, SyncRuntimeState, TaskGeneration, TaskSupervisor,
+    };
     use crate::app::DialogKind;
-    use std::time::Instant;
+    use std::time::{Duration, Instant};
 
     #[test]
     fn dialog_coordinator_reports_same_active_kind_for_normal_open_ignore() {
@@ -604,6 +704,75 @@ mod tests {
 
         state.mark_saved(state.generation());
         assert!(!state.is_dirty());
+    }
+
+    #[test]
+    fn sync_runtime_keeps_changes_saved_during_reconciliation_dirty() {
+        let mut state = SyncRuntimeState::new("idle".into());
+        state.mark_local_change();
+        state.begin_reconciliation();
+        state.mark_local_change();
+
+        state.record_success();
+
+        assert!(state.has_unsynced_local_changes());
+        assert!(state.take_pending_automatic());
+    }
+
+    #[test]
+    fn sync_runtime_marks_an_in_flight_snapshot_stale_after_a_new_save() {
+        let mut state = SyncRuntimeState::new("idle".into());
+        state.mark_local_change();
+        state.begin_reconciliation();
+        assert!(!state.reconciliation_is_stale());
+
+        state.mark_local_change();
+
+        assert!(state.reconciliation_is_stale());
+        state.abandon_reconciliation();
+        assert!(state.take_pending_automatic());
+    }
+
+    #[test]
+    fn sync_runtime_clears_only_the_generation_that_completed() {
+        let mut state = SyncRuntimeState::new("idle".into());
+        state.mark_local_change();
+        state.begin_reconciliation();
+
+        state.record_success();
+
+        assert!(!state.has_unsynced_local_changes());
+        assert!(!state.take_pending_automatic());
+    }
+
+    #[test]
+    fn sync_runtime_throttles_window_activation_checks() {
+        let mut state = SyncRuntimeState::new("idle".into());
+        let now = Instant::now();
+
+        assert!(state.should_reconcile_on_activation(now, Duration::from_secs(30)));
+        assert!(!state.should_reconcile_on_activation(
+            now + Duration::from_secs(29),
+            Duration::from_secs(30)
+        ));
+        assert!(state.should_reconcile_on_activation(
+            now + Duration::from_secs(30),
+            Duration::from_secs(30)
+        ));
+    }
+
+    #[test]
+    fn sync_runtime_retry_delay_is_bounded_exponential_backoff() {
+        let mut state = SyncRuntimeState::new("idle".into());
+        assert_eq!(state.retry_delay(), Duration::from_secs(5));
+
+        for _ in 0..10 {
+            state.record_failure();
+        }
+
+        assert_eq!(state.retry_delay(), Duration::from_secs(300));
+        state.record_success();
+        assert_eq!(state.retry_delay(), Duration::from_secs(5));
     }
 
     #[test]

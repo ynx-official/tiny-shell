@@ -197,7 +197,7 @@ pub(crate) fn open(
                 this.auxiliary_windows.settings.opening = false;
                 this.recording_action = None;
                 this.keybind_error = None;
-                this.persist_config_preferences_async();
+                this.persist_config_preferences_async(cx);
                 cx.notify();
             });
             crate::app::deregister_auxiliary_window(window_handle);

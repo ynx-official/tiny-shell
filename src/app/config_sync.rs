@@ -14,9 +14,14 @@ use crate::{
 };
 
 use base64::Engine as _;
-use std::{future::Future, time::Duration};
+use std::{
+    future::Future,
+    time::{Duration, Instant},
+};
 
 const PRIVACY_PASSWORD_MIN_LEN: usize = 8;
+const LOCAL_CHANGE_SYNC_DEBOUNCE: Duration = Duration::from_secs(3);
+const WINDOW_ACTIVATION_SYNC_THROTTLE: Duration = Duration::from_secs(30);
 
 pub(crate) fn automatic_sync_delay(interval_hours: u32, last_synced_at: i64, now: i64) -> Duration {
     if last_synced_at <= 0 {
@@ -155,6 +160,7 @@ fn upload_preflight_result(
     privacy_password: String,
     include_secrets: bool,
     merged: MergedConfig,
+    remote_payload: crate::sync::protocol::V3SyncPayload,
     etag: Option<String>,
 ) -> SyncResult {
     if merged.unavailable_secret_count > 0 {
@@ -166,13 +172,14 @@ fn upload_preflight_result(
             },
         }
     } else {
-        SyncResult::UploadPreflightReady {
+        SyncResult::UploadPreflightReady(sync::UploadPreflightReady {
             credentials,
             privacy_password,
             include_secrets,
             merged: Some(merged),
+            remote_payload: Some(remote_payload),
             etag,
-        }
+        })
     }
 }
 
@@ -480,13 +487,83 @@ impl TinyShell {
             return;
         }
         match self.automatic_sync_form() {
-            Ok(form) => self.upload_sync_config(form, cx),
+            Ok(form) => {
+                self.sync_runtime.begin_reconciliation();
+                self.upload_sync_config(form, cx);
+            }
             Err(error) => {
                 self.sync_runtime
                     .set_failed(t!("sync_failed", error = format!("{error:#}")).into());
+                self.schedule_automatic_sync(false, cx);
                 cx.notify();
             }
         }
+    }
+
+    pub(crate) fn request_automatic_sync(&mut self, cx: &mut Context<Self>) {
+        if !self.config.sync_enabled() || self.config.sync_backend() != "webdav" {
+            return;
+        }
+        if self.sync_runtime.pending_conflicts.is_some() {
+            return;
+        }
+        if self.sync_runtime.request_automatic() {
+            self.run_automatic_sync(cx);
+        }
+    }
+
+    pub(crate) fn note_local_config_saved(&mut self, cx: &mut Context<Self>) {
+        self.sync_runtime.pending_conflicts = None;
+        self.sync_runtime.mark_local_change();
+        if !self.config.sync_enabled() || self.config.sync_backend() != "webdav" {
+            return;
+        }
+        let generation = self.sync_runtime.start_debounce();
+        let cancellation = self
+            .async_runtime
+            .supervisor
+            .start("automatic-sync-debounce");
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(LOCAL_CHANGE_SYNC_DEBOUNCE)
+                .await;
+            if cancellation.is_cancelled() {
+                return;
+            }
+            let _ = this.update(cx, |this, cx| {
+                if this.sync_runtime.is_current_debounce(generation)
+                    && this.sync_runtime.has_unsynced_local_changes()
+                {
+                    this.request_automatic_sync(cx);
+                }
+            });
+        })
+        .detach();
+    }
+
+    pub(crate) fn reconcile_on_window_activation(&mut self, cx: &mut Context<Self>) {
+        if self
+            .sync_runtime
+            .should_reconcile_on_activation(Instant::now(), WINDOW_ACTIVATION_SYNC_THROTTLE)
+        {
+            self.request_automatic_sync(cx);
+        }
+    }
+
+    pub(crate) fn schedule_automatic_sync_retry(&mut self, cx: &mut Context<Self>) {
+        if !self.config.sync_enabled() || self.config.sync_backend() != "webdav" {
+            return;
+        }
+        let delay = self.sync_runtime.retry_delay();
+        let cancellation = self.async_runtime.supervisor.start("automatic-sync-retry");
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(delay).await;
+            if cancellation.is_cancelled() {
+                return;
+            }
+            let _ = this.update(cx, |this, cx| this.request_automatic_sync(cx));
+        })
+        .detach();
     }
 
     pub(crate) fn schedule_automatic_sync(
@@ -530,7 +607,7 @@ impl TinyShell {
                     {
                         return false;
                     }
-                    this.run_automatic_sync(cx);
+                    this.request_automatic_sync(cx);
                     true
                 }) else {
                     break;
@@ -620,6 +697,7 @@ impl TinyShell {
         else {
             return;
         };
+        self.sync_runtime.begin_reconciliation();
 
         let include_secrets = self.config.sync_include_secrets();
         if include_secrets && privacy_password.chars().count() < PRIVACY_PASSWORD_MIN_LEN {
@@ -656,6 +734,61 @@ impl TinyShell {
                         reason: UploadBlockReason::PasswordMismatch,
                     },
                     Ok(PrivacyPasswordStatus::Verified | PrivacyPasswordStatus::NotConfigured) => {
+                        if let Some(baseline) = local_base_payload.as_ref() {
+                            match sync::reconcile_three_way(
+                                sync::MergeLocal {
+                                    sessions: &local_sessions,
+                                    deleted_sessions: &local_deleted_sessions,
+                                    connection_groups: &local_connection_groups,
+                                    deleted_connection_groups: &local_deleted_connection_groups,
+                                    keys: &local_keys,
+                                    commands: &local_commands,
+                                    base_payload: Some(baseline),
+                                },
+                                baseline,
+                                payload.clone(),
+                                &privacy_password,
+                            ) {
+                                Ok(three_way) if three_way.merged.unavailable_secret_count > 0 => {
+                                    return upload_preflight_result(
+                                        credentials,
+                                        privacy_password,
+                                        include_secrets,
+                                        three_way.merged,
+                                        payload,
+                                        etag,
+                                    );
+                                }
+                                Ok(three_way) if !three_way.conflicts.is_empty() => {
+                                    return SyncResult::ReconciliationConflicts(
+                                        sync::PendingSyncConflicts {
+                                            credentials,
+                                            privacy_password,
+                                            include_secrets,
+                                            three_way,
+                                            remote_payload: payload,
+                                            etag,
+                                        },
+                                    );
+                                }
+                                Ok(three_way) => {
+                                    return upload_preflight_result(
+                                        credentials,
+                                        privacy_password,
+                                        include_secrets,
+                                        three_way.merged,
+                                        payload,
+                                        etag,
+                                    );
+                                }
+                                Err(error) => {
+                                    return SyncResult::Failed(SyncFailure::other(
+                                        Some(credentials.backend.kind()),
+                                        error,
+                                    ));
+                                }
+                            }
+                        }
                         let merged = sync::merge_payload_for_upload_with_deleted(
                             sync::MergeLocal {
                                 sessions: &local_sessions,
@@ -666,7 +799,7 @@ impl TinyShell {
                                 commands: &local_commands,
                                 base_payload: local_base_payload.as_ref(),
                             },
-                            payload,
+                            payload.clone(),
                             &privacy_password,
                         );
                         upload_preflight_result(
@@ -674,6 +807,7 @@ impl TinyShell {
                             privacy_password,
                             include_secrets,
                             merged,
+                            payload,
                             etag,
                         )
                     }
@@ -683,13 +817,14 @@ impl TinyShell {
                     )),
                 },
                 Err(failure) if failure.category == SyncErrorCategory::RemoteMissing => {
-                    SyncResult::UploadPreflightReady {
+                    SyncResult::UploadPreflightReady(sync::UploadPreflightReady {
                         credentials,
                         privacy_password,
                         include_secrets,
                         merged: None,
+                        remote_payload: None,
                         etag: None,
-                    }
+                    })
                 }
                 Err(failure) => SyncResult::Failed(failure),
             }
@@ -787,6 +922,7 @@ impl TinyShell {
         else {
             return;
         };
+        self.sync_runtime.begin_reconciliation();
 
         let local_sessions = self.config.sessions().to_vec();
         let local_deleted_sessions = self.config.deleted_sessions().to_vec();
@@ -1026,6 +1162,7 @@ mod tests {
                 unavailable_managed_key_secret_count: 2,
                 base_payload: None,
             },
+            test_remote_payload(),
             Some("etag-1".into()),
         );
 
@@ -1060,19 +1197,20 @@ mod tests {
                 unavailable_managed_key_secret_count: 0,
                 base_payload: None,
             },
+            test_remote_payload(),
             Some("etag-2".into()),
         );
 
         assert!(matches!(
             result,
-            SyncResult::UploadPreflightReady {
+            SyncResult::UploadPreflightReady(sync::UploadPreflightReady {
                 merged: Some(MergedConfig {
                     connection_groups,
                     ..
                 }),
                 etag: Some(etag),
                 ..
-            } if connection_groups == ["remote"] && etag == "etag-2"
+            }) if connection_groups == ["remote"] && etag == "etag-2"
         ));
     }
 
@@ -1121,6 +1259,29 @@ mod tests {
             SyncResult::PrivacyPasswordInitializationReady { password, .. }
                 if password == "privacy-password"
         ));
+    }
+
+    fn test_remote_payload() -> crate::sync::protocol::V3SyncPayload {
+        crate::sync::protocol::V3SyncPayload {
+            schema_version: crate::sync::protocol::V3_FORMAT_VERSION,
+            revision: "remote-revision".into(),
+            updated_at: "2026-03-15T00:00:00Z".into(),
+            device_id: "remote-device".into(),
+            sessions: Vec::new(),
+            managed_keys: Vec::new(),
+            connection_groups: Vec::new(),
+            quick_command_categories: Vec::new(),
+            quick_commands: Vec::new(),
+            deleted_sessions: Vec::new(),
+            deleted_managed_keys: Vec::new(),
+            deleted_connection_groups: Vec::new(),
+            deleted_quick_command_categories: Vec::new(),
+            deleted_quick_commands: Vec::new(),
+            deleted_session_snapshots: Vec::new(),
+            deleted_group_snapshots: Vec::new(),
+            privacy_password_verifier: None,
+            secrets: Vec::new(),
+        }
     }
 
     fn webdav_credentials() -> SyncCredentials {

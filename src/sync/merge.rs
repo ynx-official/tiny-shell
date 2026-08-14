@@ -104,6 +104,23 @@ pub fn merge_public_payload_with_deleted(
     merge_payload_with_secret_access(local, remote, None, MergePreference::Remote)
 }
 
+pub(crate) fn decode_payload(remote: V3SyncPayload, privacy_password: &str) -> MergedConfig {
+    merge_payload_with_secret_access(
+        MergeLocal {
+            sessions: &[],
+            deleted_sessions: &[],
+            connection_groups: &[],
+            deleted_connection_groups: &[],
+            keys: &[],
+            commands: &[],
+            base_payload: None,
+        },
+        remote,
+        Some(privacy_password),
+        MergePreference::Remote,
+    )
+}
+
 fn merge_payload_with_secret_access(
     local: MergeLocal<'_>,
     remote: V3SyncPayload,
@@ -290,6 +307,7 @@ fn stable_group_id(group: &str) -> String {
     format!("connection-group:{}", hex::encode(digest.finalize()))
 }
 
+#[derive(Default)]
 struct ProjectedPayload {
     sessions: Vec<SyncSession>,
     managed_keys: Vec<SyncManagedKey>,
@@ -297,6 +315,29 @@ struct ProjectedPayload {
     commands: Vec<QuickCommandCategory>,
     deleted_sessions: Vec<SyncDeletedSession>,
     deleted_groups: Vec<SyncDeletedConnectionGroup>,
+}
+
+pub(crate) fn normalize_merged_config(config: &MergedConfig) -> MergedConfig {
+    let mut normalized = merge_projected_payload(
+        MergeLocal {
+            sessions: &config.sessions,
+            deleted_sessions: &config.deleted_sessions,
+            connection_groups: &config.connection_groups,
+            deleted_connection_groups: &config.deleted_connection_groups,
+            keys: &config.managed_keys,
+            commands: &config.quick_command_categories,
+            base_payload: config.base_payload.as_ref(),
+        },
+        ProjectedPayload::default(),
+        None,
+        MergePreference::Local,
+    );
+    normalized.decrypted_count = config.decrypted_count;
+    normalized.unavailable_secret_count = config.unavailable_secret_count;
+    normalized.unavailable_session_secret_count = config.unavailable_session_secret_count;
+    normalized.unavailable_managed_key_secret_count = config.unavailable_managed_key_secret_count;
+    normalized.base_payload.clone_from(&config.base_payload);
+    normalized
 }
 
 fn project_v3_payload(payload: V3SyncPayload) -> ProjectedPayload {

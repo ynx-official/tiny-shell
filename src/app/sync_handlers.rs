@@ -9,8 +9,8 @@ use crate::{
         Session,
     },
     sync::{
-        MergedConfig, PrivacyPasswordStatus, SyncCredentials, SyncFailure, SyncResult,
-        UploadBlockReason,
+        ConflictResolution, MergedConfig, PrivacyPasswordStatus, SyncCredentials, SyncFailure,
+        SyncResult, UploadBlockReason,
     },
 };
 
@@ -53,7 +53,7 @@ impl TinyShell {
             tracing::debug!(task_id, "ignoring stale sync result");
             return;
         }
-        let close_sync_terminal = !matches!(&result, SyncResult::UploadPreflightReady { .. });
+        let close_sync_terminal = !matches!(&result, SyncResult::UploadPreflightReady(_));
         let close_sync_was_running = self.close_sync_running;
         self.sync_runtime.in_progress = false;
         match result {
@@ -66,21 +66,11 @@ impl TinyShell {
             } => {
                 self.handle_sync_uploaded(target, payload, etag, privacy_password, merged, cx);
             }
-            SyncResult::UploadPreflightReady {
-                credentials,
-                privacy_password,
-                include_secrets,
-                merged,
-                etag,
-            } => {
-                self.handle_sync_upload_preflight_ready(
-                    credentials,
-                    privacy_password,
-                    include_secrets,
-                    merged,
-                    etag,
-                    cx,
-                );
+            SyncResult::UploadPreflightReady(plan) => {
+                self.handle_sync_upload_preflight_ready(plan, cx);
+            }
+            SyncResult::ReconciliationConflicts(pending) => {
+                self.handle_sync_reconciliation_conflicts(pending, cx);
             }
             SyncResult::UploadPreflightBlocked {
                 credentials,
@@ -153,6 +143,9 @@ impl TinyShell {
         } else if !close_sync_was_running && !self.sync_runtime.in_progress {
             self.continue_queued_close_sync(cx);
         }
+        if !self.sync_runtime.in_progress && self.sync_runtime.take_pending_automatic() {
+            self.request_automatic_sync(cx);
+        }
     }
 
     fn handle_sync_uploaded(
@@ -166,7 +159,8 @@ impl TinyShell {
     ) {
         let previous_config = self.config.clone();
         let previous_managed_keys = self.managed_keys.clone();
-        if let Some(merged) = merged {
+        let reconciliation_is_stale = self.sync_runtime.reconciliation_is_stale();
+        if !reconciliation_is_stale && let Some(merged) = merged {
             self.config.replace_sessions(merged.sessions);
             self.config
                 .replace_deleted_sessions(merged.deleted_sessions);
@@ -202,7 +196,7 @@ impl TinyShell {
                     .and_then(|repository| repository.save(&target, baseline))
                 {
                     Ok(()) => {
-                        self.sync_runtime.clear_failure();
+                        self.sync_runtime.record_success();
                         self.sync_runtime.status = t!("sync_upload_complete").into();
                         self.schedule_automatic_sync(false, cx);
                     }
@@ -223,13 +217,45 @@ impl TinyShell {
 
     fn handle_sync_upload_preflight_ready(
         &mut self,
-        credentials: SyncCredentials,
-        privacy_password: String,
-        include_secrets: bool,
-        merged: Option<MergedConfig>,
-        etag: Option<String>,
+        plan: crate::sync::UploadPreflightReady,
         cx: &mut Context<Self>,
     ) {
+        if self.sync_runtime.reconciliation_is_stale() {
+            self.sync_runtime.abandon_reconciliation();
+            self.sync_runtime.status = t!("sync_status_pending_changes").into();
+            return;
+        }
+        let crate::sync::UploadPreflightReady {
+            credentials,
+            privacy_password,
+            include_secrets,
+            merged,
+            remote_payload,
+            etag,
+        } = plan;
+        if let (Some(remote_payload), Some(merged)) = (&remote_payload, &merged) {
+            let Ok(candidate) = crate::sync::protocol::V3SyncPayload::from_config(
+                self.config.sync_device_id().to_string(),
+                merged,
+                include_secrets,
+                &privacy_password,
+                Some(remote_payload),
+            ) else {
+                self.sync_runtime
+                    .set_failed(t!("sync_failed", error = "serialize merged payload").into());
+                return;
+            };
+            if candidate.is_content_equivalent(remote_payload) {
+                self.handle_sync_reconciled(
+                    crate::sync::state::SyncTargetKey::from_credentials(&credentials.backend),
+                    remote_payload.clone(),
+                    etag,
+                    Some(merged.clone()),
+                    cx,
+                );
+                return;
+            }
+        }
         self.continue_sync_upload(
             credentials,
             privacy_password,
@@ -238,6 +264,148 @@ impl TinyShell {
             etag,
             cx,
         );
+    }
+
+    fn handle_sync_reconciliation_conflicts(
+        &mut self,
+        pending: crate::sync::PendingSyncConflicts,
+        cx: &mut Context<Self>,
+    ) {
+        if self.sync_runtime.reconciliation_is_stale() {
+            self.sync_runtime.abandon_reconciliation();
+            self.sync_runtime.status = t!("sync_status_pending_changes").into();
+            return;
+        }
+        let count = pending.three_way.conflicts.len();
+        self.sync_runtime.pending_conflicts = Some(pending);
+        self.sync_runtime.failed = false;
+        self.sync_runtime.status = t!("sync_conflicts_pending", count = count).into();
+        cx.notify();
+    }
+
+    pub(crate) fn resolve_sync_conflict(
+        &mut self,
+        index: usize,
+        resolution: ConflictResolution,
+        cx: &mut Context<Self>,
+    ) {
+        let result = self
+            .sync_runtime
+            .pending_conflicts
+            .as_mut()
+            .ok_or_else(|| anyhow::anyhow!("no pending synchronization conflicts"))
+            .and_then(|pending| pending.three_way.resolve(index, resolution));
+        self.finish_sync_conflict_action(result, cx);
+    }
+
+    pub(crate) fn resolve_all_sync_conflicts(
+        &mut self,
+        resolution: ConflictResolution,
+        cx: &mut Context<Self>,
+    ) {
+        let result = self
+            .sync_runtime
+            .pending_conflicts
+            .as_mut()
+            .ok_or_else(|| anyhow::anyhow!("no pending synchronization conflicts"))
+            .and_then(|pending| pending.three_way.resolve_all(resolution));
+        self.finish_sync_conflict_action(result, cx);
+    }
+
+    pub(crate) fn copy_sync_conflict_as_new_connection(
+        &mut self,
+        index: usize,
+        cx: &mut Context<Self>,
+    ) {
+        let suffix = t!("sync_conflict_copy_suffix").to_string();
+        let result = self
+            .sync_runtime
+            .pending_conflicts
+            .as_mut()
+            .ok_or_else(|| anyhow::anyhow!("no pending synchronization conflicts"))
+            .and_then(|pending| pending.three_way.copy_local_session(index, &suffix));
+        self.finish_sync_conflict_action(result, cx);
+    }
+
+    fn finish_sync_conflict_action(&mut self, result: anyhow::Result<()>, cx: &mut Context<Self>) {
+        if let Err(error) = result {
+            self.sync_runtime
+                .set_failed(t!("sync_failed", error = format!("{error:#}")).into());
+            cx.notify();
+            return;
+        }
+        let remaining = self
+            .sync_runtime
+            .pending_conflicts
+            .as_ref()
+            .map_or(0, |pending| pending.three_way.conflicts.len());
+        if remaining > 0 {
+            self.sync_runtime.status = t!("sync_conflicts_pending", count = remaining).into();
+            cx.notify();
+            return;
+        }
+        let Some(pending) = self.sync_runtime.pending_conflicts.take() else {
+            return;
+        };
+        self.handle_sync_upload_preflight_ready(
+            crate::sync::UploadPreflightReady {
+                credentials: pending.credentials,
+                privacy_password: pending.privacy_password,
+                include_secrets: pending.include_secrets,
+                merged: Some(pending.three_way.merged),
+                remote_payload: Some(pending.remote_payload),
+                etag: pending.etag,
+            },
+            cx,
+        );
+    }
+
+    fn handle_sync_reconciled(
+        &mut self,
+        target: crate::sync::state::SyncTargetKey,
+        payload: crate::sync::protocol::V3SyncPayload,
+        etag: Option<String>,
+        merged: Option<MergedConfig>,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(merged) = merged {
+            self.config.replace_sessions(merged.sessions);
+            self.config
+                .replace_deleted_sessions(merged.deleted_sessions);
+            self.config
+                .replace_connection_groups(merged.connection_groups);
+            self.config
+                .replace_deleted_connection_groups(merged.deleted_connection_groups);
+            self.config.replace_managed_keys(merged.managed_keys);
+            self.managed_keys = self.config.managed_keys().to_vec();
+            self.config
+                .set_quick_command_categories(merged.quick_command_categories);
+        }
+        self.config.set_sync_etag(etag.clone());
+        self.config
+            .set_sync_last_synced_at(chrono::Utc::now().timestamp());
+        match config_persistence::save_full(&self.config_repository, &self.config).and_then(|()| {
+            crate::sync::state::SyncStateRepository::new().and_then(|repository| {
+                repository.save(
+                    &target,
+                    crate::sync::state::SyncBaseline::from_remote_payload(
+                        &target,
+                        payload,
+                        etag,
+                        chrono::Utc::now().timestamp(),
+                    ),
+                )
+            })
+        }) {
+            Ok(()) => {
+                self.sync_runtime.record_success();
+                self.sync_runtime.status = t!("sync_upload_complete").into();
+                self.schedule_automatic_sync(false, cx);
+            }
+            Err(error) => self
+                .sync_runtime
+                .set_failed(t!("sync_failed", error = format!("{error:#}")).into()),
+        }
     }
 
     fn handle_sync_upload_preflight_blocked(
@@ -288,6 +456,11 @@ impl TinyShell {
             decrypted_count,
             unavailable_secret_count,
         } = result;
+        if self.sync_runtime.reconciliation_is_stale() {
+            self.sync_runtime.abandon_reconciliation();
+            self.sync_runtime.status = t!("sync_status_pending_changes").into();
+            return;
+        }
         let session_count = config.sessions.len();
         let group_count = config.connection_groups.len();
         let key_count = config.managed_keys.len();
@@ -357,6 +530,7 @@ impl TinyShell {
                     self.sync_runtime
                         .set_failed(t!("sync_failed", error = format!("{err:#}")).into());
                 } else {
+                    self.sync_runtime.record_success();
                     self.schedule_automatic_sync(false, cx);
                 }
             }
@@ -535,7 +709,12 @@ impl TinyShell {
         self.sync_runtime.status = t!("sync_connection_verified").into();
     }
 
-    fn handle_sync_failed(&mut self, error: SyncFailure, _cx: &mut Context<Self>) {
+    fn handle_sync_failed(&mut self, error: SyncFailure, cx: &mut Context<Self>) {
+        let should_retry = matches!(
+            error.category,
+            crate::sync::SyncErrorCategory::Other | crate::sync::SyncErrorCategory::Conflict
+        );
+        self.sync_runtime.record_failure();
         self.sync_runtime.status = config_sync::sync_failure_status(&error).into();
         if self
             .sync_runtime
@@ -550,6 +729,9 @@ impl TinyShell {
                 dialog.status = crate::app::SyncSecretsPasswordDialogStatus::Failed;
                 dialog.message = Some(message);
             }
+        }
+        if should_retry {
+            self.schedule_automatic_sync_retry(cx);
         }
     }
 }

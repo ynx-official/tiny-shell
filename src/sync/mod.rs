@@ -3,6 +3,7 @@ mod http;
 mod merge;
 mod model;
 pub mod protocol;
+mod reconcile;
 mod secrets;
 pub mod state;
 
@@ -29,6 +30,9 @@ pub use merge::{
     merge_public_payload_with_deleted,
 };
 pub use model::PrivacyPasswordStatus;
+pub use reconcile::{
+    ConflictResolution, SyncConflict, SyncEntityKind, ThreeWayMerge, reconcile_three_way,
+};
 
 const SYNC_FILE_NAME: &str = "tiny-shell-sync.json";
 const MAX_SYNC_PAYLOAD_BYTES: usize = 16 * 1024 * 1024;
@@ -120,6 +124,26 @@ impl fmt::Debug for SyncFailure {
 
 pub type SyncOperationResult<T> = std::result::Result<T, SyncFailure>;
 
+#[derive(Clone)]
+pub struct UploadPreflightReady {
+    pub credentials: SyncCredentials,
+    pub privacy_password: String,
+    pub include_secrets: bool,
+    pub merged: Option<MergedConfig>,
+    pub remote_payload: Option<protocol::V3SyncPayload>,
+    pub etag: Option<String>,
+}
+
+#[derive(Clone)]
+pub struct PendingSyncConflicts {
+    pub credentials: SyncCredentials,
+    pub privacy_password: String,
+    pub include_secrets: bool,
+    pub three_way: ThreeWayMerge,
+    pub remote_payload: protocol::V3SyncPayload,
+    pub etag: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UploadBlockReason {
     PasswordRequired,
@@ -140,13 +164,8 @@ pub enum SyncResult {
         privacy_password: Option<String>,
         merged: Option<MergedConfig>,
     },
-    UploadPreflightReady {
-        credentials: SyncCredentials,
-        privacy_password: String,
-        include_secrets: bool,
-        merged: Option<MergedConfig>,
-        etag: Option<String>,
-    },
+    UploadPreflightReady(UploadPreflightReady),
+    ReconciliationConflicts(PendingSyncConflicts),
     UploadPreflightBlocked {
         credentials: SyncCredentials,
         reason: UploadBlockReason,
@@ -202,16 +221,17 @@ impl fmt::Debug for SyncResult {
                     &privacy_password.as_ref().map(|_| "<redacted>"),
                 )
                 .finish(),
-            Self::UploadPreflightReady {
-                include_secrets,
-                merged,
-                etag,
-                ..
-            } => formatter
+            Self::UploadPreflightReady(plan) => formatter
                 .debug_struct("UploadPreflightReady")
-                .field("include_secrets", include_secrets)
-                .field("has_remote_config", &merged.is_some())
-                .field("etag", etag)
+                .field("include_secrets", &plan.include_secrets)
+                .field("has_remote_config", &plan.merged.is_some())
+                .field("has_remote_payload", &plan.remote_payload.is_some())
+                .field("etag", &plan.etag)
+                .finish(),
+            Self::ReconciliationConflicts(pending) => formatter
+                .debug_struct("ReconciliationConflicts")
+                .field("conflict_count", &pending.three_way.conflicts.len())
+                .field("etag", &pending.etag)
                 .finish(),
             Self::UploadPreflightBlocked { reason, .. } => formatter
                 .debug_struct("UploadPreflightBlocked")

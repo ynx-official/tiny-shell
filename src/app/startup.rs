@@ -596,6 +596,7 @@ fn open_window_with_initializer(
             view.update(cx, |this, cx| {
                 this.schedule_automatic_update_checks(window_handle, true, cx);
                 this.schedule_automatic_sync(false, cx);
+                this.request_automatic_sync(cx);
             });
         }
 

@@ -13,7 +13,11 @@ use gpui_component::{
 };
 use rust_i18n::t;
 
-use crate::{TinyShell, app::settings::form::SyncSettingsInputs};
+use crate::{
+    TinyShell,
+    app::settings::form::SyncSettingsInputs,
+    sync::{ConflictResolution, SyncConflict, SyncEntityKind},
+};
 
 use super::controls::{labeled_input, labeled_input_with_hint, split_inputs};
 
@@ -35,6 +39,7 @@ pub(crate) fn page(view: &Entity<TinyShell>, inputs: SyncSettingsInputs) -> Sett
                             last_synced,
                             next_sync,
                             include_secrets,
+                            conflicts,
                         ) = {
                             let state = view.read(cx);
                             (
@@ -52,13 +57,21 @@ pub(crate) fn page(view: &Entity<TinyShell>, inputs: SyncSettingsInputs) -> Sett
                                 )
                                 .unwrap_or_else(|| t!("sync_time_pending").to_string()),
                                 state.config.sync_include_secrets(),
+                                state
+                                    .sync_runtime
+                                    .pending_conflicts
+                                    .as_ref()
+                                    .map_or_else(Vec::new, |pending| {
+                                        pending.three_way.conflicts.clone()
+                                    }),
                             )
                         };
 
                         let privacy_password_valid =
                             inputs.privacy_password.read(cx).value().chars().count() >= 8;
-                        let can_upload =
-                            !in_progress && (!include_secrets || privacy_password_valid);
+                        let can_upload = !in_progress
+                            && conflicts.is_empty()
+                            && (!include_secrets || privacy_password_valid);
 
                         v_flex()
                             .w_full()
@@ -255,6 +268,9 @@ pub(crate) fn page(view: &Entity<TinyShell>, inputs: SyncSettingsInputs) -> Sett
                                             })),
                                     ),
                             )
+                            .when(!conflicts.is_empty(), |content| {
+                                content.child(conflict_panel(&view, &conflicts, window, cx))
+                            })
                             .child(status_banner(status.to_string(), failed, cx))
                     }
                 })),
@@ -384,6 +400,159 @@ fn sync_times(last_synced: String, next_sync: String, cx: &gpui::App) -> gpui::D
                 )
                 .child(div().text_sm().child(next_sync)),
         )
+}
+
+fn conflict_panel(
+    view: &Entity<TinyShell>,
+    conflicts: &[SyncConflict],
+    window: &mut gpui::Window,
+    cx: &gpui::App,
+) -> gpui::Div {
+    let mut panel = v_flex()
+        .w_full()
+        .gap_2()
+        .p_3()
+        .rounded_md()
+        .border_1()
+        .border_color(cx.theme().danger.opacity(0.35))
+        .bg(cx.theme().danger.opacity(0.06))
+        .child(
+            h_flex()
+                .items_center()
+                .justify_between()
+                .child(
+                    v_flex()
+                        .gap_1()
+                        .child(
+                            div().text_sm().font_weight(FontWeight::SEMIBOLD).child(
+                                t!("sync_conflicts_title", count = conflicts.len()).to_string(),
+                            ),
+                        )
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(t!("sync_conflicts_desc").to_string()),
+                        ),
+                )
+                .child(
+                    h_flex()
+                        .gap_2()
+                        .child(
+                            Button::new("sync-conflicts-all-local")
+                                .small()
+                                .secondary()
+                                .label(t!("sync_conflicts_all_local").to_string())
+                                .on_click(window.listener_for(view, |this, _, _, cx| {
+                                    this.resolve_all_sync_conflicts(ConflictResolution::Local, cx);
+                                })),
+                        )
+                        .child(
+                            Button::new("sync-conflicts-all-remote")
+                                .small()
+                                .secondary()
+                                .label(t!("sync_conflicts_all_remote").to_string())
+                                .on_click(window.listener_for(view, |this, _, _, cx| {
+                                    this.resolve_all_sync_conflicts(ConflictResolution::Remote, cx);
+                                })),
+                        ),
+                ),
+        );
+
+    for (index, conflict) in conflicts.iter().enumerate() {
+        let kind = match conflict.kind() {
+            SyncEntityKind::Session => t!("sync_entity_session").to_string(),
+            SyncEntityKind::ManagedKey => t!("sync_entity_managed_key").to_string(),
+            SyncEntityKind::ConnectionGroup => t!("sync_entity_connection_group").to_string(),
+            SyncEntityKind::QuickCommandCategory => {
+                t!("sync_entity_quick_command_category").to_string()
+            }
+            SyncEntityKind::QuickCommand => t!("sync_entity_quick_command").to_string(),
+        };
+        let can_copy = conflict.can_copy_local_session();
+        panel = panel.child(
+            v_flex()
+                .gap_2()
+                .p_2()
+                .rounded_md()
+                .border_1()
+                .border_color(cx.theme().border)
+                .bg(cx.theme().background)
+                .child(
+                    h_flex()
+                        .items_center()
+                        .justify_between()
+                        .child(
+                            v_flex()
+                                .gap_1()
+                                .child(
+                                    div()
+                                        .text_sm()
+                                        .font_weight(FontWeight::MEDIUM)
+                                        .child(conflict.label().to_string()),
+                                )
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child(kind),
+                                ),
+                        )
+                        .child(
+                            h_flex()
+                                .gap_2()
+                                .child(
+                                    Button::new(format!("sync-conflict-local-{index}"))
+                                        .small()
+                                        .secondary()
+                                        .label(t!("sync_conflict_keep_local").to_string())
+                                        .on_click(window.listener_for(
+                                            view,
+                                            move |this, _, _, cx| {
+                                                this.resolve_sync_conflict(
+                                                    index,
+                                                    ConflictResolution::Local,
+                                                    cx,
+                                                );
+                                            },
+                                        )),
+                                )
+                                .child(
+                                    Button::new(format!("sync-conflict-remote-{index}"))
+                                        .small()
+                                        .secondary()
+                                        .label(t!("sync_conflict_use_remote").to_string())
+                                        .on_click(window.listener_for(
+                                            view,
+                                            move |this, _, _, cx| {
+                                                this.resolve_sync_conflict(
+                                                    index,
+                                                    ConflictResolution::Remote,
+                                                    cx,
+                                                );
+                                            },
+                                        )),
+                                )
+                                .child(
+                                    Button::new(format!("sync-conflict-copy-{index}"))
+                                        .small()
+                                        .secondary()
+                                        .disabled(!can_copy)
+                                        .label(t!("sync_conflict_copy").to_string())
+                                        .on_click(window.listener_for(
+                                            view,
+                                            move |this, _, _, cx| {
+                                                this.copy_sync_conflict_as_new_connection(
+                                                    index, cx,
+                                                );
+                                            },
+                                        )),
+                                ),
+                        ),
+                ),
+        );
+    }
+    panel
 }
 
 fn status_banner(status: String, failed: bool, cx: &gpui::App) -> gpui::Div {

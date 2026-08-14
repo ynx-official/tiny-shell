@@ -1749,7 +1749,7 @@ impl TinyShell {
                     break;
                 }
                 let active = match this.update(cx, |this, cx| {
-                    this.drive_config_preferences_save();
+                    this.drive_config_preferences_save(cx);
                     let changed = this.drain_backend_events(cx);
                     let system_sampled = this.sample_system_if_due();
                     this.sample_sftp_latency_if_due();
@@ -2697,9 +2697,9 @@ impl TinyShell {
         Ok(())
     }
 
-    pub(crate) fn persist_config_preferences_async(&mut self) {
+    pub(crate) fn persist_config_preferences_async(&mut self, cx: &mut Context<Self>) {
         self.config_persistence.request_immediate_save();
-        self.drive_config_preferences_save();
+        self.drive_config_preferences_save(cx);
     }
 
     /// Persist a full configuration transaction off the UI thread and expose
@@ -2750,6 +2750,7 @@ impl TinyShell {
                         committed.merge_interactive_preferences_from(&this.config);
                         this.config = committed;
                         this.config_persistence.mark_saved(preference_generation);
+                        this.note_local_config_saved(cx);
                         this.continue_queued_close_sync(cx);
                         on_committed(this, cx);
                     }
@@ -2809,6 +2810,7 @@ impl TinyShell {
                         committed.merge_interactive_preferences_from(&this.config);
                         this.config = committed;
                         this.config_persistence.mark_saved(preference_generation);
+                        this.note_local_config_saved(cx);
                         this.continue_queued_close_sync(cx);
                         Ok(())
                     }
@@ -2829,14 +2831,17 @@ impl TinyShell {
         .detach();
     }
 
-    fn drive_config_preferences_save(&mut self) {
+    fn drive_config_preferences_save(&mut self, cx: &mut Context<Self>) {
         const PREFERENCE_SAVE_DEBOUNCE: Duration = Duration::from_millis(350);
         const PREFERENCE_SAVE_RETRY_DELAY: Duration = Duration::from_secs(2);
 
         let now = Instant::now();
         if let Some((generation, result)) = self.config_persistence.poll_result() {
             match result {
-                Ok(()) => self.config_persistence.mark_saved(generation),
+                Ok(()) => {
+                    self.config_persistence.mark_saved(generation);
+                    self.note_local_config_saved(cx);
+                }
                 Err(error) => {
                     tracing::warn!(generation, "background preference save failed: {error:#}");
                     self.config_persistence

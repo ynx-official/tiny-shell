@@ -570,6 +570,7 @@ impl Render for TinyShell {
                         }
                         if is_window_active && !this.was_window_active {
                             crate::app::mark_window_active(handle);
+                            this.reconcile_on_window_activation(cx);
                         }
                         this.was_window_active = is_window_active;
 
