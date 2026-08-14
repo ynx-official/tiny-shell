@@ -100,6 +100,7 @@ impl ConnectionOperationWindow {
         };
         let name = input.read(cx).value().trim().to_string();
         if name.is_empty() {
+            crate::feedback::Feedback::warning(window, cx, t!("connection_group_name"));
             return;
         }
         let ConnectionOperation::EditGroup { original, parent } = &self.operation else {
@@ -111,7 +112,7 @@ impl ConnectionOperationWindow {
             .as_deref()
             .map(|parent| format!("{parent}/{name}"))
             .unwrap_or(name);
-        let saved = self.owner.update(cx, |owner, cx| {
+        let result = self.owner.update(cx, |owner, cx| {
             let mut staged = owner.config.clone();
             if let Some(original) = &original {
                 staged.rename_connection_group(original, full_name.clone());
@@ -127,22 +128,31 @@ impl ConnectionOperationWindow {
                     }
                     owner.config = staged;
                     cx.notify();
-                    true
+                    Ok(())
                 }
                 Err(error) => {
-                    owner.status = t!(
+                    let message = t!(
                         "connection_manager_action_failed",
                         error = error.to_string()
                     )
-                    .to_string()
-                    .into();
+                    .to_string();
+                    owner.status = message.clone().into();
                     cx.notify();
-                    false
+                    Err(message)
                 }
             }
         });
-        if saved {
-            Self::close_window(window);
+        match result {
+            Ok(()) => {
+                crate::feedback::Feedback::show_for_owner(
+                    &self.owner,
+                    cx,
+                    crate::feedback::FeedbackKind::Success,
+                    format!("{} · {}", t!("connection_group_dialog_title"), t!("save")),
+                );
+                Self::close_window(window);
+            }
+            Err(message) => crate::feedback::Feedback::error(window, cx, message),
         }
     }
 
@@ -159,6 +169,12 @@ impl ConnectionOperationWindow {
         if commit_catalog_change(&self.owner, window, cx, move |config| {
             crate::session::connection_catalog::move_session(config, &session_id, target.as_deref())
         }) {
+            crate::feedback::Feedback::show_for_owner(
+                &self.owner,
+                cx,
+                crate::feedback::FeedbackKind::Success,
+                t!("connection_group_move_to"),
+            );
             Self::close_window(window);
         }
     }
@@ -176,12 +192,24 @@ impl ConnectionOperationWindow {
             )
             .map(|_| ())
         }) {
+            crate::feedback::Feedback::show_for_owner(
+                &self.owner,
+                cx,
+                crate::feedback::FeedbackKind::Success,
+                t!("connection_group_move_to"),
+            );
             Self::close_window(window);
         }
     }
 
-    fn run_archive(&self, path: &PathBuf, password: &str, cx: &mut Context<Self>) -> bool {
-        self.owner.update(cx, |owner, cx| {
+    fn run_archive(
+        &self,
+        path: &PathBuf,
+        password: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let result = self.owner.update(cx, |owner, cx| {
             let result = match self.operation {
                 ConnectionOperation::Archive {
                     importing: true, ..
@@ -189,19 +217,36 @@ impl ConnectionOperationWindow {
                 ConnectionOperation::Archive {
                     importing: false, ..
                 } => owner.export_connection_archive(path, password),
-                _ => return false,
+                _ => return Err(String::new()),
             };
             if let Err(error) = result {
-                owner.status = t!("connection_archive_failed", error = error.to_string())
-                    .to_string()
-                    .into();
+                let message = t!("connection_archive_failed", error = error.to_string()).to_string();
+                owner.status = message.clone().into();
                 cx.notify();
-                false
+                Err(message)
             } else {
+                let message = owner.status.clone();
                 cx.notify();
+                Ok(message)
+            }
+        });
+        match result {
+            Ok(message) => {
+                crate::feedback::Feedback::show_for_owner(
+                    &self.owner,
+                    cx,
+                    crate::feedback::FeedbackKind::Success,
+                    message,
+                );
                 true
             }
-        })
+            Err(message) => {
+                if !message.is_empty() {
+                    crate::feedback::Feedback::error(window, cx, message);
+                }
+                false
+            }
+        }
     }
 
     fn submit_archive(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -210,19 +255,19 @@ impl ConnectionOperationWindow {
         };
         let password = password_input.read(cx).value().to_string();
         if password.is_empty() {
+            let message = t!("connection_archive_password_required").to_string();
             self.owner.update(cx, |owner, cx| {
-                owner.status = t!("connection_archive_password_required")
-                    .to_string()
-                    .into();
+                owner.status = message.clone().into();
                 cx.notify();
             });
+            crate::feedback::Feedback::warning(window, cx, message);
             return;
         }
         let ConnectionOperation::Archive { path, importing } = &self.operation else {
             return;
         };
         if !path.as_os_str().is_empty() {
-            if self.run_archive(path, &password, cx) {
+            if self.run_archive(path, &password, window, cx) {
                 Self::close_window(window);
             }
             return;
@@ -253,8 +298,13 @@ impl ConnectionOperationWindow {
                         } else {
                             path.join("tiny-shell-connections.json")
                         };
-                        let succeeded =
-                            this.update(cx, |this, cx| this.run_archive(&path, &password, cx))?;
+                        let succeeded = this.update(cx, |this, cx| {
+                            let mut succeeded = false;
+                            let _ = window_handle.update(cx, |_, window, cx| {
+                                succeeded = this.run_archive(&path, &password, window, cx);
+                            });
+                            succeeded
+                        })?;
                         if succeeded {
                             let _ = window_handle.update(cx, |_, window, _| {
                                 Self::close_window(window);
@@ -263,17 +313,20 @@ impl ConnectionOperationWindow {
                     }
                 }
                 Ok(Err(error)) => {
+                    let message = t!(
+                        "connection_archive_picker_failed",
+                        error = error.to_string()
+                    )
+                    .to_string();
                     this.update(cx, |this, cx| {
                         this.owner.update(cx, |owner, cx| {
-                            owner.status = t!(
-                                "connection_archive_picker_failed",
-                                error = error.to_string()
-                            )
-                            .to_string()
-                            .into();
+                            owner.status = message.clone().into();
                             cx.notify();
                         });
                     })?;
+                    let _ = window_handle.update(cx, |_, window, cx| {
+                        crate::feedback::Feedback::error(window, cx, message);
+                    });
                 }
                 _ => {}
             }
@@ -497,11 +550,11 @@ fn move_target_row(
 
 fn commit_catalog_change(
     owner: &Entity<TinyShell>,
-    _window: &mut Window,
+    window: &mut Window,
     cx: &mut Context<ConnectionOperationWindow>,
     change: impl FnOnce(&mut crate::session::config::ConfigStore) -> anyhow::Result<()>,
 ) -> bool {
-    owner.update(cx, |owner, cx| {
+    let result = owner.update(cx, |owner, cx| {
         let mut staged = owner.config.clone();
         match change(&mut staged).and_then(|_| {
             crate::app::config_persistence::save_full(&owner.config_repository, &staged)
@@ -509,20 +562,27 @@ fn commit_catalog_change(
             Ok(()) => {
                 owner.config = staged;
                 cx.notify();
-                true
+                Ok(())
             }
             Err(error) => {
-                owner.status = t!(
+                let message = t!(
                     "connection_manager_action_failed",
                     error = error.to_string()
                 )
-                .to_string()
-                .into();
+                .to_string();
+                owner.status = message.clone().into();
                 cx.notify();
-                false
+                Err(message)
             }
         }
-    })
+    });
+    match result {
+        Ok(()) => true,
+        Err(message) => {
+            crate::feedback::Feedback::error(window, cx, message);
+            false
+        }
+    }
 }
 
 fn window_options(cx: &mut App, compact: bool) -> WindowOptions {
@@ -571,12 +631,14 @@ pub(crate) fn open(owner: Entity<TinyShell>, operation: ConnectionOperation, cx:
         })
         .to_string(),
     };
+    let owner_for_window = owner.clone();
     let opened = cx.open_window(window_options(cx, compact), move |window, cx| {
         window.set_window_title(&title);
         let window_handle = window.window_handle();
         crate::app::register_auxiliary_window(window_handle, owner_id);
-        let view =
-            cx.new(|cx| ConnectionOperationWindow::new(owner.clone(), operation, window, cx));
+        let view = cx.new(|cx| {
+            ConnectionOperationWindow::new(owner_for_window.clone(), operation, window, cx)
+        });
         let focus_input = view
             .read(cx)
             .group_name_input
@@ -597,5 +659,11 @@ pub(crate) fn open(owner: Entity<TinyShell>, operation: ConnectionOperation, cx:
     });
     if let Err(error) = opened {
         tracing::error!("failed to open connection operation window: {error:?}");
+        crate::feedback::Feedback::show_for_owner(
+            &owner,
+            cx,
+            crate::feedback::FeedbackKind::Error,
+            t!("connection_manager_action_failed", error = format!("{error:?}")).to_string(),
+        );
     }
 }
