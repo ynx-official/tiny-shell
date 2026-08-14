@@ -1,9 +1,9 @@
 use std::path::PathBuf;
 
 use gpui::{
-    App, AppContext as _, Bounds, Context, Entity, FocusHandle, Focusable, InteractiveElement as _,
+    App, AppContext as _, Context, Entity, FocusHandle, Focusable, InteractiveElement as _,
     IntoElement, ParentElement as _, PathPromptOptions, Render, StatefulInteractiveElement as _,
-    Styled, Window, WindowOptions, point, px, rems, size,
+    Styled, Window, WindowOptions, px, rems, size,
 };
 use gpui_component::{
     ActiveTheme as _, Icon, IconName, Root, Sizable as _, Size,
@@ -537,22 +537,17 @@ fn window_options(cx: &App, compact: bool) -> WindowOptions {
         }),
         ..Default::default()
     };
-    if let Some(display) = cx.displays().first().cloned() {
-        let display_bounds = display.bounds();
-        let window_size = if compact {
-            size(px(420.), px(220.))
-        } else {
-            size(px(480.), px(560.))
-        };
-        let origin = point(
-            display_bounds.origin.x + (display_bounds.size.width - window_size.width) / 2.,
-            display_bounds.origin.y + (display_bounds.size.height - window_size.height) / 2.,
-        );
-        options.window_bounds = Some(gpui::WindowBounds::Windowed(Bounds::new(
-            origin,
-            window_size,
-        )));
-    }
+    let preferred_size = if compact {
+        size(px(420.), px(220.))
+    } else {
+        size(px(480.), px(560.))
+    };
+    options.window_bounds = crate::app::platform::centered_child_window_bounds(
+        cx,
+        preferred_size,
+        0.9,
+        0.9,
+    );
     #[cfg(not(target_os = "macos"))]
     if let Ok(image) =
         image::load_from_memory(include_bytes!("../../../assets/icons/tiny-shell.png"))
