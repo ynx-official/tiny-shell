@@ -69,35 +69,13 @@ pub(crate) fn deregister_window(window: AnyWindowHandle) {
     crate::app::deregister_auxiliary_window(window);
 }
 
-fn window_options(cx: &App, position_hint: Option<Point<Pixels>>) -> WindowOptions {
-    let mut options = WindowOptions::default();
-    let preferred_size = size(px(1000.), px(760.));
-
-    options.window_bounds = match position_hint {
-        Some(position) => crate::app::platform::window_bounds_near_position(
-            cx,
-            preferred_size,
-            0.9,
-            0.9,
-            position,
-            px(80.),
-            px(24.),
-        ),
-        None => crate::app::platform::centered_child_window_bounds(
-            cx,
-            preferred_size,
-            0.9,
-            0.9,
-        ),
-    };
-
-    #[cfg(not(target_os = "macos"))]
-    if let Ok(image) = image::load_from_memory(include_bytes!("../../assets/icons/tiny-shell.png"))
-    {
-        options.icon = Some(std::sync::Arc::new(image.into_rgba8()));
+fn window_options(cx: &mut App, position_hint: Option<Point<Pixels>>) -> WindowOptions {
+    let mut spec = crate::app::platform::AuxiliaryWindowSpec::new(size(px(1000.), px(760.)))
+        .with_max_ratio(0.9, 0.9);
+    if let Some(position) = position_hint {
+        spec = spec.near(position, px(80.), px(24.));
     }
-
-    options
+    crate::app::platform::auxiliary_window_options(cx, spec)
 }
 
 pub(crate) fn open_or_focus(
