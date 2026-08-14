@@ -8,15 +8,15 @@ impl TinyShell {
         let sessions = self.config.sessions().to_vec();
         let active_session_id = self.active_session_id().map(ToOwned::to_owned);
         self.selector_selection = self.default_selector_index();
-        self.open_dialog(crate::app::DialogKind::SessionSelector, window, cx, move |dialog: Dialog, token, _window, _cx| {
+        self.open_modal_dialog(crate::app::DialogKind::SessionSelector, window, cx, move |dialog: Dialog, token, _window, _cx| {
             dialog
                 .title(t!("open_session").to_string())
                 .w(px(520.))
                 .on_close({
                     let view = view.clone();
-                    move |_, _, cx| {
+                    move |_, window, cx| {
                         view.update(cx, |this, cx| {
-                            this.dialog_closed(token);
+                            this.modal_dialog_closed(token, window, cx);
                             cx.notify();
                         });
                     }
@@ -70,7 +70,7 @@ impl TinyShell {
                                             MouseButton::Left,
                                             window.listener_for(&view, move |this, _, window, cx| {
                                                 this.open_local(cx);
-                                                this.dismiss_dialog(token, window, cx);
+                                                this.dismiss_modal_dialog(token, window, cx);
                                                 cx.notify();
                                             }),
                                         )
@@ -112,7 +112,7 @@ impl TinyShell {
                                         .on_mouse_down(
                                             MouseButton::Left,
                                             window.listener_for(&view, move |this, _, window, cx| {
-                                                this.dismiss_dialog(token, window, cx);
+                                                this.dismiss_modal_dialog(token, window, cx);
                                                 this.open_new_ssh_dialog(window, cx);
                                                 cx.notify();
                                             }),
@@ -187,7 +187,7 @@ impl TinyShell {
                                                                     window,
                                                                     cx,
                                                                 );
-                                                                this.dismiss_dialog(token, window, cx);
+                                                                this.dismiss_modal_dialog(token, window, cx);
                                                                 cx.notify();
                                                             },
                                                         ),
