@@ -1093,32 +1093,18 @@ fn same_session_revision(left: &Session, right: &Session) -> bool {
         && left.proxy_password == right.proxy_password
 }
 
-fn window_options(cx: &App, compact: bool) -> WindowOptions {
-    let (min_width, min_height, default_width, default_height) = if compact {
-        (px(540.), px(340.), px(560.), px(360.))
+fn window_options(cx: &mut App, compact: bool) -> WindowOptions {
+    let (min_size, preferred_size) = if compact {
+        (size(px(540.), px(340.)), size(px(560.), px(360.)))
     } else {
-        (px(680.), px(420.), px(620.), px(400.))
+        (size(px(680.), px(420.)), size(px(620.), px(400.)))
     };
-    let mut options = WindowOptions {
-        is_movable: true,
-        is_resizable: true,
-        is_minimizable: true,
-        window_min_size: Some(size(min_width, min_height)),
-        ..Default::default()
-    };
-    options.window_bounds = crate::app::platform::centered_child_window_bounds(
+    crate::app::platform::auxiliary_window_options(
         cx,
-        size(default_width, default_height),
-        0.9,
-        0.9,
-    );
-    #[cfg(not(target_os = "macos"))]
-    if let Ok(image) =
-        image::load_from_memory(include_bytes!("../../../assets/icons/tiny-shell.png"))
-    {
-        options.icon = Some(std::sync::Arc::new(image.into_rgba8()));
-    }
-    options
+        crate::app::platform::AuxiliaryWindowSpec::new(preferred_size)
+            .with_min_size(min_size)
+            .with_max_ratio(0.9, 0.9),
+    )
 }
 
 pub(crate) fn open(owner: Entity<TinyShell>, request: SshEditorRequest, cx: &mut App) {
