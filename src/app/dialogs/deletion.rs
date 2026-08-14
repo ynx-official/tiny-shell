@@ -18,7 +18,7 @@ impl TinyShell {
         };
 
         let view = cx.entity();
-        self.open_dialog(
+        self.open_modal_dialog(
             crate::app::DialogKind::DeleteConfirmation,
             window,
             cx,
@@ -28,9 +28,9 @@ impl TinyShell {
                     .w(px(420.))
                     .on_close({
                         let view = view.clone();
-                        move |_, _, cx| {
+                        move |_, window, cx| {
                             view.update(cx, |this, cx| {
-                                this.dialog_closed(token);
+                                this.modal_dialog_closed(token, window, cx);
                                 cx.notify();
                             });
                         }
@@ -59,7 +59,7 @@ impl TinyShell {
                                         let view = view.clone();
                                         move |_, window, cx| {
                                             view.update(cx, |this, cx| {
-                                                this.dismiss_dialog(token, window, cx);
+                                                this.dismiss_modal_dialog(token, window, cx);
                                             });
                                         }
                                     }),
@@ -74,7 +74,7 @@ impl TinyShell {
                                         move |_, window, cx| {
                                             view.update(cx, |this, cx| {
                                                 this.remove_saved_session(session_id.clone(), cx);
-                                                this.dismiss_dialog(token, window, cx);
+                                                this.dismiss_modal_dialog(token, window, cx);
                                             });
                                         }
                                     }),
@@ -101,7 +101,7 @@ impl TinyShell {
         }
 
         let view = cx.entity();
-        self.open_dialog(
+        self.open_modal_dialog(
             crate::app::DialogKind::DeleteConfirmation,
             window,
             cx,
@@ -111,9 +111,9 @@ impl TinyShell {
                     .w(px(420.))
                     .on_close({
                         let view = view.clone();
-                        move |_, _, cx| {
+                        move |_, window, cx| {
                             view.update(cx, |this, cx| {
-                                this.dialog_closed(token);
+                                this.modal_dialog_closed(token, window, cx);
                                 cx.notify();
                             });
                         }
@@ -134,7 +134,7 @@ impl TinyShell {
                                         let view = view.clone();
                                         move |_, window, cx| {
                                             view.update(cx, |this, cx| {
-                                                this.dismiss_dialog(token, window, cx);
+                                                this.dismiss_modal_dialog(token, window, cx);
                                             });
                                         }
                                     }),
@@ -149,7 +149,7 @@ impl TinyShell {
                                         move |_, window, cx| {
                                             view.update(cx, |this, cx| {
                                                 this.delete_managed_key(key_id.clone(), cx);
-                                                this.dismiss_dialog(token, window, cx);
+                                                this.dismiss_modal_dialog(token, window, cx);
                                             });
                                         }
                                     }),
@@ -199,7 +199,7 @@ impl TinyShell {
                 || p == "/sbin"
         });
 
-        self.open_dialog(
+        self.open_modal_dialog(
             crate::app::DialogKind::DeleteConfirmation,
             window,
             cx,
@@ -209,9 +209,9 @@ impl TinyShell {
                     .w(px(500.))
                     .on_close({
                         let view = view.clone();
-                        move |_, _, cx| {
+                        move |_, window, cx| {
                             view.update(cx, |this, cx| {
-                                this.dialog_closed(token);
+                                this.modal_dialog_closed(token, window, cx);
                                 cx.notify();
                             });
                         }
@@ -234,7 +234,7 @@ impl TinyShell {
                                 cx.notify();
                             });
                             view.update(cx, |this, cx| {
-                                this.dismiss_dialog(token, window, cx);
+                                this.dismiss_modal_dialog(token, window, cx);
                             });
                             true
                         }
@@ -340,7 +340,7 @@ impl TinyShell {
                                     .label(t!("cancel").to_string())
                                     .on_click(move |_, window, cx| {
                                         cancel_view.update(cx, |this, cx| {
-                                            this.dismiss_dialog(token, window, cx);
+                                            this.dismiss_modal_dialog(token, window, cx);
                                         });
                                     }),
                             )
@@ -365,7 +365,7 @@ impl TinyShell {
                                                 cx.notify();
                                             });
                                             view.update(cx, |this, cx| {
-                                                this.dismiss_dialog(token, window, cx);
+                                                this.dismiss_modal_dialog(token, window, cx);
                                             });
                                         }
                                     }),
