@@ -529,6 +529,10 @@ fn group_context_menu(
                         move |this, _, _, cx| {
                             this.connection_manager_actions
                                 .cut_group(group_name.clone());
+                            show_manager_action_success(
+                                cx,
+                                t!("connection_manager_cut").to_string(),
+                            );
                             cx.notify();
                         }
                     }),
@@ -761,6 +765,10 @@ fn session_menu(
                         let id = session_id.clone();
                         move |this, _, _, cx| {
                             this.connection_manager_actions.cut_session(id.clone());
+                            show_manager_action_success(
+                                cx,
+                                t!("connection_manager_cut").to_string(),
+                            );
                             cx.notify();
                         }
                     }),
@@ -775,6 +783,10 @@ fn session_menu(
                                 cx.write_to_clipboard(gpui::ClipboardItem::new_string(
                                     crate::session::connection_catalog::session_address(session),
                                 ));
+                                show_manager_action_success(
+                                    cx,
+                                    t!("connection_copy_address").to_string(),
+                                );
                             }
                         }
                     }),
@@ -1007,12 +1019,14 @@ fn render_empty_menu(
                     };
                     this.connection_group_parent = None;
                     if let Err(error) = this.open_ssh_address_dialog(&address, window, cx) {
-                        this.status = t!(
+                        let message = t!(
                             "connection_manager_action_failed",
                             error = error.to_string()
                         )
-                        .to_string()
-                        .into();
+                        .to_string();
+                        this.status = message.clone().into();
+                        let owner = cx.entity();
+                        crate::feedback::Feedback::error_for_owner(&owner, cx, message);
                         cx.notify();
                     }
                 }),
@@ -1059,38 +1073,76 @@ fn run_manager_action(
     action: ConnectionManagerAction,
     cx: &mut Context<TinyShell>,
 ) {
+    let success_action = manager_action_label(&action);
+    let owner = cx.entity();
     let mut staged_config = this.config.clone();
     let mut staged_actions = this.connection_manager_actions.clone();
     match staged_actions.execute(&mut staged_config, action) {
         Ok(_) => this.commit_staged_config_async(
             staged_config,
-            move |this, cx| {
-                this.connection_manager_actions = staged_actions;
-                cx.notify();
+            {
+                let owner = owner.clone();
+                move |this, cx| {
+                    this.connection_manager_actions = staged_actions;
+                    crate::feedback::Feedback::success_for_owner(
+                        &owner,
+                        cx,
+                        t!(
+                            "connection_manager_action_succeeded",
+                            action = success_action
+                        )
+                        .to_string(),
+                    );
+                    cx.notify();
+                }
             },
-            |this, error, cx| {
+            move |this, error, cx| {
                 tracing::warn!("connection manager action failed: {error:#}");
-                this.status = t!(
+                let message = t!(
                     "connection_manager_action_failed",
                     error = error.to_string()
                 )
-                .to_string()
-                .into();
+                .to_string();
+                this.status = message.clone().into();
+                crate::feedback::Feedback::error_for_owner(&owner, cx, message);
                 cx.notify();
             },
             cx,
         ),
         Err(error) => {
             tracing::warn!("connection manager action failed: {error:#}");
-            this.status = t!(
+            let message = t!(
                 "connection_manager_action_failed",
                 error = error.to_string()
             )
-            .to_string()
-            .into();
+            .to_string();
+            this.status = message.clone().into();
+            crate::feedback::Feedback::error_for_owner(&owner, cx, message);
             cx.notify();
         }
     }
+}
+
+fn manager_action_label(action: &ConnectionManagerAction) -> String {
+    match action {
+        ConnectionManagerAction::CopySession { .. } | ConnectionManagerAction::CopyGroup { .. } => {
+            t!("connection_manager_copy").to_string()
+        }
+        ConnectionManagerAction::Paste { .. } => t!("connection_manager_paste").to_string(),
+        ConnectionManagerAction::DeleteSession { .. }
+        | ConnectionManagerAction::DeleteGroup { .. } => t!("delete").to_string(),
+        ConnectionManagerAction::RestoreSession { .. }
+        | ConnectionManagerAction::RestoreGroup { .. } => t!("connection_restore").to_string(),
+    }
+}
+
+fn show_manager_action_success(cx: &mut Context<TinyShell>, action: String) {
+    let owner = cx.entity();
+    crate::feedback::Feedback::success_for_owner(
+        &owner,
+        cx,
+        t!("connection_manager_action_succeeded", action = action).to_string(),
+    );
 }
 
 #[cfg(test)]

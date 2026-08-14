@@ -56,6 +56,22 @@ impl Feedback {
         Self::show(window, cx, FeedbackKind::Error, message);
     }
 
+    pub(crate) fn success_for_owner(
+        owner: &Entity<TinyShell>,
+        cx: &mut App,
+        message: impl Into<SharedString>,
+    ) {
+        Self::show_for_owner(owner, cx, FeedbackKind::Success, message);
+    }
+
+    pub(crate) fn error_for_owner(
+        owner: &Entity<TinyShell>,
+        cx: &mut App,
+        message: impl Into<SharedString>,
+    ) {
+        Self::show_for_owner(owner, cx, FeedbackKind::Error, message);
+    }
+
     /// Route feedback to the TinyShell workspace that owns an auxiliary window.
     /// This is used when the auxiliary window is about to close, or when opening it failed and
     /// there is no native child window available to render the notification.

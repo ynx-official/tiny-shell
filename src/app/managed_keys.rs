@@ -528,23 +528,34 @@ impl TinyShell {
     /// Delete a managed key by id. Also clears the reference from any
     /// session that used it.
     pub(crate) fn delete_managed_key(&mut self, key_id: String, cx: &mut Context<Self>) {
+        let owner = cx.entity();
         let mut staged = self.config.clone();
         staged.remove_managed_key(&key_id);
         self.commit_staged_config_async(
             staged,
-            move |this, cx| {
-                this.managed_keys = this.config.managed_keys().to_vec();
-                if this.managed_key_selected.as_deref() == Some(&key_id) {
-                    this.managed_key_selected = None;
+            {
+                let owner = owner.clone();
+                move |this, cx| {
+                    this.managed_keys = this.config.managed_keys().to_vec();
+                    if this.managed_key_selected.as_deref() == Some(&key_id) {
+                        this.managed_key_selected = None;
+                    }
+                    if this.managed_key_dialog_selection.as_deref() == Some(&key_id) {
+                        this.managed_key_dialog_selection = None;
+                    }
+                    crate::feedback::Feedback::success_for_owner(
+                        &owner,
+                        cx,
+                        t!("key_delete_success"),
+                    );
+                    cx.notify();
                 }
-                if this.managed_key_dialog_selection.as_deref() == Some(&key_id) {
-                    this.managed_key_dialog_selection = None;
-                }
-                cx.notify();
             },
-            |this, error, cx| {
+            move |this, error, cx| {
                 tracing::warn!("failed to delete managed key: {error:#}");
-                this.status = t!("config_save_failed", error = format!("{error:#}")).into();
+                let message = t!("config_save_failed", error = format!("{error:#}")).to_string();
+                this.status = message.clone().into();
+                crate::feedback::Feedback::error_for_owner(&owner, cx, message);
                 cx.notify();
             },
             cx,

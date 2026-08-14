@@ -57,17 +57,25 @@ impl TinyShell {
     }
 
     pub(crate) fn remove_saved_session(&mut self, session_id: String, cx: &mut Context<Self>) {
+        let owner = cx.entity();
         let mut staged = self.config.clone();
         staged.remove(&session_id);
         self.commit_staged_config_async(
             staged,
-            |this, cx| {
-                this.status = t!("session_removed").into();
-                cx.notify();
+            {
+                let owner = owner.clone();
+                move |this, cx| {
+                    let message = t!("session_removed").to_string();
+                    this.status = message.clone().into();
+                    crate::feedback::Feedback::success_for_owner(&owner, cx, message);
+                    cx.notify();
+                }
             },
-            |this, error, cx| {
+            move |this, error, cx| {
                 tracing::warn!("failed to remove saved session: {error:#}");
-                this.status = t!("config_save_failed", error = format!("{error:#}")).into();
+                let message = t!("config_save_failed", error = format!("{error:#}")).to_string();
+                this.status = message.clone().into();
+                crate::feedback::Feedback::error_for_owner(&owner, cx, message);
                 cx.notify();
             },
             cx,
