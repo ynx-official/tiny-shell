@@ -186,6 +186,12 @@ pub(crate) fn open(
         Ok(handle) => Some(handle.into()),
         Err(error) => {
             tracing::error!("failed to open settings window: {error:?}");
+            crate::feedback::Feedback::show_for_owner(
+                &owner,
+                cx,
+                crate::feedback::FeedbackKind::Error,
+                format!("{} · {}: {error:?}", t!("settings"), t!("failed")),
+            );
             None
         }
     }
