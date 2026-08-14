@@ -3,7 +3,7 @@ use super::*;
 impl TinyShell {
     pub(crate) fn show_transfers_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let view = cx.entity();
-        self.open_dialog(
+        self.open_modal_dialog(
             crate::app::DialogKind::Transfers,
             window,
             cx,
@@ -13,9 +13,9 @@ impl TinyShell {
                     .close_button(false)
                     .on_close({
                         let view = view.clone();
-                        move |_, _, cx| {
+                        move |_, window, cx| {
                             view.update(cx, |this, cx| {
-                                this.dialog_closed(token);
+                                this.modal_dialog_closed(token, window, cx);
                                 cx.notify();
                             });
                         }
@@ -84,7 +84,7 @@ impl TinyShell {
                                             .on_click(window.listener_for(
                                                 &view,
                                                 move |this, _, window, cx| {
-                                                    this.dismiss_dialog(token, window, cx);
+                                                    this.dismiss_modal_dialog(token, window, cx);
                                                     cx.notify();
                                                 },
                                             )),
