@@ -166,6 +166,18 @@ impl TinyShell {
         }
     }
 
+    fn clear_recorded_modal_token(&mut self, token: DialogToken) {
+        if self.selector_dialog_token == Some(token) {
+            self.selector_dialog_token = None;
+        }
+        if self.connection_group_dialog_token == Some(token) {
+            self.connection_group_dialog_token = None;
+        }
+        if self.managed_key_dialog_token == Some(token) {
+            self.managed_key_dialog_token = None;
+        }
+    }
+
     fn activate_modal_request(
         &mut self,
         request: PendingModal,
@@ -243,11 +255,15 @@ impl TinyShell {
         cx: &mut Context<Self>,
     ) -> bool {
         let (closed, next) = close_active(window.window_handle(), token);
+        if !closed {
+            return false;
+        }
+        self.clear_recorded_modal_token(token);
         if let Some(request) = next {
             self.record_modal_token(request.kind, request.token);
             window.defer(cx, move |window, cx| open_request(request, window, cx));
         }
-        closed
+        true
     }
 
     /// Programmatically dismiss a modal without allowing a queued request from another native
