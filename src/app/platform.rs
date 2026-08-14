@@ -89,12 +89,10 @@ fn window_bounds_for_handle(
     cx: &mut App,
 ) -> Option<Bounds<Pixels>> {
     handle
-        .update(cx, |_, window, _| {
-            match window.window_bounds() {
-                WindowBounds::Fullscreen(bounds)
-                | WindowBounds::Maximized(bounds)
-                | WindowBounds::Windowed(bounds) => bounds,
-            }
+        .update(cx, |_, window, _| match window.window_bounds() {
+            WindowBounds::Fullscreen(bounds)
+            | WindowBounds::Maximized(bounds)
+            | WindowBounds::Windowed(bounds) => bounds,
         })
         .ok()
 }
@@ -105,25 +103,8 @@ fn window_bounds_for_handle(
 /// anchored to that exact UI context instead of jumping to whichever TinyShell workspace happened
 /// to be activated most recently.
 fn active_native_window_bounds(cx: &mut App) -> Option<Bounds<Pixels>> {
-    for handle in cx.windows() {
-        let bounds = handle
-            .update(cx, |_, window, _| {
-                if !window.is_window_active() {
-                    return None;
-                }
-                Some(match window.window_bounds() {
-                    WindowBounds::Fullscreen(bounds)
-                    | WindowBounds::Maximized(bounds)
-                    | WindowBounds::Windowed(bounds) => bounds,
-                })
-            })
-            .ok()
-            .flatten();
-        if bounds.is_some() {
-            return bounds;
-        }
-    }
-    None
+    let handle = cx.active_window()?;
+    window_bounds_for_handle(handle, cx)
 }
 
 /// Returns the bounds of the most recently active TinyShell workspace window.
@@ -233,16 +214,16 @@ fn near_bounds(
 /// silently enlarge a window after the centering calculation and make it appear offset.
 pub(crate) fn auxiliary_window_options(cx: &mut App, spec: AuxiliaryWindowSpec) -> WindowOptions {
     let active_bounds = match spec.placement {
-        AuxiliaryWindowPlacement::Centered => active_native_window_bounds(cx)
-            .or_else(active_workspace_bounds),
+        AuxiliaryWindowPlacement::Centered => {
+            active_native_window_bounds(cx).or_else(active_workspace_bounds)
+        }
         AuxiliaryWindowPlacement::Near { .. } => None,
     };
 
     let window_bounds = match spec.placement {
         AuxiliaryWindowPlacement::Centered => {
-            let anchor_bounds = active_bounds.or_else(|| {
-                cx.primary_display().map(|display| display.bounds())
-            });
+            let anchor_bounds = active_bounds
+                .or_else(|| cx.primary_display().map(|display| display.bounds()));
             anchor_bounds.and_then(|anchor_bounds| {
                 let display_bounds = display_bounds_for_point(cx, bounds_center(anchor_bounds))?;
                 Some(centered_bounds(spec, anchor_bounds, display_bounds))
@@ -257,7 +238,7 @@ pub(crate) fn auxiliary_window_options(cx: &mut App, spec: AuxiliaryWindowSpec) 
     };
 
     let effective_min_size = spec.min_size.map(|minimum| {
-        if let Some(WindowBounds::Windowed(bounds)) = window_bounds {
+        if let Some(WindowBounds::Windowed(bounds)) = window_bounds.as_ref() {
             size(
                 minimum.width.min(bounds.size.width),
                 minimum.height.min(bounds.size.height),
@@ -283,40 +264,6 @@ pub(crate) fn auxiliary_window_options(cx: &mut App, spec: AuxiliaryWindowSpec) 
     }
 
     options
-}
-
-/// Backward-compatible bounds helper for code that only needs a centered rectangle.
-pub(crate) fn centered_child_window_bounds(
-    cx: &mut App,
-    preferred_size: Size<Pixels>,
-    max_width_ratio: f32,
-    max_height_ratio: f32,
-) -> Option<WindowBounds> {
-    auxiliary_window_options(
-        cx,
-        AuxiliaryWindowSpec::new(preferred_size)
-            .with_max_ratio(max_width_ratio, max_height_ratio),
-    )
-    .window_bounds
-}
-
-/// Backward-compatible placement helper for drag-detached windows.
-pub(crate) fn window_bounds_near_position(
-    cx: &mut App,
-    preferred_size: Size<Pixels>,
-    max_width_ratio: f32,
-    max_height_ratio: f32,
-    position: Point<Pixels>,
-    offset_x: Pixels,
-    offset_y: Pixels,
-) -> Option<WindowBounds> {
-    auxiliary_window_options(
-        cx,
-        AuxiliaryWindowSpec::new(preferred_size)
-            .with_max_ratio(max_width_ratio, max_height_ratio)
-            .near(position, offset_x, offset_y),
-    )
-    .window_bounds
 }
 
 #[cfg(test)]
