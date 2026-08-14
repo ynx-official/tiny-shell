@@ -182,23 +182,42 @@ pub(crate) fn dock_zone_at(
     if !bounds.contains(&cursor) {
         return None;
     }
+    Some(dock_zone_inside_bounds(cursor, bounds, 0.20))
+}
 
+/// Cross-window tabs only merge. Accept the complete terminal surface and a
+/// small vertical margin around the tab bar so the target is easy to acquire.
+pub(crate) fn tab_merge_target_at(
+    cursor: Point<Pixels>,
+    bounds: Bounds<Pixels>,
+    tab_bar_bounds: Option<Bounds<Pixels>>,
+) -> bool {
+    const TAB_BAR_MERGE_SLOP: f32 = 12.0;
+    if tab_bar_bounds.is_some_and(|tab_bar| {
+        let slop = px(TAB_BAR_MERGE_SLOP);
+        cursor.x >= tab_bar.origin.x
+            && cursor.x < tab_bar.origin.x + tab_bar.size.width
+            && cursor.y >= tab_bar.origin.y - slop
+            && cursor.y < tab_bar.origin.y + tab_bar.size.height + slop
+    }) {
+        return true;
+    }
+    bounds.contains(&cursor)
+}
+
+fn dock_zone_inside_bounds(cursor: Point<Pixels>, bounds: Bounds<Pixels>, edge: f32) -> DockZone {
     let x = (cursor.x - bounds.origin.x).as_f32() / bounds.size.width.as_f32().max(1.0);
     let y = (cursor.y - bounds.origin.y).as_f32() / bounds.size.height.as_f32().max(1.0);
-    // Keep the center merge target deliberately generous. Cross-window drops
-    // are less precise than pointer interactions inside a single window, and
-    // the previous 28% edge bands left only 19% of the panel for merging.
-    const EDGE: f32 = 0.20;
-    if x < EDGE {
-        Some(DockZone::Left)
-    } else if x > 1.0 - EDGE {
-        Some(DockZone::Right)
-    } else if y < EDGE {
-        Some(DockZone::Up)
-    } else if y > 1.0 - EDGE {
-        Some(DockZone::Down)
+    if x < edge {
+        DockZone::Left
+    } else if x > 1.0 - edge {
+        DockZone::Right
+    } else if y < edge {
+        DockZone::Up
+    } else if y > 1.0 - edge {
+        DockZone::Down
     } else {
-        Some(DockZone::Center)
+        DockZone::Center
     }
 }
 
@@ -269,7 +288,7 @@ mod tests {
     use super::{
         DockZone, DropIntent, TabDragState, cursor_inside_viewport, dock_zone_at,
         local_position_in_window, reorder_index_at_x, should_close_empty_source,
-        should_offer_detach,
+        should_offer_detach, tab_merge_target_at,
     };
 
     #[test]
@@ -356,16 +375,31 @@ mod tests {
     }
 
     #[test]
-    fn docking_center_uses_a_forgiving_cross_window_hit_area() {
+    fn cross_window_merge_accepts_the_entire_terminal_surface() {
         let bounds = Bounds::new(point(px(0.), px(40.)), size(px(1000.), px(600.)));
+        assert!(tab_merge_target_at(point(px(10.), px(50.)), bounds, None));
+        assert!(tab_merge_target_at(point(px(990.), px(630.)), bounds, None));
+        assert!(!tab_merge_target_at(point(px(500.), px(20.)), bounds, None));
         assert_eq!(
-            dock_zone_at(point(px(210.), px(300.)), bounds, None),
-            Some(DockZone::Center)
-        );
-        assert_eq!(
-            dock_zone_at(point(px(190.), px(300.)), bounds, None),
+            dock_zone_at(point(px(160.), px(300.)), bounds, None),
             Some(DockZone::Left)
         );
+    }
+
+    #[test]
+    fn docking_tab_bar_has_a_small_merge_slop() {
+        let bounds = Bounds::new(point(px(0.), px(40.)), size(px(1000.), px(600.)));
+        let tab_bar = Bounds::new(point(px(0.), px(0.)), size(px(1000.), px(40.)));
+        assert!(tab_merge_target_at(
+            point(px(500.), px(50.)),
+            bounds,
+            Some(tab_bar)
+        ));
+        assert!(!tab_merge_target_at(
+            point(px(500.), px(53.)),
+            Bounds::new(point(px(0.), px(100.)), size(px(1000.), px(600.))),
+            Some(tab_bar)
+        ));
     }
 
     #[test]

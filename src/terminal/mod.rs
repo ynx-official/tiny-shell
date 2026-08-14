@@ -680,6 +680,7 @@ pub(crate) struct TerminalTab {
     pub session: Option<Session>,
     processor: Processor,
     term: Term<TerminalListener>,
+    pending_title: Arc<Mutex<Option<String>>>,
     pub cols: u16,
     pub rows: u16,
     pub backend: std::sync::Arc<std::sync::Mutex<BackendTx>>,
@@ -823,7 +824,15 @@ impl TerminalTab {
         events: BackendEventSender,
     ) -> Self {
         let shared_backend = std::sync::Arc::new(std::sync::Mutex::new(backend));
-        let mut term = new_term(100, 30, shared_backend.clone(), id.clone(), events.clone());
+        let pending_title = Arc::new(Mutex::new(None));
+        let mut term = new_term(
+            100,
+            30,
+            shared_backend.clone(),
+            id.clone(),
+            events.clone(),
+            pending_title.clone(),
+        );
         term.reset_damage();
         Self {
             id: id.clone(),
@@ -837,6 +846,7 @@ impl TerminalTab {
             session: None,
             processor: Processor::new(),
             term,
+            pending_title,
             cols: 100,
             rows: 30,
             backend: shared_backend,
@@ -857,7 +867,7 @@ impl TerminalTab {
         self.invalidate_render_cache();
     }
 
-    pub fn feed(&mut self, bytes: &[u8]) {
+    pub fn feed(&mut self, bytes: &[u8]) -> bool {
         self.invalidate_render_cache();
         self.processor.advance(&mut self.term, bytes);
         {
@@ -865,6 +875,20 @@ impl TerminalTab {
             self.pending_render_damage.get_mut().merge(damage);
         }
         self.term.reset_damage();
+
+        let title = self
+            .pending_title
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take();
+        let Some(title) = title else {
+            return false;
+        };
+        if self.dynamic_title == title {
+            return false;
+        }
+        self.dynamic_title = title;
+        true
     }
 
     pub fn feed_status_line(&mut self, text: &str) {
@@ -1199,6 +1223,26 @@ mod tests {
     use super::*;
 
     #[test]
+    fn terminal_title_is_available_in_the_same_output_cycle() {
+        let (backend_tx, _backend_rx) =
+            std::sync::mpsc::sync_channel(BACKEND_COMMAND_QUEUE_CAPACITY);
+        let (event_tx, _event_rx) = backend_event_channel();
+        let mut tab = TerminalTab::new_local(
+            "test".to_string(),
+            "Test".to_string(),
+            BackendTx::Local {
+                commands: backend_tx,
+                close: Arc::new(AtomicBool::new(false)),
+                resize: Arc::new(Mutex::new(None)),
+            },
+            event_tx,
+        );
+
+        assert!(tab.feed(b"\x1b]0;root@host:/srv/app\x07"));
+        assert_eq!(tab.dynamic_title, "root@host:/srv/app");
+    }
+
+    #[test]
     fn clear_contents_removes_viewport_and_scrollback() {
         let (backend_tx, backend_rx) =
             std::sync::mpsc::sync_channel(BACKEND_COMMAND_QUEUE_CAPACITY);
@@ -1375,6 +1419,7 @@ struct TerminalListener {
     tab_id: String,
     backend: std::sync::Arc<std::sync::Mutex<BackendTx>>,
     events: BackendEventSender,
+    pending_title: Arc<Mutex<Option<String>>>,
 }
 
 impl EventListener for TerminalListener {
@@ -1397,6 +1442,10 @@ impl EventListener for TerminalListener {
                 }
             }
             Event::Title(title) => {
+                *self
+                    .pending_title
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(title.clone());
                 let _ = self.events.send(BackendEvent::TerminalTitleChanged {
                     tab_id: self.tab_id.clone(),
                     title,
@@ -1413,6 +1462,7 @@ fn new_term(
     backend: std::sync::Arc<std::sync::Mutex<BackendTx>>,
     tab_id: String,
     events: BackendEventSender,
+    pending_title: Arc<Mutex<Option<String>>>,
 ) -> Term<TerminalListener> {
     Term::new(
         Config {
@@ -1424,6 +1474,7 @@ fn new_term(
             tab_id,
             backend,
             events,
+            pending_title,
         },
     )
 }

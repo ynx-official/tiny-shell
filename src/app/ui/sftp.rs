@@ -1138,14 +1138,8 @@ impl TinyShell {
                                 .label(t!("sync_cwd").to_string())
                                 .checked(sftp.follow_terminal_cwd)
                                 .tab_stop(false)
-                                .on_click(cx.listener(|this, checked, window, cx| {
-                                    if this
-                                        .active_sftp()
-                                        .is_some_and(|sftp| sftp.follow_terminal_cwd == *checked)
-                                    {
-                                        return;
-                                    }
-                                    this.toggle_follow_terminal_cwd(window, cx);
+                                .on_click(cx.listener(|this, checked, _, cx| {
+                                    this.set_follow_terminal_cwd(*checked, cx);
                                 })),
                         )
                     })

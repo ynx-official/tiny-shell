@@ -376,51 +376,10 @@ impl TinyShell {
             .font_family(self.ui_font_family.clone())
             .on_drag_move::<IncomingTabDrag>(move |event, window, cx| {
                 let drag = event.drag(cx).clone();
-                let target_window = window.window_handle();
-                if drag.source_window == target_window {
-                    return;
-                }
-
-                let changed = drag_move_view.update(cx, |target, cx| {
-                    let zone = target
-                        .terminal_panel_bounds
-                        .and_then(|bounds| {
-                            crate::app::tab_drag::dock_zone_at(
-                                window.mouse_position(),
-                                bounds,
-                                target.tab_bar_bounds,
-                            )
-                        })
-                        .unwrap_or_default();
-                    let same_drag = target
-                        .incoming_tab_drag
-                        .as_ref()
-                        .is_some_and(|current| current.drag_id == drag.drag_id);
-                    let unchanged = same_drag && target.incoming_tab_drop_zone == Some(zone);
-                    if unchanged {
-                        return false;
-                    }
-                    target.incoming_tab_drag = Some(drag.clone());
-                    target.incoming_tab_drop_zone = Some(zone);
-                    cx.notify();
-                    true
+                let position = event.event.position;
+                drag_move_view.update(cx, |this, cx| {
+                    this.on_native_tab_drag_move(drag, position, window, cx);
                 });
-                if changed {
-                    let generation = crate::app::set_tab_drag_hover(drag.drag_id, target_window);
-                    window.defer(cx, move |_window, cx| {
-                        if crate::app::tab_drag_hover_is_current(
-                            drag.drag_id,
-                            target_window,
-                            generation,
-                        ) {
-                            crate::app::clear_incoming_tab_drag_except(
-                                drag.drag_id,
-                                Some(target_window),
-                                cx,
-                            );
-                        }
-                    });
-                }
             })
             .on_drop::<IncomingPaneDrag>({
                 let pane_drop_view = pane_drag_move_view;
@@ -459,7 +418,24 @@ impl TinyShell {
                     return;
                 }
 
-                let zone = target.read(cx).incoming_tab_drop_zone.unwrap_or_default();
+                let position = window.mouse_position();
+                if !TinyShell::promote_native_tab_drag_from_target(&drag, position, window, cx) {
+                    drag.source
+                        .update(cx, |source, cx| source.cancel_tab_drag(cx));
+                    window.defer(cx, move |_window, cx| {
+                        crate::app::clear_incoming_tab_drag_except(drag.drag_id, None, cx);
+                    });
+                    return;
+                }
+                let Some(zone) = target.read(cx).native_tab_drop_zone(position) else {
+                    crate::app::clear_tab_drag_hover();
+                    drag.source
+                        .update(cx, |source, cx| source.cancel_tab_drag(cx));
+                    window.defer(cx, move |_window, cx| {
+                        crate::app::clear_incoming_tab_drag_except(drag.drag_id, None, cx);
+                    });
+                    return;
+                };
                 TinyShell::defer_native_cross_window_tab_drop(
                     drag,
                     target_window,

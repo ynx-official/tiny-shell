@@ -245,6 +245,14 @@ impl TinyShell {
             .flex_1()
             .min_w(px(0.))
             .h_full()
+            .on_prepaint({
+                let view = view.clone();
+                move |bounds, _window, cx| {
+                    view.update(cx, |this, _| {
+                        this.tab_bar_bounds = Some(bounds);
+                    });
+                }
+            })
             .items_center()
             .gap_2()
             .child(
@@ -271,14 +279,6 @@ impl TinyShell {
                     .flex_1()
                     .min_w(px(0.))
                     .h_full()
-                    .on_prepaint({
-                        let view = view.clone();
-                        move |bounds, _window, cx| {
-                            view.update(cx, |this, _| {
-                                this.tab_bar_bounds = Some(bounds);
-                            });
-                        }
-                    })
                     .when(is_integrated, |this| {
                         this.window_control_area(gpui::WindowControlArea::Drag)
                     })
@@ -401,6 +401,7 @@ impl TinyShell {
                                         group_id: gid.clone(),
                                     };
                                     let drag_preview_label = label.clone();
+                                    let drag_source = view.clone();
                                     let tooltip_label = label.clone();
                                     let context_gid = gid.clone();
                                     let bounds_gid = gid.clone();
@@ -493,8 +494,16 @@ impl TinyShell {
                                                 })
                                                 .on_drag(
                                                     drag_payload,
-                                                    move |_, offset, _, cx| {
+                                                    move |_, offset, window, cx| {
                                                         crate::app::clear_tab_drag_hover();
+                                                        drag_source.update(cx, |this, cx| {
+                                                            if this.tab_drag.promote_if_needed(
+                                                                window.mouse_position(),
+                                                                crate::app::tab_drag::TAB_DRAG_THRESHOLD,
+                                                            ) {
+                                                                cx.notify();
+                                                            }
+                                                        });
                                                         cx.new(|_| TabDragPreview {
                                                             label: drag_preview_label.clone(),
                                                             offset,
@@ -971,58 +980,6 @@ impl TinyShell {
 
     pub(super) fn render_tab_drag_overlay(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let scrim = hsla(220. / 360., 0.25, 0.08, 0.22);
-        let active = self.incoming_tab_drop_zone;
-        let target = cx.entity();
-        let card = |zone: crate::app::tab_drag::DockZone, label: String| {
-            let selected = active == Some(zone);
-            let drop_target = target.clone();
-            div()
-                .w(px(118.))
-                .h(px(70.))
-                .flex()
-                .items_center()
-                .justify_center()
-                .rounded(px(10.))
-                .border_2()
-                .border_color(if selected {
-                    cx.theme().primary
-                } else {
-                    cx.theme().border
-                })
-                .bg(if selected {
-                    cx.theme().primary.opacity(0.28)
-                } else {
-                    cx.theme().background.opacity(0.94)
-                })
-                .shadow_lg()
-                .text_sm()
-                .font_weight(if selected {
-                    FontWeight::BOLD
-                } else {
-                    FontWeight::NORMAL
-                })
-                .drag_over::<IncomingTabDrag>(|this, _, _, cx| {
-                    this.border_color(cx.theme().primary)
-                        .bg(cx.theme().primary.opacity(0.34))
-                })
-                .on_drop::<IncomingTabDrag>(move |drag, window, cx| {
-                    let drag = drag.clone();
-                    let target_window = window.window_handle();
-                    if drag.source_window == target_window {
-                        return;
-                    }
-                    let target = drop_target.clone();
-                    TinyShell::defer_native_cross_window_tab_drop(
-                        drag,
-                        target_window,
-                        target,
-                        zone,
-                        window,
-                        cx,
-                    );
-                })
-                .child(label)
-        };
 
         div()
             .absolute()
@@ -1033,39 +990,31 @@ impl TinyShell {
             .bg(scrim)
             .when(self.incoming_tab_drag.is_some(), |this| {
                 this.child(
-                    v_flex()
+                    div()
                         .absolute()
                         .top_0()
                         .left_0()
                         .right_0()
                         .bottom_0()
+                        .flex()
                         .items_center()
                         .justify_center()
-                        .gap_2()
-                        .child(card(
-                            crate::app::tab_drag::DockZone::Up,
-                            t!("drag_dock_up").to_string(),
-                        ))
                         .child(
-                            h_flex()
-                                .gap_2()
-                                .child(card(
-                                    crate::app::tab_drag::DockZone::Left,
-                                    t!("drag_dock_left").to_string(),
-                                ))
-                                .child(card(
-                                    crate::app::tab_drag::DockZone::Center,
-                                    t!("drag_merge_title").to_string(),
-                                ))
-                                .child(card(
-                                    crate::app::tab_drag::DockZone::Right,
-                                    t!("drag_dock_right").to_string(),
-                                )),
-                        )
-                        .child(card(
-                            crate::app::tab_drag::DockZone::Down,
-                            t!("drag_dock_down").to_string(),
-                        )),
+                            div()
+                                .w(px(156.))
+                                .h(px(82.))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .rounded(px(10.))
+                                .border_2()
+                                .border_color(cx.theme().primary)
+                                .bg(cx.theme().primary.opacity(0.28))
+                                .shadow_lg()
+                                .text_sm()
+                                .font_weight(FontWeight::BOLD)
+                                .child(t!("drag_merge_title").to_string()),
+                        ),
                 )
             })
             .when(

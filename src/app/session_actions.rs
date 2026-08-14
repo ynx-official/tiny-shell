@@ -13,9 +13,9 @@ use crate::{
         AuxiliaryWindowsState, IncomingTabDrag, PaneDirection, SystemInfoTab,
         constants::{DEFAULT_COLS, DEFAULT_ROWS},
         tab_drag::{
-            DockZone, DropIntent, TAB_DRAG_THRESHOLD, cursor_inside_viewport, dock_zone_at,
+            DockZone, DropIntent, TAB_DRAG_THRESHOLD, cursor_inside_viewport,
             local_position_in_window, reorder_index_at_x, should_close_empty_source,
-            should_offer_detach,
+            should_offer_detach, tab_merge_target_at,
         },
     },
     backend::{local, ssh},
@@ -1803,6 +1803,12 @@ impl TinyShell {
         })
     }
 
+    pub(crate) fn native_tab_drop_zone(&self, position: Point<Pixels>) -> Option<DockZone> {
+        let terminal_bounds = self.terminal_panel_bounds?;
+        tab_merge_target_at(position, terminal_bounds, self.tab_bar_bounds)
+            .then_some(DockZone::Center)
+    }
+
     fn native_tab_drop_target(
         &self,
         source_position: Point<Pixels>,
@@ -1820,18 +1826,174 @@ impl TinyShell {
         let target_position = local_position_in_window(screen_position, target_bounds);
         let zone = {
             let target_state = target.read(cx);
-            let terminal_bounds = target_state.terminal_panel_bounds?;
-            dock_zone_at(
-                target_position,
-                terminal_bounds,
-                target_state.tab_bar_bounds,
-            )?
+            target_state.native_tab_drop_zone(target_position)?
         };
         Some(NativeTabDropTarget {
             window: target_window,
             entity: target,
             zone,
         })
+    }
+
+    /// Promote the source-side drag state using a cursor event delivered to a
+    /// target window. This keeps TinyShell's 10px threshold intact even on
+    /// platforms that stop sending move events to the source window.
+    pub(crate) fn promote_native_tab_drag_from_target(
+        drag: &IncomingTabDrag,
+        target_position: Point<Pixels>,
+        target_window: &Window,
+        cx: &mut App,
+    ) -> bool {
+        if drag.source.read(cx).tab_drag.dragging_group() == Some(drag.group_id.as_str()) {
+            return true;
+        }
+        let Some(source_bounds) = drag.source.read(cx).last_registered_window_bounds else {
+            return false;
+        };
+        let screen_position = Self::screen_position(target_window, target_position);
+        let source_position = local_position_in_window(screen_position, source_bounds);
+        drag.source.update(cx, |source, cx| {
+            if source
+                .tab_drag
+                .promote_if_needed(source_position, TAB_DRAG_THRESHOLD)
+            {
+                cx.notify();
+            }
+            source.tab_drag.dragging_group() == Some(drag.group_id.as_str())
+        })
+    }
+
+    fn set_incoming_native_tab_drag(
+        &mut self,
+        drag: IncomingTabDrag,
+        zone: DockZone,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let same_drag = self
+            .incoming_tab_drag
+            .as_ref()
+            .is_some_and(|current| current.drag_id == drag.drag_id);
+        if same_drag && self.incoming_tab_drop_zone == Some(zone) {
+            return false;
+        }
+        self.incoming_tab_drag = Some(drag);
+        self.incoming_tab_drop_zone = Some(zone);
+        cx.notify();
+        true
+    }
+
+    fn clear_incoming_native_tab_drag(&mut self, drag_id: u64, cx: &mut Context<Self>) -> bool {
+        if !self
+            .incoming_tab_drag
+            .as_ref()
+            .is_some_and(|drag| drag.drag_id == drag_id)
+        {
+            return false;
+        }
+        self.incoming_tab_drag = None;
+        self.incoming_tab_drop_zone = None;
+        cx.notify();
+        true
+    }
+
+    fn retain_native_tab_hover(
+        drag_id: u64,
+        target_window: AnyWindowHandle,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        let generation = crate::app::set_tab_drag_hover(drag_id, target_window);
+        window.defer(cx, move |_window, cx| {
+            if crate::app::tab_drag_hover_is_current(drag_id, target_window, generation) {
+                crate::app::clear_incoming_tab_drag_except(drag_id, Some(target_window), cx);
+            }
+        });
+    }
+
+    fn defer_native_tab_hover_clear(drag_id: u64, window: &mut Window, cx: &mut App) {
+        window.defer(cx, move |_window, cx| {
+            if !crate::app::tab_drag_hover_exists(drag_id) {
+                crate::app::clear_incoming_tab_drag_except(drag_id, None, cx);
+            }
+        });
+    }
+
+    /// Track a native tab drag from both possible platform event paths. Some
+    /// platforms keep delivering the move to the source window while others
+    /// deliver it to the window under the pointer.
+    pub(crate) fn on_native_tab_drag_move(
+        &mut self,
+        drag: IncomingTabDrag,
+        position: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let current_window = window.window_handle();
+        if drag.source_window != current_window {
+            if !Self::promote_native_tab_drag_from_target(&drag, position, window, cx) {
+                self.clear_incoming_native_tab_drag(drag.drag_id, cx);
+                return;
+            }
+            let zone = self.native_tab_drop_zone(position);
+            if let Some(zone) = zone {
+                let changed = self.set_incoming_native_tab_drag(drag.clone(), zone, cx);
+                if changed || !crate::app::tab_drag_hover_targets(drag.drag_id, current_window) {
+                    Self::retain_native_tab_hover(drag.drag_id, current_window, window, cx);
+                }
+            } else {
+                self.clear_incoming_native_tab_drag(drag.drag_id, cx);
+                if crate::app::clear_tab_drag_hover_for_target(drag.drag_id, current_window) {
+                    Self::defer_native_tab_hover_clear(drag.drag_id, window, cx);
+                }
+            }
+            return;
+        }
+
+        let promoted = self
+            .tab_drag
+            .promote_if_needed(position, TAB_DRAG_THRESHOLD);
+        if promoted {
+            cx.notify();
+        }
+        if self.tab_drag.dragging_group() != Some(drag.group_id.as_str()) {
+            return;
+        }
+
+        let target = self.native_tab_drop_target(position, window, cx);
+        let outside_source = !cursor_inside_viewport(position, window.viewport_size());
+        let over_other_window = target.is_some()
+            || (outside_source
+                && crate::app::find_window_at_screen_pos(
+                    &current_window,
+                    Self::screen_position(window, position),
+                )
+                .is_some());
+        let group_count = self.workspace_state_mut().tab_groups().len();
+        let reorder_changed = self.tab_drag.set_reorder_index(None);
+        let detach_changed = self.tab_drag.set_outside(
+            outside_source
+                && should_offer_detach(
+                    group_count,
+                    position,
+                    self.tab_bar_bounds,
+                    over_other_window,
+                ),
+        );
+        if reorder_changed || detach_changed {
+            cx.notify();
+        }
+
+        if let Some(target) = target {
+            let target_window = target.window;
+            let changed = target.entity.update(cx, |target_state, cx| {
+                target_state.set_incoming_native_tab_drag(drag.clone(), target.zone, cx)
+            });
+            if changed || !crate::app::tab_drag_hover_targets(drag.drag_id, target_window) {
+                Self::retain_native_tab_hover(drag.drag_id, target_window, window, cx);
+            }
+        } else if crate::app::clear_tab_drag_hover_for_drag(drag.drag_id) {
+            Self::defer_native_tab_hover_clear(drag.drag_id, window, cx);
+        }
     }
 
     fn prepare_tab_drag_release(
@@ -2013,6 +2175,36 @@ impl TinyShell {
         });
     }
 
+    fn close_empty_source_in_window(source: Entity<TinyShell>, window: &mut Window, cx: &mut App) {
+        let should_remove = source.update(cx, |source, cx| {
+            if !source.workspace().tab_groups().is_empty() {
+                return false;
+            }
+            source.finalize_main_window_close(window, cx);
+            true
+        });
+        if should_remove {
+            window.remove_window();
+        }
+    }
+
+    /// Wait until the current window callback has returned before resolving the
+    /// source handle. GPUI temporarily removes the active window from its
+    /// window table, so a nested update of that same window reports "not found".
+    fn defer_close_empty_source_window(
+        source_window: AnyWindowHandle,
+        source: Entity<TinyShell>,
+        cx: &mut App,
+    ) {
+        cx.defer(move |cx| {
+            if let Err(error) = source_window.update(cx, move |_, window, cx| {
+                Self::close_empty_source_in_window(source, window, cx);
+            }) {
+                tracing::warn!("[tab-drag] failed to close empty source window: {error:?}");
+            }
+        });
+    }
+
     pub(crate) fn finish_native_tab_drop(
         drag: IncomingTabDrag,
         target_window: AnyWindowHandle,
@@ -2048,16 +2240,7 @@ impl TinyShell {
             )
         });
         if should_close_source {
-            if let Err(error) = source_window.update(cx, |_, window, cx| {
-                source.update(cx, |source, cx| {
-                    source.finalize_main_window_close(window, cx);
-                });
-                window.remove_window();
-            }) {
-                tracing::warn!(
-                    "[tab-drag] failed to close empty source window after native drop: {error:?}"
-                );
-            }
+            Self::defer_close_empty_source_window(source_window, source, cx);
         }
     }
 
@@ -2533,13 +2716,7 @@ impl TinyShell {
                 .position(|id| *id == tab.id)
                 .unwrap_or(usize::MAX)
         });
-        let group_id = self.create_group_for_transfer(
-            group.pane_root.clone(),
-            group.title.clone(),
-            group.ordinal,
-            group.sftp.clone(),
-            cx,
-        );
+        let group_id = self.create_group_for_transfer(group, cx);
         let _fallback_tab = self
             .workspace()
             .pane_root()
@@ -2682,12 +2859,7 @@ impl TinyShell {
             &target_window,
         ) {
             let source = cx.entity();
-            if let Err(error) = source_window.update(cx, |_, window, cx| {
-                source.update(cx, |this, cx| this.finalize_main_window_close(window, cx));
-                window.remove_window();
-            }) {
-                tracing::warn!("failed to close empty source window: {error:?}");
-            }
+            Self::defer_close_empty_source_window(source_window, source, cx);
         }
     }
 
@@ -2732,12 +2904,7 @@ impl TinyShell {
             self.commit_groups_merge(group_ids, target_window, target, DockZone::Center, cx);
         if merged && self.workspace().tab_groups().is_empty() {
             let source = cx.entity();
-            if let Err(error) = source_window.update(cx, |_, window, cx| {
-                source.update(cx, |this, cx| this.finalize_main_window_close(window, cx));
-                window.remove_window();
-            }) {
-                tracing::warn!("failed to close merged source window: {error:?}");
-            }
+            Self::defer_close_empty_source_window(source_window, source, cx);
         }
     }
 
@@ -2810,26 +2977,14 @@ impl TinyShell {
         }
     }
 
-    fn create_group_for_transfer(
-        &mut self,
-        pane_root: PaneLayout,
-        title: String,
-        ordinal: u64,
-        sftp: Option<crate::terminal::SftpUiState>,
-        _cx: &mut Context<Self>,
-    ) -> String {
+    fn create_group_for_transfer(&mut self, group: TabGroup, _cx: &mut Context<Self>) -> String {
+        let group_id = group.id.clone();
+        let pane_root = group.pane_root.clone();
+        let ordinal = group.ordinal;
         let next_ordinal = self.workspace().next_tab_group_ordinal().max(ordinal + 1);
         self.workspace_state_mut()
             .set_next_tab_group_ordinal(next_ordinal);
-        let group_id = Uuid::new_v4().to_string();
-        self.workspace_state_mut().push_group(TabGroup {
-            id: group_id.clone(),
-            drag_id: crate::app::next_tab_drag_id(),
-            ordinal,
-            title,
-            pane_root: pane_root.clone(),
-            sftp,
-        });
+        self.workspace_state_mut().push_group(group);
         self.home_page_open = false;
         self.workspace_state_mut().clear_active_system_info_tab();
         self.workspace_state_mut()

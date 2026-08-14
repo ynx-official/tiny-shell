@@ -283,6 +283,48 @@ pub(crate) fn tab_drag_hover_is_current(
         .is_some_and(|current| *current == (drag_id, target_window, generation))
 }
 
+pub(crate) fn tab_drag_hover_targets(drag_id: u64, target_window: AnyWindowHandle) -> bool {
+    let hover = TAB_DRAG_HOVER.get_or_init(|| Mutex::new(None));
+    lock_recover(hover, "tab drag hover")
+        .as_ref()
+        .is_some_and(|current| current.0 == drag_id && current.1 == target_window)
+}
+
+pub(crate) fn tab_drag_hover_exists(drag_id: u64) -> bool {
+    let hover = TAB_DRAG_HOVER.get_or_init(|| Mutex::new(None));
+    lock_recover(hover, "tab drag hover")
+        .as_ref()
+        .is_some_and(|current| current.0 == drag_id)
+}
+
+pub(crate) fn clear_tab_drag_hover_for_drag(drag_id: u64) -> bool {
+    let hover = TAB_DRAG_HOVER.get_or_init(|| Mutex::new(None));
+    let mut hover = lock_recover(hover, "tab drag hover");
+    if hover.as_ref().is_some_and(|current| current.0 == drag_id) {
+        *hover = None;
+        true
+    } else {
+        false
+    }
+}
+
+pub(crate) fn clear_tab_drag_hover_for_target(
+    drag_id: u64,
+    target_window: AnyWindowHandle,
+) -> bool {
+    let hover = TAB_DRAG_HOVER.get_or_init(|| Mutex::new(None));
+    let mut hover = lock_recover(hover, "tab drag hover");
+    if hover
+        .as_ref()
+        .is_some_and(|current| current.0 == drag_id && current.1 == target_window)
+    {
+        *hover = None;
+        true
+    } else {
+        false
+    }
+}
+
 pub(crate) fn clear_tab_drag_hover() {
     let hover = TAB_DRAG_HOVER.get_or_init(|| Mutex::new(None));
     *lock_recover(hover, "tab drag hover") = None;
@@ -2050,8 +2092,14 @@ impl TinyShell {
     }
 
     fn handle_terminal_output(&mut self, tab_id: String, bytes: Vec<u8>, _cx: &mut Context<Self>) {
-        if let Some(tab) = self.terminal_tab_mut(&tab_id) {
-            tab.feed(&bytes);
+        let title_changed = self
+            .terminal_tab_mut(&tab_id)
+            .is_some_and(|tab| tab.feed(&bytes));
+        if title_changed && self.workspace().active_tab_id() == Some(tab_id.as_str()) {
+            let initially_synced = self.sync_initial_sftp_to_terminal_tab(&tab_id);
+            if !initially_synced {
+                self.sync_sftp_to_terminal_tab(&tab_id, true);
+            }
         }
     }
 
@@ -2592,25 +2640,27 @@ impl TinyShell {
         self.window_state_mut().workspace_state_mut().clear();
     }
 
-    pub(crate) fn toggle_follow_terminal_cwd(
-        &mut self,
-        _window: &mut gpui::Window,
-        cx: &mut Context<Self>,
-    ) {
+    pub(crate) fn set_follow_terminal_cwd(&mut self, enabled: bool, cx: &mut Context<Self>) {
         let Some(active_group) = self.workspace().active_group_id().map(str::to_owned) else {
             return;
         };
-        let enabled = self
+        let changed = self
             .tab_group_mut(&active_group)
             .and_then(|group| group.sftp.as_mut())
             .map(|sftp| {
-                sftp.follow_terminal_cwd = !sftp.follow_terminal_cwd;
-                sftp.follow_terminal_cwd
-            });
+                if sftp.follow_terminal_cwd == enabled {
+                    return false;
+                }
+                sftp.follow_terminal_cwd = enabled;
+                true
+            })
+            .unwrap_or(false);
 
-        if enabled == Some(true)
-            && let Some(active_tab) = self.workspace().active_tab_id().map(str::to_owned)
-        {
+        if !changed {
+            return;
+        }
+
+        if enabled && let Some(active_tab) = self.workspace().active_tab_id().map(str::to_owned) {
             self.sync_sftp_to_terminal_tab(&active_tab, false);
         }
         cx.notify();
@@ -2690,12 +2740,25 @@ impl TinyShell {
     }
 
     fn parse_path_from_title(title: &str, home_dir: &str) -> Option<String> {
-        let title = title.strip_prefix("TINY_SHELL_CWD:").unwrap_or(title);
-        let path_part = if let Some(pos) = title.find(':') {
-            title[pos + 1..].trim()
-        } else {
-            title.trim()
-        };
+        const CWD_MARKERS: [&str; 2] = ["TINY_SHELL_CWD:", "ASHELL_CWD:"];
+        let title = title.trim();
+        let path_part = CWD_MARKERS
+            .iter()
+            .find_map(|marker| title.rsplit_once(marker).map(|(_, path)| path.trim()))
+            .or_else(|| {
+                title
+                    .match_indices(':')
+                    .rev()
+                    .map(|(index, _)| title[index + 1..].trim())
+                    .find(|candidate| Self::looks_like_terminal_path(candidate))
+            })
+            .or_else(|| Self::looks_like_terminal_path(title).then_some(title))?;
+
+        let path_part = [" — ", " | "]
+            .into_iter()
+            .filter_map(|separator| path_part.split_once(separator).map(|(path, _)| path.trim()))
+            .next()
+            .unwrap_or(path_part);
 
         if path_part.starts_with('/') {
             Some(path_part.to_string())
@@ -2707,6 +2770,10 @@ impl TinyShell {
         } else {
             None
         }
+    }
+
+    fn looks_like_terminal_path(candidate: &str) -> bool {
+        candidate.starts_with('/') || candidate == "~" || candidate.starts_with("~/")
     }
 
     pub(crate) fn mark_config_preferences_dirty(&mut self) {
@@ -3045,6 +3112,34 @@ mod tests {
         assert_eq!(
             TinyShell::parse_path_from_title("TINY_SHELL_CWD:~/projects", "/home/user"),
             Some("/home/user/projects".to_string())
+        );
+    }
+
+    #[test]
+    fn parses_path_after_decorated_title_prefix() {
+        assert_eq!(
+            TinyShell::parse_path_from_title("ssh: user@host:/srv/app", "/home/user"),
+            Some("/srv/app".to_string())
+        );
+    }
+
+    #[test]
+    fn parses_path_before_common_title_suffix() {
+        assert_eq!(
+            TinyShell::parse_path_from_title("user@host:/srv/app — zsh", "/home/user"),
+            Some("/srv/app".to_string())
+        );
+        assert_eq!(
+            TinyShell::parse_path_from_title("~/projects | main", "/home/user"),
+            Some("/home/user/projects".to_string())
+        );
+    }
+
+    #[test]
+    fn accepts_legacy_explicit_cwd_marker() {
+        assert_eq!(
+            TinyShell::parse_path_from_title("ASHELL_CWD:~/legacy", "/home/user"),
+            Some("/home/user/legacy".to_string())
         );
     }
 
