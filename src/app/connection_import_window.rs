@@ -419,8 +419,12 @@ impl Render for FinalShellImportWindow {
 
 pub(crate) fn open(owner: Entity<TinyShell>, cx: &mut App) {
     let owner_id = owner.read(cx).session_owner_id;
-    let mut options = super::connection_manager::window::window_options(cx);
-    options.window_min_size = Some(gpui::size(gpui::px(420.), gpui::px(300.)));
+    let options = crate::app::platform::auxiliary_window_options(
+        cx,
+        crate::app::platform::AuxiliaryWindowSpec::new(gpui::size(gpui::px(600.), gpui::px(400.)))
+            .with_min_size(gpui::size(gpui::px(420.), gpui::px(300.)))
+            .with_max_ratio(0.72, 0.62),
+    );
     let opened = cx.open_window(options, move |window, cx| {
         window.set_window_title(t!("finalshell_import_title").as_ref());
         let window_handle = window.window_handle();
