@@ -22,6 +22,43 @@ use super::{
 };
 use crate::{app::TinyShell, session::config::Session};
 
+const TREE_ROW_PADDING_LEFT_PX: f32 = 14.;
+const TREE_INDENT_PX: f32 = 16.;
+const TREE_DISCLOSURE_SLOT_WIDTH_PX: f32 = 16.;
+const TREE_ICON_SLOT_HEIGHT_PX: f32 = 18.;
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct TreeRowLayout {
+    padding_left: f32,
+    disclosure_slot_width: f32,
+}
+
+fn tree_row_layout(depth: usize) -> TreeRowLayout {
+    TreeRowLayout {
+        padding_left: TREE_ROW_PADDING_LEFT_PX + depth as f32 * TREE_INDENT_PX,
+        disclosure_slot_width: TREE_DISCLOSURE_SLOT_WIDTH_PX,
+    }
+}
+
+fn tree_disclosure_spacer(width: f32) -> AnyElement {
+    div()
+        .w(px(width))
+        .h(px(TREE_ICON_SLOT_HEIGHT_PX))
+        .flex_none()
+        .into_any_element()
+}
+
+fn tree_icon_slot(icon: IconName) -> AnyElement {
+    h_flex()
+        .w(px(TREE_DISCLOSURE_SLOT_WIDTH_PX))
+        .h(px(TREE_ICON_SLOT_HEIGHT_PX))
+        .flex_none()
+        .items_center()
+        .justify_center()
+        .child(Icon::new(icon).with_size(Size::Small))
+        .into_any_element()
+}
+
 /// Shared rendering context passed to connection-manager row renderers.
 struct RenderNodeContext<'a> {
     view: &'a Entity<TinyShell>,
@@ -335,10 +372,11 @@ fn render_group(
     let selected = state.selected.as_ref() == Some(&id);
     let node_id = id.clone();
     let double_click_group = group_name.clone();
+    let layout = tree_row_layout(depth);
     h_flex()
         .id(("connection-manager-group", index))
         .min_h(px(32.))
-        .pl(px(14. + depth as f32 * 16.))
+        .pl(px(layout.padding_left))
         .pr_3()
         .items_center()
         .gap_2()
@@ -359,10 +397,10 @@ fn render_group(
         )
         .context_menu(group_context_menu(view, &group_name))
         .child(
-            div()
+            h_flex()
                 .id(("connection-manager-group-toggle", index))
-                .w(px(16.))
-                .h(px(18.))
+                .w(px(layout.disclosure_slot_width))
+                .h(px(TREE_ICON_SLOT_HEIGHT_PX))
                 .flex_none()
                 .items_center()
                 .justify_center()
@@ -390,17 +428,14 @@ fn render_group(
             h_flex()
                 .flex_1()
                 .min_w(px(0.))
-                .h(px(18.))
+                .h(px(TREE_ICON_SLOT_HEIGHT_PX))
                 .items_center()
                 .gap_2()
-                .child(
-                    Icon::new(if expanded {
-                        IconName::FolderOpen
-                    } else {
-                        IconName::Folder
-                    })
-                    .with_size(Size::Small),
-                )
+                .child(tree_icon_slot(if expanded {
+                    IconName::FolderOpen
+                } else {
+                    IconName::Folder
+                }))
                 .child(
                     h_flex()
                         .flex_1()
@@ -582,10 +617,11 @@ fn render_session_row(
     let needs_prompt = session.requires_credential_prompt();
     let session_for_menu = session.clone();
     let node_id = id.clone();
+    let layout = tree_row_layout(depth);
     h_flex()
         .id(("connection-manager-session", index))
         .min_h(px(34.))
-        .pl(px(14. + depth as f32 * 16.))
+        .pl(px(layout.padding_left))
         .pr_3()
         .items_center()
         .gap_2()
@@ -615,17 +651,25 @@ fn render_session_row(
             }),
         )
         .context_menu(session_menu(view, session_for_menu))
-        .child(Icon::new(IconName::SquareTerminal).with_size(Size::Small))
+        .child(tree_disclosure_spacer(layout.disclosure_slot_width))
         .child(
-            div()
+            h_flex()
                 .flex_1()
                 .min_w(px(0.))
-                .overflow_hidden()
-                .whitespace_nowrap()
-                .text_ellipsis()
-                .text_size(rems(0.74))
-                .font_weight(FontWeight::MEDIUM)
-                .child(session.name),
+                .items_center()
+                .gap_2()
+                .child(tree_icon_slot(IconName::SquareTerminal))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.))
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .text_ellipsis()
+                        .text_size(rems(0.74))
+                        .font_weight(FontWeight::MEDIUM)
+                        .child(session.name),
+                ),
         )
         .child(
             div()
@@ -784,10 +828,11 @@ fn render_deleted_group(
     let ConnectionNodeId::DeletedGroup(group_name) = id else {
         return div().into_any_element();
     };
+    let layout = tree_row_layout(depth);
     h_flex()
         .id(("connection-manager-deleted-group", index))
         .min_h(px(28.))
-        .pl(px(10. + depth as f32 * 16.))
+        .pl(px(layout.padding_left))
         .pr_3()
         .items_center()
         .gap_2()
@@ -812,12 +857,25 @@ fn render_deleted_group(
                 menu
             }
         })
-        .child(Icon::new(IconName::Delete).with_size(Size::Small))
+        .child(tree_disclosure_spacer(layout.disclosure_slot_width))
         .child(
-            div()
-                .text_size(rems(0.72))
-                .font_weight(FontWeight::SEMIBOLD)
-                .child(format!("{} ({})", name, t!("quick_connection_deleted"))),
+            h_flex()
+                .flex_1()
+                .min_w(px(0.))
+                .items_center()
+                .gap_2()
+                .child(tree_icon_slot(IconName::Delete))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.))
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .text_ellipsis()
+                        .text_size(rems(0.72))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child(format!("{} ({})", name, t!("quick_connection_deleted"))),
+                ),
         )
         .into_any_element()
 }
@@ -833,10 +891,11 @@ fn render_deleted_session(
     let ConnectionNodeId::DeletedSession(id) = id else {
         return div().into_any_element();
     };
+    let layout = tree_row_layout(depth);
     h_flex()
         .id(("connection-manager-deleted-session", index))
         .min_h(px(30.))
-        .pl(px(14. + depth as f32 * 16.))
+        .pl(px(layout.padding_left))
         .pr_3()
         .items_center()
         .gap_2()
@@ -861,16 +920,46 @@ fn render_deleted_session(
                 menu
             }
         })
-        .child(Icon::new(IconName::Delete).with_size(Size::Small))
-        .child(div().flex_1().child(session.name))
-        .child(div().w(px(140.)).child(session.host))
+        .child(tree_disclosure_spacer(layout.disclosure_slot_width))
+        .child(
+            h_flex()
+                .flex_1()
+                .min_w(px(0.))
+                .items_center()
+                .gap_2()
+                .child(tree_icon_slot(IconName::Delete))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.))
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .text_ellipsis()
+                        .child(session.name),
+                ),
+        )
+        .child(
+            div()
+                .w(px(140.))
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .text_ellipsis()
+                .child(session.host),
+        )
         .child(
             div()
                 .w(px(64.))
                 .text_center()
                 .child(session.port.to_string()),
         )
-        .child(div().w(px(100.)).child(session.user))
+        .child(
+            div()
+                .w(px(100.))
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .text_ellipsis()
+                .child(session.user),
+        )
         .into_any_element()
 }
 
@@ -1001,5 +1090,34 @@ fn run_manager_action(
             .into();
             cx.notify();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_tree_row_reserves_the_same_disclosure_slot() {
+        assert_eq!(
+            tree_row_layout(0).disclosure_slot_width,
+            TREE_DISCLOSURE_SLOT_WIDTH_PX
+        );
+        assert_eq!(
+            tree_row_layout(3).disclosure_slot_width,
+            TREE_DISCLOSURE_SLOT_WIDTH_PX
+        );
+    }
+
+    #[test]
+    fn nested_tree_rows_advance_by_one_indent_step() {
+        assert_eq!(
+            tree_row_layout(1).padding_left - tree_row_layout(0).padding_left,
+            TREE_INDENT_PX
+        );
+        assert_eq!(
+            tree_row_layout(3).padding_left - tree_row_layout(2).padding_left,
+            TREE_INDENT_PX
+        );
     }
 }

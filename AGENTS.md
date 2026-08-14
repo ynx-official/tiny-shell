@@ -11,6 +11,15 @@
 - 当前版本的唯一代码来源：`Cargo.toml` 中的 `[package].version`
 - CI 质量门禁：格式检查、Clippy、测试和多平台 release 构建
 
+## UI design system
+
+- Scope: 快速连接窗口（`src/app/connection_manager/`）
+- Skill: `awesome-design-md`
+- Source: `VoltAgent/awesome-design-md`
+- Style ID: `sentry`
+- Style reference: `C:/Users/Administrator/.codex/skills/awesome-design-md/references/design-md/sentry/DESIGN.md`
+- Implementation note: 保持原生桌面应用的紧凑信息密度，使用 Sentry 规范的 8px 间距节奏和清晰技术层级；项目主题色与既有组件状态优先。
+
 ## 2. 基本开发规范
 
 ### 2.1 修改原则
