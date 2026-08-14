@@ -132,29 +132,13 @@ impl Render for SettingsWindow {
     }
 }
 
-fn window_options(cx: &App) -> WindowOptions {
-    let mut options = WindowOptions {
-        is_movable: true,
-        is_resizable: true,
-        is_minimizable: true,
-        window_min_size: Some(size(px(720.), px(520.))),
-        ..Default::default()
-    };
-
-    options.window_bounds = crate::app::platform::centered_child_window_bounds(
+fn window_options(cx: &mut App) -> WindowOptions {
+    crate::app::platform::auxiliary_window_options(
         cx,
-        size(px(980.), px(700.)),
-        0.9,
-        0.9,
-    );
-
-    #[cfg(not(target_os = "macos"))]
-    if let Ok(image) = image::load_from_memory(include_bytes!("../../assets/icons/tiny-shell.png"))
-    {
-        options.icon = Some(std::sync::Arc::new(image.into_rgba8()));
-    }
-
-    options
+        crate::app::platform::AuxiliaryWindowSpec::new(size(px(980.), px(700.)))
+            .with_min_size(size(px(720.), px(520.)))
+            .with_max_ratio(0.9, 0.9),
+    )
 }
 
 pub(crate) fn open(
