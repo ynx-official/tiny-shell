@@ -107,20 +107,25 @@ impl TinyShell {
             crate::app::keybinding_recorder::find_conflict(&self.config, &action, &new_key)
         {
             let formatted = crate::app::keybinding_recorder::format_keystroke(&new_key);
+            let message = rust_i18n::t!("keybind_conflict", key = formatted, action = conflict_label)
+                .to_string();
             self.recording_action = None;
-            self.keybind_error = Some((
-                action,
-                rust_i18n::t!("keybind_conflict", key = formatted, action = conflict_label)
-                    .to_string(),
-            ));
+            self.keybind_error = Some((action, message.clone()));
+            crate::feedback::Feedback::warning(window, cx, message);
             cx.notify();
             return;
         }
 
+        let formatted = crate::app::keybinding_recorder::format_keystroke(&new_key);
         self.recording_action = None;
         self.keybind_error = None;
         self.config.set_key_binding(&action, &new_key);
         self.mark_config_preferences_dirty();
+        crate::feedback::Feedback::success(
+            window,
+            cx,
+            format!("{} · {formatted}", rust_i18n::t!("settings_key_bindings")),
+        );
         cx.notify();
     }
 
@@ -168,10 +173,12 @@ impl TinyShell {
     pub(crate) fn save_proxy_settings(
         &mut self,
         inputs: &ProxySettingsInputs,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
         let kind = ProxyKind::from_config(&self.global_proxy_type);
         let Some(values) = ProxyFormValues::capture(kind, inputs, cx) else {
+            crate::feedback::Feedback::warning(window, cx, rust_i18n::t!("ssh_editor_proxy_required"));
             return false;
         };
 
@@ -182,6 +189,7 @@ impl TinyShell {
         self.config.set_global_proxy_user(values.user);
         self.config.set_global_proxy_password(values.password);
         self.mark_config_preferences_dirty();
+        crate::feedback::Feedback::success(window, cx, rust_i18n::t!("save_proxy"));
         cx.notify();
         true
     }
