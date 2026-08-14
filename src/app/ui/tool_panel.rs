@@ -1,5 +1,77 @@
 use super::*;
-use crate::docker::{DockerAction, DockerContainerState, DockerPage};
+use crate::docker::{DockerAction, DockerContainer, DockerContainerState, DockerImage, DockerPage};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DockerContainerGroup {
+    Running,
+    Stopped,
+    Other,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct DockerContainerSummary {
+    total: usize,
+    running: usize,
+    stopped: usize,
+    other: usize,
+}
+
+fn docker_container_group(state: &DockerContainerState) -> DockerContainerGroup {
+    match state {
+        DockerContainerState::Running => DockerContainerGroup::Running,
+        DockerContainerState::Created | DockerContainerState::Exited => {
+            DockerContainerGroup::Stopped
+        }
+        DockerContainerState::Paused
+        | DockerContainerState::Restarting
+        | DockerContainerState::Removing
+        | DockerContainerState::Dead
+        | DockerContainerState::Unknown(_) => DockerContainerGroup::Other,
+    }
+}
+
+fn docker_container_summary(containers: &[DockerContainer]) -> DockerContainerSummary {
+    let mut summary = DockerContainerSummary {
+        total: containers.len(),
+        ..DockerContainerSummary::default()
+    };
+    for container in containers {
+        match docker_container_group(&container.state) {
+            DockerContainerGroup::Running => summary.running += 1,
+            DockerContainerGroup::Stopped => summary.stopped += 1,
+            DockerContainerGroup::Other => summary.other += 1,
+        }
+    }
+    summary
+}
+
+fn docker_container_matches(container: &DockerContainer, query: &str) -> bool {
+    let query = query.trim().to_lowercase();
+    query.is_empty()
+        || [
+            container.names.as_str(),
+            container.image.as_str(),
+            container.status.as_str(),
+            container.ports.as_str(),
+            container.id.as_str(),
+        ]
+        .iter()
+        .any(|value| value.to_lowercase().contains(&query))
+}
+
+fn docker_image_matches(image: &DockerImage, query: &str) -> bool {
+    let query = query.trim().to_lowercase();
+    query.is_empty()
+        || [
+            image.repository.as_str(),
+            image.tag.as_str(),
+            image.created_since.as_str(),
+            image.size.as_str(),
+            image.id.as_str(),
+        ]
+        .iter()
+        .any(|value| value.to_lowercase().contains(&query))
+}
 
 impl TinyShell {
     // Keep panel composition outside TinyShell::render and erase both render
@@ -43,6 +115,7 @@ impl TinyShell {
         let pending = self.tool_panel.pending.is_some();
         let target_available = self.tool_panel.target_tab_id.is_some();
         let connected = self.tool_panel.target_connected;
+        let search_query = self.docker_search_input.read(cx).value().trim().to_string();
         let view = cx.entity();
 
         let page_content = if !target_available {
@@ -73,9 +146,20 @@ impl TinyShell {
             .into_any_element()
         } else {
             match self.tool_panel.page {
-                DockerPage::Containers => self.render_docker_containers(cx).into_any_element(),
-                DockerPage::Images => self.render_docker_images(cx).into_any_element(),
+                DockerPage::Containers => self
+                    .render_docker_containers(&search_query, cx)
+                    .into_any_element(),
+                DockerPage::Images => self
+                    .render_docker_images(&search_query, cx)
+                    .into_any_element(),
             }
+        };
+
+        let summary = docker_container_summary(&self.tool_panel.containers);
+        let target_label = if target_available {
+            self.tool_panel.target_label.clone()
+        } else {
+            t!("docker_target_none_short").to_string()
         };
 
         v_flex()
@@ -89,120 +173,157 @@ impl TinyShell {
             .border_color(cx.theme().border)
             .bg(cx.theme().background)
             .child(
-                h_flex()
+                v_flex()
                     .flex_none()
-                    .h(px(42.))
                     .px_3()
-                    .justify_between()
+                    .pt_3()
+                    .gap_3()
                     .border_b_1()
                     .border_color(cx.theme().border)
                     .child(
-                        div()
-                            .font_weight(FontWeight::MEDIUM)
-                            .child(t!("tool_panel").to_string()),
+                        h_flex()
+                            .h(px(28.))
+                            .justify_between()
+                            .child(
+                                div()
+                                    .text_lg()
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child("Docker"),
+                            )
+                            .child(
+                                Button::new("tool-panel-close")
+                                    .ghost()
+                                    .xsmall()
+                                    .icon(IconName::Close)
+                                    .tooltip(t!("tool_panel_close").to_string())
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.close_tool_panel(window, cx)
+                                    })),
+                            ),
                     )
                     .child(
-                        Button::new("tool-panel-close")
-                            .ghost()
-                            .xsmall()
-                            .icon(IconName::Close)
-                            .tooltip(t!("tool_panel_close").to_string())
-                            .on_click(
-                                cx.listener(|this, _, window, cx| {
-                                    this.close_tool_panel(window, cx)
-                                }),
-                            ),
-                    ),
-            )
-            .child(
-                h_flex()
-                    .flex_none()
-                    .h(px(38.))
-                    .px_3()
-                    .border_b_1()
-                    .border_color(cx.theme().border)
-                    .child(
-                        div()
-                            .h_full()
-                            .flex()
-                            .items_center()
-                            .border_b_2()
-                            .border_color(cx.theme().primary)
-                            .font_weight(FontWeight::MEDIUM)
-                            .child("Docker"),
-                    ),
-            )
-            .child(
-                h_flex()
-                    .flex_none()
-                    .min_h(px(44.))
-                    .px_3()
-                    .gap_2()
-                    .border_b_1()
-                    .border_color(cx.theme().border)
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w(px(0.))
-                            .text_sm()
-                            .truncate()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(if target_available {
-                                t!(
-                                    "docker_target",
-                                    target = self.tool_panel.target_label.clone()
-                                )
-                                .to_string()
+                        h_flex()
+                            .h(px(44.))
+                            .px_3()
+                            .gap_2()
+                            .rounded(px(8.))
+                            .border_1()
+                            .border_color(cx.theme().border)
+                            .bg(cx.theme().muted.opacity(0.12))
+                            .child(div().size(px(8.)).rounded(px(999.)).bg(if connected {
+                                cx.theme().success
                             } else {
-                                t!("docker_target_none").to_string()
-                            }),
-                    )
-                    .child(
-                        Button::new("docker-refresh")
-                            .ghost()
-                            .xsmall()
-                            .icon(IconName::ArrowRight)
-                            .tooltip(t!("refresh").to_string())
-                            .disabled(!target_available || !connected || pending)
-                            .on_click(
-                                cx.listener(|this, _, _, cx| this.request_current_docker_page(cx)),
+                                cx.theme().muted_foreground
+                            }))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w(px(0.))
+                                    .truncate()
+                                    .text_sm()
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .child(target_label),
+                            )
+                            .child(
+                                Button::new("docker-refresh")
+                                    .ghost()
+                                    .xsmall()
+                                    .icon(IconName::ArrowRight)
+                                    .tooltip(t!("refresh").to_string())
+                                    .disabled(!target_available || !connected || pending)
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.request_current_docker_page(cx)
+                                    })),
                             ),
-                    ),
-            )
-            .child(
-                h_flex()
-                    .flex_none()
-                    .gap_1()
-                    .px_3()
-                    .py_2()
-                    .child(
-                        Button::new("docker-page-containers")
-                            .small()
-                            .label(t!("docker_containers").to_string())
-                            .when(self.tool_panel.page == DockerPage::Containers, |button| {
-                                button.primary()
-                            })
-                            .on_click({
-                                let view = view.clone();
-                                move |_, _, cx| {
-                                    view.update(cx, |this, cx| {
-                                        this.set_docker_page(DockerPage::Containers, cx)
-                                    });
-                                }
-                            }),
                     )
                     .child(
-                        Button::new("docker-page-images")
-                            .small()
-                            .label(t!("docker_images").to_string())
-                            .when(self.tool_panel.page == DockerPage::Images, |button| {
-                                button.primary()
-                            })
-                            .on_click(move |_, _, cx| {
-                                view.update(cx, |this, cx| {
-                                    this.set_docker_page(DockerPage::Images, cx)
-                                });
-                            }),
+                        h_flex()
+                            .h(px(32.))
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(div().flex_1().text_center().child(
+                                t!("docker_summary_total", count = summary.total).to_string(),
+                            ))
+                            .child(
+                                div()
+                                    .h(px(16.))
+                                    .border_l_1()
+                                    .border_color(cx.theme().border),
+                            )
+                            .child(div().flex_1().text_center().child(
+                                t!("docker_summary_running", count = summary.running).to_string(),
+                            ))
+                            .child(
+                                div()
+                                    .h(px(16.))
+                                    .border_l_1()
+                                    .border_color(cx.theme().border),
+                            )
+                            .child(div().flex_1().text_center().child(
+                                t!("docker_summary_stopped", count = summary.stopped).to_string(),
+                            )),
+                    )
+                    .child(
+                        div().h(px(36.)).child(
+                            Input::new(&self.docker_search_input)
+                                .small()
+                                .prefix(Icon::new(IconName::Search).small()),
+                        ),
+                    )
+                    .child(
+                        h_flex()
+                            .h(px(40.))
+                            .gap_4()
+                            .child(
+                                h_flex()
+                                    .id("docker-page-containers")
+                                    .h_full()
+                                    .gap_2()
+                                    .px_1()
+                                    .cursor_pointer()
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .when(self.tool_panel.page == DockerPage::Containers, |this| {
+                                        this.border_b_2().border_color(cx.theme().foreground)
+                                    })
+                                    .child(t!("docker_containers").to_string())
+                                    .child(
+                                        div()
+                                            .px_2()
+                                            .py(px(1.))
+                                            .rounded(px(999.))
+                                            .bg(cx.theme().muted)
+                                            .text_xs()
+                                            .child(summary.total.to_string()),
+                                    )
+                                    .on_click({
+                                        let view = view.clone();
+                                        move |_, _, cx| {
+                                            view.update(cx, |this, cx| {
+                                                this.set_docker_page(DockerPage::Containers, cx)
+                                            });
+                                        }
+                                    }),
+                            )
+                            .child(
+                                h_flex()
+                                    .id("docker-page-images")
+                                    .h_full()
+                                    .px_1()
+                                    .cursor_pointer()
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .when(self.tool_panel.page == DockerPage::Images, |this| {
+                                        this.border_b_2().border_color(cx.theme().foreground)
+                                    })
+                                    .child(t!("docker_images").to_string())
+                                    .on_click({
+                                        let view = view.clone();
+                                        move |_, _, cx| {
+                                            view.update(cx, |this, cx| {
+                                                this.set_docker_page(DockerPage::Images, cx)
+                                            });
+                                        }
+                                    }),
+                            ),
                     ),
             )
             .when_some(self.tool_panel.error.clone(), |this, error| {
@@ -210,10 +331,11 @@ impl TinyShell {
                     div()
                         .flex_none()
                         .mx_3()
+                        .mt_2()
                         .mb_2()
                         .px_3()
                         .py_2()
-                        .rounded(px(6.))
+                        .rounded(px(8.))
                         .border_1()
                         .border_color(cx.theme().danger.opacity(0.35))
                         .bg(cx.theme().danger.opacity(0.08))
@@ -250,7 +372,7 @@ impl TinyShell {
             .child(div().text_sm().child(message))
     }
 
-    fn render_docker_containers(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_docker_containers(&self, query: &str, cx: &mut Context<Self>) -> impl IntoElement {
         if self.tool_panel.containers.is_empty() {
             return self
                 .render_docker_empty_state(
@@ -269,150 +391,251 @@ impl TinyShell {
                 None
             }
         });
+        let filtered = self
+            .tool_panel
+            .containers
+            .iter()
+            .enumerate()
+            .filter(|(_, container)| docker_container_matches(container, query))
+            .collect::<Vec<_>>();
+        if filtered.is_empty() {
+            return self
+                .render_docker_empty_state(
+                    IconName::SquareTerminal,
+                    t!("docker_search_empty").to_string(),
+                    cx,
+                )
+                .into_any_element();
+        }
+        let running = filtered
+            .iter()
+            .copied()
+            .filter(|(_, container)| {
+                docker_container_group(&container.state) == DockerContainerGroup::Running
+            })
+            .collect::<Vec<_>>();
+        let stopped = filtered
+            .iter()
+            .copied()
+            .filter(|(_, container)| {
+                docker_container_group(&container.state) == DockerContainerGroup::Stopped
+            })
+            .collect::<Vec<_>>();
+        let other = filtered
+            .into_iter()
+            .filter(|(_, container)| {
+                docker_container_group(&container.state) == DockerContainerGroup::Other
+            })
+            .collect::<Vec<_>>();
+        let running_count = running.len();
+        let stopped_count = stopped.len();
+        let other_count = other.len();
 
         v_flex()
             .id("docker-containers-scroll")
             .size_full()
             .overflow_y_scroll()
             .px_3()
-            .pb_3()
-            .children(
-                self.tool_panel
-                    .containers
-                    .iter()
-                    .enumerate()
-                    .map(|(index, container)| {
-                        let actions = container.state.actions();
-                        let is_pending = pending_container == Some(container.id.as_str());
-                        let state_label = docker_state_label(&container.state);
-                        let start_container = container.clone();
-                        let stop_container = container.clone();
-                        let restart_container = container.clone();
-                        v_flex()
-                            .id(("docker-container", index))
-                            .gap_1()
-                            .py_3()
-                            .border_b_1()
-                            .border_color(cx.theme().border)
-                            .child(
-                                h_flex()
-                                    .gap_2()
-                                    .child(div().size(px(7.)).rounded(px(999.)).bg(
-                                        if container.state == DockerContainerState::Running {
-                                            cx.theme().success
-                                        } else {
-                                            cx.theme().muted_foreground
-                                        },
-                                    ))
-                                    .child(
-                                        div()
-                                            .flex_1()
-                                            .min_w(px(0.))
-                                            .truncate()
-                                            .font_weight(FontWeight::MEDIUM)
-                                            .child(container.names.clone()),
-                                    )
-                                    .child(
-                                        div()
-                                            .text_xs()
-                                            .text_color(cx.theme().muted_foreground)
-                                            .child(state_label),
-                                    ),
-                            )
-                            .child(
-                                div()
-                                    .text_sm()
-                                    .truncate()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child(container.image.clone()),
-                            )
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .truncate()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child(if container.ports.is_empty() {
-                                        container.status.clone()
-                                    } else {
-                                        format!("{} · {}", container.status, container.ports)
-                                    }),
-                            )
-                            .child(
-                                h_flex()
-                                    .gap_1()
-                                    .mt_1()
-                                    .when(actions.start, |this| {
-                                        this.child(
-                                            Button::new(("docker-start", index))
-                                                .small()
-                                                .primary()
-                                                .label(t!("docker_start").to_string())
-                                                .disabled(is_pending)
-                                                .on_click(cx.listener(
-                                                    move |this, _, window, cx| {
-                                                        this.confirm_docker_action(
-                                                            start_container.clone(),
-                                                            DockerAction::Start,
-                                                            window,
-                                                            cx,
-                                                        )
-                                                    },
-                                                )),
+            .py_3()
+            .gap_4()
+            .when(!running.is_empty(), |this| {
+                this.child(self.render_docker_container_group(
+                    t!("docker_group_running", count = running_count).to_string(),
+                    running,
+                    pending_container,
+                    cx,
+                ))
+            })
+            .when(!stopped.is_empty(), |this| {
+                this.child(self.render_docker_container_group(
+                    t!("docker_group_stopped", count = stopped_count).to_string(),
+                    stopped,
+                    pending_container,
+                    cx,
+                ))
+            })
+            .when(!other.is_empty(), |this| {
+                this.child(self.render_docker_container_group(
+                    t!("docker_group_other", count = other_count).to_string(),
+                    other,
+                    pending_container,
+                    cx,
+                ))
+            })
+            .into_any_element()
+    }
+
+    fn render_docker_container_group(
+        &self,
+        title: String,
+        containers: Vec<(usize, &DockerContainer)>,
+        pending_container: Option<&str>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let container_count = containers.len();
+        v_flex()
+            .gap_2()
+            .child(
+                div()
+                    .px_1()
+                    .text_sm()
+                    .font_weight(FontWeight::MEDIUM)
+                    .child(title),
+            )
+            .child(
+                v_flex()
+                    .rounded(px(8.))
+                    .border_1()
+                    .border_color(cx.theme().border)
+                    .bg(cx.theme().muted.opacity(0.1))
+                    .overflow_hidden()
+                    .children(containers.into_iter().enumerate().map(
+                        |(row_index, (index, container))| {
+                            let actions = container.state.actions();
+                            let is_pending = pending_container == Some(container.id.as_str());
+                            let is_running = container.state == DockerContainerState::Running;
+                            let state_label = docker_state_label(&container.state);
+                            let start_container = container.clone();
+                            let stop_container = container.clone();
+                            let restart_container = container.clone();
+                            v_flex()
+                                .id(("docker-container", index))
+                                .gap_1()
+                                .px_3()
+                                .py_2()
+                                .when(row_index + 1 < container_count, |this| {
+                                    this.border_b_1().border_color(cx.theme().border)
+                                })
+                                .child(
+                                    h_flex()
+                                        .gap_2()
+                                        .child(div().size(px(7.)).rounded(px(999.)).bg(
+                                            if is_running {
+                                                cx.theme().success
+                                            } else {
+                                                cx.theme().muted_foreground
+                                            },
+                                        ))
+                                        .child(
+                                            div()
+                                                .flex_1()
+                                                .min_w(px(0.))
+                                                .truncate()
+                                                .font_weight(FontWeight::MEDIUM)
+                                                .child(container.names.clone()),
                                         )
-                                    })
-                                    .when(actions.stop, |this| {
-                                        this.child(
-                                            Button::new(("docker-stop", index))
-                                                .small()
-                                                .danger()
-                                                .label(t!("docker_stop").to_string())
-                                                .disabled(is_pending)
-                                                .on_click(cx.listener(
-                                                    move |this, _, window, cx| {
-                                                        this.confirm_docker_action(
-                                                            stop_container.clone(),
-                                                            DockerAction::Stop,
-                                                            window,
-                                                            cx,
-                                                        )
-                                                    },
-                                                )),
-                                        )
-                                    })
-                                    .when(actions.restart, |this| {
-                                        this.child(
-                                            Button::new(("docker-restart", index))
-                                                .small()
-                                                .label(t!("docker_restart").to_string())
-                                                .disabled(is_pending)
-                                                .on_click(cx.listener(
-                                                    move |this, _, window, cx| {
-                                                        this.confirm_docker_action(
-                                                            restart_container.clone(),
-                                                            DockerAction::Restart,
-                                                            window,
-                                                            cx,
-                                                        )
-                                                    },
-                                                )),
-                                        )
-                                    })
-                                    .when(is_pending, |this| {
-                                        this.child(
+                                        .child(
                                             div()
                                                 .text_xs()
+                                                .text_color(if is_running {
+                                                    cx.theme().success
+                                                } else {
+                                                    cx.theme().muted_foreground
+                                                })
+                                                .child(state_label),
+                                        ),
+                                )
+                                .child(
+                                    div()
+                                        .pl(px(15.))
+                                        .text_sm()
+                                        .truncate()
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child(container.image.clone()),
+                                )
+                                .child(
+                                    h_flex()
+                                        .pl(px(15.))
+                                        .gap_2()
+                                        .child(
+                                            div()
+                                                .flex_1()
+                                                .min_w(px(0.))
+                                                .text_xs()
+                                                .truncate()
                                                 .text_color(cx.theme().muted_foreground)
-                                                .child(t!("docker_action_running").to_string()),
+                                                .child(if container.ports.is_empty() {
+                                                    container.status.clone()
+                                                } else {
+                                                    format!(
+                                                        "{} · {}",
+                                                        container.status, container.ports
+                                                    )
+                                                }),
                                         )
-                                    }),
-                            )
-                            .into_any_element()
-                    }),
+                                        .when(actions.start, |this| {
+                                            this.child(
+                                                Button::new(("docker-start", index))
+                                                    .small()
+                                                    .primary()
+                                                    .label(t!("docker_start").to_string())
+                                                    .disabled(is_pending)
+                                                    .on_click(cx.listener(
+                                                        move |this, _, window, cx| {
+                                                            this.confirm_docker_action(
+                                                                start_container.clone(),
+                                                                DockerAction::Start,
+                                                                window,
+                                                                cx,
+                                                            )
+                                                        },
+                                                    )),
+                                            )
+                                        })
+                                        .when(actions.stop, |this| {
+                                            this.child(
+                                                Button::new(("docker-stop", index))
+                                                    .small()
+                                                    .danger()
+                                                    .label(t!("docker_stop").to_string())
+                                                    .disabled(is_pending)
+                                                    .on_click(cx.listener(
+                                                        move |this, _, window, cx| {
+                                                            this.confirm_docker_action(
+                                                                stop_container.clone(),
+                                                                DockerAction::Stop,
+                                                                window,
+                                                                cx,
+                                                            )
+                                                        },
+                                                    )),
+                                            )
+                                        })
+                                        .when(actions.restart, |this| {
+                                            this.child(
+                                                Button::new(("docker-restart", index))
+                                                    .small()
+                                                    .label(t!("docker_restart").to_string())
+                                                    .disabled(is_pending)
+                                                    .on_click(cx.listener(
+                                                        move |this, _, window, cx| {
+                                                            this.confirm_docker_action(
+                                                                restart_container.clone(),
+                                                                DockerAction::Restart,
+                                                                window,
+                                                                cx,
+                                                            )
+                                                        },
+                                                    )),
+                                            )
+                                        })
+                                        .when(is_pending, |this| {
+                                            this.child(
+                                                div()
+                                                    .text_xs()
+                                                    .text_color(cx.theme().muted_foreground)
+                                                    .child(t!("docker_action_running").to_string()),
+                                            )
+                                        }),
+                                )
+                                .into_any_element()
+                        },
+                    )),
             )
             .into_any_element()
     }
 
-    fn render_docker_images(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_docker_images(&self, query: &str, cx: &mut Context<Self>) -> impl IntoElement {
         if self.tool_panel.images.is_empty() {
             return self
                 .render_docker_empty_state(
@@ -422,56 +645,85 @@ impl TinyShell {
                 )
                 .into_any_element();
         }
+        let images = self
+            .tool_panel
+            .images
+            .iter()
+            .enumerate()
+            .filter(|(_, image)| docker_image_matches(image, query))
+            .collect::<Vec<_>>();
+        if images.is_empty() {
+            return self
+                .render_docker_empty_state(
+                    IconName::SquareTerminal,
+                    t!("docker_search_empty").to_string(),
+                    cx,
+                )
+                .into_any_element();
+        }
+        let image_count = images.len();
         v_flex()
             .id("docker-images-scroll")
             .size_full()
             .overflow_y_scroll()
             .px_3()
-            .pb_3()
-            .children(
-                self.tool_panel
-                    .images
-                    .iter()
-                    .enumerate()
-                    .map(|(index, image)| {
-                        let repository = if image.repository == "<none>" {
-                            t!("docker_untagged").to_string()
-                        } else {
-                            image.repository.clone()
-                        };
-                        v_flex()
-                            .id(("docker-image", index))
-                            .gap_1()
-                            .py_3()
-                            .border_b_1()
-                            .border_color(cx.theme().border)
-                            .child(
-                                h_flex()
-                                    .gap_2()
+            .py_3()
+            .child(
+                v_flex()
+                    .rounded(px(8.))
+                    .border_1()
+                    .border_color(cx.theme().border)
+                    .bg(cx.theme().muted.opacity(0.1))
+                    .overflow_hidden()
+                    .children(
+                        images
+                            .into_iter()
+                            .enumerate()
+                            .map(|(row_index, (index, image))| {
+                                let repository = if image.repository == "<none>" {
+                                    t!("docker_untagged").to_string()
+                                } else {
+                                    image.repository.clone()
+                                };
+                                v_flex()
+                                    .id(("docker-image", index))
+                                    .gap_1()
+                                    .px_3()
+                                    .py_2()
+                                    .when(row_index + 1 < image_count, |this| {
+                                        this.border_b_1().border_color(cx.theme().border)
+                                    })
                                     .child(
-                                        div()
-                                            .flex_1()
-                                            .min_w(px(0.))
-                                            .truncate()
-                                            .font_weight(FontWeight::MEDIUM)
-                                            .child(format!("{}:{}", repository, image.tag)),
+                                        h_flex()
+                                            .gap_2()
+                                            .child(
+                                                div()
+                                                    .flex_1()
+                                                    .min_w(px(0.))
+                                                    .truncate()
+                                                    .font_weight(FontWeight::MEDIUM)
+                                                    .child(format!("{}:{}", repository, image.tag)),
+                                            )
+                                            .child(
+                                                div()
+                                                    .text_xs()
+                                                    .text_color(cx.theme().muted_foreground)
+                                                    .child(image.size.clone()),
+                                            ),
                                     )
                                     .child(
                                         div()
                                             .text_xs()
+                                            .truncate()
                                             .text_color(cx.theme().muted_foreground)
-                                            .child(image.size.clone()),
-                                    ),
-                            )
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .truncate()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child(format!("{} · {}", image.created_since, image.id)),
-                            )
-                            .into_any_element()
-                    }),
+                                            .child(format!(
+                                                "{} · {}",
+                                                image.created_since, image.id
+                                            )),
+                                    )
+                                    .into_any_element()
+                            }),
+                    ),
             )
             .into_any_element()
     }
@@ -487,5 +739,79 @@ fn docker_state_label(state: &DockerContainerState) -> String {
         DockerContainerState::Exited => t!("docker_state_exited").to_string(),
         DockerContainerState::Dead => t!("docker_state_dead").to_string(),
         DockerContainerState::Unknown(state) => state.clone(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        DockerContainerGroup, docker_container_group, docker_container_matches,
+        docker_container_summary, docker_image_matches,
+    };
+    use crate::docker::{DockerContainer, DockerContainerState, DockerImage};
+
+    fn container(name: &str, image: &str, state: DockerContainerState) -> DockerContainer {
+        DockerContainer {
+            id: "0123456789abcdef".into(),
+            names: name.into(),
+            image: image.into(),
+            state,
+            status: "Up 2 hours".into(),
+            ports: "127.0.0.1:8080->80/tcp".into(),
+        }
+    }
+
+    #[test]
+    fn docker_summary_and_groups_preserve_every_container_state() {
+        let containers = vec![
+            container("web", "nginx:latest", DockerContainerState::Running),
+            container("db", "mysql:8", DockerContainerState::Exited),
+            container("job", "worker:1", DockerContainerState::Created),
+            container("cache", "redis:7", DockerContainerState::Paused),
+        ];
+
+        let summary = docker_container_summary(&containers);
+        assert_eq!(summary.total, 4);
+        assert_eq!(summary.running, 1);
+        assert_eq!(summary.stopped, 2);
+        assert_eq!(summary.other, 1);
+        assert_eq!(
+            docker_container_group(&containers[0].state),
+            DockerContainerGroup::Running
+        );
+        assert_eq!(
+            docker_container_group(&containers[1].state),
+            DockerContainerGroup::Stopped
+        );
+        assert_eq!(
+            docker_container_group(&containers[3].state),
+            DockerContainerGroup::Other
+        );
+    }
+
+    #[test]
+    fn docker_search_matches_name_image_status_ports_and_id_case_insensitively() {
+        let container = container(
+            "Tiny-Blog",
+            "registry.example/app:1",
+            DockerContainerState::Running,
+        );
+
+        for query in ["tiny", "REGISTRY", "2 HOURS", "8080", "012345"] {
+            assert!(docker_container_matches(&container, query));
+        }
+        assert!(docker_container_matches(&container, ""));
+        assert!(!docker_container_matches(&container, "postgres"));
+
+        let image = DockerImage {
+            id: "sha256:abcdef".into(),
+            repository: "registry.example/worker".into(),
+            tag: "v2".into(),
+            created_since: "3 days ago".into(),
+            size: "128MB".into(),
+        };
+        assert!(docker_image_matches(&image, "WORKER"));
+        assert!(docker_image_matches(&image, "128mb"));
+        assert!(!docker_image_matches(&image, "nginx"));
     }
 }

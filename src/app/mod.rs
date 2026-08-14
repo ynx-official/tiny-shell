@@ -997,6 +997,7 @@ pub(crate) struct TinyShell {
     pub(crate) keybind_error: Option<(String, String)>, // (action_id, error_message)
     pub(crate) monitoring: MonitoringState,
     pub(crate) tool_panel: tool_panel::ToolPanelState,
+    pub(crate) docker_search_input: Entity<InputState>,
     pub(crate) connection_manager_state: Entity<ConnectionManagerState>,
     pub(crate) connection_manager_actions: ConnectionManagerActions,
     pub(crate) search_input: Entity<InputState>,
@@ -1276,6 +1277,9 @@ impl TinyShell {
             cx.new(|cx| InputState::new(window, cx).placeholder(t!("new_folder").to_string()));
         let search_input =
             cx.new(|cx| InputState::new(window, cx).placeholder(t!("search").to_string()));
+        let docker_search_input = cx.new(|cx| {
+            InputState::new(window, cx).placeholder(t!("docker_search_placeholder").to_string())
+        });
         let connection_manager_state = cx.new(|_| ConnectionManagerState::default());
         let quick_command_parameter_inputs = (1..=5)
             .map(|index| {
@@ -1299,6 +1303,7 @@ impl TinyShell {
             cx.subscribe_in(&sftp_path_input, window, Self::on_input_event),
             cx.subscribe_in(&sftp_new_folder_input, window, Self::on_input_event),
             cx.subscribe_in(&search_input, window, Self::on_input_event),
+            cx.subscribe_in(&docker_search_input, window, Self::on_input_event),
         ]);
         _subscriptions.extend(
             settings_inputs
@@ -1350,6 +1355,9 @@ impl TinyShell {
         }
         rust_i18n::set_locale(&active_locale);
         gpui_component::set_locale(&active_locale);
+        docker_search_input.update(cx, |input, cx| {
+            input.set_placeholder(t!("docker_search_placeholder").to_string(), window, cx);
+        });
         if config.quick_commands_builtin_version() < BUILTIN_QUICK_COMMANDS_VERSION {
             let mut categories = config
                 .quick_command_categories()
@@ -1525,6 +1533,7 @@ impl TinyShell {
                 prev_monitoring_size: None,
             },
             tool_panel: tool_panel::ToolPanelState::default(),
+            docker_search_input,
             recording_action: None,
             auxiliary_windows: AuxiliaryWindowsState::default(),
             update_runtime: UpdateRuntimeState::default(),
