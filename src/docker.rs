@@ -25,11 +25,18 @@ pub(crate) enum DockerAction {
     Start,
     Stop,
     Restart,
+    Remove,
+    ForceRemove,
+    EnableAutostart,
+    DisableAutostart,
 }
 
 impl DockerAction {
     pub(crate) fn requires_confirmation(self) -> bool {
-        matches!(self, Self::Stop | Self::Restart)
+        matches!(
+            self,
+            Self::Stop | Self::Restart | Self::Remove | Self::ForceRemove
+        )
     }
 }
 
@@ -74,6 +81,22 @@ pub(crate) enum DockerContainerState {
     Unknown(String),
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) enum DockerRestartPolicy {
+    No,
+    Always,
+    UnlessStopped,
+    OnFailure,
+    #[default]
+    Unknown,
+}
+
+impl DockerRestartPolicy {
+    pub(crate) fn autostart_enabled(&self) -> bool {
+        matches!(self, Self::Always | Self::UnlessStopped)
+    }
+}
+
 impl DockerContainerState {
     pub(crate) fn actions(&self) -> ContainerActions {
         match self {
@@ -108,6 +131,7 @@ pub(crate) struct DockerContainer {
     pub(crate) state: DockerContainerState,
     pub(crate) status: String,
     pub(crate) ports: String,
+    pub(crate) restart_policy: DockerRestartPolicy,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -176,13 +200,27 @@ pub(crate) fn command_spec(operation: &DockerOperation) -> Result<DockerCommandS
             if !is_valid_container_id(container_id) {
                 return Err(anyhow!("invalid Docker container ID"));
             }
-            let action = match action {
-                DockerAction::Start => "start",
-                DockerAction::Stop => "stop",
-                DockerAction::Restart => "restart",
+            let args = match action {
+                DockerAction::Start => vec!["container", "start", container_id],
+                DockerAction::Stop => vec!["container", "stop", container_id],
+                DockerAction::Restart => vec!["container", "restart", container_id],
+                DockerAction::Remove => vec!["container", "rm", container_id],
+                DockerAction::ForceRemove => {
+                    vec!["container", "rm", "--force", container_id]
+                }
+                DockerAction::EnableAutostart => vec![
+                    "container",
+                    "update",
+                    "--restart",
+                    "unless-stopped",
+                    container_id,
+                ],
+                DockerAction::DisableAutostart => {
+                    vec!["container", "update", "--restart", "no", container_id]
+                }
             };
             (
-                vec!["container".into(), action.into(), container_id.clone()],
+                args.into_iter().map(str::to_owned).collect(),
                 ACTION_TIMEOUT,
             )
         }
@@ -205,6 +243,7 @@ pub(crate) fn parse_output(operation: &DockerOperation, output: &str) -> Result<
                     state: parse_container_state(raw.state),
                     status: raw.status,
                     ports: raw.ports,
+                    restart_policy: DockerRestartPolicy::Unknown,
                 })
             })
             .collect::<Result<Vec<_>>>()
@@ -231,6 +270,52 @@ pub(crate) fn parse_output(operation: &DockerOperation, output: &str) -> Result<
     }
 }
 
+pub(crate) fn restart_policy_command_spec(
+    containers: &[DockerContainer],
+) -> Result<Option<DockerCommandSpec>> {
+    if containers.is_empty() {
+        return Ok(None);
+    }
+    if containers
+        .iter()
+        .any(|container| !is_valid_container_id(&container.id))
+    {
+        return Err(anyhow!("invalid Docker container ID"));
+    }
+    let mut args = vec![
+        "container".to_string(),
+        "inspect".to_string(),
+        "--format={{.HostConfig.RestartPolicy.Name}}".to_string(),
+    ];
+    args.extend(containers.iter().map(|container| container.id.clone()));
+    Ok(Some(DockerCommandSpec {
+        args,
+        timeout: LIST_TIMEOUT,
+    }))
+}
+
+pub(crate) fn apply_restart_policies(
+    containers: &mut [DockerContainer],
+    output: &str,
+) -> Result<()> {
+    let policies = output.lines().map(str::trim).collect::<Vec<_>>();
+    if policies.len() != containers.len() {
+        return Err(anyhow!(
+            "Docker restart policy count did not match container count"
+        ));
+    }
+    for (container, policy) in containers.iter_mut().zip(policies) {
+        container.restart_policy = match policy {
+            "no" => DockerRestartPolicy::No,
+            "always" => DockerRestartPolicy::Always,
+            "unless-stopped" => DockerRestartPolicy::UnlessStopped,
+            "on-failure" => DockerRestartPolicy::OnFailure,
+            _ => DockerRestartPolicy::Unknown,
+        };
+    }
+    Ok(())
+}
+
 fn parse_container_state(state: String) -> DockerContainerState {
     match state.as_str() {
         "created" => DockerContainerState::Created,
@@ -244,15 +329,22 @@ fn parse_container_state(state: String) -> DockerContainerState {
     }
 }
 
-pub(crate) fn shell_command(operation: &DockerOperation) -> Result<String> {
-    let spec = command_spec(operation)?;
-    Ok(format!("docker {}", spec.args.join(" ")))
+pub(crate) fn shell_command_from_spec(spec: &DockerCommandSpec) -> String {
+    format!("docker {}", spec.args.join(" "))
 }
 
 pub(crate) async fn execute_local(request: DockerRequest) -> DockerResponse {
-    let result = execute_with_runner(&request.operation, &LocalDockerRunner)
+    let result = async {
+        let timeout = command_spec(&request.operation)?.timeout;
+        tokio::time::timeout(
+            timeout,
+            execute_with_runner(&request.operation, &LocalDockerRunner),
+        )
         .await
-        .map_err(|error| format!("{error:#}"));
+        .map_err(|_| anyhow!("Docker request timed out after {}s", timeout.as_secs()))?
+    }
+    .await
+    .map_err(|error: anyhow::Error| format!("{error:#}"));
     DockerResponse {
         request_id: request.request_id,
         result,
@@ -285,7 +377,22 @@ async fn execute_with_runner(
     runner: &dyn DockerCommandRunner,
 ) -> Result<DockerPayload> {
     let spec = command_spec(operation)?;
-    let output = runner.run(&spec).await?;
+    let output = run_checked(runner, &spec).await?;
+    let mut payload = parse_output(operation, &String::from_utf8_lossy(&output.stdout))?;
+    if let DockerPayload::Containers(containers) = &mut payload
+        && let Some(spec) = restart_policy_command_spec(containers)?
+    {
+        let output = run_checked(runner, &spec).await?;
+        apply_restart_policies(containers, &String::from_utf8_lossy(&output.stdout))?;
+    }
+    Ok(payload)
+}
+
+async fn run_checked(
+    runner: &dyn DockerCommandRunner,
+    spec: &DockerCommandSpec,
+) -> Result<DockerCommandOutput> {
+    let output = runner.run(spec).await?;
     if !output.success {
         let message = String::from_utf8_lossy(&output.stderr).trim().to_owned();
         return Err(if message.is_empty() {
@@ -294,7 +401,7 @@ async fn execute_with_runner(
             anyhow!(message)
         });
     }
-    parse_output(operation, &String::from_utf8_lossy(&output.stdout))
+    Ok(output)
 }
 
 async fn run_local_command(spec: &DockerCommandSpec) -> Result<DockerCommandOutput> {
@@ -476,6 +583,36 @@ mod tests {
         .unwrap();
         assert_eq!(spec.args, ["container", "restart", id]);
         assert_eq!(spec.timeout, ACTION_TIMEOUT);
+        let remove = command_spec(&DockerOperation::ContainerAction {
+            action: DockerAction::Remove,
+            container_id: id.into(),
+        })
+        .unwrap();
+        assert_eq!(remove.args, ["container", "rm", id]);
+        let force_remove = command_spec(&DockerOperation::ContainerAction {
+            action: DockerAction::ForceRemove,
+            container_id: id.into(),
+        })
+        .unwrap();
+        assert_eq!(force_remove.args, ["container", "rm", "--force", id]);
+        let enable_autostart = command_spec(&DockerOperation::ContainerAction {
+            action: DockerAction::EnableAutostart,
+            container_id: id.into(),
+        })
+        .unwrap();
+        assert_eq!(
+            enable_autostart.args,
+            ["container", "update", "--restart", "unless-stopped", id]
+        );
+        let disable_autostart = command_spec(&DockerOperation::ContainerAction {
+            action: DockerAction::DisableAutostart,
+            container_id: id.into(),
+        })
+        .unwrap();
+        assert_eq!(
+            disable_autostart.args,
+            ["container", "update", "--restart", "no", id]
+        );
         assert!(
             command_spec(&DockerOperation::ContainerAction {
                 action: DockerAction::Stop,
@@ -486,6 +623,56 @@ mod tests {
         assert!(!DockerAction::Start.requires_confirmation());
         assert!(DockerAction::Stop.requires_confirmation());
         assert!(DockerAction::Restart.requires_confirmation());
+        assert!(DockerAction::Remove.requires_confirmation());
+        assert!(DockerAction::ForceRemove.requires_confirmation());
+        assert!(!DockerAction::EnableAutostart.requires_confirmation());
+        assert!(!DockerAction::DisableAutostart.requires_confirmation());
+    }
+
+    #[test]
+    fn restart_policy_inspection_is_batched_and_controls_menu_availability() {
+        let first = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        let second = "abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd";
+        let mut containers = match parse_output(
+            &DockerOperation::ListContainers,
+            &format!(
+                "{{\"ID\":\"{first}\",\"Image\":\"nginx\",\"Names\":\"web\",\"State\":\"running\",\"Status\":\"Up\"}}\n{{\"ID\":\"{second}\",\"Image\":\"redis\",\"Names\":\"cache\",\"State\":\"exited\",\"Status\":\"Exited\"}}\n"
+            ),
+        )
+        .unwrap()
+        {
+            DockerPayload::Containers(containers) => containers,
+            _ => panic!("expected containers"),
+        };
+
+        let spec = restart_policy_command_spec(&containers).unwrap().unwrap();
+        assert_eq!(
+            spec.args,
+            [
+                "container",
+                "inspect",
+                "--format={{.HostConfig.RestartPolicy.Name}}",
+                first,
+                second,
+            ]
+        );
+        apply_restart_policies(&mut containers, "unless-stopped\nno\n").unwrap();
+        assert!(containers[0].restart_policy.autostart_enabled());
+        assert!(!containers[1].restart_policy.autostart_enabled());
+    }
+
+    #[test]
+    fn restart_policy_parser_rejects_incomplete_inspect_output() {
+        let mut containers = match parse_output(
+            &DockerOperation::ListContainers,
+            r#"{"ID":"0123456789abcdef","Image":"nginx","Names":"web","State":"running","Status":"Up"}"#,
+        )
+        .unwrap()
+        {
+            DockerPayload::Containers(containers) => containers,
+            _ => panic!("expected containers"),
+        };
+        assert!(apply_restart_policies(&mut containers, "").is_err());
     }
 
     #[tokio::test]

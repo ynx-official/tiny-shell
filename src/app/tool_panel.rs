@@ -27,6 +27,14 @@ pub(crate) enum ToolPanelLayout {
     Overlay,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum DockerContainerFilter {
+    #[default]
+    All,
+    Running,
+    Stopped,
+}
+
 pub(crate) fn tool_panel_layout(
     open: bool,
     presentation: ToolPanelPresentation,
@@ -55,9 +63,11 @@ pub(crate) struct ToolPanelState {
     pub(crate) base_window_bounds: Option<Bounds<Pixels>>,
     pub(crate) base_viewport_size: Option<Size<Pixels>>,
     pub(crate) page: DockerPage,
+    pub(crate) container_filter: DockerContainerFilter,
     pub(crate) target_tab_id: Option<String>,
     pub(crate) target_generation: Option<u64>,
     pub(crate) target_label: String,
+    pub(crate) target_detail: String,
     pub(crate) target_connected: bool,
     pub(crate) containers: Vec<DockerContainer>,
     pub(crate) images: Vec<DockerImage>,
@@ -74,9 +84,11 @@ impl Default for ToolPanelState {
             base_window_bounds: None,
             base_viewport_size: None,
             page: DockerPage::Containers,
+            container_filter: DockerContainerFilter::All,
             target_tab_id: None,
             target_generation: None,
             target_label: String::new(),
+            target_detail: String::new(),
             target_connected: false,
             containers: Vec::new(),
             images: Vec::new(),
@@ -188,6 +200,9 @@ impl TinyShell {
         self.tool_panel.pending = None;
         self.tool_panel.target_tab_id = None;
         self.tool_panel.target_generation = None;
+        self.tool_panel.target_label.clear();
+        self.tool_panel.target_detail.clear();
+        self.tool_panel.target_connected = false;
         self.tool_panel.containers.clear();
         self.tool_panel.images.clear();
         self.tool_panel.error = None;
@@ -205,21 +220,41 @@ impl TinyShell {
                 .active_tab_id()
                 .and_then(|id| self.workspace().terminal_tab(id))
                 .map(|tab| {
-                    let label = match tab.kind {
-                        TabKind::Local => t!("local_terminal").to_string(),
-                        TabKind::Ssh => tab
-                            .session
-                            .as_ref()
-                            .map(|session| session.name.clone())
-                            .unwrap_or_else(|| tab.title.clone()),
+                    let (label, detail) = match tab.kind {
+                        TabKind::Local => (
+                            t!("local_terminal").to_string(),
+                            t!("docker_local_host").to_string(),
+                        ),
+                        TabKind::Ssh => tab.session.as_ref().map_or_else(
+                            || (tab.title.clone(), String::new()),
+                            |session| {
+                                let address = if session.port == 22 {
+                                    session.host.clone()
+                                } else {
+                                    format!("{}:{}", session.host, session.port)
+                                };
+                                (session.name.clone(), address)
+                            },
+                        ),
                     };
-                    (tab.id.clone(), label, tab.connected, tab.backend_generation)
+                    (
+                        tab.id.clone(),
+                        label,
+                        detail,
+                        tab.connected,
+                        tab.backend_generation,
+                    )
                 })
         };
         let target_id = target.as_ref().map(|target| target.0.as_str());
         if self.tool_panel.target_tab_id.as_deref() == target_id
-            && self.tool_panel.target_connected == target.as_ref().is_some_and(|target| target.2)
-            && self.tool_panel.target_generation == target.as_ref().map(|target| target.3)
+            && self.tool_panel.target_detail
+                == target
+                    .as_ref()
+                    .map(|target| target.2.as_str())
+                    .unwrap_or_default()
+            && self.tool_panel.target_connected == target.as_ref().is_some_and(|target| target.3)
+            && self.tool_panel.target_generation == target.as_ref().map(|target| target.4)
             && self.tool_panel.target_label
                 == target
                     .as_ref()
@@ -234,10 +269,11 @@ impl TinyShell {
         self.tool_panel.images.clear();
         self.tool_panel.error = None;
         match target {
-            Some((tab_id, label, connected, generation)) => {
+            Some((tab_id, label, detail, connected, generation)) => {
                 self.tool_panel.target_tab_id = Some(tab_id);
                 self.tool_panel.target_generation = Some(generation);
                 self.tool_panel.target_label = label;
+                self.tool_panel.target_detail = detail;
                 self.tool_panel.target_connected = connected;
                 if connected {
                     self.request_current_docker_page(cx);
@@ -247,6 +283,7 @@ impl TinyShell {
                 self.tool_panel.target_tab_id = None;
                 self.tool_panel.target_generation = None;
                 self.tool_panel.target_label.clear();
+                self.tool_panel.target_detail.clear();
                 self.tool_panel.target_connected = false;
             }
         }
@@ -259,6 +296,18 @@ impl TinyShell {
         self.tool_panel.page = page;
         self.tool_panel.error = None;
         self.request_current_docker_page(cx);
+        cx.notify();
+    }
+
+    pub(crate) fn set_docker_container_filter(
+        &mut self,
+        filter: DockerContainerFilter,
+        cx: &mut Context<Self>,
+    ) {
+        if self.tool_panel.container_filter == filter {
+            return;
+        }
+        self.tool_panel.container_filter = filter;
         cx.notify();
     }
 
@@ -334,14 +383,35 @@ impl TinyShell {
         let title = match action {
             DockerAction::Stop => t!("docker_confirm_stop_title").to_string(),
             DockerAction::Restart => t!("docker_confirm_restart_title").to_string(),
+            DockerAction::Remove | DockerAction::ForceRemove => {
+                t!("docker_confirm_remove_title").to_string()
+            }
             DockerAction::Start => t!("docker_start").to_string(),
+            DockerAction::EnableAutostart => t!("docker_enable_autostart").to_string(),
+            DockerAction::DisableAutostart => t!("docker_disable_autostart").to_string(),
         };
-        let description = t!(
-            "docker_confirm_action_desc",
-            container = container.names.clone(),
-            target = target_label
-        )
-        .to_string();
+        let description = if action == DockerAction::ForceRemove {
+            t!(
+                "docker_confirm_force_remove_desc",
+                container = container.names.clone(),
+                target = target_label
+            )
+            .to_string()
+        } else if action == DockerAction::Remove {
+            t!(
+                "docker_confirm_remove_desc",
+                container = container.names.clone(),
+                target = target_label
+            )
+            .to_string()
+        } else {
+            t!(
+                "docker_confirm_action_desc",
+                container = container.names.clone(),
+                target = target_label
+            )
+            .to_string()
+        };
         window.open_alert_dialog(cx, move |dialog, _, _| {
             dialog
                 .title(title.clone())
@@ -351,11 +421,18 @@ impl TinyShell {
                         .show_cancel(true)
                         .cancel_text(t!("cancel").to_string())
                         .ok_text(t!("confirm").to_string())
-                        .ok_variant(if action == DockerAction::Stop {
-                            ButtonVariant::Danger
-                        } else {
-                            ButtonVariant::Primary
-                        }),
+                        .ok_variant(
+                            if matches!(
+                                action,
+                                DockerAction::Stop
+                                    | DockerAction::Remove
+                                    | DockerAction::ForceRemove
+                            ) {
+                                ButtonVariant::Danger
+                            } else {
+                                ButtonVariant::Primary
+                            },
+                        ),
                 )
                 .on_ok({
                     let owner = owner.clone();
