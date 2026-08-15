@@ -1231,38 +1231,100 @@ impl TinyShell {
                 if let Some(tab) = this.workspace().terminal_tab(tab_id)
                     && tab.kind == TabKind::Rdp
                 {
+                    let surface = this.remote_desktop_surfaces.get(tab_id);
                     let stats = tab
                         .remote_desktop_mailbox
                         .as_ref()
                         .map(|mailbox| (mailbox.stats(), mailbox.latest_metadata()));
                     let status = tab.status.clone();
                     let connected = tab.connected;
+                    let certificate_request = this.rdp_certificate_requests.get(tab_id).cloned();
                     let background = cx.theme().background;
                     let foreground = cx.theme().foreground;
                     let muted = cx.theme().muted_foreground;
                     let accent = cx.theme().primary;
-                    let frame_text = stats
-                        .and_then(|(stats, metadata)| metadata.map(|(seq, size)| (stats, seq, size)))
-                        .map(|(stats, sequence, size)| {
-                            format!(
-                                "{}×{} · frame #{sequence} · {} published / {} replaced",
-                                size.width, size.height, stats.published, stats.replaced
+                    let surface_tab_id = tab_id.clone();
+                    let surface_bounds_view = cx.entity();
+                    let frame_text = surface
+                        .map(|surface| {
+                            let stats = stats.map(|(stats, _)| stats).unwrap_or_default();
+                            t!(
+                                "rdp_frame_stats",
+                                width = surface.size.width,
+                                height = surface.size.height,
+                                sequence = surface.sequence,
+                                published = stats.published,
+                                replaced = stats.replaced,
                             )
+                            .to_string()
                         })
                         .unwrap_or_else(|| t!("rdp_waiting_for_frame").to_string());
-                    return div()
+                    let mut surface_element = div()
                         .size_full()
                         .bg(background)
-                        .on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener({
-                                let tab_id = tab_id.clone();
-                                move |this, _, _, cx| {
-                                    this.focus_pane_with_id(tab_id.clone());
+                        .on_prepaint(move |bounds, _window, cx| {
+                            surface_bounds_view.update(cx, |this, cx| {
+                                let old_bounds =
+                                    this.terminal_bounds.insert(surface_tab_id.clone(), bounds);
+                                if let Some(tab) = this.terminal_tab_mut(&surface_tab_id) {
+                                    tab.resize_remote_desktop(
+                                        bounds.size.width.as_f32() as u32,
+                                        bounds.size.height.as_f32() as u32,
+                                    );
+                                }
+                                if old_bounds != Some(bounds) {
                                     cx.notify();
                                 }
+                            });
+                        })
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, event, window, cx| {
+                                this.on_remote_desktop_mouse_down(event, window, cx);
                             }),
                         )
+                        .on_mouse_down(
+                            MouseButton::Right,
+                            cx.listener(|this, event, window, cx| {
+                                this.on_remote_desktop_mouse_down(event, window, cx);
+                            }),
+                        )
+                        .on_mouse_down(
+                            MouseButton::Middle,
+                            cx.listener(|this, event, window, cx| {
+                                this.on_remote_desktop_mouse_down(event, window, cx);
+                            }),
+                        )
+                        .on_mouse_up(
+                            MouseButton::Left,
+                            cx.listener(|this, event, window, cx| {
+                                this.on_remote_desktop_mouse_up(event, window, cx);
+                            }),
+                        )
+                        .on_mouse_up(
+                            MouseButton::Right,
+                            cx.listener(|this, event, window, cx| {
+                                this.on_remote_desktop_mouse_up(event, window, cx);
+                            }),
+                        )
+                        .on_mouse_up(
+                            MouseButton::Middle,
+                            cx.listener(|this, event, window, cx| {
+                                this.on_remote_desktop_mouse_up(event, window, cx);
+                            }),
+                        )
+                        .on_mouse_move(cx.listener(|this, event, window, cx| {
+                            this.on_remote_desktop_mouse_move(event, window, cx);
+                        }))
+                        .on_scroll_wheel(cx.listener(|this, event, window, cx| {
+                            this.on_remote_desktop_scroll(event, window, cx);
+                        }))
+                        .on_key_down(cx.listener(|this, event, window, cx| {
+                            this.on_remote_desktop_key_down(event, window, cx);
+                        }))
+                        .on_key_up(cx.listener(|this, event, window, cx| {
+                            this.on_remote_desktop_key_up(event, window, cx);
+                        }))
                         .child(
                             v_flex()
                                 .size_full()
@@ -1281,15 +1343,98 @@ impl TinyShell {
                                         .text_color(if connected { accent } else { muted })
                                         .child(status),
                                 )
-                                .child(gpui::div().text_color(muted).child(frame_text))
+                                .child(gpui::div().text_color(muted).child(frame_text.clone()))
                                 .child(
                                     gpui::div()
                                         .text_color(muted)
                                         .text_size(rems(0.78))
                                         .child(t!("rdp_surface_pending").to_string()),
                                 ),
-                        )
-                        .into_any_element();
+                        );
+                    if let Some(surface) = surface {
+                        surface_element = surface_element
+                            .relative()
+                            .child(
+                                img(surface.image.clone())
+                                    .id((ElementId::from("rdp-surface"), tab_id.clone()))
+                                    .absolute()
+                                    .size_full()
+                                    .object_fit(ObjectFit::Contain),
+                            )
+                            .child(
+                                div()
+                                    .absolute()
+                                    .left_2()
+                                    .bottom_2()
+                                    .px_2()
+                                    .py_1()
+                                    .rounded_sm()
+                                    .bg(background.opacity(0.78))
+                                    .text_color(muted)
+                                    .text_size(rems(0.68))
+                                    .child(frame_text),
+                            );
+                    }
+                    if let Some(request) = certificate_request {
+                        let request_tab_id = request.tab_id.clone();
+                        let accept_tab_id = request_tab_id.clone();
+                        let always_tab_id = request_tab_id.clone();
+                        let reject_tab_id = request_tab_id.clone();
+                        surface_element = surface_element.relative().child(
+                            v_flex()
+                                .absolute()
+                                .top_3()
+                                .left_3()
+                                .right_3()
+                                .p_3()
+                                .gap_2()
+                                .rounded_md()
+                                .bg(background.opacity(0.96))
+                                .text_color(foreground)
+                                .child(
+                                    div().text_size(rems(0.82)).child(
+                                        t!(
+                                            "rdp_certificate_prompt",
+                                            host = request.host,
+                                            port = request.port,
+                                            fingerprint = request.fingerprint
+                                        )
+                                        .to_string(),
+                                    ),
+                                )
+                                .child(
+                                    h_flex()
+                                        .gap_2()
+                                        .child(
+                                            Button::new(format!("rdp-cert-trust-{request_tab_id}"))
+                                                .label(t!("rdp_certificate_trust_once").to_string())
+                                                .on_click(cx.listener(move |this, _, _, cx| {
+                                                    this.accept_rdp_certificate(&accept_tab_id, cx);
+                                                })),
+                                        )
+                                        .child(
+                                            Button::new(format!("rdp-cert-always-{always_tab_id}"))
+                                                .label(
+                                                    t!("rdp_certificate_trust_always").to_string(),
+                                                )
+                                                .on_click(cx.listener(move |this, _, _, cx| {
+                                                    this.accept_rdp_certificate_always(
+                                                        &always_tab_id,
+                                                        cx,
+                                                    );
+                                                })),
+                                        )
+                                        .child(
+                                            Button::new(format!("rdp-cert-reject-{reject_tab_id}"))
+                                                .label(t!("rdp_certificate_reject").to_string())
+                                                .on_click(cx.listener(move |this, _, _, cx| {
+                                                    this.reject_rdp_certificate(&reject_tab_id, cx);
+                                                })),
+                                        ),
+                                ),
+                        );
+                    }
+                    return surface_element.into_any_element();
                 }
                 let completion_cursor = snapshot.cursor;
                 let tab_id_clone2 = tab_id.clone();

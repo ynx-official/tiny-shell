@@ -532,7 +532,9 @@ fn event_route_id(event: &BackendEventEnvelope) -> Option<&str> {
         | BackendEvent::TransferProgress { tab_id, .. }
         | BackendEvent::TransferStarted { tab_id, .. }
         | BackendEvent::Closed { tab_id, .. }
-        | BackendEvent::TerminalTitleChanged { tab_id, .. } => Some(tab_id),
+        | BackendEvent::TerminalTitleChanged { tab_id, .. }
+        | BackendEvent::RemoteDesktopFrameReady { tab_id, .. } => Some(tab_id),
+        BackendEvent::RemoteDesktopCertificateRequest(request) => Some(&request.tab_id),
         BackendEvent::SyncFinished { .. } => None,
     }
 }
@@ -628,6 +630,34 @@ mod tests {
 
         assert!(!store.move_event_routes(&["session-a".to_string()], 3, 2));
         assert_eq!(store.drain_events_for(2, usize::MAX).len(), 0);
+    }
+
+    #[test]
+    fn batch_move_is_atomic_when_one_route_changed_owner() {
+        let mut store = SessionStore::new();
+        store.register_event_route("session-a".to_string(), 1);
+        store.register_event_route("session-b".to_string(), 2);
+
+        assert!(!store.move_event_routes(
+            &["session-a".to_string(), "session-b".to_string()],
+            1,
+            3,
+        ));
+        for tab_id in ["session-a", "session-b"] {
+            assert!(
+                store
+                    .events_sender()
+                    .send(BackendEvent::Status {
+                        tab_id: tab_id.to_string(),
+                        text: "still routed".to_string(),
+                    })
+                    .is_ok()
+            );
+        }
+
+        assert_eq!(store.drain_events_for(1, usize::MAX).len(), 1);
+        assert_eq!(store.drain_events_for(2, usize::MAX).len(), 1);
+        assert!(store.drain_events_for(3, usize::MAX).is_empty());
     }
 
     #[test]

@@ -25,7 +25,7 @@ use alacritty_terminal::{
 };
 use gpui::Keystroke;
 
-use crate::backend::remote_desktop::FrameMailbox;
+use crate::backend::remote_desktop::{CertificateRequest, FrameMailbox};
 use crate::session::config::Session;
 use crate::sftp::{
     RemoteEntry,
@@ -45,7 +45,19 @@ pub(crate) enum TabKind {
 #[derive(Debug)]
 pub(crate) enum BackendCommand {
     Input(Vec<u8>),
-    Resize { cols: u16, rows: u16 },
+    Resize {
+        cols: u16,
+        rows: u16,
+    },
+    #[cfg_attr(not(feature = "freerdp"), allow(dead_code))]
+    RemoteDesktopResize {
+        width: u32,
+        height: u32,
+    },
+    #[cfg_attr(not(feature = "freerdp"), allow(dead_code))]
+    RemoteDesktopInput(RemoteDesktopInput),
+    #[cfg_attr(not(feature = "freerdp"), allow(dead_code))]
+    RemoteDesktopText(String),
     SampleMetrics,
     Docker(crate::docker::DockerRequest),
     Close,
@@ -56,11 +68,38 @@ impl BackendCommand {
         match self {
             Self::Input(_) => "input",
             Self::Resize { .. } => "resize",
+            Self::RemoteDesktopResize { .. } => "remote-desktop-resize",
+            Self::RemoteDesktopInput(_) => "remote-desktop-input",
+            Self::RemoteDesktopText(_) => "remote-desktop-text",
             Self::SampleMetrics => "sample-metrics",
             Self::Docker(_) => "docker",
             Self::Close => "close",
         }
     }
+}
+
+#[derive(Debug, Clone, Copy)]
+#[cfg_attr(not(feature = "freerdp"), allow(dead_code))]
+pub(crate) enum RemoteDesktopInput {
+    Key {
+        scancode: u32,
+        down: bool,
+        extended: bool,
+    },
+    MouseMove {
+        x: u16,
+        y: u16,
+    },
+    MouseButton {
+        flags: u16,
+        x: u16,
+        y: u16,
+    },
+    MouseWheel {
+        flags: u16,
+        x: u16,
+        y: u16,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -76,6 +115,7 @@ pub(crate) enum BackendEvent {
         tab_id: String,
         bytes: Vec<u8>,
     },
+    #[cfg_attr(not(feature = "freerdp"), allow(dead_code))]
     RemoteDesktopFrameReady {
         tab_id: String,
         sequence: u64,
@@ -84,6 +124,8 @@ pub(crate) enum BackendEvent {
         tab_id: String,
         text: String,
     },
+    #[cfg_attr(not(feature = "freerdp"), allow(dead_code))]
+    RemoteDesktopCertificateRequest(Box<CertificateRequest>),
     Connected {
         tab_id: String,
     },
@@ -175,8 +217,9 @@ impl BackendEvent {
         match self {
             Self::Output { tab_id, .. }
             | Self::RemoteDesktopFrameReady { tab_id, .. }
-            | Self::Status { tab_id, .. }
-            | Self::Connected { tab_id }
+            | Self::Status { tab_id, .. } => Some(tab_id),
+            Self::RemoteDesktopCertificateRequest(request) => Some(&request.tab_id),
+            Self::Connected { tab_id }
             | Self::SftpEntries { tab_id, .. }
             | Self::SftpDirectoryEntries { tab_id, .. }
             | Self::SftpStatus { tab_id, .. }
@@ -201,6 +244,7 @@ impl BackendEvent {
         matches!(
             self,
             Self::Connected { .. }
+                | Self::RemoteDesktopCertificateRequest(_)
                 | Self::Closed { .. }
                 | Self::SftpFileContent { .. }
                 | Self::SftpContentUploaded { .. }
@@ -664,11 +708,14 @@ impl BackendTx {
                 resize.send(Some((cols, rows))).is_ok()
             }
             (Self::Ssh { commands, .. }, command) => commands.try_send(command).is_ok(),
-            (Self::Rdp {
-                close,
-                stop_requested,
-                ..
-            }, BackendCommand::Close) => {
+            (
+                Self::Rdp {
+                    close,
+                    stop_requested,
+                    ..
+                },
+                BackendCommand::Close,
+            ) => {
                 stop_requested.store(true, Ordering::Release);
                 close.send(true).is_ok()
             }
@@ -712,6 +759,7 @@ pub(crate) struct TerminalTab {
     /// Latest decoded RDP frame. The renderer consumes this mailbox without
     /// placing frame-sized buffers on the generic backend event queue.
     pub(crate) remote_desktop_mailbox: Option<Arc<FrameMailbox>>,
+    remote_desktop_size: Option<(u32, u32)>,
     pub scroll_pixel_y: f32,
     pub(crate) highlight_cache: std::cell::RefCell<HighlightCache>,
     render_revision: u64,
@@ -903,6 +951,7 @@ impl TerminalTab {
             rows: 30,
             backend: shared_backend,
             remote_desktop_mailbox: None,
+            remote_desktop_size: None,
             scroll_pixel_y: 0.0,
             highlight_cache: std::cell::RefCell::new(None),
             render_revision: 0,
@@ -993,6 +1042,16 @@ impl TerminalTab {
             self.term.reset_damage();
             self.send_backend(BackendCommand::Resize { cols, rows });
         }
+    }
+
+    pub(crate) fn resize_remote_desktop(&mut self, width: u32, height: u32) {
+        let width = width.max(1);
+        let height = height.max(1);
+        if self.remote_desktop_size == Some((width, height)) {
+            return;
+        }
+        self.remote_desktop_size = Some((width, height));
+        self.send_backend(BackendCommand::RemoteDesktopResize { width, height });
     }
 
     pub fn cursor_state(&self) -> Option<CursorState> {

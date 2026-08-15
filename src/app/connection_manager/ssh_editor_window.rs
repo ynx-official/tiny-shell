@@ -544,6 +544,7 @@ impl Render for SshEditorWindow {
             ConnectionType::Ssh => "SSH / SFTP",
             ConnectionType::Rdp => "Windows 远程桌面 (RDP)",
         };
+        let connection_type = self.connection_type;
         let ssh_config_label = self
             .ssh_config_selected
             .and_then(|index| self.ssh_config_entries.get(index))
@@ -610,7 +611,8 @@ impl Render for SshEditorWindow {
                                                     .on_click(window.listener_for(
                                                         &editor,
                                                         |this, _, _, cx| {
-                                                            this.connection_type = ConnectionType::Ssh;
+                                                            this.connection_type =
+                                                                ConnectionType::Ssh;
                                                             cx.notify();
                                                         },
                                                     )),
@@ -621,7 +623,8 @@ impl Render for SshEditorWindow {
                                                     .on_click(window.listener_for(
                                                         &editor,
                                                         |this, _, _, cx| {
-                                                            this.connection_type = ConnectionType::Rdp;
+                                                            this.connection_type =
+                                                                ConnectionType::Rdp;
                                                             this.auth = AuthMethod::Password;
                                                             this.proxy_type = "none".to_string();
                                                             cx.notify();

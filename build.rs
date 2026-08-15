@@ -17,11 +17,18 @@ fn main() {
         build.compile("tiny_shell_freerdp");
 
         if let Some(lib_dir) = std::env::var_os("TINY_SHELL_FREERDP_LIB_DIR") {
-            println!("cargo:rustc-link-search=native={}", lib_dir.to_string_lossy());
+            println!(
+                "cargo:rustc-link-search=native={}",
+                lib_dir.to_string_lossy()
+            );
         }
         let libraries = std::env::var("TINY_SHELL_FREERDP_LIBS")
             .unwrap_or_else(|_| "freerdp-client3,freerdp3,winpr3".to_string());
-        for library in libraries.split(',').map(str::trim).filter(|item| !item.is_empty()) {
+        for library in libraries
+            .split(',')
+            .map(str::trim)
+            .filter(|item| !item.is_empty())
+        {
             println!("cargo:rustc-link-lib=dylib={library}");
         }
     }

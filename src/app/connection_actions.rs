@@ -402,6 +402,7 @@ impl TinyShell {
             return;
         }
         self.terminal_completions.remove(tab_id);
+        self.remote_desktop_surfaces.remove(tab_id);
 
         let tab_kind = self.window_state_mut().workspace_state_mut().tabs_mut()[ix].kind;
         let is_ssh = tab_kind == crate::terminal::TabKind::Ssh;
@@ -440,8 +441,7 @@ impl TinyShell {
                 tab.set_backend(backend);
                 tab.remote_desktop_mailbox = Some(mailbox);
                 tab.connected = false;
-                tab.status =
-                    t!("starting_connection").to_string();
+                tab.status = t!("starting_connection").to_string();
                 tab.disconnected_reason = None;
                 tab.backend_generation = new_generation;
                 tab.feed_status_line(&rust_i18n::t!("starting_connection"));

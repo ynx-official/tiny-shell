@@ -7,9 +7,12 @@
 
 #![allow(dead_code)]
 
-use std::sync::{
-    Arc, Mutex,
-    atomic::{AtomicBool, AtomicU64, Ordering},
+use std::{
+    collections::HashMap,
+    sync::{
+        Arc, Condvar, Mutex, OnceLock,
+        atomic::{AtomicBool, AtomicU64, Ordering},
+    },
 };
 
 use tokio::sync::{mpsc, watch};
@@ -21,6 +24,93 @@ use crate::{
 
 pub(crate) const DEFAULT_REMOTE_DESKTOP_WIDTH: u32 = 1280;
 pub(crate) const DEFAULT_REMOTE_DESKTOP_HEIGHT: u32 = 720;
+
+static TRUSTED_CERTIFICATES: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CertificateDecisionKind {
+    TrustOnce,
+    TrustAlways,
+    Reject,
+}
+
+pub(crate) fn is_certificate_trusted(host: &str, port: u16, fingerprint: &str) -> bool {
+    TRUSTED_CERTIFICATES
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get(&format!("{host}:{port}"))
+        .is_some_and(|known| known == fingerprint)
+}
+
+pub(crate) fn remember_certificate(host: &str, port: u16, fingerprint: &str) {
+    TRUSTED_CERTIFICATES
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .insert(format!("{host}:{port}"), fingerprint.to_owned());
+}
+
+/// A certificate decision shared between the FreeRDP worker and the UI.
+///
+/// The native verification callback runs on the RDP thread, so it must wait
+/// without touching GPUI. A timeout is deliberately fail-closed.
+#[derive(Clone, Debug)]
+pub(crate) struct CertificateDecision {
+    state: Arc<(Mutex<Option<CertificateDecisionKind>>, Condvar)>,
+}
+
+impl CertificateDecision {
+    pub(crate) fn new() -> Self {
+        Self {
+            state: Arc::new((Mutex::new(None), Condvar::new())),
+        }
+    }
+
+    pub(crate) fn accept(&self) {
+        self.set(Some(CertificateDecisionKind::TrustOnce));
+    }
+
+    pub(crate) fn accept_always(&self) {
+        self.set(Some(CertificateDecisionKind::TrustAlways));
+    }
+
+    pub(crate) fn reject(&self) {
+        self.set(Some(CertificateDecisionKind::Reject));
+    }
+
+    pub(crate) fn wait(&self) -> CertificateDecisionKind {
+        let (lock, signal) = &*self.state;
+        let guard = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let (guard, _) = signal
+            .wait_timeout_while(guard, std::time::Duration::from_secs(60), |value| {
+                value.is_none()
+            })
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        (*guard).unwrap_or(CertificateDecisionKind::Reject)
+    }
+
+    fn set(&self, value: Option<CertificateDecisionKind>) {
+        let (lock, signal) = &*self.state;
+        let mut guard = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if guard.is_none() {
+            *guard = value;
+            signal.notify_all();
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct CertificateRequest {
+    pub(crate) tab_id: String,
+    pub(crate) host: String,
+    pub(crate) port: u16,
+    pub(crate) common_name: String,
+    pub(crate) subject: String,
+    pub(crate) issuer: String,
+    pub(crate) fingerprint: String,
+    pub(crate) decision: CertificateDecision,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RemoteDesktopState {
@@ -155,13 +245,15 @@ pub(crate) fn spawn_remote_desktop_terminal(
         generation,
     } = request;
     let events = events.with_generation(generation);
-    let (commands, _command_rx) =
+    let (commands, command_rx) =
         mpsc::channel::<BackendCommand>(crate::terminal::BACKEND_COMMAND_QUEUE_CAPACITY);
     let (close, _close_rx) = watch::channel(false);
     let (resize, _resize_rx) = watch::channel(None);
     let stop_requested = Arc::new(AtomicBool::new(false));
     let task_tab_id = tab_id.clone();
     let mailbox = Arc::new(FrameMailbox::default());
+    #[cfg(not(feature = "freerdp"))]
+    let _ = (width, height);
     #[cfg(feature = "freerdp")]
     let worker_mailbox = Arc::clone(&mailbox);
     #[cfg(feature = "freerdp")]
@@ -179,6 +271,7 @@ pub(crate) fn spawn_remote_desktop_terminal(
                 worker_events.clone(),
                 worker_mailbox,
                 worker_stop_requested,
+                command_rx,
             )
         });
         runtime.spawn(async move {
@@ -196,7 +289,7 @@ pub(crate) fn spawn_remote_desktop_terminal(
 
     #[cfg(not(feature = "freerdp"))]
     runtime.spawn(async move {
-        let mut command_rx = _command_rx;
+        let mut command_rx = command_rx;
         let mut close_rx = _close_rx;
         let mut resize_rx = _resize_rx;
         let reason = rust_i18n::t!("rdp_backend_not_linked").to_string();
@@ -323,5 +416,19 @@ mod tests {
         );
         assert_eq!(FrameSize::new(0, 1, 4), Err(FrameError::InvalidSize));
         assert_eq!(FrameSize::new(2, 1, 4), Err(FrameError::InvalidStride));
+    }
+
+    #[test]
+    fn certificate_decision_unblocks_and_accepts_once() {
+        let decision = CertificateDecision::new();
+        let waiter = decision.clone();
+        let thread = std::thread::spawn(move || waiter.wait());
+        decision.accept();
+        assert_eq!(
+            thread.join().unwrap_or(CertificateDecisionKind::Reject),
+            CertificateDecisionKind::TrustOnce
+        );
+        decision.reject();
+        assert_eq!(decision.wait(), CertificateDecisionKind::TrustOnce);
     }
 }

@@ -13,7 +13,7 @@ use rust_i18n::t;
 
 use crate::TinyShell;
 use crate::{
-    app::session_actions::GroupTransfer,
+    app::tab_transfer::{GroupTransfer, validate_transfer_batch},
     session::{
         config::{ConfigStore, Session},
         store::{SessionStore, WindowOwnerId},
@@ -564,6 +564,9 @@ pub(crate) fn open_new_window_with_groups(
     if transfers.is_empty() {
         return Ok(());
     }
+    if let Err(message) = validate_transfer_batch(&transfers) {
+        return Err((message.to_string(), transfers));
+    }
     let config = ConfigStore::load().unwrap_or_else(|_| ConfigStore::in_memory());
     let window_options = build_window_options(&config, cx, Some((px(40.), px(40.))));
     let (target_window, target) = match open_window_with_initializer(
@@ -577,19 +580,24 @@ pub(crate) fn open_new_window_with_groups(
         Err(message) => return Err((message, transfers)),
     };
 
-    let mut remaining = transfers.into_iter();
-    while let Some(transfer) = remaining.next() {
-        if let Err((message, transfer)) = target.update(cx, |this, cx| {
-            this.receive_group_transfer(transfer, source_owner_id, cx)
-        }) {
-            let mut failed = vec![*transfer];
-            failed.extend(remaining);
-            return Err((message, failed));
+    match target.update(cx, |this, cx| {
+        this.receive_group_transfers(
+            transfers,
+            source_owner_id,
+            crate::app::tab_drag::DockZone::Center,
+            cx,
+        )
+    }) {
+        Ok(()) => {
+            let focus_handle = target.read(cx).focus_handle.clone();
+            crate::app::activate_window_with_retry(target_window, focus_handle, cx);
+            Ok(())
+        }
+        Err((message, transfers)) => {
+            close_failed_transfer_window(target_window, target, cx);
+            Err((message, transfers))
         }
     }
-    let focus_handle = target.read(cx).focus_handle.clone();
-    crate::app::activate_window_with_retry(target_window, focus_handle, cx);
-    Ok(())
 }
 
 pub(crate) fn open_new_window_with_group(
@@ -625,18 +633,24 @@ pub(crate) fn open_new_window_with_group(
             Ok(())
         }
         Err((message, transfer)) => {
-            if let Err(error) = target_window.update(cx, |_, window, cx| {
-                target.update(cx, |this, cx| {
-                    this.finalize_main_window_close(window, cx);
-                });
-                window.remove_window();
-            }) {
-                tracing::warn!(
-                    "[ui] failed to close empty window after group transfer failure: {error:?}"
-                );
-            }
+            close_failed_transfer_window(target_window, target, cx);
             Err((message, transfer))
         }
+    }
+}
+
+fn close_failed_transfer_window(
+    target_window: gpui::AnyWindowHandle,
+    target: Entity<TinyShell>,
+    cx: &mut App,
+) {
+    if let Err(error) = target_window.update(cx, |_, window, cx| {
+        target.update(cx, |this, cx| {
+            this.finalize_main_window_close(window, cx);
+        });
+        window.remove_window();
+    }) {
+        tracing::warn!("[ui] failed to close empty window after group transfer failure: {error:?}");
     }
 }
 

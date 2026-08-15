@@ -181,6 +181,9 @@ pub(crate) fn spawn_local_terminal(
                             pixel_height: 0,
                         });
                     }
+                    BackendCommand::RemoteDesktopResize { .. }
+                    | BackendCommand::RemoteDesktopInput(_)
+                    | BackendCommand::RemoteDesktopText(_) => {}
                     BackendCommand::Close => {
                         break "local shell closed".to_string();
                     }

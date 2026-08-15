@@ -4,6 +4,7 @@
 #include <freerdp/codec/color.h>
 #include <freerdp/freerdp.h>
 #include <freerdp/gdi/gdi.h>
+#include <freerdp/input.h>
 #include <freerdp/settings.h>
 #include <winpr/crt.h>
 #include <winpr/synch.h>
@@ -165,6 +166,22 @@ static BOOL ts_post_connect(freerdp* instance)
     return TRUE;
 }
 
+static DWORD ts_verify_certificate(freerdp* instance, const char* host, UINT16 port,
+                                   const char* common_name, const char* subject,
+                                   const char* issuer, const char* fingerprint, DWORD flags)
+{
+    tiny_shell_rdp_context* context = NULL;
+    if (!instance || !instance->context)
+        return 0;
+    context = (tiny_shell_rdp_context*)instance->context;
+    if (!context->client || !context->client->callbacks.on_certificate)
+        return 0;
+    return context->client->callbacks.on_certificate(
+        context->client->callbacks.user_data, host ? host : "", port,
+        common_name ? common_name : "", subject ? subject : "", issuer ? issuer : "",
+        fingerprint ? fingerprint : "", flags);
+}
+
 static void ts_post_disconnect(freerdp* instance)
 {
     if (instance && instance->context && instance->context->gdi)
@@ -245,6 +262,7 @@ tiny_shell_rdp_client* tiny_shell_rdp_client_new(
     context->instance->PreConnect = ts_pre_connect;
     context->instance->PostConnect = ts_post_connect;
     context->instance->PostDisconnect = ts_post_disconnect;
+    context->instance->VerifyCertificateEx = ts_verify_certificate;
     return client;
 
 fail:
@@ -283,6 +301,8 @@ int tiny_shell_rdp_client_run(tiny_shell_rdp_client* client)
             !client->callbacks.should_stop(client->callbacks.user_data)) &&
            !freerdp_shall_disconnect_context(context))
     {
+        if (client->callbacks.on_poll)
+            client->callbacks.on_poll(client->callbacks.user_data);
         count = freerdp_get_event_handles(context, handles, ARRAYSIZE(handles));
         if (count == 0)
             break;
@@ -297,6 +317,53 @@ int tiny_shell_rdp_client_run(tiny_shell_rdp_client* client)
         ts_emit_state(client, TINY_SHELL_RDP_STATE_DISCONNECTED, 0, "disconnected");
     (void)freerdp_client_stop(context);
     return 0;
+}
+
+int tiny_shell_rdp_client_resize(tiny_shell_rdp_client* client, uint32_t width,
+                                 uint32_t height)
+{
+    if (!client || !client->context || !client->context->settings || width == 0 || height == 0)
+        return 0;
+    /* A local gdi_resize does not notify the server and can desynchronize the
+     * framebuffer from incoming update rectangles. Keep the negotiated size
+     * until the DISP dynamic-resolution channel is wired. */
+    return freerdp_settings_get_uint32(client->context->settings, FreeRDP_DesktopWidth) == width &&
+           freerdp_settings_get_uint32(client->context->settings, FreeRDP_DesktopHeight) == height;
+}
+
+int tiny_shell_rdp_client_keyboard(tiny_shell_rdp_client* client, int down,
+                                   int extended, uint32_t scancode)
+{
+    if (!client || !client->context || !client->context->input || scancode > 0xFF)
+        return 0;
+    scancode = MAKE_RDP_SCANCODE(scancode, extended ? TRUE : FALSE);
+    return freerdp_input_send_keyboard_event_ex(client->context->input,
+                                                down ? TRUE : FALSE, FALSE, scancode)
+               ? 1
+               : 0;
+}
+
+int tiny_shell_rdp_client_text(tiny_shell_rdp_client* client, const uint16_t* text,
+                               size_t length)
+{
+    if (!client || !client->context || !client->context->input || !text || length == 0)
+        return 0;
+    for (size_t index = 0; index < length; index++)
+    {
+        if (!freerdp_input_send_unicode_keyboard_event(client->context->input, 0, text[index]) ||
+            !freerdp_input_send_unicode_keyboard_event(client->context->input, KBD_FLAGS_RELEASE,
+                                                       text[index]))
+            return 0;
+    }
+    return 1;
+}
+
+int tiny_shell_rdp_client_mouse(tiny_shell_rdp_client* client, uint16_t flags,
+                                uint16_t x, uint16_t y)
+{
+    if (!client || !client->context || !client->context->input)
+        return 0;
+    return freerdp_input_send_mouse_event(client->context->input, flags, x, y) ? 1 : 0;
 }
 
 void tiny_shell_rdp_client_stop(tiny_shell_rdp_client* client)

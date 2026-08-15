@@ -396,6 +396,9 @@ async fn run_ssh(
                     Some(BackendCommand::Resize { cols, rows }) => {
                         let _ = channel.window_change(cols.into(), rows.into(), 0, 0).await;
                     }
+                    Some(BackendCommand::RemoteDesktopResize { .. })
+                    | Some(BackendCommand::RemoteDesktopInput(_))
+                    | Some(BackendCommand::RemoteDesktopText(_)) => {}
                     Some(BackendCommand::SampleMetrics) => {
                         if !metrics_in_flight {
                             const METRICS_TIMEOUT: std::time::Duration =

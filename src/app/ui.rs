@@ -2,9 +2,10 @@ use crate::app::resizable::{h_resizable, resizable_panel, v_resizable};
 use gpui::{
     Anchor, Animation, AnimationExt as _, AnyElement, AppContext as _, Context, ElementId,
     Focusable as _, FontWeight, Hsla, InteractiveElement as _, IntoElement, MouseButton,
-    MouseDownEvent, ParentElement as _, PathBuilder, Pixels, Point, Render,
-    StatefulInteractiveElement as _, Styled as _, Window, canvas, div, ease_out_quint, hsla, point,
-    prelude::FluentBuilder as _, px, relative, rems, uniform_list,
+    MouseDownEvent, ObjectFit, ParentElement as _, PathBuilder, Pixels, Point, Render,
+    StatefulInteractiveElement as _, Styled as _, StyledImage as _, Window, canvas, div,
+    ease_out_quint, hsla, img, point, prelude::FluentBuilder as _, px, relative, rems,
+    uniform_list,
 };
 use gpui_component::{
     ActiveTheme, Disableable as _, ElementExt, Icon, IconName, InteractiveElementExt as _, Root,

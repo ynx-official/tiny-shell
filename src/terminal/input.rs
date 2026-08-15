@@ -3,17 +3,143 @@ use std::ops::Range;
 use alacritty_terminal::index::Side;
 use alacritty_terminal::selection::SelectionType;
 use gpui::{
-    ClipboardItem, Context, Focusable as _, KeyDownEvent, MouseButton, MouseDownEvent,
+    ClipboardItem, Context, Focusable as _, KeyDownEvent, KeyUpEvent, MouseButton, MouseDownEvent,
     MouseMoveEvent, MouseUpEvent, Pixels, Point, ScrollDelta, ScrollWheelEvent, Window, px,
 };
 
 use crate::{
     TerminalBacktabKey, TerminalTabKey, TinyShell,
-    terminal::{BackendCommand, encode_key},
+    terminal::{BackendCommand, RemoteDesktopInput, TabKind, encode_key},
 };
 
 thread_local! {
     static LAST_DRAG_SCROLL: std::cell::Cell<Option<std::time::Instant>> = const { std::cell::Cell::new(None) };
+}
+
+fn rdp_mouse_button(button: MouseButton) -> Option<u16> {
+    match button {
+        MouseButton::Left => Some(0x1000),
+        MouseButton::Right => Some(0x2000),
+        MouseButton::Middle => Some(0x4000),
+        MouseButton::Navigate(_) => None,
+    }
+}
+
+fn rdp_scancode(key: &str) -> Option<(u32, bool)> {
+    let key = key.to_ascii_lowercase();
+    let code = match key.as_str() {
+        "a" => 0x1e,
+        "b" => 0x30,
+        "c" => 0x2e,
+        "d" => 0x20,
+        "e" => 0x12,
+        "f" => 0x21,
+        "g" => 0x22,
+        "h" => 0x23,
+        "i" => 0x17,
+        "j" => 0x24,
+        "k" => 0x25,
+        "l" => 0x26,
+        "m" => 0x32,
+        "n" => 0x31,
+        "o" => 0x18,
+        "p" => 0x19,
+        "q" => 0x10,
+        "r" => 0x13,
+        "s" => 0x1f,
+        "t" => 0x14,
+        "u" => 0x16,
+        "v" => 0x2f,
+        "w" => 0x11,
+        "x" => 0x2d,
+        "y" => 0x15,
+        "z" => 0x2c,
+        "1" | "!" => 0x02,
+        "2" | "@" => 0x03,
+        "3" | "#" => 0x04,
+        "4" | "$" => 0x05,
+        "5" | "%" => 0x06,
+        "6" | "^" => 0x07,
+        "7" | "&" => 0x08,
+        "8" | "*" => 0x09,
+        "9" | "(" => 0x0a,
+        "0" | ")" => 0x0b,
+        "escape" | "esc" => 0x01,
+        "backspace" => 0x0e,
+        "tab" => 0x0f,
+        "enter" | "return" => 0x1c,
+        "space" => 0x39,
+        "minus" | "-" | "_" => 0x0c,
+        "equal" | "=" | "+" => 0x0d,
+        "[" | "bracketleft" => 0x1a,
+        "]" | "bracketright" => 0x1b,
+        "backslash" | "\\" | "|" => 0x2b,
+        "semicolon" | ";" | ":" => 0x27,
+        "apostrophe" | "'" | "\"" => 0x28,
+        "grave" | "`" | "~" => 0x29,
+        "comma" | "," | "<" => 0x33,
+        "period" | "." | ">" => 0x34,
+        "slash" | "/" | "?" => 0x35,
+        "f1" => 0x3b,
+        "f2" => 0x3c,
+        "f3" => 0x3d,
+        "f4" => 0x3e,
+        "f5" => 0x3f,
+        "f6" => 0x40,
+        "f7" => 0x41,
+        "f8" => 0x42,
+        "f9" => 0x43,
+        "f10" => 0x44,
+        "f11" => 0x57,
+        "f12" => 0x58,
+        "arrowup" | "up" => return Some((0x48, true)),
+        "arrowdown" | "down" => return Some((0x50, true)),
+        "arrowleft" | "left" => return Some((0x4b, true)),
+        "arrowright" | "right" => return Some((0x4d, true)),
+        "home" => return Some((0x47, true)),
+        "end" => return Some((0x4f, true)),
+        "pageup" => return Some((0x49, true)),
+        "pagedown" => return Some((0x51, true)),
+        "insert" => return Some((0x52, true)),
+        "delete" => return Some((0x53, true)),
+        "control" | "ctrl" => return Some((0x1d, false)),
+        "alt" | "option" => return Some((0x38, false)),
+        "shift" => return Some((0x2a, false)),
+        "capslock" => return Some((0x3a, false)),
+        "numlock" => return Some((0x45, false)),
+        _ => return None,
+    };
+    Some((code, false))
+}
+
+fn rdp_fitted_point(
+    container_width: f32,
+    container_height: f32,
+    local_x: f32,
+    local_y: f32,
+    frame_width: u32,
+    frame_height: u32,
+) -> Option<(u16, u16)> {
+    if container_width <= 0.0 || container_height <= 0.0 || frame_width == 0 || frame_height == 0 {
+        return None;
+    }
+    let scale = (container_width / frame_width as f32).min(container_height / frame_height as f32);
+    let fitted_width = frame_width as f32 * scale;
+    let fitted_height = frame_height as f32 * scale;
+    let offset_x = (container_width - fitted_width) * 0.5;
+    let offset_y = (container_height - fitted_height) * 0.5;
+    let fitted_x = local_x - offset_x;
+    let fitted_y = local_y - offset_y;
+    if fitted_x < 0.0 || fitted_y < 0.0 || fitted_x >= fitted_width || fitted_y >= fitted_height {
+        return None;
+    }
+    let x = (fitted_x / fitted_width * frame_width as f32)
+        .floor()
+        .clamp(0.0, frame_width.saturating_sub(1) as f32) as u16;
+    let y = (fitted_y / fitted_height * frame_height as f32)
+        .floor()
+        .clamp(0.0, frame_height.saturating_sub(1) as f32) as u16;
+    Some((x, y))
 }
 
 fn printable_terminal_input(bytes: &[u8]) -> Option<&str> {
@@ -27,6 +153,231 @@ fn trackable_terminal_paste(text: &str) -> Option<&str> {
 }
 
 impl TinyShell {
+    pub(crate) fn accept_rdp_certificate(&mut self, tab_id: &str, cx: &mut Context<Self>) {
+        if let Some(request) = self.rdp_certificate_requests.remove(tab_id) {
+            request.decision.accept();
+            cx.notify();
+        }
+    }
+
+    pub(crate) fn accept_rdp_certificate_always(&mut self, tab_id: &str, cx: &mut Context<Self>) {
+        if let Some(request) = self.rdp_certificate_requests.remove(tab_id) {
+            crate::backend::remote_desktop::remember_certificate(
+                &request.host,
+                request.port,
+                &request.fingerprint,
+            );
+            request.decision.accept_always();
+            cx.notify();
+        }
+    }
+
+    pub(crate) fn reject_rdp_certificate(&mut self, tab_id: &str, cx: &mut Context<Self>) {
+        if let Some(request) = self.rdp_certificate_requests.remove(tab_id) {
+            request.decision.reject();
+            cx.notify();
+        }
+    }
+
+    pub(crate) fn on_remote_desktop_key_down(
+        &mut self,
+        event: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(tab_id) = self.active_remote_desktop_tab() else {
+            return false;
+        };
+        let Some((scancode, extended)) = rdp_scancode(&event.keystroke.key) else {
+            return false;
+        };
+        self.send_remote_desktop_input(
+            &tab_id,
+            RemoteDesktopInput::Key {
+                scancode,
+                down: true,
+                extended,
+            },
+        );
+        window.prevent_default();
+        cx.stop_propagation();
+        true
+    }
+
+    pub(crate) fn on_remote_desktop_key_up(
+        &mut self,
+        event: &KeyUpEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(tab_id) = self.active_remote_desktop_tab() else {
+            return false;
+        };
+        let Some((scancode, extended)) = rdp_scancode(&event.keystroke.key) else {
+            return false;
+        };
+        self.send_remote_desktop_input(
+            &tab_id,
+            RemoteDesktopInput::Key {
+                scancode,
+                down: false,
+                extended,
+            },
+        );
+        window.prevent_default();
+        cx.stop_propagation();
+        true
+    }
+
+    pub(crate) fn on_remote_desktop_mouse_down(
+        &mut self,
+        event: &MouseDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(tab_id) = self.remote_desktop_tab_at(event.position) else {
+            return false;
+        };
+        let Some((x, y)) = self.remote_desktop_point(&tab_id, event.position) else {
+            return false;
+        };
+        let Some(button) = rdp_mouse_button(event.button) else {
+            return false;
+        };
+        self.send_remote_desktop_input(
+            &tab_id,
+            RemoteDesktopInput::MouseButton {
+                flags: button | 0x8000,
+                x,
+                y,
+            },
+        );
+        self.focus_pane_with_id(tab_id);
+        window.prevent_default();
+        cx.stop_propagation();
+        true
+    }
+
+    pub(crate) fn on_remote_desktop_mouse_up(
+        &mut self,
+        event: &gpui::MouseUpEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(tab_id) = self.remote_desktop_tab_at(event.position) else {
+            return false;
+        };
+        let Some((x, y)) = self.remote_desktop_point(&tab_id, event.position) else {
+            return false;
+        };
+        let Some(button) = rdp_mouse_button(event.button) else {
+            return false;
+        };
+        self.send_remote_desktop_input(
+            &tab_id,
+            RemoteDesktopInput::MouseButton {
+                flags: button,
+                x,
+                y,
+            },
+        );
+        window.prevent_default();
+        cx.stop_propagation();
+        true
+    }
+
+    pub(crate) fn on_remote_desktop_mouse_move(
+        &mut self,
+        event: &MouseMoveEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(tab_id) = self.remote_desktop_tab_at(event.position) else {
+            return false;
+        };
+        let Some((x, y)) = self.remote_desktop_point(&tab_id, event.position) else {
+            return false;
+        };
+        self.send_remote_desktop_input(&tab_id, RemoteDesktopInput::MouseMove { x, y });
+        window.prevent_default();
+        cx.stop_propagation();
+        true
+    }
+
+    pub(crate) fn on_remote_desktop_scroll(
+        &mut self,
+        event: &ScrollWheelEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(tab_id) = self.remote_desktop_tab_at(event.position) else {
+            return false;
+        };
+        let Some((x, y)) = self.remote_desktop_point(&tab_id, event.position) else {
+            return false;
+        };
+        let delta = match event.delta {
+            ScrollDelta::Lines(point) => point.y,
+            ScrollDelta::Pixels(point) => point.y.as_f32() / 40.0,
+        };
+        if delta.abs() < f32::EPSILON {
+            return false;
+        }
+        let ticks = (delta.abs().round().max(1.0) as u16)
+            .saturating_mul(120)
+            .min(0x01ff);
+        let flags = 0x0200 | if delta.is_sign_negative() { 0x0100 } else { 0 } | ticks;
+        self.send_remote_desktop_input(&tab_id, RemoteDesktopInput::MouseWheel { flags, x, y });
+        window.prevent_default();
+        cx.stop_propagation();
+        true
+    }
+
+    fn remote_desktop_tab_at(&self, position: Point<Pixels>) -> Option<String> {
+        self.terminal_bounds.iter().find_map(|(tab_id, bounds)| {
+            bounds.contains(&position).then(|| {
+                self.workspace()
+                    .terminal_tab(tab_id)
+                    .filter(|tab| tab.kind == TabKind::Rdp)
+                    .map(|_| tab_id.clone())
+            })?
+        })
+    }
+
+    fn active_remote_desktop_tab(&self) -> Option<String> {
+        let tab_id = self.preferred_terminal_tab_id()?;
+        self.terminal_tab(&tab_id)
+            .filter(|tab| tab.kind == TabKind::Rdp)
+            .map(|_| tab_id)
+    }
+
+    fn remote_desktop_point(&self, tab_id: &str, position: Point<Pixels>) -> Option<(u16, u16)> {
+        let bounds = self.terminal_bounds.get(tab_id)?;
+        let size = self
+            .remote_desktop_surfaces
+            .get(tab_id)
+            .map(|surface| surface.size)
+            .unwrap_or(crate::backend::remote_desktop::FrameSize {
+                width: bounds.size.width.as_f32().max(1.0) as u32,
+                height: bounds.size.height.as_f32().max(1.0) as u32,
+                stride: 0,
+            });
+        rdp_fitted_point(
+            bounds.size.width.as_f32(),
+            bounds.size.height.as_f32(),
+            (position.x - bounds.origin.x).as_f32(),
+            (position.y - bounds.origin.y).as_f32(),
+            size.width,
+            size.height,
+        )
+    }
+
+    fn send_remote_desktop_input(&mut self, tab_id: &str, input: RemoteDesktopInput) {
+        if let Some(tab) = self.terminal_tab_mut(tab_id) {
+            tab.send_backend(BackendCommand::RemoteDesktopInput(input));
+        }
+    }
+
     pub(crate) fn on_terminal_key_down(
         &mut self,
         event: &KeyDownEvent,
@@ -427,6 +778,14 @@ impl TinyShell {
             return;
         };
 
+        if tab.kind == TabKind::Rdp {
+            tab.send_backend(BackendCommand::RemoteDesktopText(text.to_owned()));
+            window.prevent_default();
+            cx.stop_propagation();
+            cx.notify();
+            return;
+        }
+
         if tab.display_offset() > 0 {
             tab.scroll_to_bottom();
         }
@@ -810,7 +1169,12 @@ impl TinyShell {
 
 #[cfg(test)]
 mod tests {
-    use super::{printable_terminal_input, trackable_terminal_paste};
+    use gpui::MouseButton;
+
+    use super::{
+        printable_terminal_input, rdp_fitted_point, rdp_mouse_button, rdp_scancode,
+        trackable_terminal_paste,
+    };
 
     #[test]
     fn printable_input_tracks_windows_keydown_text() {
@@ -832,5 +1196,37 @@ mod tests {
         assert_eq!(trackable_terminal_paste("docker\nps"), None);
         assert_eq!(trackable_terminal_paste("docker\r"), None);
         assert_eq!(trackable_terminal_paste(""), None);
+    }
+
+    #[test]
+    fn rdp_scancodes_cover_common_keyboard_navigation() {
+        assert_eq!(rdp_scancode("A"), Some((0x1e, false)));
+        assert_eq!(rdp_scancode("f12"), Some((0x58, false)));
+        assert_eq!(rdp_scancode("ArrowLeft"), Some((0x4b, true)));
+        assert_eq!(rdp_scancode("PageDown"), Some((0x51, true)));
+        assert_eq!(rdp_scancode("unknown-key"), None);
+    }
+
+    #[test]
+    fn rdp_mouse_buttons_use_freerdp_flag_values() {
+        assert_eq!(rdp_mouse_button(MouseButton::Left), Some(0x1000));
+        assert_eq!(rdp_mouse_button(MouseButton::Right), Some(0x2000));
+        assert_eq!(rdp_mouse_button(MouseButton::Middle), Some(0x4000));
+    }
+
+    #[test]
+    fn rdp_pointer_mapping_respects_contain_letterboxing() {
+        assert_eq!(
+            rdp_fitted_point(1000.0, 1000.0, 500.0, 500.0, 1920, 1080),
+            Some((960, 540))
+        );
+        assert_eq!(
+            rdp_fitted_point(1000.0, 1000.0, 500.0, 100.0, 1920, 1080),
+            None
+        );
+        assert_eq!(
+            rdp_fitted_point(1000.0, 500.0, 10.0, 250.0, 1000, 1000),
+            None
+        );
     }
 }

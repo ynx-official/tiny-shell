@@ -184,7 +184,10 @@ pub(crate) fn session_address(session: &Session) -> String {
         ConnectionType::Ssh => "ssh",
         ConnectionType::Rdp => "rdp",
     };
-    format!("{scheme}://{}@{}:{}", session.user, session.host, session.port)
+    format!(
+        "{scheme}://{}@{}:{}",
+        session.user, session.host, session.port
+    )
 }
 
 pub(crate) fn parse_session_address(address: &str) -> Result<Session> {
@@ -210,12 +213,7 @@ pub(crate) fn parse_session_address(address: &str) -> Result<Session> {
     if host.is_empty() || port == 0 {
         bail!("connection address host or port is invalid");
     }
-    let mut session = Session::password(
-        host.to_string(),
-        port,
-        user.to_string(),
-        String::new(),
-    );
+    let mut session = Session::password(host.to_string(), port, user.to_string(), String::new());
     session.connection_type = connection_type;
     Ok(session)
 }

@@ -1,5 +1,8 @@
-use anyhow::{Result, anyhow};
+use anyhow::{Context, Result, anyhow};
+use russh_sftp::{client::SftpSession, protocol::FileAttributes};
 use sha2::{Digest, Sha256};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use uuid::Uuid;
 
 pub(crate) const EDITOR_SOFT_LIMIT_BYTES: u64 = 1024 * 1024;
 pub(crate) const EDITOR_HARD_LIMIT_BYTES: u64 = 5 * 1024 * 1024;
@@ -129,6 +132,179 @@ pub(crate) fn encode_remote_text(content: &str, format: RemoteTextFormat) -> Vec
     }
     bytes.extend_from_slice(body.as_bytes());
     bytes
+}
+
+pub(super) enum SaveRemoteTextOutcome {
+    Saved(RemoteFileRevision),
+    Conflict(RemoteTextFile),
+}
+
+pub(super) async fn read_remote_text_file(
+    sftp: &SftpSession,
+    remote: &str,
+) -> Result<RemoteTextFile> {
+    let metadata = sftp
+        .metadata(remote)
+        .await
+        .with_context(|| format!("stat remote {remote}"))?;
+    if metadata
+        .size
+        .is_some_and(|size| size > EDITOR_HARD_LIMIT_BYTES)
+    {
+        return Err(anyhow!(
+            "file too large for in-memory editor ({} bytes, max {} bytes)",
+            metadata.size.unwrap_or_default(),
+            EDITOR_HARD_LIMIT_BYTES
+        ));
+    }
+
+    let mut file = sftp
+        .open(remote)
+        .await
+        .with_context(|| format!("open remote {remote}"))?;
+    let mut bytes = Vec::with_capacity(metadata.size.unwrap_or_default() as usize);
+    file.read_to_end(&mut bytes)
+        .await
+        .with_context(|| format!("read remote {remote}"))?;
+    decode_remote_text(bytes, metadata.mtime, metadata.permissions)
+        .with_context(|| format!("decode remote {remote}"))
+}
+
+async fn write_remote_temp_file(
+    sftp: &SftpSession,
+    remote: &str,
+    bytes: &[u8],
+    permissions: Option<u32>,
+) -> Result<()> {
+    let mut file = sftp
+        .create(remote)
+        .await
+        .with_context(|| format!("create remote temporary file {remote}"))?;
+    file.write_all(bytes)
+        .await
+        .with_context(|| format!("write remote temporary file {remote}"))?;
+    file.flush()
+        .await
+        .with_context(|| format!("flush remote temporary file {remote}"))?;
+    file.sync_all()
+        .await
+        .with_context(|| format!("sync remote temporary file {remote}"))?;
+    drop(file);
+
+    if let Some(permissions) = permissions {
+        let mut attributes = FileAttributes::empty();
+        attributes.permissions = Some(permissions);
+        sftp.set_metadata(remote, attributes)
+            .await
+            .with_context(|| format!("preserve permissions on {remote}"))?;
+    }
+    Ok(())
+}
+
+async fn remove_remote_file_if_present(sftp: &SftpSession, remote: &str) {
+    if sftp.try_exists(remote).await.unwrap_or(false) {
+        let _ = sftp.remove_file(remote).await;
+    }
+}
+
+async fn replace_remote_file(
+    sftp: &SftpSession,
+    remote: &str,
+    temp: &str,
+    backup: &str,
+) -> Result<()> {
+    match sftp.rename(temp, remote).await {
+        Ok(()) => return Ok(()),
+        Err(direct_error) => {
+            if !sftp.try_exists(temp).await.unwrap_or(false) {
+                tracing::warn!(
+                    "SFTP rename reported an error after temporary file disappeared; verifying target: {direct_error}"
+                );
+                return Ok(());
+            }
+        }
+    }
+
+    sftp.rename(remote, backup)
+        .await
+        .with_context(|| format!("move original {remote} to recovery backup {backup}"))?;
+    if let Err(replace_error) = sftp.rename(temp, remote).await {
+        let rollback = sftp.rename(backup, remote).await;
+        return match rollback {
+            Ok(()) => Err(anyhow!(
+                "replace remote {remote} failed and original file was restored: {replace_error}"
+            )),
+            Err(rollback_error) => Err(anyhow!(
+                "replace remote {remote} failed ({replace_error}); recovery backup remains at {backup} because rollback failed ({rollback_error})"
+            )),
+        };
+    }
+
+    if let Err(error) = sftp.remove_file(backup).await {
+        tracing::warn!("failed to remove SFTP save backup {backup}: {error}");
+    }
+    Ok(())
+}
+
+pub(super) async fn save_remote_text_file(
+    sftp: &SftpSession,
+    save: RemoteTextSave,
+) -> Result<SaveRemoteTextOutcome> {
+    let current = read_remote_text_file(sftp, &save.remote_path).await?;
+    if !save.force && !save.expected_revision.same_content(&current.revision) {
+        return Ok(SaveRemoteTextOutcome::Conflict(current));
+    }
+
+    let bytes = encode_remote_text(&save.content, save.format);
+    if bytes.len() as u64 > EDITOR_HARD_LIMIT_BYTES {
+        return Err(anyhow!(
+            "edited file is too large to save ({} bytes, max {} bytes)",
+            bytes.len(),
+            EDITOR_HARD_LIMIT_BYTES
+        ));
+    }
+
+    let suffix = Uuid::new_v4();
+    let temp = format!("{}.tiny-shell-save-{suffix}.tmp", save.remote_path);
+    let backup = format!("{}.tiny-shell-save-{suffix}.bak", save.remote_path);
+    if let Err(error) =
+        write_remote_temp_file(sftp, &temp, &bytes, current.revision.permissions).await
+    {
+        remove_remote_file_if_present(sftp, &temp).await;
+        return Err(error);
+    }
+
+    let before_replace = match read_remote_text_file(sftp, &save.remote_path).await {
+        Ok(file) => file,
+        Err(error) => {
+            remove_remote_file_if_present(sftp, &temp).await;
+            return Err(error);
+        }
+    };
+    if !save.force
+        && !save
+            .expected_revision
+            .same_content(&before_replace.revision)
+    {
+        remove_remote_file_if_present(sftp, &temp).await;
+        return Ok(SaveRemoteTextOutcome::Conflict(before_replace));
+    }
+
+    if let Err(error) = replace_remote_file(sftp, &save.remote_path, &temp, &backup).await {
+        remove_remote_file_if_present(sftp, &temp).await;
+        return Err(error);
+    }
+
+    let saved = read_remote_text_file(sftp, &save.remote_path).await?;
+    let expected_saved =
+        RemoteFileRevision::from_bytes(&bytes, saved.revision.modified, saved.revision.permissions);
+    if !expected_saved.same_content(&saved.revision) {
+        return Err(anyhow!(
+            "remote save verification failed for {}",
+            save.remote_path
+        ));
+    }
+    Ok(SaveRemoteTextOutcome::Saved(saved.revision))
 }
 
 #[cfg(test)]
