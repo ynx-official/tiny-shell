@@ -7,6 +7,7 @@
 #include <freerdp/input.h>
 #include <freerdp/settings.h>
 #include <winpr/crt.h>
+#include <winpr/interlocked.h>
 #include <winpr/synch.h>
 
 #include <stdio.h>

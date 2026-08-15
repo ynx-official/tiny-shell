@@ -17,7 +17,7 @@ use anyhow::{Context, Result, anyhow};
 use rust_i18n::t;
 use tokio::sync::mpsc;
 
-use super::{
+use super::remote_desktop::{
     CertificateDecision, CertificateDecisionKind, CertificateRequest, DecodedFrame, FrameMailbox,
     FrameSize, is_certificate_trusted, remember_certificate,
 };
