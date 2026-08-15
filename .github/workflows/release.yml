@@ -60,7 +60,7 @@ jobs:
             target: x86_64-unknown-linux-gnu
             name: linux-x86_64
             bin: tiny-shell
-          - os: macos-15 # Apple Silicon
+          - os: macos-14 # Apple Silicon; keep the Sonoma deployment baseline.
             target: aarch64-apple-darwin
             name: macos-aarch64
             bin: tiny-shell
@@ -111,6 +111,7 @@ jobs:
           set -euo pipefail
           brew install freerdp dylibbundler
           FREERDP_PREFIX="$(brew --prefix freerdp)"
+          echo "MACOSX_DEPLOYMENT_TARGET=14.0" >> "$GITHUB_ENV"
           echo "TINY_SHELL_FREERDP_INCLUDE_DIRS=${FREERDP_PREFIX}/include/freerdp3:${FREERDP_PREFIX}/include/winpr3" >> "$GITHUB_ENV"
           echo "TINY_SHELL_FREERDP_LIB_DIR=${FREERDP_PREFIX}/lib" >> "$GITHUB_ENV"
 
