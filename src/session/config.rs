@@ -21,7 +21,7 @@ pub use crate::session::config_file::{
 pub(crate) use crate::session::crypto::hardware_uuid;
 pub use crate::session::proxy::{ENV_PROXY, EnvProxy, active_proxy, connect_proxy};
 pub use crate::session::session_types::{
-    AuthMethod, DeletedConnectionGroup, DeletedSession, ManagedKey, QuickCommand,
+    AuthMethod, ConnectionType, DeletedConnectionGroup, DeletedSession, ManagedKey, QuickCommand,
     QuickCommandCategory, Session, SftpFooterVisibility, SftpToolbarVisibility,
 };
 

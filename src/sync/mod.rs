@@ -1178,6 +1178,7 @@ mod tests {
         Session {
             id: Uuid::new_v4().to_string(),
             name: format!("{user}@{host}"),
+            connection_type: crate::session::config::ConnectionType::Ssh,
             host: host.to_string(),
             port: 22,
             user: user.to_string(),

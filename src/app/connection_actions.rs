@@ -4,12 +4,19 @@ use uuid::Uuid;
 
 use crate::{
     PaneLayout, TabGroup, TinyShell,
-    backend::{local, ssh},
-    session::config::{AuthMethod, Session},
+    backend::{local, remote_desktop, ssh},
+    session::config::{AuthMethod, ConnectionType, Session},
     terminal::{BackendCommand, TerminalTab},
 };
 
 impl TinyShell {
+    pub(crate) fn open_connection_session(&mut self, session: Session, cx: &mut Context<Self>) {
+        match session.connection_type {
+            ConnectionType::Ssh => self.open_ssh_session(session, cx),
+            ConnectionType::Rdp => self.open_rdp_session(session, cx),
+        }
+    }
+
     pub(crate) fn edit_saved_session(
         &mut self,
         session_id: String,
@@ -193,7 +200,7 @@ impl TinyShell {
             });
             return;
         }
-        self.open_ssh_session(session, cx);
+        self.open_connection_session(session, cx);
     }
 
     pub(crate) fn open_ssh_session(&mut self, mut session: Session, cx: &mut Context<Self>) {
@@ -312,8 +319,67 @@ impl TinyShell {
         cx.notify();
     }
 
+    pub(crate) fn open_rdp_session(&mut self, mut session: Session, cx: &mut Context<Self>) {
+        self.set_active_system_info_tab(None);
+        self.home_page_open = false;
+        let ordinal = self.allocate_tab_group_ordinal();
+        tracing::info!(
+            "[session] opening RDP tab for session '{}' ({}@{})",
+            session.name,
+            session.user,
+            session.host
+        );
+
+        let last_used = chrono::Local::now().to_rfc3339();
+        session.last_used = Some(last_used.clone());
+        if let Some(mut saved_session) = self.config.get(&session.id).cloned() {
+            saved_session.last_used = Some(last_used);
+            let mut staged = self.config.clone();
+            staged.upsert(saved_session);
+            self.commit_staged_config_async(
+                staged,
+                |_, _| {},
+                |_, error, _| tracing::warn!("failed to save RDP session recency: {error:#}"),
+                cx,
+            );
+        }
+
+        let id = Uuid::new_v4().to_string();
+        let events = self.backend_events_sender(cx);
+        self.register_backend_route(id.clone(), cx);
+        let (backend, mailbox) = remote_desktop::spawn_remote_desktop_terminal(
+            self.runtime.handle(),
+            remote_desktop::RemoteDesktopRequest::new(
+                id.clone(),
+                session.clone(),
+                remote_desktop::DEFAULT_REMOTE_DESKTOP_WIDTH,
+                remote_desktop::DEFAULT_REMOTE_DESKTOP_HEIGHT,
+                1,
+            ),
+            events.clone(),
+        );
+        let tab = TerminalTab::new_rdp(id.clone(), &session, backend, events.clone(), mailbox);
+        let group = TabGroup {
+            id: Uuid::new_v4().to_string(),
+            drag_id: crate::app::next_tab_drag_id(),
+            ordinal,
+            title: session.name.clone(),
+            pane_root: PaneLayout::Single(id.clone()),
+            sftp: None,
+        };
+        self.install_terminal_tab(tab, group);
+        if let Some(tab) = self.terminal_tab_mut(&id) {
+            tab.feed_status_line(&rust_i18n::t!("starting_connection"));
+        }
+        self.tabs_scroll_handle
+            .scroll_to_item(self.terminal_tab_count() - 1);
+        self.status = t!("rdp_tab_opened").into();
+        cx.notify();
+    }
+
     /// Retry a single disconnected tab by its ID.
-    /// For SSH tabs: spawns a new SSH connection and restarts SFTP.
+    /// For SSH tabs: spawns a new SSH connection and restarts SFTP. RDP tabs
+    /// use the remote-desktop worker boundary and do not create an SFTP tab.
     /// For local tabs: spawns a new local shell.
     ///
     /// The existing `TerminalTab` (including its `term` scrollback history)
@@ -337,9 +403,8 @@ impl TinyShell {
         }
         self.terminal_completions.remove(tab_id);
 
-        let is_ssh = self.window_state_mut().workspace_state_mut().tabs_mut()[ix]
-            .session
-            .is_some();
+        let tab_kind = self.window_state_mut().workspace_state_mut().tabs_mut()[ix].kind;
+        let is_ssh = tab_kind == crate::terminal::TabKind::Ssh;
         let session = self.window_state_mut().workspace_state_mut().tabs_mut()[ix]
             .session
             .clone();
@@ -357,6 +422,34 @@ impl TinyShell {
             .send_backend(BackendCommand::Close);
 
         if let Some(session) = session {
+            if tab_kind == crate::terminal::TabKind::Rdp
+                || session.connection_type == ConnectionType::Rdp
+            {
+                let (backend, mailbox) = remote_desktop::spawn_remote_desktop_terminal(
+                    self.runtime.handle(),
+                    remote_desktop::RemoteDesktopRequest::new(
+                        tab_id.to_string(),
+                        session,
+                        remote_desktop::DEFAULT_REMOTE_DESKTOP_WIDTH,
+                        remote_desktop::DEFAULT_REMOTE_DESKTOP_HEIGHT,
+                        new_generation,
+                    ),
+                    events,
+                );
+                let tab = &mut self.window_state_mut().workspace_state_mut().tabs_mut()[ix];
+                tab.set_backend(backend);
+                tab.remote_desktop_mailbox = Some(mailbox);
+                tab.connected = false;
+                tab.status =
+                    t!("starting_connection").to_string();
+                tab.disconnected_reason = None;
+                tab.backend_generation = new_generation;
+                tab.feed_status_line(&rust_i18n::t!("starting_connection"));
+                self.status = t!("rdp_tab_retrying").into();
+                cx.notify();
+                return;
+            }
+
             // SSH tab: spawn new SSH connection
             let backend = ssh::spawn_ssh_terminal(
                 self.runtime.handle(),

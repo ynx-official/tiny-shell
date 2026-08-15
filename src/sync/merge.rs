@@ -893,6 +893,7 @@ fn session_from_remote(
     Session {
         id,
         name: remote.name,
+        connection_type: remote.connection_type,
         host: remote.host,
         port: remote.port,
         user: remote.user,
@@ -1217,6 +1218,7 @@ mod tests {
         Session {
             id: id.into(),
             name: name.into(),
+            connection_type: crate::session::config::ConnectionType::Ssh,
             host: "example.test".into(),
             port: 22,
             user: "alice".into(),

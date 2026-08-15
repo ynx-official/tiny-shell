@@ -236,6 +236,17 @@ impl TinyShell {
                                 (session.name.clone(), address)
                             },
                         ),
+                        TabKind::Rdp => tab.session.as_ref().map_or_else(
+                            || (tab.title.clone(), String::new()),
+                            |session| {
+                                let address = if session.port == 3389 {
+                                    session.host.clone()
+                                } else {
+                                    format!("{}:{}", session.host, session.port)
+                                };
+                                (session.name.clone(), address)
+                            },
+                        ),
                     };
                     (
                         tab.id.clone(),

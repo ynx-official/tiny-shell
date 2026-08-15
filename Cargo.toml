@@ -7,6 +7,10 @@ description = "A modern, fast, GPUI Component-based desktop terminal client"
 license = "GPL-3.0-or-later"
 rust-version = "1.85.0"
 
+[features]
+default = []
+freerdp = []
+
 [dependencies]
 anyhow = "1"
 tokio-socks = "0.5"
@@ -96,6 +100,7 @@ incremental = true
 opt-level = 1
 
 [build-dependencies]
+cc = "1.2.63"
 winres = "0.1.12"
 
 [patch.crates-io]

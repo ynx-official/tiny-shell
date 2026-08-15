@@ -1980,6 +1980,9 @@ impl TinyShell {
                 BackendEvent::Output { tab_id, bytes } => {
                     self.handle_terminal_output(tab_id, bytes, cx);
                 }
+                BackendEvent::RemoteDesktopFrameReady { tab_id, .. } => {
+                    self.handle_remote_desktop_frame_ready(tab_id, cx);
+                }
                 BackendEvent::Status { tab_id, text } => {
                     self.handle_terminal_status(tab_id, text, cx);
                 }
@@ -2108,6 +2111,16 @@ impl TinyShell {
             tab.status = text.clone();
         }
         self.status = text.into();
+    }
+
+    fn handle_remote_desktop_frame_ready(&mut self, tab_id: String, cx: &mut Context<Self>) {
+        if self
+            .workspace()
+            .active_tab_id()
+            .is_some_and(|active_id| active_id == tab_id.as_str())
+        {
+            cx.notify();
+        }
     }
 
     fn handle_terminal_connected(&mut self, tab_id: String, _cx: &mut Context<Self>) {

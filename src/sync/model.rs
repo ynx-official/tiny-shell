@@ -16,7 +16,9 @@ use uuid::Uuid;
 use crate::session::config::QuickCommandCategory;
 use crate::{
     crypto,
-    session::config::{AuthMethod, DeletedConnectionGroup, DeletedSession, ManagedKey, Session},
+    session::config::{
+        AuthMethod, ConnectionType, DeletedConnectionGroup, DeletedSession, ManagedKey, Session,
+    },
 };
 
 #[cfg(test)]
@@ -58,6 +60,8 @@ impl SyncSecret {
 pub struct SyncSession {
     pub id: String,
     pub name: String,
+    #[serde(default)]
+    pub connection_type: ConnectionType,
     pub host: String,
     pub port: u16,
     pub user: String,
@@ -81,6 +85,7 @@ impl SyncSession {
         Ok(Self {
             id: session.id,
             name: session.name,
+            connection_type: session.connection_type,
             host: session.host,
             port: session.port,
             user: session.user,
@@ -109,6 +114,7 @@ impl SyncSession {
         Self {
             id: session.id,
             name: session.name,
+            connection_type: session.connection_type,
             host: session.host,
             port: session.port,
             user: session.user,
@@ -506,6 +512,7 @@ mod tests {
         Session {
             id: "session-1".into(),
             name: "Production".into(),
+            connection_type: ConnectionType::Ssh,
             host: "example.test".into(),
             port: 22,
             user: "alice".into(),

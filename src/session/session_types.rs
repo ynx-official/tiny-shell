@@ -78,6 +78,18 @@ pub enum AuthMethod {
     Config,
 }
 
+/// Protocol used by a saved connection.
+///
+/// Existing configuration files do not contain this field, so the serde
+/// default keeps all previously saved sessions as SSH connections.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ConnectionType {
+    #[default]
+    Ssh,
+    Rdp,
+}
+
 /// A user-imported SSH private key managed by tiny-shell.
 ///
 /// The key file content is copied into `inline_content` at import time,
@@ -124,6 +136,8 @@ impl fmt::Debug for ManagedKey {
 pub struct Session {
     pub id: String,
     pub name: String,
+    #[serde(default)]
+    pub connection_type: ConnectionType,
     pub host: String,
     pub port: u16,
     pub user: String,
@@ -216,6 +230,7 @@ impl Session {
         Self {
             id: Uuid::new_v4().to_string(),
             name,
+            connection_type: ConnectionType::Ssh,
             host,
             port,
             user,
@@ -247,6 +262,7 @@ impl Session {
         Self {
             id: Uuid::new_v4().to_string(),
             name,
+            connection_type: ConnectionType::Ssh,
             host,
             port,
             user,
@@ -265,6 +281,15 @@ impl Session {
             proxy_password: String::new(),
         }
     }
+
+    /// Build a Windows Remote Desktop connection using password credentials.
+    /// RDP-specific options are intentionally added in a later migration so
+    /// the first schema change remains backward-compatible with SSH sessions.
+    pub fn rdp(host: String, port: u16, user: String, password: String) -> Self {
+        let mut session = Self::password(host, port, user, password);
+        session.connection_type = ConnectionType::Rdp;
+        session
+    }
 }
 
 impl fmt::Debug for Session {
@@ -273,6 +298,7 @@ impl fmt::Debug for Session {
             .debug_struct("Session")
             .field("id", &self.id)
             .field("name", &self.name)
+            .field("connection_type", &self.connection_type)
             .field("host", &self.host)
             .field("port", &self.port)
             .field("user", &self.user)
@@ -354,6 +380,47 @@ mod tests {
         let mut pending_key = default_key;
         pending_key.auth = AuthMethod::KeyPending;
         assert!(pending_key.requires_credential_prompt());
+    }
+
+    #[test]
+    fn legacy_session_json_defaults_to_ssh() {
+        let session: Session = serde_json::from_str(
+            r#"{
+                "id":"legacy",
+                "name":"legacy",
+                "host":"example.test",
+                "port":22,
+                "user":"alice",
+                "auth":"password",
+                "password":"",
+                "private_key_path":"",
+                "private_key_inline":"",
+                "passphrase":"",
+                "managed_key_id":null,
+                "last_used":null,
+                "group":null,
+                "proxy_type":"none",
+                "proxy_host":"",
+                "proxy_port":null,
+                "proxy_user":"",
+                "proxy_password":""
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(session.connection_type, ConnectionType::Ssh);
+    }
+
+    #[test]
+    fn rdp_constructor_marks_the_protocol() {
+        let session = Session::rdp(
+            "windows.example.test".into(),
+            3389,
+            "alice".into(),
+            String::new(),
+        );
+
+        assert_eq!(session.connection_type, ConnectionType::Rdp);
     }
 
     #[test]

@@ -1,7 +1,7 @@
 use anyhow::{Result, bail};
 use uuid::Uuid;
 
-use super::config::Session;
+use super::config::{ConnectionType, Session};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ConnectionSortKey {
@@ -180,32 +180,44 @@ pub(crate) fn copy_connection_group(
 }
 
 pub(crate) fn session_address(session: &Session) -> String {
-    format!("ssh://{}@{}:{}", session.user, session.host, session.port)
+    let scheme = match session.connection_type {
+        ConnectionType::Ssh => "ssh",
+        ConnectionType::Rdp => "rdp",
+    };
+    format!("{scheme}://{}@{}:{}", session.user, session.host, session.port)
 }
 
 pub(crate) fn parse_session_address(address: &str) -> Result<Session> {
-    let value = address.strip_prefix("ssh://").unwrap_or(address);
+    let (connection_type, value) = if let Some(value) = address.strip_prefix("rdp://") {
+        (ConnectionType::Rdp, value)
+    } else if let Some(value) = address.strip_prefix("ssh://") {
+        (ConnectionType::Ssh, value)
+    } else {
+        (ConnectionType::Ssh, address)
+    };
     let Some((user, host_port)) = value.split_once('@') else {
-        bail!("SSH address must contain a user");
+        bail!("connection address must contain a user");
     };
     if user.is_empty() {
-        bail!("SSH address user cannot be empty");
+        bail!("connection address user cannot be empty");
     }
     let Some((host, port)) = host_port.rsplit_once(':') else {
-        bail!("SSH address must contain a port");
+        bail!("connection address must contain a port");
     };
     let port = port
         .parse::<u16>()
-        .map_err(|_| anyhow::anyhow!("invalid SSH port"))?;
+        .map_err(|_| anyhow::anyhow!("invalid connection port"))?;
     if host.is_empty() || port == 0 {
-        bail!("SSH address host or port is invalid");
+        bail!("connection address host or port is invalid");
     }
-    Ok(Session::password(
+    let mut session = Session::password(
         host.to_string(),
         port,
         user.to_string(),
         String::new(),
-    ))
+    );
+    session.connection_type = connection_type;
+    Ok(session)
 }
 
 fn unique_group_name(existing: &[String], requested: &str) -> String {
@@ -267,6 +279,21 @@ mod tests {
                 .get(&copied_id)
                 .is_some_and(|item| item.group.is_none())
         );
+    }
+
+    #[test]
+    fn session_address_round_trips_rdp_connections() {
+        let source = Session::rdp(
+            "windows.example.test".to_string(),
+            3389,
+            "alice".to_string(),
+            String::new(),
+        );
+        let restored = parse_session_address(&session_address(&source)).unwrap();
+        assert_eq!(restored.connection_type, ConnectionType::Rdp);
+        assert_eq!(restored.host, source.host);
+        assert_eq!(restored.port, source.port);
+        assert_eq!(restored.user, source.user);
     }
 
     #[test]

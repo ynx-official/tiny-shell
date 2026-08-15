@@ -1228,6 +1228,69 @@ impl TinyShell {
                 let Some(snapshot) = snapshot else {
                     return div().into_any_element();
                 };
+                if let Some(tab) = this.workspace().terminal_tab(tab_id)
+                    && tab.kind == TabKind::Rdp
+                {
+                    let stats = tab
+                        .remote_desktop_mailbox
+                        .as_ref()
+                        .map(|mailbox| (mailbox.stats(), mailbox.latest_metadata()));
+                    let status = tab.status.clone();
+                    let connected = tab.connected;
+                    let background = cx.theme().background;
+                    let foreground = cx.theme().foreground;
+                    let muted = cx.theme().muted_foreground;
+                    let accent = cx.theme().primary;
+                    let frame_text = stats
+                        .and_then(|(stats, metadata)| metadata.map(|(seq, size)| (stats, seq, size)))
+                        .map(|(stats, sequence, size)| {
+                            format!(
+                                "{}×{} · frame #{sequence} · {} published / {} replaced",
+                                size.width, size.height, stats.published, stats.replaced
+                            )
+                        })
+                        .unwrap_or_else(|| t!("rdp_waiting_for_frame").to_string());
+                    return div()
+                        .size_full()
+                        .bg(background)
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener({
+                                let tab_id = tab_id.clone();
+                                move |this, _, _, cx| {
+                                    this.focus_pane_with_id(tab_id.clone());
+                                    cx.notify();
+                                }
+                            }),
+                        )
+                        .child(
+                            v_flex()
+                                .size_full()
+                                .items_center()
+                                .justify_center()
+                                .gap_2()
+                                .text_color(foreground)
+                                .child(
+                                    gpui::div()
+                                        .text_size(rems(1.1))
+                                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                                        .child(t!("rdp_surface_title").to_string()),
+                                )
+                                .child(
+                                    gpui::div()
+                                        .text_color(if connected { accent } else { muted })
+                                        .child(status),
+                                )
+                                .child(gpui::div().text_color(muted).child(frame_text))
+                                .child(
+                                    gpui::div()
+                                        .text_color(muted)
+                                        .text_size(rems(0.78))
+                                        .child(t!("rdp_surface_pending").to_string()),
+                                ),
+                        )
+                        .into_any_element();
+                }
                 let completion_cursor = snapshot.cursor;
                 let tab_id_clone2 = tab_id.clone();
                 let focus_handle = this.focus_handle.clone();
@@ -1998,7 +2061,7 @@ impl TinyShell {
                     .disabled(duplicate_session.is_none())
                     .on_click(window.listener_for(&view, move |this, _, _, cx| {
                         if let Some(session) = duplicate_session.clone() {
-                            this.open_ssh_session(session, cx);
+                            this.open_connection_session(session, cx);
                         }
                     })),
             )

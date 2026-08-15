@@ -16,7 +16,7 @@ use rust_i18n::t;
 use crate::{
     TinyShell,
     session::{
-        config::{AuthMethod, Session},
+        config::{AuthMethod, ConnectionType, Session},
         ssh_config::SshConfigEntry,
     },
 };
@@ -61,6 +61,7 @@ pub(crate) struct SshEditorWindow {
     editing_id: Option<String>,
     baseline: Option<Session>,
     page: SshEditorPage,
+    connection_type: ConnectionType,
     auth: AuthMethod,
     group: Option<String>,
     proxy_type: String,
@@ -125,6 +126,17 @@ impl SshEditorWindow {
                 AuthMethod::Config => AuthMethod::Config,
                 AuthMethod::Key | AuthMethod::KeyPending => AuthMethod::Key,
             });
+        let connection_type = session
+            .as_ref()
+            .map_or(ConnectionType::Ssh, |item| item.connection_type);
+        // FreeRDP currently supports password authentication only. Reset a
+        // cloned/edited SSH key mode when the record is an RDP connection so
+        // the editor cannot persist an authentication mode the backend ignores.
+        let auth = if connection_type == ConnectionType::Rdp {
+            AuthMethod::Password
+        } else {
+            auth
+        };
         let proxy_type = session
             .as_ref()
             .map(|item| item.proxy_type.clone())
@@ -266,6 +278,7 @@ impl SshEditorWindow {
             editing_id,
             baseline,
             page: SshEditorPage::Connection,
+            connection_type,
             auth,
             group,
             proxy_type,
@@ -311,6 +324,9 @@ impl SshEditorWindow {
             }
             Some(proxy_port)
         };
+        if self.connection_type == ConnectionType::Rdp && self.proxy_type != "none" {
+            anyhow::bail!(t!("rdp_proxy_not_supported").to_string());
+        }
         let managed_key_available = self.managed_key_id.as_ref().is_some_and(|selected| {
             self.owner
                 .read(cx)
@@ -351,6 +367,7 @@ impl SshEditorWindow {
                 session
             }
         };
+        session.connection_type = self.connection_type;
         let name = Self::input_value(&self.inputs.name, cx).trim().to_string();
         session.name = if name.is_empty() { host } else { name };
         if let Some(id) = &self.editing_id {
@@ -405,7 +422,7 @@ impl SshEditorWindow {
                 window,
                 move |owner, window, cx| {
                     if editing_id.is_none() || connect_after_save {
-                        owner.open_ssh_session(session, cx);
+                        owner.open_connection_session(session, cx);
                     }
                     cx.notify();
                     crate::feedback::Feedback::show_for_owner(
@@ -523,6 +540,10 @@ impl Render for SshEditorWindow {
             AuthMethod::Config => t!("ssh_config").to_string(),
             AuthMethod::Key | AuthMethod::KeyPending => t!("ssh_editor_key_label").to_string(),
         };
+        let connection_type_label = match self.connection_type {
+            ConnectionType::Ssh => "SSH / SFTP",
+            ConnectionType::Rdp => "Windows 远程桌面 (RDP)",
+        };
         let ssh_config_label = self
             .ssh_config_selected
             .and_then(|index| self.ssh_config_entries.get(index))
@@ -578,10 +599,36 @@ impl Render for SshEditorWindow {
                             .child(
                                 Button::new("ssh-editor-type")
                                     .flex_1()
-                                    .label("SSH / SFTP")
+                                    .label(connection_type_label)
                                     .dropdown_caret(true)
-                                    .dropdown_menu(|menu, _, _| {
-                                        menu.item(PopupMenuItem::new("SSH / SFTP").checked(true))
+                                    .dropdown_menu({
+                                        let editor = editor.clone();
+                                        move |menu, window, _| {
+                                            menu.item(
+                                                PopupMenuItem::new("SSH / SFTP")
+                                                    .checked(connection_type == ConnectionType::Ssh)
+                                                    .on_click(window.listener_for(
+                                                        &editor,
+                                                        |this, _, _, cx| {
+                                                            this.connection_type = ConnectionType::Ssh;
+                                                            cx.notify();
+                                                        },
+                                                    )),
+                                            )
+                                            .item(
+                                                PopupMenuItem::new("Windows 远程桌面 (RDP)")
+                                                    .checked(connection_type == ConnectionType::Rdp)
+                                                    .on_click(window.listener_for(
+                                                        &editor,
+                                                        |this, _, _, cx| {
+                                                            this.connection_type = ConnectionType::Rdp;
+                                                            this.auth = AuthMethod::Password;
+                                                            this.proxy_type = "none".to_string();
+                                                            cx.notify();
+                                                        },
+                                                    )),
+                                            )
+                                        }
                                     }),
                             ),
                     )
@@ -672,6 +719,7 @@ impl Render for SshEditorWindow {
                     .child(Input::new(&self.inputs.port).w(px(160.))),
             );
 
+        let is_rdp = self.connection_type == ConnectionType::Rdp;
         let auth_method = Button::new("ssh-editor-auth-method")
             .w(px(190.))
             .label(auth_label)
@@ -679,15 +727,18 @@ impl Render for SshEditorWindow {
             .dropdown_menu({
                 let editor = editor.clone();
                 move |menu, window, _| {
-                    menu.item(
+                    let menu = menu.item(
                         PopupMenuItem::new(t!("ssh_editor_password_label").to_string()).on_click(
                             window.listener_for(&editor, |this, _, _, cx| {
                                 this.auth = AuthMethod::Password;
                                 cx.notify();
                             }),
                         ),
-                    )
-                    .item(
+                    );
+                    if is_rdp {
+                        return menu;
+                    }
+                    menu.item(
                         PopupMenuItem::new(t!("ssh_editor_key_label").to_string()).on_click(
                             window.listener_for(&editor, |this, _, _, cx| {
                                 this.auth = AuthMethod::Key;
@@ -1090,6 +1141,7 @@ impl Render for SshEditorWindow {
 fn same_session_revision(left: &Session, right: &Session) -> bool {
     left.id == right.id
         && left.name == right.name
+        && left.connection_type == right.connection_type
         && left.host == right.host
         && left.port == right.port
         && left.user == right.user

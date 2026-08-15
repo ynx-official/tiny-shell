@@ -544,7 +544,7 @@ fn open_window_with_options(
         config_repository,
         move |view, cx| {
             if let Some(session) = session {
-                view.update(cx, |this, cx| this.open_ssh_session(session, cx));
+                view.update(cx, |this, cx| this.open_connection_session(session, cx));
             }
             true
         },

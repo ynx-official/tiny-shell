@@ -25,6 +25,7 @@ use alacritty_terminal::{
 };
 use gpui::Keystroke;
 
+use crate::backend::remote_desktop::FrameMailbox;
 use crate::session::config::Session;
 use crate::sftp::{
     RemoteEntry,
@@ -38,6 +39,7 @@ type HighlightCache = Option<(u64, Arc<HashMap<(i32, i32), gpui::Hsla>>)>;
 pub(crate) enum TabKind {
     Local,
     Ssh,
+    Rdp,
 }
 
 #[derive(Debug)]
@@ -73,6 +75,10 @@ pub(crate) enum BackendEvent {
     Output {
         tab_id: String,
         bytes: Vec<u8>,
+    },
+    RemoteDesktopFrameReady {
+        tab_id: String,
+        sequence: u64,
     },
     Status {
         tab_id: String,
@@ -168,6 +174,7 @@ impl BackendEvent {
     pub(crate) fn tab_id(&self) -> Option<&str> {
         match self {
             Self::Output { tab_id, .. }
+            | Self::RemoteDesktopFrameReady { tab_id, .. }
             | Self::Status { tab_id, .. }
             | Self::Connected { tab_id }
             | Self::SftpEntries { tab_id, .. }
@@ -626,6 +633,12 @@ pub(crate) enum BackendTx {
         close: tokio::sync::watch::Sender<bool>,
         resize: tokio::sync::watch::Sender<Option<(u16, u16)>>,
     },
+    Rdp {
+        commands: tokio::sync::mpsc::Sender<BackendCommand>,
+        close: tokio::sync::watch::Sender<bool>,
+        resize: tokio::sync::watch::Sender<Option<(u16, u16)>>,
+        stop_requested: Arc<AtomicBool>,
+    },
 }
 
 pub(crate) const BACKEND_COMMAND_QUEUE_CAPACITY: usize = 1_024;
@@ -651,6 +664,18 @@ impl BackendTx {
                 resize.send(Some((cols, rows))).is_ok()
             }
             (Self::Ssh { commands, .. }, command) => commands.try_send(command).is_ok(),
+            (Self::Rdp {
+                close,
+                stop_requested,
+                ..
+            }, BackendCommand::Close) => {
+                stop_requested.store(true, Ordering::Release);
+                close.send(true).is_ok()
+            }
+            (Self::Rdp { resize, .. }, BackendCommand::Resize { cols, rows }) => {
+                resize.send(Some((cols, rows))).is_ok()
+            }
+            (Self::Rdp { commands, .. }, command) => commands.try_send(command).is_ok(),
         };
         if !sent {
             let rejected = REJECTED_BACKEND_COMMANDS.fetch_add(1, Ordering::Relaxed) + 1;
@@ -684,6 +709,9 @@ pub(crate) struct TerminalTab {
     pub cols: u16,
     pub rows: u16,
     pub backend: std::sync::Arc<std::sync::Mutex<BackendTx>>,
+    /// Latest decoded RDP frame. The renderer consumes this mailbox without
+    /// placing frame-sized buffers on the generic backend event queue.
+    pub(crate) remote_desktop_mailbox: Option<Arc<FrameMailbox>>,
     pub scroll_pixel_y: f32,
     pub(crate) highlight_cache: std::cell::RefCell<HighlightCache>,
     render_revision: u64,
@@ -815,6 +843,30 @@ impl TerminalTab {
         tab
     }
 
+    pub fn new_rdp(
+        id: String,
+        session: &Session,
+        backend: BackendTx,
+        events: BackendEventSender,
+        mailbox: Arc<FrameMailbox>,
+    ) -> Self {
+        let mut tab = Self::new(
+            id,
+            session.name.clone(),
+            TabKind::Rdp,
+            format!(
+                "connecting RDP {}@{}:{}",
+                session.user, session.host, session.port
+            ),
+            backend,
+            events,
+        );
+        tab.session = Some(session.clone());
+        tab.connected = false;
+        tab.remote_desktop_mailbox = Some(mailbox);
+        tab
+    }
+
     fn new(
         id: String,
         title: String,
@@ -850,6 +902,7 @@ impl TerminalTab {
             cols: 100,
             rows: 30,
             backend: shared_backend,
+            remote_desktop_mailbox: None,
             scroll_pixel_y: 0.0,
             highlight_cache: std::cell::RefCell::new(None),
             render_revision: 0,

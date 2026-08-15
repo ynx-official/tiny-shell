@@ -1004,6 +1004,11 @@ impl TinyShell {
                 self.sftp_handles.insert(new_id.clone(), sftp_handle);
                 TerminalTab::new_ssh(new_id.clone(), &session, backend, events)
             }
+            TabKind::Rdp => {
+                self.status = t!("rdp_split_not_supported").into();
+                cx.notify();
+                return;
+            }
         };
         tab.resize(DEFAULT_COLS, DEFAULT_ROWS);
         // Do NOT add to tab_groups — pane stays within the existing group

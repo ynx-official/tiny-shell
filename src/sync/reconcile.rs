@@ -476,6 +476,7 @@ mod tests {
         Session {
             id: id.into(),
             name: name.into(),
+            connection_type: crate::session::config::ConnectionType::Ssh,
             host: format!("{id}.example.test"),
             port: 22,
             user: "alice".into(),
