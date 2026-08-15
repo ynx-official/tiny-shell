@@ -4,6 +4,20 @@
 
 完整的升级说明、兼容性、已知问题和验证结果统一维护在 [`docs/upgrade/`](docs/upgrade/README.md)。本文件只作为精简索引，避免与版本详情形成两套重复维护的发布说明。
 
+## [1.5.6] - 2026-08-15
+
+### 修复
+
+- 正式发布构建统一启用 `freerdp` 特性，使安装包中的 RDP 会话实际连接 FreeRDP 原生后端。
+- Windows 便携包和安装器加入 vcpkg FreeRDP DLL；macOS 应用包递归嵌入并重写 Homebrew 动态库；Linux 归档加入 FreeRDP/WinPR 运行库与相对运行路径。
+- macOS Intel 改用原生 Intel runner 构建，避免 Apple Silicon 依赖无法用于 x86_64 目标。
+
+### 兼容性
+
+- RDP 仍需要用户信任服务器证书，并保留 v1.5.5 的输入、重连和会话兼容行为。
+- Linux 构建基线从 Ubuntu 22.04 调整为 Ubuntu 24.04，以使用发行版提供的 FreeRDP 3.x；较旧发行版可能不再满足 glibc 运行要求。
+- 按发布要求跳过所有本地测试、静态检查和构建，本版本发布资料不声明本地质量门禁通过。
+
 ## [1.5.5] - 2026-08-15
 
 ### 新增
@@ -502,6 +516,7 @@
 
 - 首个正式版本，整合本地终端、SSH、SFTP、分屏、监控、主题和跨平台发布能力。
 
+[1.5.6]: docs/upgrade/v1.5.6/README.md
 [1.5.5]: docs/upgrade/v1.5.5/README.md
 [1.5.3]: docs/upgrade/v1.5.3/README.md
 [1.4.3]: docs/upgrade/v1.4.3/README.md
