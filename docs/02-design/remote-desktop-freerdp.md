@@ -6,7 +6,7 @@ TinyShell 的 FreeRDP 接入分成三层：
 2. `native/freerdp/tiny_shell_freerdp.c`：FreeRDP 3.x 客户端上下文、GDI 帧回调和事件循环。
 3. `src/backend/remote_desktop.rs`：Tokio worker、latest-frame mailbox 和后端生命周期。
 
-默认构建不链接 FreeRDP，便于现有 SSH 构建继续工作。启用原生后端时，需要准备 FreeRDP 3.x 的头文件和库：
+默认的本地 Cargo 构建不链接 FreeRDP，便于现有 SSH 开发环境继续工作；GitHub 正式发布流水线会安装 FreeRDP 3.x、启用 `freerdp` 特性，并将运行库放入安装包。自行启用原生后端时，需要准备 FreeRDP 3.x 的头文件和库：
 
 ```bash
 TINY_SHELL_FREERDP_INCLUDE_DIR=/path/to/freerdp/include \

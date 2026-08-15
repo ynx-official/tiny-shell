@@ -56,6 +56,9 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 
 [Files]
 Source: "{#SourceExe}"; DestDir: "{app}"; DestName: "tiny-shell.exe"; Flags: ignoreversion
+#ifdef RuntimeDir
+Source: "{#RuntimeDir}\*.dll"; DestDir: "{app}"; Flags: ignoreversion
+#endif
 
 [Icons]
 Name: "{autoprograms}\TinyShell"; Filename: "{app}\tiny-shell.exe"

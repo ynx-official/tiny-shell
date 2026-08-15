@@ -2,6 +2,7 @@ fn main() {
     println!("cargo:rerun-if-changed=native/freerdp/tiny_shell_freerdp.c");
     println!("cargo:rerun-if-changed=native/freerdp/tiny_shell_freerdp.h");
     println!("cargo:rerun-if-env-changed=TINY_SHELL_FREERDP_INCLUDE_DIR");
+    println!("cargo:rerun-if-env-changed=TINY_SHELL_FREERDP_INCLUDE_DIRS");
     println!("cargo:rerun-if-env-changed=TINY_SHELL_FREERDP_LIB_DIR");
     println!("cargo:rerun-if-env-changed=TINY_SHELL_FREERDP_LIBS");
 
@@ -13,6 +14,11 @@ fn main() {
             .warnings(true);
         if let Some(include_dir) = std::env::var_os("TINY_SHELL_FREERDP_INCLUDE_DIR") {
             build.include(include_dir);
+        }
+        if let Some(include_dirs) = std::env::var_os("TINY_SHELL_FREERDP_INCLUDE_DIRS") {
+            for include_dir in std::env::split_paths(&include_dirs) {
+                build.include(include_dir);
+            }
         }
         build.compile("tiny_shell_freerdp");
 
