@@ -1405,7 +1405,8 @@ impl TinyShell {
                 BackendEvent::Output { tab_id, bytes } => {
                     self.handle_terminal_output(tab_id, bytes, cx);
                 }
-                BackendEvent::RemoteDesktopFrameReady { tab_id, .. } => {
+                BackendEvent::RemoteDesktopFrameReady { tab_id, sequence } => {
+                    let _ = sequence;
                     self.handle_remote_desktop_frame_ready(tab_id, cx);
                 }
                 BackendEvent::Status { tab_id, text } => {
@@ -1414,6 +1415,26 @@ impl TinyShell {
                 BackendEvent::RemoteDesktopCertificateRequest(request) => {
                     self.rdp_certificate_requests
                         .insert(request.tab_id.clone(), *request);
+                }
+                BackendEvent::RemoteDesktopClipboard { tab_id, text } => {
+                    if self.preferred_terminal_tab_id().as_deref() == Some(tab_id.as_str()) {
+                        let current = cx.read_from_clipboard().and_then(|item| item.text());
+                        if current.as_deref() != Some(text.as_str()) {
+                            cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
+                        }
+                    }
+                }
+                BackendEvent::RemoteDesktopClosed {
+                    tab_id,
+                    reason,
+                    retryable,
+                } => {
+                    if let Some(request) = self.rdp_certificate_requests.remove(&tab_id) {
+                        request.decision.reject();
+                    }
+                    if self.handle_terminal_closed(tab_id, reason, retryable, cx) {
+                        continue;
+                    }
                 }
                 BackendEvent::Connected { tab_id } => {
                     self.rdp_reconnect_attempts.remove(&tab_id);
@@ -1426,7 +1447,7 @@ impl TinyShell {
                     if let Some(request) = self.rdp_certificate_requests.remove(&tab_id) {
                         request.decision.reject();
                     }
-                    if self.handle_terminal_closed(tab_id, reason, cx) {
+                    if self.handle_terminal_closed(tab_id, reason, false, cx) {
                         continue;
                     }
                 }
@@ -1600,6 +1621,7 @@ impl TinyShell {
         &mut self,
         tab_id: String,
         reason: String,
+        retryable: bool,
         cx: &mut Context<Self>,
     ) -> bool {
         if self.monitoring.remote_sample_in_flight.as_deref() == Some(tab_id.as_str()) {
@@ -1645,7 +1667,8 @@ impl TinyShell {
         let should_auto_retry = self
             .terminal_tab(&tab_id)
             .is_some_and(|tab| tab.kind == TabKind::Rdp)
-            && !was_manually_disconnected;
+            && !was_manually_disconnected
+            && retryable;
         if should_auto_retry {
             let attempt = self
                 .rdp_reconnect_attempts
@@ -1655,10 +1678,17 @@ impl TinyShell {
                 *attempt += 1;
                 let delay = std::time::Duration::from_millis(500 * u64::from(*attempt));
                 let retry_tab_id = tab_id.clone();
+                let retry_generation = self
+                    .terminal_tab(&tab_id)
+                    .map_or(0, |tab| tab.backend_generation);
                 cx.spawn(async move |this, cx| {
                     cx.background_executor().timer(delay).await;
                     this.update(cx, |this, cx| {
-                        this.retry_disconnected_tab(&retry_tab_id, cx);
+                        this.retry_disconnected_tab_automatically(
+                            &retry_tab_id,
+                            retry_generation,
+                            cx,
+                        );
                     })
                 })
                 .detach();

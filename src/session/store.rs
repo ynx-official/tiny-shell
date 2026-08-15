@@ -532,6 +532,8 @@ fn event_route_id(event: &BackendEventEnvelope) -> Option<&str> {
         | BackendEvent::TransferProgress { tab_id, .. }
         | BackendEvent::TransferStarted { tab_id, .. }
         | BackendEvent::Closed { tab_id, .. }
+        | BackendEvent::RemoteDesktopClipboard { tab_id, .. }
+        | BackendEvent::RemoteDesktopClosed { tab_id, .. }
         | BackendEvent::TerminalTitleChanged { tab_id, .. }
         | BackendEvent::RemoteDesktopFrameReady { tab_id, .. } => Some(tab_id),
         BackendEvent::RemoteDesktopCertificateRequest(request) => Some(&request.tab_id),

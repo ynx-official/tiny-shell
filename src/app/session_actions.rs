@@ -547,7 +547,9 @@ impl TinyShell {
 
         for tab_id in tab_ids {
             if let Some(tab) = self.workspace_state_mut().terminal_tab_mut(&tab_id) {
-                if tab.kind == TabKind::Ssh && tab.connected {
+                if matches!(tab.kind, TabKind::Ssh | TabKind::Rdp)
+                    && tab.disconnected_reason.is_none()
+                {
                     tab.connected = false;
                     tab.status = rust_i18n::t!("tab_manually_disconnected").into();
                     tab.disconnected_reason =
@@ -570,6 +572,11 @@ impl TinyShell {
         }
         self.terminal_completions.remove(&id);
         self.remote_desktop_surfaces.remove(&id);
+        self.terminal_bounds.remove(&id);
+        self.rdp_reconnect_attempts.remove(&id);
+        if let Some(request) = self.rdp_certificate_requests.remove(&id) {
+            request.decision.reject();
+        }
 
         let active_info_id = self
             .workspace()

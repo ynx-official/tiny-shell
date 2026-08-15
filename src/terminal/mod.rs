@@ -57,7 +57,7 @@ pub(crate) enum BackendCommand {
     #[cfg_attr(not(feature = "freerdp"), allow(dead_code))]
     RemoteDesktopInput(RemoteDesktopInput),
     #[cfg_attr(not(feature = "freerdp"), allow(dead_code))]
-    RemoteDesktopText(String),
+    RemoteDesktopClipboard(String),
     SampleMetrics,
     Docker(crate::docker::DockerRequest),
     Close,
@@ -70,7 +70,7 @@ impl BackendCommand {
             Self::Resize { .. } => "resize",
             Self::RemoteDesktopResize { .. } => "remote-desktop-resize",
             Self::RemoteDesktopInput(_) => "remote-desktop-input",
-            Self::RemoteDesktopText(_) => "remote-desktop-text",
+            Self::RemoteDesktopClipboard(_) => "remote-desktop-clipboard",
             Self::SampleMetrics => "sample-metrics",
             Self::Docker(_) => "docker",
             Self::Close => "close",
@@ -126,6 +126,17 @@ pub(crate) enum BackendEvent {
     },
     #[cfg_attr(not(feature = "freerdp"), allow(dead_code))]
     RemoteDesktopCertificateRequest(Box<CertificateRequest>),
+    #[cfg_attr(not(feature = "freerdp"), allow(dead_code))]
+    RemoteDesktopClipboard {
+        tab_id: String,
+        text: String,
+    },
+    #[cfg_attr(not(feature = "freerdp"), allow(dead_code))]
+    RemoteDesktopClosed {
+        tab_id: String,
+        reason: String,
+        retryable: bool,
+    },
     Connected {
         tab_id: String,
     },
@@ -219,6 +230,8 @@ impl BackendEvent {
             | Self::RemoteDesktopFrameReady { tab_id, .. }
             | Self::Status { tab_id, .. } => Some(tab_id),
             Self::RemoteDesktopCertificateRequest(request) => Some(&request.tab_id),
+            Self::RemoteDesktopClipboard { tab_id, .. }
+            | Self::RemoteDesktopClosed { tab_id, .. } => Some(tab_id),
             Self::Connected { tab_id }
             | Self::SftpEntries { tab_id, .. }
             | Self::SftpDirectoryEntries { tab_id, .. }
@@ -245,6 +258,8 @@ impl BackendEvent {
             self,
             Self::Connected { .. }
                 | Self::RemoteDesktopCertificateRequest(_)
+                | Self::RemoteDesktopClipboard { .. }
+                | Self::RemoteDesktopClosed { .. }
                 | Self::Closed { .. }
                 | Self::SftpFileContent { .. }
                 | Self::SftpContentUploaded { .. }
@@ -717,7 +732,8 @@ impl BackendTx {
                 BackendCommand::Close,
             ) => {
                 stop_requested.store(true, Ordering::Release);
-                close.send(true).is_ok()
+                let _ = close.send(true);
+                true
             }
             (Self::Rdp { resize, .. }, BackendCommand::Resize { cols, rows }) => {
                 resize.send(Some((cols, rows))).is_ok()

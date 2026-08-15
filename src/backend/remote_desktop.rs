@@ -80,13 +80,23 @@ impl CertificateDecision {
     }
 
     pub(crate) fn wait(&self) -> CertificateDecisionKind {
+        self.wait_until_cancelled(&AtomicBool::new(false))
+    }
+
+    pub(crate) fn wait_until_cancelled(&self, cancelled: &AtomicBool) -> CertificateDecisionKind {
         let (lock, signal) = &*self.state;
-        let guard = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        let (guard, _) = signal
-            .wait_timeout_while(guard, std::time::Duration::from_secs(60), |value| {
-                value.is_none()
-            })
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        let mut guard = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        while guard.is_none() && !cancelled.load(Ordering::Acquire) {
+            let now = std::time::Instant::now();
+            if now >= deadline {
+                break;
+            }
+            let timeout = (deadline - now).min(std::time::Duration::from_millis(100));
+            (guard, _) = signal
+                .wait_timeout(guard, timeout)
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+        }
         (*guard).unwrap_or(CertificateDecisionKind::Reject)
     }
 
@@ -109,6 +119,9 @@ pub(crate) struct CertificateRequest {
     pub(crate) subject: String,
     pub(crate) issuer: String,
     pub(crate) fingerprint: String,
+    pub(crate) previous_subject: Option<String>,
+    pub(crate) previous_issuer: Option<String>,
+    pub(crate) previous_fingerprint: Option<String>,
     pub(crate) decision: CertificateDecision,
 }
 
@@ -163,10 +176,10 @@ pub(crate) enum FrameError {
 pub(crate) struct DecodedFrame {
     pub(crate) sequence: u64,
     pub(crate) size: FrameSize,
-    /// BGRA pixels owned by the frame. Keeping this allocation behind an
-    /// `Arc` allows the compositor to hold a frame while the decoder reuses
-    /// its own working buffer for the next callback.
-    pub(crate) pixels: Arc<[u8]>,
+    /// Tightly or natively-strided BGRA pixels owned by the mailbox entry.
+    /// Ownership moves into the renderer so a tightly packed frame does not
+    /// require a second full-frame copy.
+    pub(crate) pixels: Vec<u8>,
 }
 
 impl DecodedFrame {
@@ -181,7 +194,7 @@ impl DecodedFrame {
         Ok(Self {
             sequence,
             size,
-            pixels: pixels.into(),
+            pixels,
         })
     }
 }
@@ -207,6 +220,12 @@ pub(crate) struct RemoteDesktopRequest {
     pub(crate) width: u32,
     pub(crate) height: u32,
     pub(crate) generation: u64,
+}
+
+#[cfg(feature = "freerdp")]
+pub(crate) struct RemoteDesktopExit {
+    pub(crate) reason: String,
+    pub(crate) retryable: bool,
 }
 
 impl RemoteDesktopRequest {
@@ -263,26 +282,29 @@ pub(crate) fn spawn_remote_desktop_terminal(
         let worker_stop_requested = Arc::clone(&stop_requested);
         let blocking_runtime = runtime.clone();
         let join = blocking_runtime.spawn_blocking(move || {
-            crate::backend::freerdp::run(
-                worker_tab_id.clone(),
+            crate::backend::freerdp::run(crate::backend::freerdp::RunRequest {
+                tab_id: worker_tab_id.clone(),
                 session,
                 width,
                 height,
-                worker_events.clone(),
-                worker_mailbox,
-                worker_stop_requested,
+                events: worker_events.clone(),
+                mailbox: worker_mailbox,
+                stop_requested: worker_stop_requested,
                 command_rx,
-            )
+            })
         });
         runtime.spawn(async move {
-            let reason = match join.await {
-                Ok(Ok(())) => "RDP connection closed".to_string(),
-                Ok(Err(error)) => format!("{error:#}"),
-                Err(error) => format!("RDP worker stopped: {error}"),
+            let exit = match join.await {
+                Ok(exit) => exit,
+                Err(error) => RemoteDesktopExit {
+                    reason: format!("RDP worker stopped: {error}"),
+                    retryable: true,
+                },
             };
-            let _ = events.send(BackendEvent::Closed {
+            let _ = events.send(BackendEvent::RemoteDesktopClosed {
                 tab_id: task_tab_id,
-                reason,
+                reason: exit.reason,
+                retryable: exit.retryable,
             });
         });
     }
@@ -334,15 +356,18 @@ pub(crate) fn spawn_remote_desktop_terminal(
 }
 
 impl FrameMailbox {
-    pub(crate) fn publish(&self, frame: DecodedFrame) {
+    /// Publishes a frame and returns whether the UI needs a wake-up event.
+    pub(crate) fn publish(&self, frame: DecodedFrame) -> bool {
         self.published.fetch_add(1, Ordering::Relaxed);
         let mut latest = self
             .latest
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let needs_wakeup = latest.is_none();
         if latest.replace(frame).is_some() {
             self.replaced.fetch_add(1, Ordering::Relaxed);
         }
+        needs_wakeup
     }
 
     pub(crate) fn take_latest(&self) -> Option<DecodedFrame> {
@@ -389,8 +414,8 @@ mod tests {
     #[test]
     fn mailbox_keeps_only_the_latest_frame() {
         let mailbox = FrameMailbox::default();
-        mailbox.publish(frame(1));
-        mailbox.publish(frame(2));
+        assert!(mailbox.publish(frame(1)));
+        assert!(!mailbox.publish(frame(2)));
 
         assert_eq!(mailbox.take_latest().unwrap().sequence, 2);
         assert!(mailbox.take_latest().is_none());
@@ -430,5 +455,15 @@ mod tests {
         );
         decision.reject();
         assert_eq!(decision.wait(), CertificateDecisionKind::TrustOnce);
+    }
+
+    #[test]
+    fn certificate_decision_stops_waiting_when_connection_is_cancelled() {
+        let decision = CertificateDecision::new();
+        let cancelled = AtomicBool::new(true);
+        assert_eq!(
+            decision.wait_until_cancelled(&cancelled),
+            CertificateDecisionKind::Reject
+        );
     }
 }

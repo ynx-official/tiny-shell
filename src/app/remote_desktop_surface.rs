@@ -53,10 +53,15 @@ fn surface_from_frame(frame: DecodedFrame) -> Result<RemoteDesktopSurface> {
     let packed_bytes = row_bytes
         .checked_mul(frame.size.height as usize)
         .context("RDP packed frame size overflowed")?;
-    let mut pixels = Vec::with_capacity(packed_bytes);
-    for row in frame.pixels[..total_bytes].chunks_exact(stride) {
-        pixels.extend_from_slice(&row[..row_bytes]);
-    }
+    let pixels = if stride == row_bytes && frame.pixels.len() == packed_bytes {
+        frame.pixels
+    } else {
+        let mut pixels = Vec::with_capacity(packed_bytes);
+        for row in frame.pixels[..total_bytes].chunks_exact(stride) {
+            pixels.extend_from_slice(&row[..row_bytes]);
+        }
+        pixels
+    };
     let buffer = RgbaImage::from_raw(frame.size.width, frame.size.height, pixels)
         .context("RDP frame dimensions do not match its pixel buffer")?;
     let image = Arc::new(RenderImage::new(vec![Frame::new(buffer)]));

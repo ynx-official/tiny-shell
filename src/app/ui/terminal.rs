@@ -1380,6 +1380,27 @@ impl TinyShell {
                         let accept_tab_id = request_tab_id.clone();
                         let always_tab_id = request_tab_id.clone();
                         let reject_tab_id = request_tab_id.clone();
+                        let certificate_prompt = request.previous_fingerprint.as_ref().map_or_else(
+                            || {
+                                t!(
+                                    "rdp_certificate_prompt",
+                                    host = request.host,
+                                    port = request.port,
+                                    fingerprint = request.fingerprint
+                                )
+                                .to_string()
+                            },
+                            |old_fingerprint| {
+                                t!(
+                                    "rdp_certificate_changed_prompt",
+                                    host = request.host,
+                                    port = request.port,
+                                    old_fingerprint = old_fingerprint,
+                                    fingerprint = request.fingerprint
+                                )
+                                .to_string()
+                            },
+                        );
                         surface_element = surface_element.relative().child(
                             v_flex()
                                 .absolute()
@@ -1391,17 +1412,7 @@ impl TinyShell {
                                 .rounded_md()
                                 .bg(background.opacity(0.96))
                                 .text_color(foreground)
-                                .child(
-                                    div().text_size(rems(0.82)).child(
-                                        t!(
-                                            "rdp_certificate_prompt",
-                                            host = request.host,
-                                            port = request.port,
-                                            fingerprint = request.fingerprint
-                                        )
-                                        .to_string(),
-                                    ),
-                                )
+                                .child(div().text_size(rems(0.82)).child(certificate_prompt))
                                 .child(
                                     h_flex()
                                         .gap_2()

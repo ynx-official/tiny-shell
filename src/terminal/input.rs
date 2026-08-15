@@ -779,7 +779,7 @@ impl TinyShell {
         };
 
         if tab.kind == TabKind::Rdp {
-            tab.send_backend(BackendCommand::RemoteDesktopText(text.to_owned()));
+            tab.send_backend(BackendCommand::RemoteDesktopClipboard(text.to_owned()));
             window.prevent_default();
             cx.stop_propagation();
             cx.notify();

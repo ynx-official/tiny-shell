@@ -183,7 +183,7 @@ pub(crate) fn spawn_local_terminal(
                     }
                     BackendCommand::RemoteDesktopResize { .. }
                     | BackendCommand::RemoteDesktopInput(_)
-                    | BackendCommand::RemoteDesktopText(_) => {}
+                    | BackendCommand::RemoteDesktopClipboard(_) => {}
                     BackendCommand::Close => {
                         break "local shell closed".to_string();
                     }

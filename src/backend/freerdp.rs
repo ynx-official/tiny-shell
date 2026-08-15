@@ -19,7 +19,7 @@ use tokio::sync::mpsc;
 
 use super::remote_desktop::{
     CertificateDecision, CertificateDecisionKind, CertificateRequest, DecodedFrame, FrameMailbox,
-    FrameSize, is_certificate_trusted, remember_certificate,
+    FrameSize, RemoteDesktopExit, is_certificate_trusted, remember_certificate,
 };
 use crate::{
     session::config::Session,
@@ -30,6 +30,7 @@ const STATE_CONNECTING: u32 = 1;
 const STATE_CONNECTED: u32 = 2;
 const STATE_DISCONNECTED: u32 = 3;
 const STATE_FAILED: u32 = 4;
+const MAX_CLIPBOARD_BYTES: usize = 8 * 1024 * 1024;
 
 #[repr(C)]
 struct NativeConfig {
@@ -56,6 +57,20 @@ type CertificateCallback = unsafe extern "C" fn(
     *const c_char,
     u32,
 ) -> u32;
+type ChangedCertificateCallback = unsafe extern "C" fn(
+    *mut c_void,
+    *const c_char,
+    u16,
+    *const c_char,
+    *const c_char,
+    *const c_char,
+    *const c_char,
+    *const c_char,
+    *const c_char,
+    *const c_char,
+    u32,
+) -> u32;
+type ClipboardCallback = unsafe extern "C" fn(*mut c_void, *const u8, usize);
 
 #[repr(C)]
 struct NativeCallbacks {
@@ -65,6 +80,8 @@ struct NativeCallbacks {
     should_stop: Option<ShouldStopCallback>,
     on_poll: Option<PollCallback>,
     on_certificate: Option<CertificateCallback>,
+    on_changed_certificate: Option<ChangedCertificateCallback>,
+    on_clipboard: Option<ClipboardCallback>,
 }
 
 #[repr(C)]
@@ -85,12 +102,19 @@ unsafe extern "C" {
         extended: i32,
         scancode: u32,
     ) -> i32;
+    fn tiny_shell_rdp_client_clipboard(
+        client: *mut NativeClient,
+        text: *const u16,
+        length: usize,
+    ) -> i32;
     fn tiny_shell_rdp_client_text(
         client: *mut NativeClient,
         text: *const u16,
         length: usize,
     ) -> i32;
     fn tiny_shell_rdp_client_mouse(client: *mut NativeClient, flags: u16, x: u16, y: u16) -> i32;
+    fn tiny_shell_rdp_client_stop(client: *mut NativeClient);
+    fn tiny_shell_rdp_client_should_retry(client: *mut NativeClient, result: i32) -> i32;
     fn tiny_shell_rdp_client_free(client: *mut NativeClient);
 }
 
@@ -101,19 +125,39 @@ struct CallbackBridge {
     stop_requested: Arc<AtomicBool>,
     sequence: AtomicU64,
     command_rx: Mutex<mpsc::Receiver<BackendCommand>>,
+    pending_resize: Mutex<Option<(u32, u32, std::time::Instant)>>,
     client: std::sync::atomic::AtomicUsize,
 }
 
-pub(crate) fn run(
-    tab_id: String,
-    session: Session,
-    width: u32,
-    height: u32,
-    events: BackendEventSender,
-    mailbox: Arc<FrameMailbox>,
-    stop_requested: Arc<AtomicBool>,
-    command_rx: mpsc::Receiver<BackendCommand>,
-) -> Result<()> {
+pub(crate) struct RunRequest {
+    pub(crate) tab_id: String,
+    pub(crate) session: Session,
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+    pub(crate) events: BackendEventSender,
+    pub(crate) mailbox: Arc<FrameMailbox>,
+    pub(crate) stop_requested: Arc<AtomicBool>,
+    pub(crate) command_rx: mpsc::Receiver<BackendCommand>,
+}
+
+pub(crate) fn run(request: RunRequest) -> RemoteDesktopExit {
+    run_inner(request).unwrap_or_else(|error| RemoteDesktopExit {
+        reason: format!("{error:#}"),
+        retryable: false,
+    })
+}
+
+fn run_inner(request: RunRequest) -> Result<RemoteDesktopExit> {
+    let RunRequest {
+        tab_id,
+        session,
+        width,
+        height,
+        events,
+        mailbox,
+        stop_requested,
+        command_rx,
+    } = request;
     let Session {
         host: host_value,
         port,
@@ -134,9 +178,10 @@ pub(crate) fn run(
         tab_id,
         events,
         mailbox,
-        stop_requested,
+        stop_requested: Arc::clone(&stop_requested),
         sequence: AtomicU64::new(0),
         command_rx: Mutex::new(command_rx),
+        pending_resize: Mutex::new(None),
         client: std::sync::atomic::AtomicUsize::new(0),
     });
     let bridge_ptr = Box::into_raw(bridge);
@@ -156,6 +201,8 @@ pub(crate) fn run(
         should_stop: Some(should_stop),
         on_poll: Some(on_poll),
         on_certificate: Some(on_certificate),
+        on_changed_certificate: Some(on_changed_certificate),
+        on_clipboard: Some(on_clipboard),
     };
 
     // The native client copies all configuration strings during `new`, and
@@ -172,7 +219,25 @@ pub(crate) fn run(
             .client
             .store(client as usize, Ordering::Release);
     }
-    let result = unsafe { tiny_shell_rdp_client_run(client) };
+    let worker_finished = Arc::new(AtomicBool::new(false));
+    let result = std::thread::scope(|scope| {
+        let monitor_finished = Arc::clone(&worker_finished);
+        let monitor_stop = Arc::clone(&stop_requested);
+        let client_address = client as usize;
+        scope.spawn(move || {
+            while !monitor_finished.load(Ordering::Acquire) {
+                if monitor_stop.load(Ordering::Acquire) {
+                    unsafe { tiny_shell_rdp_client_stop(client_address as *mut NativeClient) };
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            }
+        });
+        let result = unsafe { tiny_shell_rdp_client_run(client) };
+        worker_finished.store(true, Ordering::Release);
+        result
+    });
+    let retryable = unsafe { tiny_shell_rdp_client_should_retry(client, result) != 0 };
     unsafe {
         (*bridge_ptr).client.store(0, Ordering::Release);
     }
@@ -182,10 +247,12 @@ pub(crate) fn run(
     unsafe {
         drop(Box::from_raw(bridge_ptr));
     }
-    if result != 0 {
-        return Err(anyhow!("FreeRDP connection failed with code {result}"));
-    }
-    Ok(())
+    let reason = if result == 0 {
+        "RDP connection closed".to_string()
+    } else {
+        format!("FreeRDP connection failed with code {result}")
+    };
+    Ok(RemoteDesktopExit { reason, retryable })
 }
 
 unsafe extern "C" fn on_state(
@@ -258,8 +325,9 @@ unsafe extern "C" fn on_frame(
         return;
     };
     let sequence = bridge.sequence.fetch_add(1, Ordering::Relaxed) + 1;
-    if let Ok(frame) = DecodedFrame::new(sequence, size, slice.to_vec()) {
-        bridge.mailbox.publish(frame);
+    if let Ok(frame) = DecodedFrame::new(sequence, size, slice.to_vec())
+        && bridge.mailbox.publish(frame)
+    {
         let _ = bridge.events.send(BackendEvent::RemoteDesktopFrameReady {
             tab_id: bridge.tab_id.clone(),
             sequence,
@@ -299,9 +367,12 @@ unsafe extern "C" fn on_poll(user_data: *mut c_void) {
             }
         }
         let success = match command {
-            BackendCommand::RemoteDesktopResize { width, height } => unsafe {
-                tiny_shell_rdp_client_resize(client, width, height) != 0
-            },
+            BackendCommand::RemoteDesktopResize { width, height } => {
+                if let Ok(mut pending) = bridge.pending_resize.lock() {
+                    *pending = Some((width, height, std::time::Instant::now()));
+                }
+                true
+            }
             BackendCommand::RemoteDesktopInput(input) => match input {
                 RemoteDesktopInput::Key {
                     scancode,
@@ -321,9 +392,13 @@ unsafe extern "C" fn on_poll(user_data: *mut c_void) {
                 },
                 RemoteDesktopInput::MouseMove { .. } => true,
             },
-            BackendCommand::RemoteDesktopText(text) => {
+            BackendCommand::RemoteDesktopClipboard(text) => {
                 let utf16: Vec<u16> = text.encode_utf16().collect();
-                unsafe { tiny_shell_rdp_client_text(client, utf16.as_ptr(), utf16.len()) != 0 }
+                utf16.len() <= MAX_CLIPBOARD_BYTES / size_of::<u16>()
+                    && unsafe {
+                        tiny_shell_rdp_client_clipboard(client, utf16.as_ptr(), utf16.len()) != 0
+                            || tiny_shell_rdp_client_text(client, utf16.as_ptr(), utf16.len()) != 0
+                    }
             }
             BackendCommand::Close => {
                 bridge.stop_requested.store(true, Ordering::Release);
@@ -341,6 +416,17 @@ unsafe extern "C" fn on_poll(user_data: *mut c_void) {
             tracing::debug!("FreeRDP rejected a coalesced mouse move");
         }
     }
+    if let Ok(mut pending) = bridge.pending_resize.lock()
+        && pending.as_ref().is_some_and(|(_, _, changed)| {
+            changed.elapsed() >= std::time::Duration::from_millis(200)
+        })
+        && let Some((width, height, _)) = pending.take()
+    {
+        let success = unsafe { tiny_shell_rdp_client_resize(client, width, height) != 0 };
+        if !success {
+            tracing::debug!(width, height, "FreeRDP rejected a dynamic resize event");
+        }
+    }
 }
 
 unsafe extern "C" fn on_certificate(
@@ -353,10 +439,60 @@ unsafe extern "C" fn on_certificate(
     fingerprint: *const c_char,
     flags: u32,
 ) -> u32 {
+    handle_certificate(
+        user_data,
+        host,
+        port,
+        common_name,
+        subject,
+        issuer,
+        fingerprint,
+        None,
+        flags,
+    )
+}
+
+unsafe extern "C" fn on_changed_certificate(
+    user_data: *mut c_void,
+    host: *const c_char,
+    port: u16,
+    common_name: *const c_char,
+    subject: *const c_char,
+    issuer: *const c_char,
+    fingerprint: *const c_char,
+    old_subject: *const c_char,
+    old_issuer: *const c_char,
+    old_fingerprint: *const c_char,
+    flags: u32,
+) -> u32 {
+    handle_certificate(
+        user_data,
+        host,
+        port,
+        common_name,
+        subject,
+        issuer,
+        fingerprint,
+        Some((old_subject, old_issuer, old_fingerprint)),
+        flags,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn handle_certificate(
+    user_data: *mut c_void,
+    host: *const c_char,
+    port: u16,
+    common_name: *const c_char,
+    subject: *const c_char,
+    issuer: *const c_char,
+    fingerprint: *const c_char,
+    previous: Option<(*const c_char, *const c_char, *const c_char)>,
+    _flags: u32,
+) -> u32 {
     let Some(bridge) = (unsafe { user_data.cast::<CallbackBridge>().as_ref() }) else {
         return 0;
     };
-    let _ = flags;
     let text = |value: *const c_char| {
         if value.is_null() {
             String::new()
@@ -371,6 +507,14 @@ unsafe extern "C" fn on_certificate(
     let subject = text(subject);
     let issuer = text(issuer);
     let fingerprint = text(fingerprint);
+    let (previous_subject, previous_issuer, previous_fingerprint) =
+        previous.map_or((None, None, None), |(subject, issuer, fingerprint)| {
+            (
+                Some(text(subject)),
+                Some(text(issuer)),
+                Some(text(fingerprint)),
+            )
+        });
     if is_certificate_trusted(&host, port, &fingerprint) {
         return 1;
     }
@@ -386,6 +530,9 @@ unsafe extern "C" fn on_certificate(
                 subject,
                 issuer,
                 fingerprint: fingerprint.clone(),
+                previous_subject,
+                previous_issuer,
+                previous_fingerprint,
                 decision: decision.clone(),
             },
         )))
@@ -393,7 +540,7 @@ unsafe extern "C" fn on_certificate(
     {
         return 0;
     }
-    match decision.wait() {
+    match decision.wait_until_cancelled(&bridge.stop_requested) {
         CertificateDecisionKind::TrustOnce => 2,
         CertificateDecisionKind::TrustAlways => {
             remember_certificate(&host, port, &fingerprint);
@@ -401,4 +548,28 @@ unsafe extern "C" fn on_certificate(
         }
         CertificateDecisionKind::Reject => 0,
     }
+}
+
+unsafe extern "C" fn on_clipboard(user_data: *mut c_void, text: *const u8, length: usize) {
+    let Some(bridge) = (unsafe { user_data.cast::<CallbackBridge>().as_ref() }) else {
+        return;
+    };
+    if text.is_null() || length == 0 || length > MAX_CLIPBOARD_BYTES {
+        return;
+    }
+    let Some(bytes) = (unsafe { ptr::slice_from_raw_parts(text, length).as_ref() }) else {
+        return;
+    };
+    let mut utf16 = bytes
+        .chunks_exact(2)
+        .map(|unit| u16::from_le_bytes([unit[0], unit[1]]))
+        .collect::<Vec<_>>();
+    while utf16.last() == Some(&0) {
+        utf16.pop();
+    }
+    let text = String::from_utf16_lossy(&utf16);
+    let _ = bridge.events.send(BackendEvent::RemoteDesktopClipboard {
+        tab_id: bridge.tab_id.clone(),
+        text,
+    });
 }

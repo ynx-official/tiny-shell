@@ -385,6 +385,28 @@ impl TinyShell {
     /// The existing `TerminalTab` (including its `term` scrollback history)
     /// is preserved — only the backend is swapped via `set_backend()`.
     pub(crate) fn retry_disconnected_tab(&mut self, tab_id: &str, cx: &mut Context<Self>) {
+        self.rdp_reconnect_attempts.remove(tab_id);
+        self.retry_disconnected_tab_impl(tab_id, cx);
+    }
+
+    pub(crate) fn retry_disconnected_tab_automatically(
+        &mut self,
+        tab_id: &str,
+        expected_generation: u64,
+        cx: &mut Context<Self>,
+    ) {
+        let should_retry = self.terminal_tab(tab_id).is_some_and(|tab| {
+            tab.kind == crate::terminal::TabKind::Rdp
+                && tab.backend_generation == expected_generation
+                && !tab.connected
+                && tab.disconnected_reason.is_some()
+        });
+        if should_retry {
+            self.retry_disconnected_tab_impl(tab_id, cx);
+        }
+    }
+
+    fn retry_disconnected_tab_impl(&mut self, tab_id: &str, cx: &mut Context<Self>) {
         let Some(ix) = self
             .window_state_mut()
             .workspace_state_mut()
