@@ -1228,6 +1228,7 @@ impl TinyShell {
                 let Some(snapshot) = snapshot else {
                     return div().into_any_element();
                 };
+                this.remote_desktop_surfaces.mark_rendered(tab_id);
                 if let Some(tab) = this.workspace().terminal_tab(tab_id)
                     && tab.kind == TabKind::Rdp
                 {
@@ -1358,6 +1359,7 @@ impl TinyShell {
                                 img(surface.image.clone())
                                     .id((ElementId::from("rdp-surface"), tab_id.clone()))
                                     .absolute()
+                                    .inset_0()
                                     .size_full()
                                     .object_fit(ObjectFit::Contain),
                             )

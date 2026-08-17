@@ -94,7 +94,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            build-essential pkg-config cmake \
+            build-essential pkg-config cmake curl desktop-file-utils file \
             freerdp3-dev patchelf \
             libfontconfig1-dev libfreetype6-dev \
             libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev \
@@ -248,7 +248,20 @@ jobs:
               exit 1
             fi
             tar -czf "${STAGE}.tar.gz" "$STAGE"
-            echo "ASSETS=${STAGE}.tar.gz" >> "$GITHUB_ENV"
+
+            bash scripts/package-linux-appimage.sh \
+              --version "$VERSION" \
+              --target "${{ matrix.target }}" \
+              --output-dir . \
+              --binary "target/${{ matrix.target }}/release/${{ matrix.bin }}" \
+              --skip-build
+
+            APPIMAGE="${STAGE}.AppImage"
+            test -x "$APPIMAGE"
+            echo "ASSETS<<EOF" >> "$GITHUB_ENV"
+            echo "${STAGE}.tar.gz" >> "$GITHUB_ENV"
+            echo "$APPIMAGE" >> "$GITHUB_ENV"
+            echo "EOF" >> "$GITHUB_ENV"
           fi
 
       - name: Package Windows portable and installer editions

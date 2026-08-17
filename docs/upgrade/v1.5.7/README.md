@@ -1,6 +1,6 @@
 # TinyShell v1.5.7
 
-> 发布日期：2026-08-15
+> 发布日期：2026-08-17
 
 ## 版本概述
 
@@ -14,12 +14,17 @@
 - macOS Apple Silicon 与 Intel 在原生架构 runner 上安装 Homebrew FreeRDP，使用 `dylibbundler` 将非系统动态依赖嵌入 `TinyShell.app/Contents/Frameworks` 并重写加载路径。
 - macOS 构建固定 14.0 部署目标，Apple Silicon runner 保持 macOS 14，避免 FreeRDP 修复无意提高到 macOS 15。
 - Linux 使用 Ubuntu 24.04 FreeRDP 3 开发包，并将链接到的 FreeRDP/WinPR 共享库复制到归档 `lib` 目录，设置 `$ORIGIN/lib` 运行路径并检查未解析依赖。
+- Linux 新增单文件 x86_64 AppImage，并继续保留 `.tar.gz`；打包脚本使用固定版本和 SHA-256 的 `linuxdeploy`，检查 FreeRDP/WinPR 运行库、ELF 依赖与可重定位 RPATH。
+- Ubuntu 24.04 CI 会生成、解包并在 Xvfb 下限时启动 AppImage，发布工作流将 AppImage 纳入工作流产物、GitHub Release 和 SHA-256 更新清单。
 - 构建脚本支持多个 FreeRDP/WinPR 头文件目录，兼容 apt、Homebrew 和 vcpkg 的分离头文件布局。
+- RDP 支持远端桌面动态分辨率调整，窗口尺寸变化会经过节流后提交到 FreeRDP DISP 通道。
+- RDP 支持 Unicode 文本双向剪贴板：本地复制内容可提供给远端，远端复制内容可回写到 TinyShell 本地剪贴板。
 
 ## 行为与界面变化
 
 - 官方安装包中的 RDP 会话可以加载 FreeRDP 原生后端，进入证书确认、连接、画面显示与输入流程。
-- RDP 行为保持 v1.5.5 的设计：支持基础键鼠输入、本地文本粘贴、进程内证书指纹信任和最多三次断线重试。
+- Linux AppImage 可直接赋予执行权限后启动；应用内更新会识别 `$APPIMAGE`，下载匹配的 AppImage，原子替换外层文件并从该路径重启。
+- RDP 行为保持 v1.5.5 的设计，并增加动态分辨率和双向文本剪贴板；仍支持基础键鼠输入、进程内证书指纹信任和最多三次断线重试。
 - SSH、SFTP、本地终端和配置同步界面没有行为变化。
 
 ## 配置与数据兼容性
@@ -30,7 +35,7 @@
 
 ## 升级说明
 
-Windows、macOS 和 Linux 用户可以直接覆盖安装。请完全退出旧进程后启动 v1.5.7，确保加载新安装目录或应用包内的 FreeRDP 运行库。
+Windows、macOS 和 Linux 用户可以直接覆盖安装。请完全退出旧进程后启动 v1.5.7，确保加载新安装目录或应用包内的 FreeRDP 运行库。Linux 用户可选择 AppImage 或原有 `.tar.gz`；首次运行 AppImage 前需执行 `chmod +x`。
 
 Linux 构建基线从 Ubuntu 22.04 提升到 Ubuntu 24.04。Linux 用户需要具备与 Ubuntu 24.04 相当的 glibc 运行环境；较旧发行版无法启动时，需要在目标系统从源码构建启用 `freerdp` 的版本。
 
@@ -38,7 +43,8 @@ Linux 构建基线从 Ubuntu 22.04 提升到 Ubuntu 24.04。Linux 用户需要�
 
 - 无配置或数据格式破坏性变更。
 - Linux 二进制最低 glibc 环境高于 v1.5.5，旧发行版兼容性降低。
-- RDP 服务端到本地剪贴板同步、DISP 动态分辨率和持久 GPU 纹理原位更新仍未实现；当前仅支持将本地文本粘贴到远端。
+- AppImage 不捆绑 glibc、显卡驱动或 Mesa/Vulkan 等主机图形栈，同样需要与 Ubuntu 24.04 相当的 glibc 环境；没有 FUSE 2 兼容层时可安装发行版对应软件包或使用 `.tar.gz`。
+- 持久 GPU 纹理原位更新仍未实现；画面更新继续通过当前帧缓冲路径处理。
 - 证书“始终信任”仅在当前进程内有效，应用重启后需要重新确认。
 - 按发布要求未执行本轮本地测试、静态检查、release 构建或真实 RDP 主机手工验收。
 
@@ -52,7 +58,7 @@ Linux 构建基线从 Ubuntu 22.04 提升到 Ubuntu 24.04。Linux 用户需要�
 - Windows、macOS、Linux 真实 RDP 手工验收：按发布要求跳过。
 - GitHub Actions 工作流 YAML 语法检查：通过。
 - v1.5.6 环境预验证：Ubuntu FreeRDP 3 安装、macOS Homebrew FreeRDP 安装及 Windows vcpkg FreeRDP 3.30.0 安装均成功；编译错误已在 v1.5.7 修复。
-- `python3 scripts/release_notes.py --check-current`：已执行，用于校验版本号与发布资料一致性。
+- `python scripts/release_notes.py --check-current`：通过，用于校验版本号与发布资料一致性。
 
 ## 变更依据
 

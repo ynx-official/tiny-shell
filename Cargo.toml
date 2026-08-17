@@ -8,7 +8,10 @@ license = "GPL-3.0-or-later"
 rust-version = "1.85.0"
 
 [features]
-default = []
+# Source builds use FreeRDP when its native dependencies can be discovered.
+# `freerdp` remains the force-on mode used by release builds.
+default = ["freerdp-auto"]
+freerdp-auto = []
 freerdp = []
 
 [dependencies]
@@ -73,7 +76,7 @@ priority = "optional"
 assets = [
     ["target/release/tiny-shell", "usr/bin/", "755"],
     ["assets/tiny-shell.desktop", "usr/share/applications/", "644"],
-    ["assets/icons/tiny-shell.png", "usr/share/icons/hicolor/256x256/apps/", "644"],
+    ["assets/icons/256x256/tiny-shell.png", "usr/share/icons/hicolor/256x256/apps/", "644"],
 ]
 
 [profile.release]
@@ -101,6 +104,7 @@ opt-level = 1
 
 [build-dependencies]
 cc = "1.2.63"
+pkg-config = "0.3"
 winres = "0.1.12"
 
 [patch.crates-io]

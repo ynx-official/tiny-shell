@@ -49,14 +49,14 @@ pub(crate) enum BackendCommand {
         cols: u16,
         rows: u16,
     },
-    #[cfg_attr(not(feature = "freerdp"), allow(dead_code))]
+    #[cfg_attr(not(tiny_shell_freerdp_backend), allow(dead_code))]
     RemoteDesktopResize {
         width: u32,
         height: u32,
     },
-    #[cfg_attr(not(feature = "freerdp"), allow(dead_code))]
+    #[cfg_attr(not(tiny_shell_freerdp_backend), allow(dead_code))]
     RemoteDesktopInput(RemoteDesktopInput),
-    #[cfg_attr(not(feature = "freerdp"), allow(dead_code))]
+    #[cfg_attr(not(tiny_shell_freerdp_backend), allow(dead_code))]
     RemoteDesktopClipboard(String),
     SampleMetrics,
     Docker(crate::docker::DockerRequest),
@@ -79,7 +79,7 @@ impl BackendCommand {
 }
 
 #[derive(Debug, Clone, Copy)]
-#[cfg_attr(not(feature = "freerdp"), allow(dead_code))]
+#[cfg_attr(not(tiny_shell_freerdp_backend), allow(dead_code))]
 pub(crate) enum RemoteDesktopInput {
     Key {
         scancode: u32,
@@ -115,7 +115,7 @@ pub(crate) enum BackendEvent {
         tab_id: String,
         bytes: Vec<u8>,
     },
-    #[cfg_attr(not(feature = "freerdp"), allow(dead_code))]
+    #[cfg_attr(not(tiny_shell_freerdp_backend), allow(dead_code))]
     RemoteDesktopFrameReady {
         tab_id: String,
         sequence: u64,
@@ -124,14 +124,14 @@ pub(crate) enum BackendEvent {
         tab_id: String,
         text: String,
     },
-    #[cfg_attr(not(feature = "freerdp"), allow(dead_code))]
+    #[cfg_attr(not(tiny_shell_freerdp_backend), allow(dead_code))]
     RemoteDesktopCertificateRequest(Box<CertificateRequest>),
-    #[cfg_attr(not(feature = "freerdp"), allow(dead_code))]
+    #[cfg_attr(not(tiny_shell_freerdp_backend), allow(dead_code))]
     RemoteDesktopClipboard {
         tab_id: String,
         text: String,
     },
-    #[cfg_attr(not(feature = "freerdp"), allow(dead_code))]
+    #[cfg_attr(not(tiny_shell_freerdp_backend), allow(dead_code))]
     RemoteDesktopClosed {
         tab_id: String,
         reason: String,
@@ -254,9 +254,13 @@ impl BackendEvent {
     }
 
     pub(crate) fn is_reliable_lifecycle(&self) -> bool {
+        // Frame-ready is a coalesced mailbox wake-up, not a frame payload. At
+        // most one is outstanding per RDP tab, and the downstream router must
+        // preserve it when evicting ordinary events from a full owner queue.
         matches!(
             self,
             Self::Connected { .. }
+                | Self::RemoteDesktopFrameReady { .. }
                 | Self::RemoteDesktopCertificateRequest(_)
                 | Self::RemoteDesktopClipboard { .. }
                 | Self::RemoteDesktopClosed { .. }
@@ -287,6 +291,8 @@ impl BackendEvent {
 const OUTPUT_QUEUE_BYTE_CAPACITY: usize = 8 * 1024 * 1024;
 const OUTPUT_QUEUE_EVENT_CAPACITY: usize = 1_024;
 const MAX_COALESCED_OUTPUT_BYTES: usize = 64 * 1024;
+const LIFECYCLE_QUEUE_CAPACITY: usize = 4_096;
+const CONTROL_QUEUE_CAPACITY: usize = 4_096;
 
 #[derive(Default)]
 struct OutputEventQueue {
@@ -511,6 +517,22 @@ impl BackendEventSender {
         event: BackendEvent,
         generation: u64,
     ) -> Result<(), BackendEventSendError> {
+        if matches!(&event, BackendEvent::RemoteDesktopFrameReady { .. }) {
+            // EndPaint runs on FreeRDP's event thread. Bypass send_order
+            // because another reliable event may hold that lock while waiting
+            // for lifecycle capacity. A failed try_send re-arms the mailbox.
+            let envelope = BackendEventEnvelope {
+                event,
+                generation,
+                sequence: self.sequence.fetch_add(1, Ordering::Relaxed),
+            };
+            let result = self
+                .lifecycle_events
+                .try_send(envelope)
+                .map_err(|_| BackendEventSendError);
+            return self.record_send_result(result);
+        }
+
         let _send_guard = self
             .send_order
             .lock()
@@ -535,6 +557,13 @@ impl BackendEventSender {
                 .try_send(envelope)
                 .map_err(|_| BackendEventSendError)
         };
+        self.record_send_result(result)
+    }
+
+    fn record_send_result(
+        &self,
+        result: Result<(), BackendEventSendError>,
+    ) -> Result<(), BackendEventSendError> {
         match result {
             Ok(()) => {
                 self.sent_events.fetch_add(1, Ordering::Relaxed);
@@ -562,8 +591,6 @@ impl BackendEventSender {
 }
 
 pub(crate) fn backend_event_channel() -> (BackendEventSender, BackendEventReceiver) {
-    const LIFECYCLE_QUEUE_CAPACITY: usize = 4_096;
-    const CONTROL_QUEUE_CAPACITY: usize = 4_096;
     // Lifecycle events are bounded separately from ordinary controls. Sending
     // them may briefly apply backpressure, but it cannot grow memory without
     // limit while the UI is stalled.
@@ -597,7 +624,7 @@ pub(crate) fn backend_event_channel() -> (BackendEventSender, BackendEventReceiv
 
 #[cfg(test)]
 mod backend_event_tests {
-    use super::{BackendEvent, backend_event_channel};
+    use super::{BackendEvent, LIFECYCLE_QUEUE_CAPACITY, backend_event_channel};
 
     #[test]
     fn control_event_is_received_before_queued_output() {
@@ -623,6 +650,87 @@ mod backend_event_tests {
             receiver.try_recv().unwrap().event,
             BackendEvent::Closed { .. }
         ));
+    }
+
+    #[test]
+    fn remote_desktop_frame_wakeup_is_reliable() {
+        assert!(
+            BackendEvent::RemoteDesktopFrameReady {
+                tab_id: "rdp-a".to_string(),
+                sequence: 1,
+            }
+            .is_reliable_lifecycle()
+        );
+    }
+
+    #[test]
+    fn remote_desktop_frame_wakeup_does_not_block_when_lifecycle_queue_is_full() {
+        let (sender, receiver) = backend_event_channel();
+        for sequence in 0..LIFECYCLE_QUEUE_CAPACITY {
+            sender
+                .send(BackendEvent::RemoteDesktopFrameReady {
+                    tab_id: format!("rdp-{sequence}"),
+                    sequence: sequence as u64,
+                })
+                .unwrap();
+        }
+
+        let (result_tx, result_rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let result = sender.send(BackendEvent::RemoteDesktopFrameReady {
+                tab_id: "rdp-overflow".to_string(),
+                sequence: LIFECYCLE_QUEUE_CAPACITY as u64,
+            });
+            let _ = result_tx.send(result);
+        });
+
+        let result = result_rx
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("frame wake-up send must not block on a full lifecycle queue");
+        assert!(result.is_err());
+        drop(receiver);
+    }
+
+    #[test]
+    fn remote_desktop_frame_wakeup_bypasses_blocked_reliable_sender() {
+        let (sender, receiver) = backend_event_channel();
+        for sequence in 0..LIFECYCLE_QUEUE_CAPACITY {
+            sender
+                .send(BackendEvent::RemoteDesktopFrameReady {
+                    tab_id: format!("rdp-{sequence}"),
+                    sequence: sequence as u64,
+                })
+                .unwrap();
+        }
+
+        let blocking_sender = sender.clone();
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let blocked = std::thread::spawn(move || {
+            let _ = started_tx.send(());
+            blocking_sender.send(BackendEvent::Connected {
+                tab_id: "ssh-blocked".to_string(),
+            })
+        });
+        started_rx.recv().unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(25));
+        assert!(!blocked.is_finished());
+
+        let (result_tx, result_rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let result = sender.send(BackendEvent::RemoteDesktopFrameReady {
+                tab_id: "rdp-overflow".to_string(),
+                sequence: LIFECYCLE_QUEUE_CAPACITY as u64,
+            });
+            let _ = result_tx.send(result);
+        });
+
+        let result = result_rx
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("frame wake-up must bypass a blocked reliable sender");
+        assert!(result.is_err());
+
+        drop(receiver);
+        assert!(blocked.join().unwrap().is_err());
     }
 
     #[test]

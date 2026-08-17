@@ -701,6 +701,11 @@ impl TinyShell {
 impl Render for TinyShell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let workspace = self.render_workspace_shell(window, cx);
+        for image in self.remote_desktop_surfaces.take_retired_images() {
+            if let Err(error) = window.drop_image(image) {
+                tracing::warn!("failed to evict retired RDP texture: {error:#}");
+            }
+        }
         self.render_root_shell(workspace, window, cx)
     }
 }

@@ -23,6 +23,7 @@ class UpdateManifestError(ValueError):
 
 def expected_asset_names(tag: str) -> set[str]:
     return {
+        f"tiny-shell-{tag}-linux-x86_64.AppImage",
         f"tiny-shell-{tag}-linux-x86_64.tar.gz",
         f"tiny-shell-{tag}-macos-aarch64-portable.zip",
         f"tiny-shell-{tag}-macos-aarch64-setup.pkg",

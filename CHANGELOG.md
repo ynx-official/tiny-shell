@@ -4,14 +4,18 @@
 
 完整的升级说明、兼容性、已知问题和验证结果统一维护在 [`docs/upgrade/`](docs/upgrade/README.md)。本文件只作为精简索引，避免与版本详情形成两套重复维护的发布说明。
 
-## [1.5.7] - 2026-08-15
+## [1.5.7] - 2026-08-17
 
 ### 修复
 
 - 修复启用 `freerdp` 时远程桌面类型从错误模块导入导致的 Rust 编译失败。
 - 为 FreeRDP 原生桥接补充 WinPR 原子操作头文件，修复 Linux/macOS 上未声明的原子函数。
 - 正式发布安装包启用 RDP，并分别携带 Windows DLL、macOS 内嵌动态库和 Linux FreeRDP/WinPR 共享库。
+- Linux 发布新增单文件 AppImage，CI 会验证依赖闭包、解包结果和 Xvfb 启动；原 `.tar.gz` 继续保留。
+- AppImage 版本的内置更新会选择新的 AppImage 资产，原子替换外层文件并从该文件重启。
 - macOS Apple Silicon 与 Intel 使用原生架构构建，并保持 macOS 14.0 部署目标。
+- RDP 支持远端桌面动态分辨率调整，以及远端到本地和本地到远端的 Unicode 文本剪贴板同步。
+- Linux 发布同时提供 `.tar.gz` 和单文件 AppImage，更新器会识别 AppImage 资产并安全替换后重启。
 
 ### 兼容性
 

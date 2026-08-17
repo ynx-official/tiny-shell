@@ -458,7 +458,10 @@ fn build_window_options(
     cx: &App,
     offset: Option<(gpui::Pixels, gpui::Pixels)>,
 ) -> WindowOptions {
-    let mut window_options = WindowOptions::default();
+    let mut window_options = WindowOptions {
+        app_id: Some(crate::app::platform::APP_ID.to_string()),
+        ..WindowOptions::default()
+    };
 
     if config.title_bar_style() == crate::session::config::TitleBarStyle::Integrated {
         window_options.titlebar = Some(gpui::TitlebarOptions {

@@ -31,6 +31,7 @@ const STATE_CONNECTED: u32 = 2;
 const STATE_DISCONNECTED: u32 = 3;
 const STATE_FAILED: u32 = 4;
 const MAX_CLIPBOARD_BYTES: usize = 8 * 1024 * 1024;
+const MAX_FRAME_DIAGNOSTIC_SAMPLES: usize = 4096;
 
 #[repr(C)]
 struct NativeConfig {
@@ -124,8 +125,11 @@ struct CallbackBridge {
     mailbox: Arc<FrameMailbox>,
     stop_requested: Arc<AtomicBool>,
     sequence: AtomicU64,
+    last_frame_dimensions: AtomicU64,
+    last_frame_diagnostic_sequence: AtomicU64,
     command_rx: Mutex<mpsc::Receiver<BackendCommand>>,
     pending_resize: Mutex<Option<(u32, u32, std::time::Instant)>>,
+    failure_reason: Mutex<Option<String>>,
     client: std::sync::atomic::AtomicUsize,
 }
 
@@ -180,8 +184,11 @@ fn run_inner(request: RunRequest) -> Result<RemoteDesktopExit> {
         mailbox,
         stop_requested: Arc::clone(&stop_requested),
         sequence: AtomicU64::new(0),
+        last_frame_dimensions: AtomicU64::new(0),
+        last_frame_diagnostic_sequence: AtomicU64::new(0),
         command_rx: Mutex::new(command_rx),
         pending_resize: Mutex::new(None),
+        failure_reason: Mutex::new(None),
         client: std::sync::atomic::AtomicUsize::new(0),
     });
     let bridge_ptr = Box::into_raw(bridge);
@@ -238,6 +245,13 @@ fn run_inner(request: RunRequest) -> Result<RemoteDesktopExit> {
         result
     });
     let retryable = unsafe { tiny_shell_rdp_client_should_retry(client, result) != 0 };
+    let failure_reason = unsafe {
+        (*bridge_ptr)
+            .failure_reason
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    };
     unsafe {
         (*bridge_ptr).client.store(0, Ordering::Release);
     }
@@ -247,7 +261,9 @@ fn run_inner(request: RunRequest) -> Result<RemoteDesktopExit> {
     unsafe {
         drop(Box::from_raw(bridge_ptr));
     }
-    let reason = if result == 0 {
+    let reason = if let Some(reason) = failure_reason {
+        reason
+    } else if result == 0 {
         "RDP connection closed".to_string()
     } else {
         format!("FreeRDP connection failed with code {result}")
@@ -273,31 +289,45 @@ unsafe extern "C" fn on_state(
     };
     match state {
         STATE_CONNECTING => {
+            tracing::info!(tab_id = %bridge.tab_id, "RDP connection is starting");
             let _ = bridge.events.send(BackendEvent::Status {
                 tab_id: bridge.tab_id.clone(),
                 text: t!("rdp_connecting").to_string(),
             });
         }
         STATE_CONNECTED => {
+            tracing::info!(tab_id = %bridge.tab_id, "RDP connection established");
             let _ = bridge.events.send(BackendEvent::Connected {
                 tab_id: bridge.tab_id.clone(),
             });
         }
         STATE_DISCONNECTED => {
+            tracing::info!(tab_id = %bridge.tab_id, "RDP connection disconnected");
             let _ = bridge.events.send(BackendEvent::Status {
                 tab_id: bridge.tab_id.clone(),
                 text: t!("rdp_connection_closed").to_string(),
             });
         }
         STATE_FAILED => {
+            let failure_reason = t!(
+                "rdp_connection_failed",
+                error_code = error_code,
+                message = message
+            )
+            .to_string();
+            *bridge
+                .failure_reason
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(failure_reason.clone());
+            tracing::warn!(
+                tab_id = %bridge.tab_id,
+                error_code,
+                message = %message,
+                "RDP connection failed"
+            );
             let _ = bridge.events.send(BackendEvent::Status {
                 tab_id: bridge.tab_id.clone(),
-                text: t!(
-                    "rdp_connection_failed",
-                    error_code = error_code,
-                    message = message
-                )
-                .to_string(),
+                text: failure_reason,
             });
         }
         _ => {}
@@ -325,14 +355,111 @@ unsafe extern "C" fn on_frame(
         return;
     };
     let sequence = bridge.sequence.fetch_add(1, Ordering::Relaxed) + 1;
-    if let Ok(frame) = DecodedFrame::new(sequence, size, slice.to_vec())
-        && bridge.mailbox.publish(frame)
-    {
-        let _ = bridge.events.send(BackendEvent::RemoteDesktopFrameReady {
-            tab_id: bridge.tab_id.clone(),
-            sequence,
-        });
+    if sequence == 1 {
+        tracing::info!(
+            tab_id = %bridge.tab_id,
+            width,
+            height,
+            stride,
+            "received first RDP frame"
+        );
     }
+    let Ok(frame) = DecodedFrame::new(sequence, size, slice.to_vec()) else {
+        return;
+    };
+    let dimensions = (u64::from(width) << 32) | u64::from(height);
+    let previous_dimensions = bridge
+        .last_frame_dimensions
+        .swap(dimensions, Ordering::Relaxed);
+    let previous_diagnostic_sequence = bridge
+        .last_frame_diagnostic_sequence
+        .load(Ordering::Relaxed);
+    let dimension_log_is_due = previous_dimensions != dimensions
+        && sequence.saturating_sub(previous_diagnostic_sequence) >= 30;
+    if sequence <= 3 || sequence % 120 == 0 || dimension_log_is_due {
+        bridge
+            .last_frame_diagnostic_sequence
+            .store(sequence, Ordering::Relaxed);
+        let stats = frame_pixel_stats(&frame);
+        tracing::info!(
+            tab_id = %bridge.tab_id,
+            sequence,
+            width,
+            height,
+            stride,
+            visible_pixels = stats.visible_pixels,
+            sampled_pixels = stats.sampled_pixels,
+            rgb_non_white_pixels = stats.rgb_non_white_pixels,
+            rgb_min = stats.rgb_min,
+            rgb_max = stats.rgb_max,
+            alpha_min = stats.alpha_min,
+            alpha_max = stats.alpha_max,
+            alpha_zero_pixels = stats.alpha_zero_pixels,
+            "sampled RDP frame pixels"
+        );
+    }
+    if bridge.mailbox.publish(frame)
+        && bridge
+            .events
+            .send(BackendEvent::RemoteDesktopFrameReady {
+                tab_id: bridge.tab_id.clone(),
+                sequence,
+            })
+            .is_err()
+    {
+        bridge.mailbox.wakeup_failed();
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FramePixelStats {
+    visible_pixels: u64,
+    sampled_pixels: u64,
+    rgb_non_white_pixels: u64,
+    alpha_zero_pixels: u64,
+    rgb_min: u8,
+    rgb_max: u8,
+    alpha_min: u8,
+    alpha_max: u8,
+}
+
+fn frame_pixel_stats(frame: &DecodedFrame) -> FramePixelStats {
+    let width = frame.size.width as usize;
+    let height = frame.size.height as usize;
+    let stride = frame.size.stride as usize;
+    let visible_pixels = width * height;
+    let sample_count = visible_pixels.min(MAX_FRAME_DIAGNOSTIC_SAMPLES);
+    let mut stats = FramePixelStats {
+        visible_pixels: visible_pixels as u64,
+        sampled_pixels: sample_count as u64,
+        rgb_non_white_pixels: 0,
+        alpha_zero_pixels: 0,
+        rgb_min: u8::MAX,
+        rgb_max: u8::MIN,
+        alpha_min: u8::MAX,
+        alpha_max: u8::MIN,
+    };
+    for sample_index in 0..sample_count {
+        let pixel_index =
+            ((sample_index as u128 * visible_pixels as u128) / sample_count as u128) as usize;
+        let row = pixel_index / width;
+        let column = pixel_index % width;
+        let offset = row * stride + column * 4;
+        let pixel = &frame.pixels[offset..offset + 4];
+        if pixel[..3] != [u8::MAX; 3] {
+            stats.rgb_non_white_pixels += 1;
+        }
+        for channel in &pixel[..3] {
+            stats.rgb_min = stats.rgb_min.min(*channel);
+            stats.rgb_max = stats.rgb_max.max(*channel);
+        }
+        stats.alpha_min = stats.alpha_min.min(pixel[3]);
+        stats.alpha_max = stats.alpha_max.max(pixel[3]);
+        if pixel[3] == 0 {
+            stats.alpha_zero_pixels += 1;
+        }
+    }
+    stats
 }
 
 unsafe extern "C" fn should_stop(user_data: *mut c_void) -> i32 {
@@ -572,4 +699,43 @@ unsafe extern "C" fn on_clipboard(user_data: *mut c_void, text: *const u8, lengt
         tab_id: bridge.tab_id.clone(),
         text,
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn frame_pixel_stats_ignore_stride_padding() {
+        let size = FrameSize::new(2, 1, 12).unwrap();
+        let frame = DecodedFrame::new(1, size, vec![10, 20, 30, 0, 255, 255, 255, 127, 1, 2, 3, 4])
+            .unwrap();
+
+        assert_eq!(
+            frame_pixel_stats(&frame),
+            FramePixelStats {
+                visible_pixels: 2,
+                sampled_pixels: 2,
+                rgb_non_white_pixels: 1,
+                alpha_zero_pixels: 1,
+                rgb_min: 10,
+                rgb_max: 255,
+                alpha_min: 0,
+                alpha_max: 127,
+            }
+        );
+    }
+
+    #[test]
+    fn frame_pixel_stats_bound_work_for_large_frames() {
+        let size = FrameSize::new(100, 100, 400).unwrap();
+        let frame = DecodedFrame::new(1, size, vec![0; 40_000]).unwrap();
+
+        let stats = frame_pixel_stats(&frame);
+
+        assert_eq!(stats.visible_pixels, 10_000);
+        assert_eq!(stats.sampled_pixels, MAX_FRAME_DIAGNOSTIC_SAMPLES as u64);
+        assert_eq!(stats.rgb_non_white_pixels, stats.sampled_pixels);
+        assert_eq!(stats.alpha_zero_pixels, stats.sampled_pixels);
+    }
 }

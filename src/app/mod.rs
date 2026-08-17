@@ -1591,8 +1591,12 @@ impl TinyShell {
     }
 
     fn handle_terminal_connected(&mut self, tab_id: String, _cx: &mut Context<Self>) {
+        let success = t!("connection_succeeded").to_string();
         if let Some(tab) = self.terminal_tab_mut(&tab_id) {
-            tab.feed_status_line(&t!("connection_succeeded"));
+            tab.feed_status_line(&success);
+            if tab.kind == TabKind::Rdp {
+                tab.status = success;
+            }
             tab.connected = true;
             tab.disconnected_reason = None;
         }

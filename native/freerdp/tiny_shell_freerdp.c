@@ -1,14 +1,24 @@
 #include "tiny_shell_freerdp.h"
 
+#include <freerdp/config.h>
 #include <freerdp/client.h>
 #include <freerdp/client/cliprdr.h>
 #include <freerdp/client/cmdline.h>
 #include <freerdp/client/disp.h>
+#if defined(CHANNEL_RDPGFX_CLIENT)
+#include <freerdp/client/rdpgfx.h>
+#endif
 #include <freerdp/channels/disp.h>
+#if defined(CHANNEL_RDPGFX_CLIENT)
+#include <freerdp/channels/rdpgfx.h>
+#endif
 #include <freerdp/codec/color.h>
 #include <freerdp/error.h>
 #include <freerdp/freerdp.h>
 #include <freerdp/gdi/gdi.h>
+#if defined(CHANNEL_RDPGFX_CLIENT)
+#include <freerdp/gdi/gfx.h>
+#endif
 #include <freerdp/input.h>
 #include <freerdp/settings.h>
 #include <winpr/crt.h>
@@ -87,6 +97,15 @@ static void ts_channel_connected(void* value, const ChannelConnectedEventArgs* e
     tiny_shell_rdp_client* client = context ? context->client : NULL;
     if (!client || !event || !event->name)
         return;
+#if defined(CHANNEL_RDPGFX_CLIENT)
+    if (strcmp(event->name, RDPGFX_DVC_CHANNEL_NAME) == 0)
+    {
+        if (context->context.gdi && event->pInterface)
+            (void)gdi_graphics_pipeline_init(
+                context->context.gdi, (RdpgfxClientContext*)event->pInterface);
+        return;
+    }
+#endif
     if (strcmp(event->name, DISP_DVC_CHANNEL_NAME) == 0)
     {
         client->disp = (DispClientContext*)event->pInterface;
@@ -117,6 +136,15 @@ static void ts_channel_disconnected(void* value, const ChannelDisconnectedEventA
     tiny_shell_rdp_client* client = context ? context->client : NULL;
     if (!client || !event || !event->name)
         return;
+#if defined(CHANNEL_RDPGFX_CLIENT)
+    if (strcmp(event->name, RDPGFX_DVC_CHANNEL_NAME) == 0)
+    {
+        if (context->context.gdi && event->pInterface)
+            gdi_graphics_pipeline_uninit(
+                context->context.gdi, (RdpgfxClientContext*)event->pInterface);
+        return;
+    }
+#endif
     if (strcmp(event->name, DISP_DVC_CHANNEL_NAME) == 0)
     {
         client->disp = NULL;
@@ -193,12 +221,23 @@ static BOOL ts_pre_connect(freerdp* instance)
                                             ts_channel_disconnected) < 0)
         return FALSE;
 
-    /* Prefer the graphics pipeline and AVC when the linked FreeRDP build has
-     * these capabilities. Unknown settings are rejected by FreeRDP, so these
-     * options are intentionally best-effort for distro-specific builds. */
+    /* Prefer the graphics pipeline when the matching client channel exists.
+     * Only advertise H.264 when the linked FreeRDP build actually contains a
+     * decoder; the Windows vcpkg package is commonly built without it. Unknown
+     * settings are rejected by FreeRDP, so these remain best-effort. */
+#if defined(CHANNEL_RDPGFX_CLIENT)
     (void)freerdp_settings_set_value_for_name(settings,
                                                "FreeRDP_SupportGraphicsPipeline", "TRUE");
+#if defined(WITH_GFX_H264)
     (void)freerdp_settings_set_value_for_name(settings, "FreeRDP_GfxH264", "TRUE");
+#else
+    (void)freerdp_settings_set_value_for_name(settings, "FreeRDP_GfxH264", "FALSE");
+#endif
+#else
+    (void)freerdp_settings_set_value_for_name(settings,
+                                               "FreeRDP_SupportGraphicsPipeline", "FALSE");
+    (void)freerdp_settings_set_value_for_name(settings, "FreeRDP_GfxH264", "FALSE");
+#endif
     return TRUE;
 }
 

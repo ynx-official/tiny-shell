@@ -1708,10 +1708,10 @@ impl TinyShell {
     }
 
     fn clear_incoming_native_tab_drag(&mut self, drag_id: u64, cx: &mut Context<Self>) -> bool {
-        if !self
+        if self
             .incoming_tab_drag
             .as_ref()
-            .is_some_and(|drag| drag.drag_id == drag_id)
+            .is_none_or(|drag| drag.drag_id != drag_id)
         {
             return false;
         }

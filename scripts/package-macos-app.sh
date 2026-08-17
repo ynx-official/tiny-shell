@@ -72,10 +72,11 @@ APP_DIR="$ROOT_DIR/target/release/${DISPLAY_NAME}.app"
 CONTENTS_DIR="$APP_DIR/Contents"
 MACOS_DIR="$CONTENTS_DIR/MacOS"
 RESOURCES_DIR="$CONTENTS_DIR/Resources"
+FRAMEWORKS_DIR="$CONTENTS_DIR/Frameworks"
 SIGN_IDENTITY="${SIGN_IDENTITY:--}"
 
 rm -rf "$APP_DIR"
-mkdir -p "$MACOS_DIR" "$RESOURCES_DIR"
+mkdir -p "$MACOS_DIR" "$RESOURCES_DIR" "$FRAMEWORKS_DIR"
 cp "$BINARY" "$MACOS_DIR/$APP_NAME"
 
 cp "$ROOT_DIR/assets/icons/tiny-shell.icns" "$RESOURCES_DIR/tiny-shell.icns"
@@ -84,6 +85,19 @@ sed "s/{{VERSION}}/${VERSION_NUM}/g" \
   "$ROOT_DIR/assets/macos/Info.plist" > "$CONTENTS_DIR/Info.plist"
 
 printf 'APPL????' > "$CONTENTS_DIR/PkgInfo"
+
+if otool -L "$MACOS_DIR/$APP_NAME" | grep -Eq 'lib(freerdp|winpr)'; then
+  if ! command -v dylibbundler >/dev/null 2>&1; then
+    echo "FreeRDP is linked, but dylibbundler is required to package its runtime libraries" >&2
+    echo "Install it with: brew install dylibbundler" >&2
+    exit 1
+  fi
+  dylibbundler \
+    -od -b \
+    -x "$MACOS_DIR/$APP_NAME" \
+    -d "$FRAMEWORKS_DIR" \
+    -p @executable_path/../Frameworks/
+fi
 
 if command -v codesign >/dev/null 2>&1; then
   # Important: do not pass an entitlements file here.

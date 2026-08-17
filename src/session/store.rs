@@ -543,8 +543,55 @@ fn event_route_id(event: &BackendEventEnvelope) -> Option<&str> {
 
 #[cfg(test)]
 mod tests {
-    use super::SessionStore;
-    use crate::terminal::BackendEvent;
+    use super::{EventQueue, SessionStore};
+    use crate::terminal::{BackendEvent, BackendEventEnvelope};
+
+    fn envelope(event: BackendEvent, sequence: u64) -> BackendEventEnvelope {
+        BackendEventEnvelope {
+            event,
+            generation: 1,
+            sequence,
+        }
+    }
+
+    #[test]
+    fn frame_wakeup_evicts_ordinary_event_from_full_owner_queue() {
+        let mut queue = EventQueue::default();
+        queue
+            .push_bounded(
+                envelope(
+                    BackendEvent::Status {
+                        tab_id: "rdp-a".to_string(),
+                        text: "waiting".to_string(),
+                    },
+                    1,
+                ),
+                1,
+                usize::MAX,
+            )
+            .unwrap();
+
+        queue
+            .push_bounded(
+                envelope(
+                    BackendEvent::RemoteDesktopFrameReady {
+                        tab_id: "rdp-a".to_string(),
+                        sequence: 1,
+                    },
+                    2,
+                ),
+                1,
+                usize::MAX,
+            )
+            .unwrap();
+
+        let queued = queue.pop_front().unwrap();
+        assert!(matches!(
+            queued.event,
+            BackendEvent::RemoteDesktopFrameReady { .. }
+        ));
+        assert!(queue.is_empty());
+    }
 
     #[test]
     fn queued_event_follows_moved_route() {

@@ -145,7 +145,7 @@ The current release workflow publishes the following artifacts:
 | --- | --- | --- |
 | Windows | x86_64 | `.exe` installer and portable `.zip` |
 | macOS | Apple Silicon / Intel | `.pkg` installer and portable `.zip` |
-| Linux | x86_64 | Generic `.tar.gz` |
+| Linux | x86_64 | Single-file `.AppImage` and generic `.tar.gz` |
 
 ### macOS
 
@@ -169,7 +169,14 @@ Choose one of the following packages from the [Releases page](https://github.com
 
 ### Linux
 
-Download `tiny-shell-*-linux-x86_64.tar.gz`, then run:
+Download `tiny-shell-*-linux-x86_64.AppImage`, make it executable, and launch it directly:
+
+```bash
+chmod +x tiny-shell-*-linux-x86_64.AppImage
+./tiny-shell-*-linux-x86_64.AppImage
+```
+
+The built-in updater recognizes AppImage installations, verifies the SHA-256 digest, atomically replaces the outer AppImage file, and restarts from that file. If your distribution does not provide a FUSE 2 compatibility layer (`libfuse2t64` on Ubuntu 24.04), install the matching package or use the `.tar.gz` archive instead:
 
 ```bash
 tar -xzf tiny-shell-*-linux-x86_64.tar.gz
@@ -177,9 +184,9 @@ cd tiny-shell-*-linux-x86_64
 ./tiny-shell
 ```
 
-If your system is missing GPUI runtime dependencies, install the corresponding X11, Wayland, Fontconfig, FreeType, OpenGL, and GTK runtime libraries through your distribution's package manager.
+The AppImage bundles TinyShell, FreeRDP/WinPR, and their non-system dynamic dependencies, but it does not bundle glibc, graphics drivers, or host graphics stacks such as Mesa and Vulkan. Linux releases retain an Ubuntu 24.04 glibc baseline. Install any missing X11, Wayland, Fontconfig, FreeType, and OpenGL runtime libraries through your distribution's package manager.
 
-> Debian package metadata is available in the repository, so developers can build a `.deb` with `cargo-deb`. The current GitHub Release workflow publishes a generic `.tar.gz` for Linux by default.
+> Debian package metadata remains available for developers who want to build a `.deb` with `cargo-deb`. GitHub Releases continue to include the `.tar.gz` archive for systems that cannot run the AppImage.
 
 ---
 
@@ -203,9 +210,9 @@ TinyShell handles sensitive values such as SSH passwords, private keys, and prox
 - [Rust](https://www.rust-lang.org/tools/install) `1.85.0` or later.
 - Cargo with Rust 2024 Edition support.
 - Git for cloning the repository and fetching Git dependencies.
-- Windows: MSVC Build Tools.
-- macOS: Xcode Command Line Tools.
-- Linux: C/C++ build tools plus the X11, Wayland, font, and graphics development libraries required by GPUI.
+- Windows: MSVC Build Tools; to use Windows Remote Desktop from a source build, also install FreeRDP 3 through vcpkg.
+- macOS: Xcode Command Line Tools; to use Windows Remote Desktop from a source build, also install the FreeRDP 3 development libraries so that `pkg-config` can find them.
+- Linux: C/C++ build tools plus the X11, Wayland, font, and graphics development libraries required by GPUI; to use Windows Remote Desktop from a source build, also install the FreeRDP 3 development libraries.
 
 ### Linux Build Dependencies
 
@@ -222,6 +229,19 @@ sudo apt-get install -y --no-install-recommends \
   libudev-dev
 ```
 
+On Debian or Ubuntu releases that provide it, install the FreeRDP 3 development package as well:
+
+```bash
+sudo apt-get install -y freerdp3-dev
+```
+
+On Windows, install FreeRDP with vcpkg and let the build script locate it through `VCPKG_ROOT`:
+
+```powershell
+vcpkg install "freerdp[client]:x64-windows"
+$env:VCPKG_ROOT = "C:\path\to\vcpkg"
+```
+
 ### Clone and Run
 
 ```bash
@@ -229,6 +249,17 @@ git clone https://github.com/ynx-official/tiny-shell.git
 cd tiny-shell
 cargo run
 ```
+
+The default `freerdp-auto` feature discovers FreeRDP 3 automatically. On Windows it looks for headers, libraries, and DLLs in vcpkg or explicitly configured paths; on macOS and Linux it queries `pkg-config` for `freerdp-client3`, `freerdp3`, and `winpr3`. When the dependencies are found, plain `cargo run` enables the native RDP backend. Windows runtime libraries are copied into Cargo's build output so that `cargo run` and tests can find them. If FreeRDP is not found, the project still builds and runs with the no-backend fallback.
+
+Use force mode when the native backend is required; the build fails immediately if its dependencies are missing. To explicitly build without the RDP backend, disable the default features:
+
+```bash
+cargo run --features freerdp
+cargo run --no-default-features
+```
+
+For non-standard installations, set `TINY_SHELL_FREERDP_INCLUDE_DIRS`, `TINY_SHELL_FREERDP_LIB_DIR`, and (on Windows) `TINY_SHELL_FREERDP_RUNTIME_DIR`. See the [FreeRDP integration notes](docs/02-design/remote-desktop-freerdp.md) for details.
 
 Build an optimized binary:
 
@@ -238,7 +269,7 @@ cargo build --locked --release
 
 ### Quality Checks
 
-CI runs formatting, Clippy, tests, and release builds on Windows, macOS, and Linux. Before submitting changes, run at least:
+CI runs formatting, Clippy, tests, and release builds on Windows, macOS, and Linux. The Ubuntu 24.04 gate also builds, extracts, and smoke-starts the AppImage under Xvfb. Before submitting changes, run at least:
 
 ```bash
 cargo fmt --all -- --check
@@ -254,11 +285,23 @@ macOS App Bundle:
 ./scripts/package-macos-app.sh
 ```
 
+When the default build discovers and links FreeRDP, the script uses `dylibbundler` to include its dynamic libraries in the app bundle; install it first with `brew install dylibbundler`.
+
 Windows installer and portable archive (requires Inno Setup 6):
 
 ```powershell
 ./scripts/package-windows.ps1
 ```
+
+The Windows script automatically reuses the FreeRDP DLLs copied into Cargo's `OUT_DIR`; use `-RuntimeDir` to select a runtime directory explicitly.
+
+Linux AppImage (requires the FreeRDP 3 development package, `curl`, `desktop-file-utils`, `file`, and `patchelf`):
+
+```bash
+bash scripts/package-linux-appimage.sh
+```
+
+The script pins `linuxdeploy 1-alpha-20251107-1` and verifies its SHA-256 digest. Pass `--linuxdeploy <path>` to use a pre-fetched tool. The output is `dist/tiny-shell-vX.Y.Z-linux-x86_64.AppImage`.
 
 Optional Debian package:
 

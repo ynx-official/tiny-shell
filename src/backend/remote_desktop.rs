@@ -200,8 +200,14 @@ impl DecodedFrame {
 }
 
 #[derive(Debug, Default)]
+struct FrameMailboxSlot {
+    latest: Option<DecodedFrame>,
+    wake_pending: bool,
+}
+
+#[derive(Debug, Default)]
 pub(crate) struct FrameMailbox {
-    latest: Mutex<Option<DecodedFrame>>,
+    slot: Mutex<FrameMailboxSlot>,
     published: AtomicU64,
     replaced: AtomicU64,
     consumed: AtomicU64,
@@ -222,7 +228,7 @@ pub(crate) struct RemoteDesktopRequest {
     pub(crate) generation: u64,
 }
 
-#[cfg(feature = "freerdp")]
+#[cfg(tiny_shell_freerdp_backend)]
 pub(crate) struct RemoteDesktopExit {
     pub(crate) reason: String,
     pub(crate) retryable: bool,
@@ -248,8 +254,8 @@ impl RemoteDesktopRequest {
 
 /// Start the protocol worker boundary used by the optional FreeRDP adapter.
 ///
-/// The native adapter is kept behind this boundary. Builds without the
-/// `freerdp` feature report a clear status while retaining the same lifecycle
+/// The native adapter is kept behind this boundary. Builds where FreeRDP was
+/// not discovered report a clear status while retaining the same lifecycle
 /// and cancellation contract used by SSH.
 pub(crate) fn spawn_remote_desktop_terminal(
     runtime: &tokio::runtime::Handle,
@@ -271,11 +277,11 @@ pub(crate) fn spawn_remote_desktop_terminal(
     let stop_requested = Arc::new(AtomicBool::new(false));
     let task_tab_id = tab_id.clone();
     let mailbox = Arc::new(FrameMailbox::default());
-    #[cfg(not(feature = "freerdp"))]
+    #[cfg(not(tiny_shell_freerdp_backend))]
     let _ = (width, height);
-    #[cfg(feature = "freerdp")]
+    #[cfg(tiny_shell_freerdp_backend)]
     let worker_mailbox = Arc::clone(&mailbox);
-    #[cfg(feature = "freerdp")]
+    #[cfg(tiny_shell_freerdp_backend)]
     {
         let worker_tab_id = task_tab_id.clone();
         let worker_events = events.clone();
@@ -309,7 +315,7 @@ pub(crate) fn spawn_remote_desktop_terminal(
         });
     }
 
-    #[cfg(not(feature = "freerdp"))]
+    #[cfg(not(tiny_shell_freerdp_backend))]
     runtime.spawn(async move {
         let mut command_rx = command_rx;
         let mut close_rx = _close_rx;
@@ -359,24 +365,36 @@ impl FrameMailbox {
     /// Publishes a frame and returns whether the UI needs a wake-up event.
     pub(crate) fn publish(&self, frame: DecodedFrame) -> bool {
         self.published.fetch_add(1, Ordering::Relaxed);
-        let mut latest = self
-            .latest
+        let mut slot = self
+            .slot
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let needs_wakeup = latest.is_none();
-        if latest.replace(frame).is_some() {
+        let needs_wakeup = !slot.wake_pending;
+        slot.wake_pending = true;
+        if slot.latest.replace(frame).is_some() {
             self.replaced.fetch_add(1, Ordering::Relaxed);
         }
         needs_wakeup
     }
 
-    pub(crate) fn take_latest(&self) -> Option<DecodedFrame> {
-        let frame = self
-            .latest
+    /// Re-arms notification delivery when the UI event cannot be delivered.
+    /// The latest frame stays available so the next frame can retry the
+    /// lightweight notification without copying it again.
+    pub(crate) fn wakeup_failed(&self) {
+        self.slot
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .take();
+            .wake_pending = false;
+    }
+
+    pub(crate) fn take_latest(&self) -> Option<DecodedFrame> {
+        let mut slot = self
+            .slot
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let frame = slot.latest.take();
         if frame.is_some() {
+            slot.wake_pending = false;
             self.consumed.fetch_add(1, Ordering::Relaxed);
         }
         frame
@@ -394,9 +412,10 @@ impl FrameMailbox {
     /// connection/decoder health while a future texture renderer consumes the
     /// owned pixel buffer.
     pub(crate) fn latest_metadata(&self) -> Option<(u64, FrameSize)> {
-        self.latest
+        self.slot
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .latest
             .as_ref()
             .map(|frame| (frame.sequence, frame.size))
     }
@@ -405,6 +424,9 @@ impl FrameMailbox {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(not(tiny_shell_freerdp_backend))]
+    use crate::terminal::backend_event_channel;
 
     fn frame(sequence: u64) -> DecodedFrame {
         let size = FrameSize::new(2, 1, 8).unwrap();
@@ -427,6 +449,56 @@ mod tests {
                 consumed: 1,
             }
         );
+    }
+
+    #[cfg(not(tiny_shell_freerdp_backend))]
+    #[test]
+    fn no_backend_build_reports_status_and_closes() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let (events, mut receiver) = backend_event_channel();
+        let session = Session::rdp(
+            "rdp.example.test".to_string(),
+            3389,
+            "tester".to_string(),
+            "secret".to_string(),
+        );
+        let request = RemoteDesktopRequest::new(
+            "rdp-fallback".to_string(),
+            session.clone(),
+            DEFAULT_REMOTE_DESKTOP_WIDTH,
+            DEFAULT_REMOTE_DESKTOP_HEIGHT,
+            7,
+        );
+
+        let (_backend, _mailbox) = spawn_remote_desktop_terminal(runtime.handle(), request, events);
+        runtime.block_on(async { tokio::task::yield_now().await });
+
+        let reason = rust_i18n::t!("rdp_backend_not_linked").to_string();
+        assert!(matches!(
+            receiver.try_recv().unwrap().event,
+            BackendEvent::Status { tab_id, text }
+                if tab_id == "rdp-fallback"
+                    && text == format!("{reason}: {}", session.host)
+        ));
+        assert!(matches!(
+            receiver.try_recv().unwrap().event,
+            BackendEvent::Closed { tab_id, reason: closed_reason }
+                if tab_id == "rdp-fallback" && closed_reason == reason
+        ));
+    }
+
+    #[test]
+    fn mailbox_retries_wakeup_after_event_delivery_fails() {
+        let mailbox = FrameMailbox::default();
+        assert!(mailbox.publish(frame(1)));
+
+        mailbox.wakeup_failed();
+
+        assert!(mailbox.publish(frame(2)));
+        assert_eq!(mailbox.take_latest().unwrap().sequence, 2);
     }
 
     #[test]

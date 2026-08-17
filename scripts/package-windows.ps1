@@ -30,6 +30,28 @@ if (-not (Test-Path -LiteralPath $sourceExe -PathType Leaf)) {
     throw "Compiled executable not found: $sourceExe"
 }
 
+if ([string]::IsNullOrWhiteSpace($RuntimeDir)) {
+    $buildRoot = Join-Path $root "target\$Target\release\build"
+    $coreRuntimeFiles = @("freerdp-client3.dll", "freerdp3.dll", "winpr3.dll")
+    $buildOutputs = Get-ChildItem -LiteralPath $buildRoot -Directory -Filter "tiny-shell-*" -ErrorAction SilentlyContinue |
+        Sort-Object LastWriteTime -Descending
+    foreach ($buildOutput in $buildOutputs) {
+        $candidate = Join-Path $buildOutput.FullName "out"
+        $hasCoreRuntime = $true
+        foreach ($runtimeFile in $coreRuntimeFiles) {
+            if (-not (Test-Path -LiteralPath (Join-Path $candidate $runtimeFile) -PathType Leaf)) {
+                $hasCoreRuntime = $false
+                break
+            }
+        }
+        if ($hasCoreRuntime) {
+            $RuntimeDir = $candidate
+            Write-Host "Using FreeRDP runtime copied by Cargo: $RuntimeDir"
+            break
+        }
+    }
+}
+
 if (-not [System.IO.Path]::IsPathRooted($OutputDir)) {
     $OutputDir = Join-Path $root $OutputDir
 }
@@ -59,8 +81,8 @@ if (-not [string]::IsNullOrWhiteSpace($RuntimeDir)) {
     if (-not (Test-Path -LiteralPath $RuntimeDir -PathType Container)) {
         throw "Runtime directory not found: $RuntimeDir"
     }
-    $runtimeFiles = Get-ChildItem -LiteralPath $RuntimeDir -File
-    if (-not ($runtimeFiles | Where-Object { $_.Extension -ieq ".dll" })) {
+    $runtimeFiles = Get-ChildItem -LiteralPath $RuntimeDir -File -Filter "*.dll"
+    if (-not $runtimeFiles) {
         throw "Runtime directory does not contain DLL files: $RuntimeDir"
     }
     $runtimeFiles | Copy-Item -Destination $portableDir

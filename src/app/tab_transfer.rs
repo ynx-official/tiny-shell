@@ -399,6 +399,11 @@ impl TinyShell {
                 return;
             }
         };
+        let transferred_tab_ids = transfers
+            .iter()
+            .flat_map(|transfer| transfer.tabs.iter())
+            .map(|(_, tab)| tab.id.clone())
+            .collect::<Vec<_>>();
 
         match super::startup::open_new_window_with_groups(
             transfers,
@@ -409,6 +414,7 @@ impl TinyShell {
         ) {
             Ok(()) => {
                 source.update(cx, |this, cx| {
+                    this.clear_transferred_remote_desktop_surfaces(&transferred_tab_ids);
                     this.status = t!("tab_groups_detached").into();
                     cx.notify();
                 });
@@ -455,6 +461,11 @@ impl TinyShell {
         let moved_search_target = transfer.tabs.iter().any(|(_, tab)| {
             source.read(cx).window_state.search_target_tab.as_deref() == Some(tab.id.as_str())
         });
+        let transferred_tab_ids = transfer
+            .tabs
+            .iter()
+            .map(|(_, tab)| tab.id.clone())
+            .collect::<Vec<_>>();
         let result = super::startup::open_new_window_with_group(
             transfer,
             source_owner_id,
@@ -467,6 +478,7 @@ impl TinyShell {
             match result {
                 Ok(()) => {
                     tracing::info!(group_id, "[tab-drag] detached window opened");
+                    this.clear_transferred_remote_desktop_surfaces(&transferred_tab_ids);
                     if moved_search_target {
                         this.window_state.search_target_tab = None;
                         this.window_state.search_matches.clear();
@@ -588,6 +600,11 @@ impl TinyShell {
                     .flat_map(|transfer| transfer.tabs.iter())
                     .any(|(_, tab)| tab.id == *id)
             });
+        let transferred_tab_ids = transfers
+            .iter()
+            .flat_map(|transfer| transfer.tabs.iter())
+            .map(|(_, tab)| tab.id.clone())
+            .collect::<Vec<_>>();
         let source_owner_id = self.session_owner_id;
         let result = target.update(cx, |target, cx| {
             target.incoming_tab_drag = None;
@@ -598,6 +615,7 @@ impl TinyShell {
 
         match result {
             Ok(()) => {
+                self.clear_transferred_remote_desktop_surfaces(&transferred_tab_ids);
                 let focus_handle = target.read(cx).focus_handle.clone();
                 super::activate_window_with_retry(target_window, focus_handle, cx);
                 if moved_search_target {
@@ -948,6 +966,12 @@ impl TinyShell {
             self.activate_after_group_extraction(group_index);
         } else {
             self.sync_system_tab_to_active_group();
+        }
+    }
+
+    fn clear_transferred_remote_desktop_surfaces(&mut self, tab_ids: &[String]) {
+        for tab_id in tab_ids {
+            self.remote_desktop_surfaces.remove(tab_id);
         }
     }
 
