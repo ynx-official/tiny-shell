@@ -148,8 +148,12 @@ pub struct ConfigFile {
     pub sync_backend: String,
     #[serde(default)]
     pub sync_enabled: bool,
-    #[serde(default = "default_sync_interval_hours")]
-    pub sync_interval_hours: u32,
+    /// New clients store the polling interval in minutes. Keeping the legacy
+    /// hours field readable lets older configuration files migrate safely.
+    #[serde(default)]
+    pub sync_interval_minutes: Option<u32>,
+    #[serde(default)]
+    pub sync_interval_hours: Option<u32>,
     #[serde(default)]
     pub sync_last_synced_at: i64,
     #[serde(default)]
@@ -246,6 +250,10 @@ pub(crate) fn default_sync_interval_hours() -> u32 {
     24
 }
 
+pub(crate) fn default_sync_interval_minutes() -> u32 {
+    5
+}
+
 pub(crate) fn default_update_interval_hours() -> u32 {
     24
 }
@@ -307,7 +315,8 @@ impl Default for ConfigFile {
             sync_device_id: String::new(),
             sync_backend: String::new(),
             sync_enabled: false,
-            sync_interval_hours: default_sync_interval_hours(),
+            sync_interval_minutes: Some(default_sync_interval_minutes()),
+            sync_interval_hours: Some(default_sync_interval_hours()),
             sync_last_synced_at: 0,
             sync_webdav_password_sealed: String::new(),
             sync_etag_backend: String::new(),
@@ -335,6 +344,23 @@ impl Default for ConfigFile {
     }
 }
 
+impl ConfigFile {
+    pub(crate) fn migrate_sync_interval(&mut self) {
+        let minutes = self
+            .sync_interval_minutes
+            .or_else(|| {
+                self.sync_interval_hours
+                    .map(|hours| hours.saturating_mul(60))
+            })
+            .unwrap_or_else(default_sync_interval_minutes)
+            .clamp(1, 525_600);
+        self.sync_interval_minutes = Some(minutes);
+        if self.sync_interval_hours.is_none() {
+            self.sync_interval_hours = Some(minutes.div_ceil(60));
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -352,7 +378,8 @@ mod tests {
         assert_eq!(config.update_interval_hours, 24);
         assert!(config.update_notify);
         assert!(!config.sync_enabled);
-        assert_eq!(config.sync_interval_hours, 24);
+        assert_eq!(config.sync_interval_minutes, Some(5));
+        assert_eq!(config.sync_interval_hours, Some(24));
         assert_eq!(config.sync_last_synced_at, 0);
         assert!(config.sync_webdav_password_sealed.is_empty());
         assert!(config.download_directory.is_empty());
@@ -366,5 +393,14 @@ mod tests {
             config.terminal_display_style,
             TerminalDisplayStyle::Standard
         );
+    }
+
+    #[test]
+    fn legacy_sync_interval_is_converted_from_hours_to_minutes() {
+        let mut config: ConfigFile = serde_json::from_str(r#"{"sync_interval_hours":24}"#).unwrap();
+
+        config.migrate_sync_interval();
+
+        assert_eq!(config.sync_interval_minutes, Some(1_440));
     }
 }

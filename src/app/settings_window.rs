@@ -25,18 +25,18 @@ impl SettingsWindow {
     ) -> Self {
         let inputs = SettingsInputs::new(&config, window, cx);
         let owner_subscription = cx.observe(&owner, |_, _, cx| cx.notify());
-        let sync_interval_hours = inputs.sync.interval_hours.clone();
+        let sync_interval_minutes = inputs.sync.interval_minutes.clone();
         let owner_for_sync_interval = owner.clone();
         let sync_interval_subscription = cx.subscribe_in(
-            &sync_interval_hours,
+            &sync_interval_minutes,
             window,
             move |_, input, event, window, cx| match event {
                 InputEvent::Change => {
-                    if let Some(hours) = crate::app::settings::actions::parse_hour_interval(
+                    if let Some(minutes) = crate::app::settings::actions::parse_minute_interval(
                         input.read(cx).value().as_ref(),
                     ) {
                         owner_for_sync_interval.update(cx, |this, cx| {
-                            this.config.set_sync_interval_hours(hours);
+                            this.config.set_sync_interval_minutes(minutes);
                             this.mark_config_preferences_dirty();
                             this.schedule_automatic_sync(false, cx);
                             cx.notify();
@@ -44,12 +44,12 @@ impl SettingsWindow {
                     }
                 }
                 InputEvent::Blur | InputEvent::PressEnter { .. } => {
-                    let hours = owner_for_sync_interval
+                    let minutes = owner_for_sync_interval
                         .read(cx)
                         .config
-                        .sync_interval_hours()
+                        .sync_interval_minutes()
                         .to_string();
-                    input.update(cx, |input, cx| input.set_value(hours, window, cx));
+                    input.update(cx, |input, cx| input.set_value(minutes, window, cx));
                     if matches!(event, InputEvent::PressEnter { .. }) {
                         window.prevent_default();
                         cx.stop_propagation();

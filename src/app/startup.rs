@@ -687,8 +687,10 @@ fn open_window_with_initializer(
             let window_handle = window.window_handle();
             view.update(cx, |this, cx| {
                 this.schedule_automatic_update_checks(window_handle, true, cx);
-                this.schedule_automatic_sync(false, cx);
-                this.request_automatic_sync(cx);
+                // The first workspace window must reconcile immediately. The
+                // scheduler itself owns this request so startup cannot race a
+                // second direct request and enqueue a duplicate sync.
+                this.schedule_automatic_sync(true, cx);
             });
         }
 

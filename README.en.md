@@ -100,6 +100,7 @@ After an SSH connection is established, the built-in SFTP manager can handle rem
 ### Configuration Sync and Migration
 
 - **WebDAV and S3**: Synchronize connection and application settings through widely available storage backends.
+- **Automatic WebDAV reconciliation**: Pull, merge, and push when needed after startup, saves, window activation, wake, and configurable minute-based checks.
 - **Preflight validation**: Validate configuration and credentials before upload to reduce failures caused by incomplete settings.
 - **Privacy-password verification**: Check the privacy password before synchronizing sensitive fields and detect missing or inconsistent passwords early.
 - **Conflict-aware merging**: Synchronization metadata includes timestamps and deletion state for cross-device catalog merging.

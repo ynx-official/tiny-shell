@@ -518,6 +518,7 @@ pub(crate) struct TinyShell {
     pub(crate) last_window_size: Option<gpui::Size<Pixels>>,
     pub(crate) last_registered_window_bounds: Option<Bounds<Pixels>>,
     pub(crate) was_window_active: bool,
+    pub(crate) last_prepaint_at: Option<Instant>,
     pub(crate) last_sidebar_width: Option<Pixels>,
     pub(crate) should_move_window: bool,
     pub(crate) hovered_url: Option<HoveredUrl>,
@@ -1039,6 +1040,7 @@ impl TinyShell {
             last_window_size: None,
             last_registered_window_bounds: None,
             was_window_active: false,
+            last_prepaint_at: None,
             last_sidebar_width,
             should_move_window: false,
             hovered_url: None,
@@ -1091,23 +1093,23 @@ impl TinyShell {
                 }
                 _ => {}
             }
-        } else if input == &self.settings_inputs.sync.interval_hours {
+        } else if input == &self.settings_inputs.sync.interval_minutes {
             match event {
                 InputEvent::Change => {
-                    if let Some(hours) =
-                        settings::actions::parse_hour_interval(input.read(cx).value().as_ref())
+                    if let Some(minutes) =
+                        settings::actions::parse_minute_interval(input.read(cx).value().as_ref())
                     {
-                        self.config.set_sync_interval_hours(hours);
+                        self.config.set_sync_interval_minutes(minutes);
                         self.mark_config_preferences_dirty();
                         self.schedule_automatic_sync(false, cx);
                     }
                 }
                 InputEvent::Blur | InputEvent::PressEnter { .. } => {
-                    let hours = self.config.sync_interval_hours().to_string();
+                    let minutes = self.config.sync_interval_minutes().to_string();
                     self.settings_inputs
                         .sync
-                        .interval_hours
-                        .update(cx, |input, cx| input.set_value(hours, window, cx));
+                        .interval_minutes
+                        .update(cx, |input, cx| input.set_value(minutes, window, cx));
                     if matches!(event, InputEvent::PressEnter { .. }) {
                         window.prevent_default();
                         cx.stop_propagation();

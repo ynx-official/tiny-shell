@@ -12,6 +12,14 @@ pub(crate) fn parse_hour_interval(value: &str) -> Option<u32> {
         .filter(|hours| (1..=8_760).contains(hours))
 }
 
+pub(crate) fn parse_minute_interval(value: &str) -> Option<u32> {
+    value
+        .trim()
+        .parse::<u32>()
+        .ok()
+        .filter(|minutes| (1..=525_600).contains(minutes))
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ProxyKind {
     Socks5,
@@ -211,7 +219,7 @@ impl TinyShell {
 
 #[cfg(test)]
 mod tests {
-    use super::{ProxyFormValues, ProxyKind, parse_hour_interval};
+    use super::{ProxyFormValues, ProxyKind, parse_hour_interval, parse_minute_interval};
 
     #[test]
     fn hour_interval_accepts_supported_range_only() {
@@ -221,6 +229,16 @@ mod tests {
         assert_eq!(parse_hour_interval("0"), None);
         assert_eq!(parse_hour_interval("8761"), None);
         assert_eq!(parse_hour_interval("invalid"), None);
+    }
+
+    #[test]
+    fn minute_interval_accepts_supported_range_only() {
+        assert_eq!(parse_minute_interval(" 5 "), Some(5));
+        assert_eq!(parse_minute_interval("1"), Some(1));
+        assert_eq!(parse_minute_interval("525600"), Some(525_600));
+        assert_eq!(parse_minute_interval("0"), None);
+        assert_eq!(parse_minute_interval("525601"), None);
+        assert_eq!(parse_minute_interval("invalid"), None);
     }
 
     #[test]

@@ -638,8 +638,14 @@ impl TinyShell {
                         | gpui::WindowBounds::Windowed(b) => b,
                     };
                     let is_window_active = window.is_window_active();
+                    let now = std::time::Instant::now();
 
                     view.update(cx, |this, cx| {
+                        let resumed_after_idle =
+                            crate::app::config_sync::should_reconcile_after_idle(
+                                this.last_prepaint_at,
+                                now,
+                            );
                         if this.last_registered_window_bounds != Some(screen_bounds) {
                             this.last_registered_window_bounds = Some(screen_bounds);
                             crate::app::update_window_bounds(handle, screen_bounds);
@@ -647,8 +653,15 @@ impl TinyShell {
                         if is_window_active && !this.was_window_active {
                             crate::app::mark_window_active(handle);
                             this.reconcile_on_window_activation(cx);
+                        } else if is_window_active && resumed_after_idle {
+                            // A sleeping device may wake while its native window
+                            // remains active, so no activation edge is emitted.
+                            // Reconcile once after the idle gap to catch remote
+                            // changes and let the normal ETag/merge path decide.
+                            this.request_automatic_sync(cx);
                         }
                         this.was_window_active = is_window_active;
+                        this.last_prepaint_at = Some(now);
 
                         this.open_pending_dialog(window, cx);
                         this.sync_tool_panel_target(cx);
