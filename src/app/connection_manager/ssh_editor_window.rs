@@ -1146,6 +1146,7 @@ fn render_group_picker(
     v_flex()
         .w(px(280.))
         .h(px(280.))
+        .overflow_hidden()
         .rounded_md()
         .border_1()
         .border_color(cx.theme().border)
@@ -1157,6 +1158,7 @@ fn render_group_picker(
             h_flex()
                 .id("ssh-editor-group-none")
                 .h(px(32.))
+                .flex_none()
                 .items_center()
                 .gap_2()
                 .pl(px(10.))
@@ -1191,88 +1193,96 @@ fn render_group_picker(
                 )
                 .child(t!("ssh_editor_group_unselected").to_string()),
         )
-        .child(div().mx_1().border_t_1().border_color(cx.theme().border))
         .child(
-            v_flex()
-                .id("ssh-editor-group-tree-scroll")
-                .flex_1()
-                .min_h(px(0.))
-                .overflow_y_scrollbar()
-                .children(rows.into_iter().enumerate().map(|(index, row)| {
-                    let path = row.path.clone();
-                    let selected_path = row.path.clone();
-                    let popover = popover.clone();
-                    let disclosure_icon = if row.expanded {
-                        IconName::ChevronDown
-                    } else {
-                        IconName::ChevronRight
-                    };
-                    let folder_icon = if row.expanded {
-                        IconName::FolderOpen
-                    } else {
-                        IconName::Folder
-                    };
+            div()
+                .mx_1()
+                .flex_none()
+                .border_t_1()
+                .border_color(cx.theme().border),
+        )
+        .child(
+            div().flex_1().min_h(px(0.)).overflow_hidden().child(
+                v_flex()
+                    .id("ssh-editor-group-tree-scroll")
+                    .size_full()
+                    .overflow_y_scrollbar()
+                    .children(rows.into_iter().enumerate().map(|(index, row)| {
+                        let path = row.path.clone();
+                        let selected_path = row.path.clone();
+                        let popover = popover.clone();
+                        let disclosure_icon = if row.expanded {
+                            IconName::ChevronDown
+                        } else {
+                            IconName::ChevronRight
+                        };
+                        let folder_icon = if row.expanded {
+                            IconName::FolderOpen
+                        } else {
+                            IconName::Folder
+                        };
 
-                    h_flex()
-                        .id(("ssh-editor-group-row", index))
-                        .h(px(32.))
-                        .items_center()
-                        .gap_2()
-                        .pl(px(10. + row.depth as f32 * 16.))
-                        .pr_2()
-                        .rounded_sm()
-                        .cursor_pointer()
-                        .text_size(rems(0.78))
-                        .when(selected.as_deref() == Some(row.path.as_str()), |this| {
-                            this.bg(cx.theme().selection.opacity(0.72))
-                        })
-                        .hover(|this| this.bg(cx.theme().secondary.opacity(0.65)))
-                        .on_click(window.listener_for(editor, move |this, _, window, cx| {
-                            this.group = Some(selected_path.clone());
-                            popover.update(cx, |state, cx| state.dismiss(window, cx));
-                            cx.notify();
-                        }))
-                        .child(
-                            div()
-                                .id(("ssh-editor-group-toggle", index))
-                                .w(px(16.))
-                                .h(px(18.))
-                                .flex_none()
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .when(row.has_children, |this| {
-                                    this.cursor_pointer().on_click(window.listener_for(
-                                        editor,
-                                        move |this, _, _, cx| {
-                                            if !this.group_picker_expanded.remove(&path) {
-                                                this.group_picker_expanded.insert(path.clone());
-                                            }
-                                            cx.stop_propagation();
-                                            cx.notify();
-                                        },
-                                    ))
-                                })
-                                .when(row.has_children, |this| {
-                                    this.child(Icon::new(disclosure_icon).with_size(Size::Small))
-                                }),
-                        )
-                        .child(
-                            div()
-                                .w(px(16.))
-                                .h(px(18.))
-                                .flex_none()
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .child(Icon::new(folder_icon).with_size(Size::Small)),
-                        )
-                        .child(
-                            div().min_w_0().flex_1().truncate().child(
+                        h_flex()
+                            .id(("ssh-editor-group-row", index))
+                            .h(px(32.))
+                            .flex_none()
+                            .items_center()
+                            .gap_2()
+                            .pl(px(10. + row.depth as f32 * 16.))
+                            .pr_2()
+                            .rounded_sm()
+                            .cursor_pointer()
+                            .text_size(rems(0.78))
+                            .when(selected.as_deref() == Some(row.path.as_str()), |this| {
+                                this.bg(cx.theme().selection.opacity(0.72))
+                            })
+                            .hover(|this| this.bg(cx.theme().secondary.opacity(0.65)))
+                            .on_click(window.listener_for(editor, move |this, _, window, cx| {
+                                this.group = Some(selected_path.clone());
+                                popover.update(cx, |state, cx| state.dismiss(window, cx));
+                                cx.notify();
+                            }))
+                            .child(
+                                div()
+                                    .id(("ssh-editor-group-toggle", index))
+                                    .w(px(16.))
+                                    .h(px(18.))
+                                    .flex_none()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .when(row.has_children, |this| {
+                                        this.cursor_pointer().on_click(window.listener_for(
+                                            editor,
+                                            move |this, _, _, cx| {
+                                                if !this.group_picker_expanded.remove(&path) {
+                                                    this.group_picker_expanded.insert(path.clone());
+                                                }
+                                                cx.stop_propagation();
+                                                cx.notify();
+                                            },
+                                        ))
+                                    })
+                                    .when(row.has_children, |this| {
+                                        this.child(
+                                            Icon::new(disclosure_icon).with_size(Size::Small),
+                                        )
+                                    }),
+                            )
+                            .child(
+                                div()
+                                    .w(px(16.))
+                                    .h(px(18.))
+                                    .flex_none()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .child(Icon::new(folder_icon).with_size(Size::Small)),
+                            )
+                            .child(div().min_w_0().flex_1().truncate().child(
                                 row.path.rsplit('/').next().unwrap_or(&row.path).to_string(),
-                            ),
-                        )
-                })),
+                            ))
+                    })),
+            ),
         )
         .into_any_element()
 }

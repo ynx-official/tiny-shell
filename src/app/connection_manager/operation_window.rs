@@ -460,6 +460,7 @@ impl ConnectionOperationWindow {
                     .id("connection-operation-targets")
                     .flex_1()
                     .min_h(px(0.))
+                    .overflow_hidden()
                     .rounded_md()
                     .border_1()
                     .border_color(cx.theme().border)
@@ -481,39 +482,41 @@ impl ConnectionOperationWindow {
                     .child(
                         gpui::div()
                             .mx_1()
+                            .flex_none()
                             .border_t_1()
                             .border_color(cx.theme().border),
                     )
                     .child(
-                        v_flex()
-                            .id("connection-operation-target-tree")
-                            .flex_1()
-                            .min_h(px(0.))
-                            .overflow_y_scrollbar()
-                            .children(visible_groups.into_iter().enumerate().map(
-                                |(index, (group, depth))| {
-                                    let label =
-                                        group.rsplit('/').next().unwrap_or(&group).to_string();
-                                    let has_children = groups.iter().any(|candidate| {
-                                        candidate
-                                            .strip_prefix(&format!("{group}/"))
-                                            .is_some_and(|rest| !rest.contains('/'))
-                                    });
-                                    let expanded = self.move_picker_expanded.contains(&group);
-                                    move_target_row(
-                                        ("connection-operation-target", index),
-                                        MoveTargetRow {
-                                            label,
-                                            depth,
-                                            target: Some(group),
-                                            has_children,
-                                            expanded,
-                                        },
-                                        is_group,
-                                        cx,
-                                    )
-                                },
-                            )),
+                        gpui::div().flex_1().min_h(px(0.)).overflow_hidden().child(
+                            v_flex()
+                                .id("connection-operation-target-tree")
+                                .size_full()
+                                .overflow_y_scrollbar()
+                                .children(visible_groups.into_iter().enumerate().map(
+                                    |(index, (group, depth))| {
+                                        let label =
+                                            group.rsplit('/').next().unwrap_or(&group).to_string();
+                                        let has_children = groups.iter().any(|candidate| {
+                                            candidate
+                                                .strip_prefix(&format!("{group}/"))
+                                                .is_some_and(|rest| !rest.contains('/'))
+                                        });
+                                        let expanded = self.move_picker_expanded.contains(&group);
+                                        move_target_row(
+                                            ("connection-operation-target", index),
+                                            MoveTargetRow {
+                                                label,
+                                                depth,
+                                                target: Some(group),
+                                                has_children,
+                                                expanded,
+                                            },
+                                            is_group,
+                                            cx,
+                                        )
+                                    },
+                                )),
+                        ),
                     ),
             )
             .child(
@@ -604,6 +607,7 @@ fn move_target_row(
         .id(id)
         .w_full()
         .h(px(32.))
+        .flex_none()
         .items_center()
         .gap_2()
         .pl(px(10. + row.depth as f32 * 16.))
