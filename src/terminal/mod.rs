@@ -1015,6 +1015,7 @@ impl TerminalTab {
         tab
     }
 
+    #[cfg(not(target_os = "windows"))]
     pub fn new_rdp(
         id: String,
         session: &Session,

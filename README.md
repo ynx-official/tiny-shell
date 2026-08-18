@@ -210,7 +210,7 @@ TinyShell 会处理 SSH 密码、私钥和代理凭据等敏感信息。使用�
 - [Rust](https://www.rust-lang.org/tools/install) `1.85.0` 或更高版本。
 - 支持 Rust 2024 Edition 的 Cargo。
 - Git，用于获取仓库及 Git 依赖。
-- Windows：MSVC Build Tools；如需从源码使用 Windows 远程桌面，还需通过 vcpkg 安装 FreeRDP 3。
+- Windows：MSVC Build Tools；Windows 远程桌面由系统自带的 `mstsc.exe` 提供，无需安装 FreeRDP。
 - macOS：Xcode Command Line Tools；如需从源码使用 Windows 远程桌面，还需安装可由 `pkg-config` 发现的 FreeRDP 3 开发库。
 - Linux：C/C++ 构建工具及 GPUI 所需的 X11、Wayland、字体和图形开发库；如需从源码使用 Windows 远程桌面，还需 FreeRDP 3 开发库。
 
@@ -235,12 +235,7 @@ sudo apt-get install -y --no-install-recommends \
 sudo apt-get install -y freerdp3-dev
 ```
 
-Windows 可使用 vcpkg 安装，并让构建脚本通过 `VCPKG_ROOT` 定位安装目录：
-
-```powershell
-vcpkg install "freerdp[client]:x64-windows"
-$env:VCPKG_ROOT = "C:\path\to\vcpkg"
-```
+Windows 连接会由 TinyShell 生成临时 `.rdp` 配置并调用系统 `mstsc.exe`；请确保系统启用了“远程桌面连接”组件。
 
 ### 获取代码并运行
 
@@ -250,16 +245,16 @@ cd tiny-shell
 cargo run
 ```
 
-默认特性 `freerdp-auto` 会自动查找 FreeRDP 3：Windows 从 vcpkg 或显式环境变量中发现头文件、库和 DLL，macOS/Linux 通过 `pkg-config` 查找 `freerdp-client3`、`freerdp3` 和 `winpr3`。发现依赖后，普通的 `cargo run` 会直接启用原生 RDP 后端；Windows 运行库会复制到 Cargo 的构建输出目录，供 `cargo run` 和测试使用。未发现依赖时仍可构建和运行，但会使用不包含 RDP 后端的回退版本。
+默认特性 `freerdp-auto` 仅用于 macOS/Linux，通过 `pkg-config` 查找 `freerdp-client3`、`freerdp3` 和 `winpr3`。Windows 不编译 FreeRDP，而是在双击 RDP 连接时调用系统 `mstsc.exe`。未发现 macOS/Linux FreeRDP 时仍可构建和运行，但会使用不包含 RDP 后端的回退版本。
 
 需要保证原生后端存在时使用强制模式；依赖缺失会立即构建失败。若明确只需无 RDP 后端的版本，则关闭默认特性：
 
 ```bash
-cargo run --features freerdp
+cargo run --features freerdp # macOS/Linux
 cargo run --no-default-features
 ```
 
-非标准安装目录可以通过 `TINY_SHELL_FREERDP_INCLUDE_DIRS`、`TINY_SHELL_FREERDP_LIB_DIR` 和（Windows）`TINY_SHELL_FREERDP_RUNTIME_DIR` 指定，详见 [FreeRDP 对接说明](docs/02-design/remote-desktop-freerdp.md)。
+macOS/Linux 的非标准 FreeRDP 安装目录可以通过 `TINY_SHELL_FREERDP_INCLUDE_DIRS`、`TINY_SHELL_FREERDP_LIB_DIR` 指定，详见 [FreeRDP 对接说明](docs/02-design/remote-desktop-freerdp.md)。
 
 构建优化版本：
 
@@ -293,7 +288,7 @@ Windows 安装版与便携版（需要 Inno Setup 6）：
 ./scripts/package-windows.ps1
 ```
 
-Windows 脚本会自动复用 Cargo `OUT_DIR` 中已发现的 FreeRDP DLL；也可通过 `-RuntimeDir` 显式指定运行库目录。
+Windows 安装包不携带 FreeRDP DLL，运行时使用系统 `mstsc.exe`。
 
 Linux AppImage（需要 FreeRDP 3 开发包、`curl`、`desktop-file-utils`、`file` 和 `patchelf`）：
 

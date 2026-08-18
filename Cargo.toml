@@ -8,8 +8,9 @@ license = "GPL-3.0-or-later"
 rust-version = "1.85.0"
 
 [features]
-# Source builds use FreeRDP when its native dependencies can be discovered.
-# `freerdp` remains the force-on mode used by release builds.
+# macOS/Linux source builds use FreeRDP when native dependencies can be
+# discovered. Windows launches the system mstsc.exe client instead.
+# `freerdp` remains the force-on mode for macOS/Linux release builds.
 default = ["freerdp-auto"]
 freerdp-auto = []
 freerdp = []
@@ -66,6 +67,7 @@ sha2 = "0.10"
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.55"
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security_Credentials"] }
 
 [package.metadata.deb]
 maintainer = "tiny-shell contributors"

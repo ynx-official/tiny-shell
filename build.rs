@@ -37,7 +37,9 @@ fn main() {
 
     let force_freerdp = env::var_os("CARGO_FEATURE_FREERDP").is_some();
     let auto_freerdp = env::var_os("CARGO_FEATURE_FREERDP_AUTO").is_some();
-    if force_freerdp || auto_freerdp {
+    // Windows uses the operating system's mstsc.exe client.  FreeRDP remains
+    // a native backend for macOS and Linux only.
+    if (force_freerdp || auto_freerdp) && !target_is_windows() {
         match discover_freerdp() {
             Ok(Some(paths)) => compile_freerdp_bridge(paths),
             Ok(None) if force_freerdp => {
@@ -60,6 +62,10 @@ fn main() {
                 panic!("invalid FreeRDP configuration: {error}");
             }
         }
+    } else if target_is_windows() && force_freerdp {
+        println!(
+            "cargo:warning=the `freerdp` feature is ignored on Windows; TinyShell launches mstsc.exe"
+        );
     }
 
     #[cfg(windows)]

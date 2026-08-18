@@ -210,7 +210,7 @@ TinyShell handles sensitive values such as SSH passwords, private keys, and prox
 - [Rust](https://www.rust-lang.org/tools/install) `1.85.0` or later.
 - Cargo with Rust 2024 Edition support.
 - Git for cloning the repository and fetching Git dependencies.
-- Windows: MSVC Build Tools; to use Windows Remote Desktop from a source build, also install FreeRDP 3 through vcpkg.
+- Windows: MSVC Build Tools; Windows Remote Desktop uses the system `mstsc.exe` client, so FreeRDP is not required.
 - macOS: Xcode Command Line Tools; to use Windows Remote Desktop from a source build, also install the FreeRDP 3 development libraries so that `pkg-config` can find them.
 - Linux: C/C++ build tools plus the X11, Wayland, font, and graphics development libraries required by GPUI; to use Windows Remote Desktop from a source build, also install the FreeRDP 3 development libraries.
 
@@ -235,12 +235,7 @@ On Debian or Ubuntu releases that provide it, install the FreeRDP 3 development 
 sudo apt-get install -y freerdp3-dev
 ```
 
-On Windows, install FreeRDP with vcpkg and let the build script locate it through `VCPKG_ROOT`:
-
-```powershell
-vcpkg install "freerdp[client]:x64-windows"
-$env:VCPKG_ROOT = "C:\path\to\vcpkg"
-```
+On Windows, TinyShell writes a temporary `.rdp` profile and launches the system `mstsc.exe` client. Make sure the Windows Remote Desktop Connection component is available.
 
 ### Clone and Run
 
@@ -250,16 +245,16 @@ cd tiny-shell
 cargo run
 ```
 
-The default `freerdp-auto` feature discovers FreeRDP 3 automatically. On Windows it looks for headers, libraries, and DLLs in vcpkg or explicitly configured paths; on macOS and Linux it queries `pkg-config` for `freerdp-client3`, `freerdp3`, and `winpr3`. When the dependencies are found, plain `cargo run` enables the native RDP backend. Windows runtime libraries are copied into Cargo's build output so that `cargo run` and tests can find them. If FreeRDP is not found, the project still builds and runs with the no-backend fallback.
+The default `freerdp-auto` feature is used only on macOS and Linux, where it discovers FreeRDP 3 through `pkg-config`. Windows does not compile FreeRDP; double-clicking an RDP connection launches the system `mstsc.exe` client. If FreeRDP is not found on macOS or Linux, the project still builds and runs with the no-backend fallback.
 
 Use force mode when the native backend is required; the build fails immediately if its dependencies are missing. To explicitly build without the RDP backend, disable the default features:
 
 ```bash
-cargo run --features freerdp
+cargo run --features freerdp # macOS/Linux
 cargo run --no-default-features
 ```
 
-For non-standard installations, set `TINY_SHELL_FREERDP_INCLUDE_DIRS`, `TINY_SHELL_FREERDP_LIB_DIR`, and (on Windows) `TINY_SHELL_FREERDP_RUNTIME_DIR`. See the [FreeRDP integration notes](docs/02-design/remote-desktop-freerdp.md) for details.
+For non-standard macOS/Linux FreeRDP installations, set `TINY_SHELL_FREERDP_INCLUDE_DIRS` and `TINY_SHELL_FREERDP_LIB_DIR`. See the [FreeRDP integration notes](docs/02-design/remote-desktop-freerdp.md) for details.
 
 Build an optimized binary:
 
@@ -293,7 +288,7 @@ Windows installer and portable archive (requires Inno Setup 6):
 ./scripts/package-windows.ps1
 ```
 
-The Windows script automatically reuses the FreeRDP DLLs copied into Cargo's `OUT_DIR`; use `-RuntimeDir` to select a runtime directory explicitly.
+Windows packages use the system `mstsc.exe` client and do not bundle FreeRDP DLLs.
 
 Linux AppImage (requires the FreeRDP 3 development package, `curl`, `desktop-file-utils`, `file`, and `patchelf`):
 
