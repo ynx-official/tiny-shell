@@ -739,6 +739,7 @@ pub(crate) fn install_and_restart(
 
 /// Restart the application by launching the new binary and exiting.
 fn restart() -> ! {
+    #[cfg(not(target_os = "windows"))]
     let current_exe = match std::env::current_exe() {
         Ok(p) => p,
         Err(e) => {

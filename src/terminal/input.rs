@@ -3,8 +3,9 @@ use std::ops::Range;
 use alacritty_terminal::index::Side;
 use alacritty_terminal::selection::SelectionType;
 use gpui::{
-    ClipboardItem, Context, Focusable as _, KeyDownEvent, KeyUpEvent, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, Pixels, Point, ScrollDelta, ScrollWheelEvent, Window, px,
+    ClipboardItem, Context, Focusable as _, KeyDownEvent, KeyUpEvent, ModifiersChangedEvent,
+    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, ScrollDelta,
+    ScrollWheelEvent, Window, px,
 };
 
 use crate::{
@@ -54,16 +55,26 @@ fn rdp_scancode(key: &str) -> Option<(u32, bool)> {
         "x" => 0x2d,
         "y" => 0x15,
         "z" => 0x2c,
-        "1" | "!" => 0x02,
-        "2" | "@" => 0x03,
-        "3" | "#" => 0x04,
-        "4" | "$" => 0x05,
-        "5" | "%" => 0x06,
-        "6" | "^" => 0x07,
-        "7" | "&" => 0x08,
-        "8" | "*" => 0x09,
-        "9" | "(" => 0x0a,
-        "0" | ")" => 0x0b,
+        "1" | "digit1" | "!" => 0x02,
+        "2" | "digit2" | "@" => 0x03,
+        "3" | "digit3" | "#" => 0x04,
+        "4" | "digit4" | "$" => 0x05,
+        "5" | "digit5" | "%" => 0x06,
+        "6" | "digit6" | "^" => 0x07,
+        "7" | "digit7" | "&" => 0x08,
+        "8" | "digit8" | "*" => 0x09,
+        "9" | "digit9" | "(" => 0x0a,
+        "0" | "digit0" | ")" => 0x0b,
+        "numpad0" => return Some((0x52, false)),
+        "numpad1" => return Some((0x4f, false)),
+        "numpad2" => return Some((0x50, false)),
+        "numpad3" => return Some((0x51, false)),
+        "numpad4" => return Some((0x4b, false)),
+        "numpad5" => return Some((0x4c, false)),
+        "numpad6" => return Some((0x4d, false)),
+        "numpad7" => return Some((0x47, false)),
+        "numpad8" => return Some((0x48, false)),
+        "numpad9" => return Some((0x49, false)),
         "escape" | "esc" => 0x01,
         "backspace" => 0x0e,
         "tab" => 0x0f,
@@ -110,6 +121,45 @@ fn rdp_scancode(key: &str) -> Option<(u32, bool)> {
         _ => return None,
     };
     Some((code, false))
+}
+
+const RDP_MOD_CONTROL: u8 = 1 << 0;
+const RDP_MOD_ALT: u8 = 1 << 1;
+const RDP_MOD_SHIFT: u8 = 1 << 2;
+const RDP_MOD_WINDOWS: u8 = 1 << 3;
+
+fn rdp_modifier_mask(modifiers: gpui::Modifiers) -> u8 {
+    let mut mask = 0;
+    if modifiers.control || (cfg!(target_os = "macos") && modifiers.platform) {
+        mask |= RDP_MOD_CONTROL;
+    }
+    if modifiers.alt {
+        mask |= RDP_MOD_ALT;
+    }
+    if modifiers.shift {
+        mask |= RDP_MOD_SHIFT;
+    }
+    if modifiers.platform && !cfg!(target_os = "macos") {
+        mask |= RDP_MOD_WINDOWS;
+    }
+    mask
+}
+
+fn rdp_modifier_scancode(bit: u8) -> Option<(u32, bool)> {
+    match bit {
+        RDP_MOD_CONTROL => Some((0x1d, false)),
+        RDP_MOD_ALT => Some((0x38, false)),
+        RDP_MOD_SHIFT => Some((0x2a, false)),
+        RDP_MOD_WINDOWS => Some((0x5b, true)),
+        _ => None,
+    }
+}
+
+fn is_rdp_modifier_key(key: &str) -> bool {
+    matches!(
+        key.to_ascii_lowercase().as_str(),
+        "control" | "ctrl" | "alt" | "option" | "shift" | "command" | "meta" | "super"
+    )
 }
 
 fn rdp_fitted_point(
@@ -188,6 +238,11 @@ impl TinyShell {
         let Some(tab_id) = self.active_remote_desktop_tab() else {
             return false;
         };
+        if is_rdp_modifier_key(&event.keystroke.key) {
+            window.prevent_default();
+            cx.stop_propagation();
+            return true;
+        }
         let Some((scancode, extended)) = rdp_scancode(&event.keystroke.key) else {
             return false;
         };
@@ -213,6 +268,11 @@ impl TinyShell {
         let Some(tab_id) = self.active_remote_desktop_tab() else {
             return false;
         };
+        if is_rdp_modifier_key(&event.keystroke.key) {
+            window.prevent_default();
+            cx.stop_propagation();
+            return true;
+        }
         let Some((scancode, extended)) = rdp_scancode(&event.keystroke.key) else {
             return false;
         };
@@ -227,6 +287,67 @@ impl TinyShell {
         window.prevent_default();
         cx.stop_propagation();
         true
+    }
+
+    pub(crate) fn on_remote_desktop_modifiers_changed(
+        &mut self,
+        event: &ModifiersChangedEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(tab_id) = self.active_remote_desktop_tab() else {
+            return false;
+        };
+        let next = rdp_modifier_mask(event.modifiers);
+        let previous = self
+            .rdp_modifier_state
+            .insert(tab_id.clone(), next)
+            .unwrap_or_default();
+        for bit in [RDP_MOD_CONTROL, RDP_MOD_ALT, RDP_MOD_SHIFT, RDP_MOD_WINDOWS] {
+            if (previous & bit) == (next & bit) {
+                continue;
+            }
+            let Some((scancode, extended)) = rdp_modifier_scancode(bit) else {
+                continue;
+            };
+            self.send_remote_desktop_input(
+                &tab_id,
+                RemoteDesktopInput::Key {
+                    scancode,
+                    down: next & bit != 0,
+                    extended,
+                },
+            );
+        }
+        window.prevent_default();
+        cx.stop_propagation();
+        true
+    }
+
+    /// Releases modifiers that were synthesized for an embedded RDP tab
+    /// before focus moves to another pane. GPUI reports the eventual key-up
+    /// against the new active pane, so forwarding it there would leave the
+    /// old remote session stuck in Ctrl/Alt/Shift/Win.
+    pub(crate) fn release_rdp_modifiers(&mut self, tab_id: &str) {
+        let Some(mask) = self.rdp_modifier_state.remove(tab_id) else {
+            return;
+        };
+        for bit in [RDP_MOD_CONTROL, RDP_MOD_ALT, RDP_MOD_SHIFT, RDP_MOD_WINDOWS] {
+            if mask & bit == 0 {
+                continue;
+            }
+            let Some((scancode, extended)) = rdp_modifier_scancode(bit) else {
+                continue;
+            };
+            self.send_remote_desktop_input(
+                tab_id,
+                RemoteDesktopInput::Key {
+                    scancode,
+                    down: false,
+                    extended,
+                },
+            );
+        }
     }
 
     pub(crate) fn on_remote_desktop_mouse_down(
@@ -475,10 +596,8 @@ impl TinyShell {
         }
         if event.keystroke.modifiers.secondary() && event.keystroke.key.eq_ignore_ascii_case("v") {
             if let Some(clipboard) = cx.read_from_clipboard() {
-                if let Some(text) = clipboard.text() {
-                    self.paste_into_terminal(&text, window, cx);
-                    return;
-                }
+                self.paste_clipboard_item(&clipboard, window, cx);
+                return;
             }
         }
 
@@ -770,7 +889,15 @@ impl TinyShell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let completion_text = trackable_terminal_paste(text).map(str::to_owned);
+        self.paste_text_into_terminal(text, window, cx);
+    }
+
+    pub(crate) fn paste_clipboard_item(
+        &mut self,
+        item: &ClipboardItem,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(active_id) = self.preferred_terminal_tab_id() else {
             return;
         };
@@ -779,12 +906,41 @@ impl TinyShell {
         };
 
         if tab.kind == TabKind::Rdp {
-            tab.send_backend(BackendCommand::RemoteDesktopClipboard(text.to_owned()));
+            let paths = item.entries().iter().find_map(|entry| match entry {
+                gpui::ClipboardEntry::ExternalPaths(paths) if !paths.0.is_empty() => {
+                    Some(paths.0.to_vec())
+                }
+                _ => None,
+            });
+            if let Some(paths) = paths {
+                tab.send_backend(BackendCommand::RemoteDesktopClipboardFiles(paths));
+            } else if let Some(text) = item.text() {
+                tab.send_backend(BackendCommand::RemoteDesktopClipboard(text));
+            }
             window.prevent_default();
             cx.stop_propagation();
             cx.notify();
             return;
         }
+
+        if let Some(text) = item.text() {
+            self.paste_text_into_terminal(&text, window, cx);
+        }
+    }
+
+    fn paste_text_into_terminal(
+        &mut self,
+        text: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let completion_text = trackable_terminal_paste(text).map(str::to_owned);
+        let Some(active_id) = self.preferred_terminal_tab_id() else {
+            return;
+        };
+        let Some(tab) = self.terminal_tab_mut(&active_id) else {
+            return;
+        };
 
         if tab.display_offset() > 0 {
             tab.scroll_to_bottom();
@@ -1172,7 +1328,8 @@ mod tests {
     use gpui::MouseButton;
 
     use super::{
-        printable_terminal_input, rdp_fitted_point, rdp_mouse_button, rdp_scancode,
+        RDP_MOD_ALT, RDP_MOD_CONTROL, RDP_MOD_SHIFT, RDP_MOD_WINDOWS, printable_terminal_input,
+        rdp_fitted_point, rdp_modifier_mask, rdp_modifier_scancode, rdp_mouse_button, rdp_scancode,
         trackable_terminal_paste,
     };
 
@@ -1201,10 +1358,61 @@ mod tests {
     #[test]
     fn rdp_scancodes_cover_common_keyboard_navigation() {
         assert_eq!(rdp_scancode("A"), Some((0x1e, false)));
+        assert_eq!(rdp_scancode("0"), Some((0x0b, false)));
+        assert_eq!(rdp_scancode("1"), Some((0x02, false)));
+        assert_eq!(rdp_scancode("9"), Some((0x0a, false)));
+        assert_eq!(rdp_scancode("Digit1"), Some((0x02, false)));
+        assert_eq!(rdp_scancode("Numpad7"), Some((0x47, false)));
         assert_eq!(rdp_scancode("f12"), Some((0x58, false)));
         assert_eq!(rdp_scancode("ArrowLeft"), Some((0x4b, true)));
         assert_eq!(rdp_scancode("PageDown"), Some((0x51, true)));
         assert_eq!(rdp_scancode("unknown-key"), None);
+    }
+
+    #[test]
+    fn rdp_modifier_scancodes_match_windows_set_1() {
+        assert_eq!(rdp_modifier_scancode(RDP_MOD_CONTROL), Some((0x1d, false)));
+        assert_eq!(rdp_modifier_scancode(RDP_MOD_ALT), Some((0x38, false)));
+        assert_eq!(rdp_modifier_scancode(RDP_MOD_SHIFT), Some((0x2a, false)));
+        assert_eq!(rdp_modifier_scancode(RDP_MOD_WINDOWS), Some((0x5b, true)));
+        assert_eq!(rdp_modifier_scancode(0), None);
+    }
+
+    #[test]
+    fn rdp_modifier_mask_preserves_native_control_alt_shift() {
+        let modifiers = gpui::Modifiers {
+            control: true,
+            alt: true,
+            shift: true,
+            ..Default::default()
+        };
+        let mask = rdp_modifier_mask(modifiers);
+        assert_eq!(
+            mask & (RDP_MOD_CONTROL | RDP_MOD_ALT | RDP_MOD_SHIFT),
+            RDP_MOD_CONTROL | RDP_MOD_ALT | RDP_MOD_SHIFT
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn mac_command_is_forwarded_as_remote_control() {
+        let mask = rdp_modifier_mask(gpui::Modifiers {
+            platform: true,
+            ..Default::default()
+        });
+        assert_ne!(mask & RDP_MOD_CONTROL, 0);
+        assert_eq!(mask & RDP_MOD_WINDOWS, 0);
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn platform_modifier_remains_remote_windows_key_off_macos() {
+        let mask = rdp_modifier_mask(gpui::Modifiers {
+            platform: true,
+            ..Default::default()
+        });
+        assert_eq!(mask & RDP_MOD_CONTROL, 0);
+        assert_ne!(mask & RDP_MOD_WINDOWS, 0);
     }
 
     #[test]

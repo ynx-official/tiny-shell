@@ -32,6 +32,29 @@ const STATE_DISCONNECTED: u32 = 3;
 const STATE_FAILED: u32 = 4;
 const MAX_CLIPBOARD_BYTES: usize = 8 * 1024 * 1024;
 const MAX_FRAME_DIAGNOSTIC_SAMPLES: usize = 4096;
+const CONNECTION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+const FIRST_FRAME_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
+fn encode_remote_clipboard(text: &str) -> Option<Vec<u16>> {
+    let utf16: Vec<u16> = text.encode_utf16().collect();
+    (utf16.len() <= MAX_CLIPBOARD_BYTES / size_of::<u16>()).then_some(utf16)
+}
+
+fn encode_remote_clipboard_files(paths: &[std::path::PathBuf]) -> Option<Vec<u8>> {
+    if paths.is_empty() {
+        return None;
+    }
+    let mut encoded = Vec::new();
+    for path in paths {
+        let value = path.to_str()?;
+        if value.is_empty() || value.contains('\0') {
+            return None;
+        }
+        encoded.extend_from_slice(value.as_bytes());
+        encoded.push(0);
+    }
+    (encoded.len() <= MAX_CLIPBOARD_BYTES).then_some(encoded)
+}
 
 #[repr(C)]
 struct NativeConfig {
@@ -108,6 +131,11 @@ unsafe extern "C" {
         text: *const u16,
         length: usize,
     ) -> i32;
+    fn tiny_shell_rdp_client_clipboard_files(
+        client: *mut NativeClient,
+        paths: *const u8,
+        length: usize,
+    ) -> i32;
     fn tiny_shell_rdp_client_text(
         client: *mut NativeClient,
         text: *const u16,
@@ -127,10 +155,47 @@ struct CallbackBridge {
     sequence: AtomicU64,
     last_frame_dimensions: AtomicU64,
     last_frame_diagnostic_sequence: AtomicU64,
+    connected_at: Mutex<Option<std::time::Instant>>,
+    first_frame_seen: AtomicBool,
+    frame_rate_sample: Mutex<FrameRateSample>,
     command_rx: Mutex<mpsc::Receiver<BackendCommand>>,
+    mouse_move: Arc<Mutex<Option<(u16, u16)>>>,
     pending_resize: Mutex<Option<(u32, u32, std::time::Instant)>>,
     failure_reason: Mutex<Option<String>>,
     client: std::sync::atomic::AtomicUsize,
+}
+
+#[derive(Debug)]
+struct FrameRateSample {
+    started: std::time::Instant,
+    frames: u32,
+}
+
+impl Default for FrameRateSample {
+    fn default() -> Self {
+        Self {
+            started: std::time::Instant::now(),
+            frames: 0,
+        }
+    }
+}
+
+impl FrameRateSample {
+    fn record(&mut self, now: std::time::Instant) -> Option<f64> {
+        self.frames = self.frames.saturating_add(1);
+        if self.frames < 60 {
+            return None;
+        }
+        let elapsed = now.saturating_duration_since(self.started);
+        let fps = if elapsed.is_zero() {
+            0.0
+        } else {
+            f64::from(self.frames) / elapsed.as_secs_f64()
+        };
+        self.started = now;
+        self.frames = 0;
+        Some(fps)
+    }
 }
 
 pub(crate) struct RunRequest {
@@ -142,6 +207,7 @@ pub(crate) struct RunRequest {
     pub(crate) mailbox: Arc<FrameMailbox>,
     pub(crate) stop_requested: Arc<AtomicBool>,
     pub(crate) command_rx: mpsc::Receiver<BackendCommand>,
+    pub(crate) mouse_move: Arc<Mutex<Option<(u16, u16)>>>,
 }
 
 pub(crate) fn run(request: RunRequest) -> RemoteDesktopExit {
@@ -161,6 +227,7 @@ fn run_inner(request: RunRequest) -> Result<RemoteDesktopExit> {
         mailbox,
         stop_requested,
         command_rx,
+        mouse_move,
     } = request;
     let Session {
         host: host_value,
@@ -186,7 +253,11 @@ fn run_inner(request: RunRequest) -> Result<RemoteDesktopExit> {
         sequence: AtomicU64::new(0),
         last_frame_dimensions: AtomicU64::new(0),
         last_frame_diagnostic_sequence: AtomicU64::new(0),
+        connected_at: Mutex::new(None),
+        first_frame_seen: AtomicBool::new(false),
+        frame_rate_sample: Mutex::new(FrameRateSample::default()),
         command_rx: Mutex::new(command_rx),
+        mouse_move,
         pending_resize: Mutex::new(None),
         failure_reason: Mutex::new(None),
         client: std::sync::atomic::AtomicUsize::new(0),
@@ -231,9 +302,38 @@ fn run_inner(request: RunRequest) -> Result<RemoteDesktopExit> {
         let monitor_finished = Arc::clone(&worker_finished);
         let monitor_stop = Arc::clone(&stop_requested);
         let client_address = client as usize;
+        let bridge_address = bridge_ptr as usize;
         scope.spawn(move || {
+            let started = std::time::Instant::now();
             while !monitor_finished.load(Ordering::Acquire) {
                 if monitor_stop.load(Ordering::Acquire) {
+                    unsafe { tiny_shell_rdp_client_stop(client_address as *mut NativeClient) };
+                    break;
+                }
+                let connected = unsafe {
+                    (*(bridge_address as *const CallbackBridge))
+                        .connected_at
+                        .lock()
+                        .ok()
+                        .is_some_and(|connected_at| connected_at.is_some())
+                };
+                if !connected && started.elapsed() >= CONNECTION_TIMEOUT {
+                    if let Ok(mut reason) = unsafe {
+                        (*(bridge_address as *const CallbackBridge))
+                            .failure_reason
+                            .lock()
+                    } {
+                        if reason.is_none() {
+                            *reason = Some(
+                                t!(
+                                    "rdp_connection_timeout",
+                                    seconds = CONNECTION_TIMEOUT.as_secs()
+                                )
+                                .to_string(),
+                            );
+                        }
+                    }
+                    monitor_stop.store(true, Ordering::Release);
                     unsafe { tiny_shell_rdp_client_stop(client_address as *mut NativeClient) };
                     break;
                 }
@@ -296,6 +396,9 @@ unsafe extern "C" fn on_state(
             });
         }
         STATE_CONNECTED => {
+            if let Ok(mut connected_at) = bridge.connected_at.lock() {
+                *connected_at = Some(std::time::Instant::now());
+            }
             tracing::info!(tab_id = %bridge.tab_id, "RDP connection established");
             let _ = bridge.events.send(BackendEvent::Connected {
                 tab_id: bridge.tab_id.clone(),
@@ -355,6 +458,17 @@ unsafe extern "C" fn on_frame(
         return;
     };
     let sequence = bridge.sequence.fetch_add(1, Ordering::Relaxed) + 1;
+    let Ok(frame) = DecodedFrame::new(sequence, size, slice.to_vec()) else {
+        return;
+    };
+    // Only a validated frame counts as the first desktop image. A malformed
+    // callback must not disable the watchdog while the UI is still blank.
+    bridge.first_frame_seen.store(true, Ordering::Release);
+    if let Ok(mut sample) = bridge.frame_rate_sample.lock()
+        && let Some(fps) = sample.record(std::time::Instant::now())
+    {
+        tracing::debug!(tab_id = %bridge.tab_id, sequence, received_fps = fps, "RDP frame rate sample");
+    }
     if sequence == 1 {
         tracing::info!(
             tab_id = %bridge.tab_id,
@@ -364,9 +478,6 @@ unsafe extern "C" fn on_frame(
             "received first RDP frame"
         );
     }
-    let Ok(frame) = DecodedFrame::new(sequence, size, slice.to_vec()) else {
-        return;
-    };
     let dimensions = (u64::from(width) << 32) | u64::from(height);
     let previous_dimensions = bridge
         .last_frame_dimensions
@@ -466,7 +577,31 @@ unsafe extern "C" fn should_stop(user_data: *mut c_void) -> i32 {
     let Some(bridge) = (unsafe { user_data.cast::<CallbackBridge>().as_ref() }) else {
         return 1;
     };
-    i32::from(bridge.stop_requested.load(Ordering::Acquire))
+    if bridge.stop_requested.load(Ordering::Acquire) {
+        return 1;
+    }
+    let first_frame_timed_out = !bridge.first_frame_seen.load(Ordering::Acquire)
+        && bridge
+            .connected_at
+            .lock()
+            .ok()
+            .and_then(|connected_at| connected_at.map(|at| at.elapsed() >= FIRST_FRAME_TIMEOUT))
+            .unwrap_or(false);
+    if first_frame_timed_out {
+        if let Ok(mut reason) = bridge.failure_reason.lock() {
+            if reason.is_none() {
+                *reason = Some(
+                    t!(
+                        "rdp_first_frame_timeout",
+                        seconds = FIRST_FRAME_TIMEOUT.as_secs()
+                    )
+                    .to_string(),
+                );
+            }
+        }
+        return 1;
+    }
+    0
 }
 
 unsafe extern "C" fn on_poll(user_data: *mut c_void) {
@@ -480,6 +615,17 @@ unsafe extern "C" fn on_poll(user_data: *mut c_void) {
     let Ok(mut commands) = bridge.command_rx.lock() else {
         return;
     };
+    let pending_mouse_move = bridge
+        .mouse_move
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .take();
+    if let Some((x, y)) = pending_mouse_move {
+        let success = unsafe { tiny_shell_rdp_client_mouse(client, 0x0800, x, y) != 0 };
+        if !success {
+            tracing::debug!("FreeRDP rejected a coalesced mouse move");
+        }
+    }
     let mut pending_move = None;
     while let Ok(command) = commands.try_recv() {
         if let BackendCommand::RemoteDesktopInput(RemoteDesktopInput::MouseMove { x, y }) = &command
@@ -519,13 +665,16 @@ unsafe extern "C" fn on_poll(user_data: *mut c_void) {
                 },
                 RemoteDesktopInput::MouseMove { .. } => true,
             },
-            BackendCommand::RemoteDesktopClipboard(text) => {
-                let utf16: Vec<u16> = text.encode_utf16().collect();
-                utf16.len() <= MAX_CLIPBOARD_BYTES / size_of::<u16>()
-                    && unsafe {
-                        tiny_shell_rdp_client_clipboard(client, utf16.as_ptr(), utf16.len()) != 0
-                            || tiny_shell_rdp_client_text(client, utf16.as_ptr(), utf16.len()) != 0
-                    }
+            BackendCommand::RemoteDesktopClipboard(text) => encode_remote_clipboard(&text)
+                .is_some_and(|utf16| unsafe {
+                    tiny_shell_rdp_client_clipboard(client, utf16.as_ptr(), utf16.len()) != 0
+                        || tiny_shell_rdp_client_text(client, utf16.as_ptr(), utf16.len()) != 0
+                }),
+            BackendCommand::RemoteDesktopClipboardFiles(paths) => {
+                encode_remote_clipboard_files(&paths).is_some_and(|encoded| unsafe {
+                    tiny_shell_rdp_client_clipboard_files(client, encoded.as_ptr(), encoded.len())
+                        != 0
+                })
             }
             BackendCommand::Close => {
                 bridge.stop_requested.store(true, Ordering::Release);
@@ -704,6 +853,29 @@ unsafe extern "C" fn on_clipboard(user_data: *mut c_void, text: *const u8, lengt
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn remote_clipboard_encoding_preserves_unicode_and_enforces_limit() {
+        assert_eq!(
+            encode_remote_clipboard("Mac 剪贴板"),
+            Some("Mac 剪贴板".encode_utf16().collect())
+        );
+        let oversized = "x".repeat(MAX_CLIPBOARD_BYTES / size_of::<u16>() + 1);
+        assert!(encode_remote_clipboard(&oversized).is_none());
+    }
+
+    #[test]
+    fn remote_file_clipboard_encoding_is_nul_delimited_and_rejects_nul_paths() {
+        let paths = vec![
+            std::path::PathBuf::from("/Users/test/one.txt"),
+            std::path::PathBuf::from("/Users/test/two.png"),
+        ];
+        assert_eq!(
+            encode_remote_clipboard_files(&paths),
+            Some(b"/Users/test/one.txt\0/Users/test/two.png\0".to_vec())
+        );
+        assert!(encode_remote_clipboard_files(&[std::path::PathBuf::from("bad\0path")]).is_none());
+    }
 
     #[test]
     fn frame_pixel_stats_ignore_stride_padding() {

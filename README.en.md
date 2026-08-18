@@ -256,6 +256,8 @@ cargo run --no-default-features
 
 For non-standard macOS/Linux FreeRDP installations, set `TINY_SHELL_FREERDP_INCLUDE_DIRS` and `TINY_SHELL_FREERDP_LIB_DIR`. See the [FreeRDP integration notes](docs/02-design/remote-desktop-freerdp.md) for details.
 
+Embedded RDP on macOS/Linux supports Cmd/Ctrl modifiers, number keys, and text clipboard. Files copied to the local Mac system clipboard can also be pasted into the remote Windows session. Clean RDP mode hides the sidebar and tabs and reveals its toolbar from the top edge. Windows continues to use the native `mstsc.exe` path and does not use this FreeRDP input or clipboard implementation.
+
 Build an optimized binary:
 
 ```bash

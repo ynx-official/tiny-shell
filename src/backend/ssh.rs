@@ -398,7 +398,8 @@ async fn run_ssh(
                     }
                     Some(BackendCommand::RemoteDesktopResize { .. })
                     | Some(BackendCommand::RemoteDesktopInput(_))
-                    | Some(BackendCommand::RemoteDesktopClipboard(_)) => {}
+                    | Some(BackendCommand::RemoteDesktopClipboard(_))
+                    | Some(BackendCommand::RemoteDesktopClipboardFiles(_)) => {}
                     Some(BackendCommand::SampleMetrics) => {
                         if !metrics_in_flight {
                             const METRICS_TIMEOUT: std::time::Duration =

@@ -94,14 +94,16 @@ fn write_session_credential(session: &Session) -> Result<Vec<u16>> {
         .encode_utf16()
         .flat_map(u16::to_le_bytes)
         .collect::<Vec<_>>();
-    let mut credential = CREDENTIALW::default();
-    credential.Type = CRED_TYPE_DOMAIN_PASSWORD;
-    credential.TargetName = target.as_mut_ptr();
-    credential.UserName = username.as_mut_ptr();
-    credential.CredentialBlobSize = u32::try_from(password.len())
-        .map_err(|_| anyhow!("RDP password is too long for Windows Credential Manager"))?;
-    credential.CredentialBlob = password.as_mut_ptr();
-    credential.Persist = CRED_PERSIST_SESSION;
+    let credential = CREDENTIALW {
+        Type: CRED_TYPE_DOMAIN_PASSWORD,
+        TargetName: target.as_mut_ptr(),
+        UserName: username.as_mut_ptr(),
+        CredentialBlobSize: u32::try_from(password.len())
+            .map_err(|_| anyhow!("RDP password is too long for Windows Credential Manager"))?,
+        CredentialBlob: password.as_mut_ptr(),
+        Persist: CRED_PERSIST_SESSION,
+        ..Default::default()
+    };
 
     let written = unsafe { CredWriteW(&credential, 0) } != 0;
     password.fill(0);

@@ -256,6 +256,8 @@ cargo run --no-default-features
 
 macOS/Linux 的非标准 FreeRDP 安装目录可以通过 `TINY_SHELL_FREERDP_INCLUDE_DIRS`、`TINY_SHELL_FREERDP_LIB_DIR` 指定，详见 [FreeRDP 对接说明](docs/02-design/remote-desktop-freerdp.md)。
 
+macOS/Linux 的嵌入式 RDP 支持 Cmd/Ctrl、数字键和文本剪贴板；Mac 本地系统剪贴板中的文件也可以粘贴到远程 Windows。RDP 纯净模式会隐藏侧栏与标签栏，并在顶部自动收起工具栏。Windows 本机仍完全使用系统 `mstsc.exe`，不使用这套 FreeRDP 输入和剪贴板路径。
+
 构建优化版本：
 
 ```bash

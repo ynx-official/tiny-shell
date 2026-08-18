@@ -58,6 +58,8 @@ pub(crate) enum BackendCommand {
     RemoteDesktopInput(RemoteDesktopInput),
     #[cfg_attr(not(tiny_shell_freerdp_backend), allow(dead_code))]
     RemoteDesktopClipboard(String),
+    #[cfg_attr(not(tiny_shell_freerdp_backend), allow(dead_code))]
+    RemoteDesktopClipboardFiles(Vec<std::path::PathBuf>),
     SampleMetrics,
     Docker(crate::docker::DockerRequest),
     Close,
@@ -71,6 +73,7 @@ impl BackendCommand {
             Self::RemoteDesktopResize { .. } => "remote-desktop-resize",
             Self::RemoteDesktopInput(_) => "remote-desktop-input",
             Self::RemoteDesktopClipboard(_) => "remote-desktop-clipboard",
+            Self::RemoteDesktopClipboardFiles(_) => "remote-desktop-clipboard-files",
             Self::SampleMetrics => "sample-metrics",
             Self::Docker(_) => "docker",
             Self::Close => "close",
@@ -804,6 +807,7 @@ pub(crate) enum BackendTx {
         commands: tokio::sync::mpsc::Sender<BackendCommand>,
         close: tokio::sync::watch::Sender<bool>,
         resize: tokio::sync::watch::Sender<Option<(u16, u16)>>,
+        mouse_move: Arc<Mutex<Option<(u16, u16)>>>,
         stop_requested: Arc<AtomicBool>,
     },
 }
@@ -845,6 +849,15 @@ impl BackendTx {
             }
             (Self::Rdp { resize, .. }, BackendCommand::Resize { cols, rows }) => {
                 resize.send(Some((cols, rows))).is_ok()
+            }
+            (
+                Self::Rdp { mouse_move, .. },
+                BackendCommand::RemoteDesktopInput(RemoteDesktopInput::MouseMove { x, y }),
+            ) => {
+                *mouse_move
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some((x, y));
+                true
             }
             (Self::Rdp { commands, .. }, command) => commands.try_send(command).is_ok(),
         };

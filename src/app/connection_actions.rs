@@ -356,7 +356,6 @@ impl TinyShell {
                 }
             }
             cx.notify();
-            return;
         }
 
         #[cfg(not(target_os = "windows"))]

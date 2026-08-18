@@ -16,18 +16,29 @@
 #include <freerdp/error.h>
 #include <freerdp/freerdp.h>
 #include <freerdp/gdi/gdi.h>
+#include <freerdp/utils/cliprdr_utils.h>
 #if defined(CHANNEL_RDPGFX_CLIENT)
 #include <freerdp/gdi/gfx.h>
 #endif
 #include <freerdp/input.h>
 #include <freerdp/settings.h>
 #include <winpr/crt.h>
+#include <winpr/file.h>
 #include <winpr/interlocked.h>
+#include <winpr/string.h>
 #include <winpr/synch.h>
 
 #include <stdio.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+
+#define TINY_SHELL_RDP_EVENT_WAIT_MS 16
+#define TINY_SHELL_FILE_GROUP_DESCRIPTOR_FORMAT 0xC001u
+#define TINY_SHELL_FILE_CONTENTS_FORMAT 0xC002u
+#define TINY_SHELL_MAX_CLIPBOARD_FILES 256u
+#define TINY_SHELL_MAX_FILE_CHUNK (4u * 1024u * 1024u)
 
 typedef struct tiny_shell_rdp_context {
     rdpContext context;
@@ -44,6 +55,9 @@ struct tiny_shell_rdp_client {
     CliprdrClientContext* cliprdr;
     uint16_t* clipboard_text;
     size_t clipboard_length;
+    char* clipboard_files;
+    size_t clipboard_files_length;
+    size_t clipboard_file_count;
     uint32_t pending_width;
     uint32_t pending_height;
     BOOL disp_ready;
@@ -59,6 +73,8 @@ static UINT ts_cliprdr_server_format_data_request(
     CliprdrClientContext* cliprdr, const CLIPRDR_FORMAT_DATA_REQUEST* request);
 static UINT ts_cliprdr_server_format_data_response(
     CliprdrClientContext* cliprdr, const CLIPRDR_FORMAT_DATA_RESPONSE* response);
+static UINT ts_cliprdr_server_file_contents_request(
+    CliprdrClientContext* cliprdr, const CLIPRDR_FILE_CONTENTS_REQUEST* request);
 static UINT ts_disp_caps(DispClientContext* disp, UINT32 max_monitors,
                          UINT32 area_factor_a, UINT32 area_factor_b);
 
@@ -126,6 +142,7 @@ static void ts_channel_connected(void* value, const ChannelConnectedEventArgs* e
             client->cliprdr->ServerFormatList = ts_cliprdr_server_format_list;
             client->cliprdr->ServerFormatDataRequest = ts_cliprdr_server_format_data_request;
             client->cliprdr->ServerFormatDataResponse = ts_cliprdr_server_format_data_response;
+            client->cliprdr->ServerFileContentsRequest = ts_cliprdr_server_file_contents_request;
         }
     }
 }
@@ -358,20 +375,103 @@ static UINT ts_cliprdr_send_capabilities(CliprdrClientContext* cliprdr)
     general.capabilitySetType = CB_CAPSTYPE_GENERAL;
     general.capabilitySetLength = CB_CAPSTYPE_GENERAL_LEN;
     general.version = CB_CAPS_VERSION_2;
-    general.generalFlags = CB_USE_LONG_FORMAT_NAMES;
+    general.generalFlags = CB_USE_LONG_FORMAT_NAMES | CB_STREAM_FILECLIP_ENABLED |
+                           CB_HUGE_FILE_SUPPORT_ENABLED;
     return cliprdr->ClientCapabilities(cliprdr, &capabilities);
 }
 
 static UINT ts_cliprdr_send_format_list(CliprdrClientContext* cliprdr)
 {
-    CLIPRDR_FORMAT format = { 0 };
+    tiny_shell_rdp_client* client = cliprdr ? (tiny_shell_rdp_client*)cliprdr->custom : NULL;
+    CLIPRDR_FORMAT formats[3] = { 0 };
     CLIPRDR_FORMAT_LIST list = { 0 };
     if (!cliprdr || !cliprdr->ClientFormatList)
         return CHANNEL_RC_BAD_CHANNEL_HANDLE;
-    format.formatId = CF_UNICODETEXT;
-    list.numFormats = 1;
-    list.formats = &format;
+    // A file-only paste must not advertise an empty CF_UNICODETEXT entry:
+    // Windows may choose it before the file formats and then treat the paste
+    // as text instead of requesting FileGroupDescriptorW/FileContents.
+    if (!client || client->clipboard_file_count == 0)
+    {
+        formats[list.numFormats].formatId = CF_UNICODETEXT;
+        list.numFormats++;
+    }
+    list.formats = formats;
+    if (client && client->clipboard_file_count > 0)
+    {
+        formats[list.numFormats].formatId = TINY_SHELL_FILE_GROUP_DESCRIPTOR_FORMAT;
+        formats[list.numFormats].formatName = "FileGroupDescriptorW";
+        list.numFormats++;
+        formats[list.numFormats].formatId = TINY_SHELL_FILE_CONTENTS_FORMAT;
+        formats[list.numFormats].formatName = "FileContents";
+        list.numFormats++;
+    }
     return cliprdr->ClientFormatList(cliprdr, &list);
+}
+
+static const char* ts_cliprdr_file_at(const tiny_shell_rdp_client* client, size_t index)
+{
+    const char* current = NULL;
+    size_t current_index = 0;
+    if (!client || index >= client->clipboard_file_count || !client->clipboard_files)
+        return NULL;
+    current = client->clipboard_files;
+    while ((size_t)(current - client->clipboard_files) < client->clipboard_files_length)
+    {
+        if (current_index == index)
+            return current;
+        current += strlen(current) + 1;
+        current_index++;
+    }
+    return NULL;
+}
+
+static BOOL ts_cliprdr_fill_file_descriptor(const char* path, FILEDESCRIPTORW* descriptor)
+{
+    struct stat info = { 0 };
+    const char* name = NULL;
+    if (!path || !descriptor || stat(path, &info) != 0)
+        return FALSE;
+    descriptor->dwFlags = FD_ATTRIBUTES | FD_FILESIZE | FD_PROGRESSUI;
+    descriptor->dwFileAttributes = S_ISDIR(info.st_mode) ? FILE_ATTRIBUTE_DIRECTORY
+                                                         : FILE_ATTRIBUTE_NORMAL;
+    if (!S_ISDIR(info.st_mode) && info.st_size >= 0)
+    {
+        const uint64_t size = (uint64_t)info.st_size;
+        descriptor->nFileSizeLow = (DWORD)(size & UINT32_MAX);
+        descriptor->nFileSizeHigh = (DWORD)(size >> 32);
+    }
+    name = strrchr(path, '/');
+    if (!name)
+        name = strrchr(path, '\\');
+    name = name ? name + 1 : path;
+    return ConvertUtf8ToWChar(name, descriptor->cFileName,
+                              sizeof(descriptor->cFileName) / sizeof(descriptor->cFileName[0])) >=
+           0;
+}
+
+static UINT ts_cliprdr_file_descriptor_data(const tiny_shell_rdp_client* client,
+                                            BYTE** data, UINT32* data_length)
+{
+    FILEDESCRIPTORW* descriptors = NULL;
+    UINT result = CHANNEL_RC_BAD_CHANNEL_HANDLE;
+    if (!client || !data || !data_length || client->clipboard_file_count == 0 ||
+        client->clipboard_file_count > TINY_SHELL_MAX_CLIPBOARD_FILES)
+        return result;
+    descriptors = (FILEDESCRIPTORW*)calloc(client->clipboard_file_count,
+                                            sizeof(FILEDESCRIPTORW));
+    if (!descriptors)
+        return result;
+    for (size_t index = 0; index < client->clipboard_file_count; index++)
+    {
+        const char* path = ts_cliprdr_file_at(client, index);
+        if (!ts_cliprdr_fill_file_descriptor(path, &descriptors[index]))
+            goto exit;
+    }
+    result = cliprdr_serialize_file_list(descriptors, (UINT32)client->clipboard_file_count,
+                                         data, data_length);
+exit:
+    free(descriptors);
+    return result;
 }
 
 static UINT ts_cliprdr_monitor_ready(CliprdrClientContext* cliprdr,
@@ -422,9 +522,24 @@ static UINT ts_cliprdr_server_format_data_request(
 {
     CLIPRDR_FORMAT_DATA_RESPONSE response = { 0 };
     tiny_shell_rdp_client* client = cliprdr ? (tiny_shell_rdp_client*)cliprdr->custom : NULL;
+    BYTE* file_data = NULL;
+    UINT32 file_data_length = 0;
     if (!cliprdr || !request || !cliprdr->ClientFormatDataResponse)
         return CHANNEL_RC_BAD_CHANNEL_HANDLE;
-    if (!client || request->requestedFormatId != CF_UNICODETEXT || !client->clipboard_text)
+    if (client && request->requestedFormatId == TINY_SHELL_FILE_GROUP_DESCRIPTOR_FORMAT)
+    {
+        if (ts_cliprdr_file_descriptor_data(client, &file_data, &file_data_length) ==
+                CHANNEL_RC_OK &&
+            file_data)
+        {
+            response.common.msgFlags = CB_RESPONSE_OK;
+            response.common.dataLen = file_data_length;
+            response.requestedFormatData = file_data;
+        }
+        else
+            response.common.msgFlags = CB_RESPONSE_FAIL;
+    }
+    else if (!client || request->requestedFormatId != CF_UNICODETEXT || !client->clipboard_text)
     {
         response.common.msgFlags = CB_RESPONSE_FAIL;
     }
@@ -434,7 +549,9 @@ static UINT ts_cliprdr_server_format_data_request(
         response.common.dataLen = (UINT32)((client->clipboard_length + 1) * sizeof(uint16_t));
         response.requestedFormatData = (const BYTE*)client->clipboard_text;
     }
-    return cliprdr->ClientFormatDataResponse(cliprdr, &response);
+    UINT result = cliprdr->ClientFormatDataResponse(cliprdr, &response);
+    free(file_data);
+    return result;
 }
 
 static UINT ts_cliprdr_server_format_data_response(
@@ -448,6 +565,78 @@ static UINT ts_cliprdr_server_format_data_response(
                                    response->requestedFormatData,
                                    response->common.dataLen);
     return CHANNEL_RC_OK;
+}
+
+static UINT ts_cliprdr_server_file_contents_request(
+    CliprdrClientContext* cliprdr, const CLIPRDR_FILE_CONTENTS_REQUEST* request)
+{
+    tiny_shell_rdp_client* client = cliprdr ? (tiny_shell_rdp_client*)cliprdr->custom : NULL;
+    CLIPRDR_FILE_CONTENTS_RESPONSE response = { 0 };
+    BYTE size_data[sizeof(uint64_t)] = { 0 };
+    BYTE* data = NULL;
+    const char* path = NULL;
+    FILE* file = NULL;
+    size_t data_length = 0;
+    if (!cliprdr || !request || !cliprdr->ClientFileContentsResponse || !client ||
+        request->listIndex >= client->clipboard_file_count ||
+        request->dwFlags == (FILECONTENTS_SIZE | FILECONTENTS_RANGE))
+        return CHANNEL_RC_BAD_CHANNEL_HANDLE;
+    path = ts_cliprdr_file_at(client, request->listIndex);
+    if (!path)
+        return CHANNEL_RC_BAD_CHANNEL_HANDLE;
+
+    if (request->dwFlags == FILECONTENTS_SIZE)
+    {
+        struct stat info = { 0 };
+        uint64_t size = 0;
+        if (stat(path, &info) != 0 || info.st_size < 0)
+            goto fail;
+        size = (uint64_t)info.st_size;
+        memcpy(size_data, &size, sizeof(size));
+        data = size_data;
+        data_length = sizeof(size_data);
+    }
+    else if (request->dwFlags == FILECONTENTS_RANGE)
+    {
+        const uint64_t offset = ((uint64_t)request->nPositionHigh << 32) |
+                                request->nPositionLow;
+        const size_t requested = request->cbRequested > TINY_SHELL_MAX_FILE_CHUNK
+                                     ? TINY_SHELL_MAX_FILE_CHUNK
+                                     : request->cbRequested;
+        file = fopen(path, "rb");
+        if (!file || fseek(file, (long)offset, SEEK_SET) != 0)
+            goto fail;
+        data = requested ? (BYTE*)malloc(requested) : NULL;
+        if (requested > 0 && !data)
+            goto fail;
+        data_length = requested ? fread(data, 1, requested, file) : 0;
+    }
+    else
+        goto fail;
+
+    response.common.msgFlags = CB_RESPONSE_OK;
+    response.streamId = request->streamId;
+    response.cbRequested = (UINT32)data_length;
+    response.requestedData = data;
+    {
+        const UINT result = cliprdr->ClientFileContentsResponse(cliprdr, &response);
+        if (file)
+            fclose(file);
+        if (data != size_data)
+            free(data);
+        return result;
+    }
+
+fail:
+    if (file)
+        fclose(file);
+    if (data && data != size_data)
+        free(data);
+    response.common.msgFlags = CB_RESPONSE_FAIL;
+    response.streamId = request->streamId;
+    response.cbRequested = 0;
+    response.requestedData = NULL;
+    return cliprdr->ClientFileContentsResponse(cliprdr, &response);
 }
 
 static void ts_post_disconnect(freerdp* instance)
@@ -553,12 +742,35 @@ int tiny_shell_rdp_client_run(tiny_shell_rdp_client* client)
         return -1;
     instance = client->context->instance;
     context = client->context;
-    InterlockedExchange(&client->stop_requested, 0);
     ts_emit_state(client, TINY_SHELL_RDP_STATE_CONNECTING, 0, "connecting");
 
-    if (freerdp_client_start(context) != 0 || !freerdp_connect(instance))
+    // The Rust stop monitor can observe a close before this worker reaches
+    // freerdp_connect. Never clear that request here: doing so would allow a
+    // just-cancelled connection to proceed and potentially block in the
+    // synchronous handshake.
+    if (InterlockedCompareExchange(&client->stop_requested, 0, 0) ||
+        (client->callbacks.should_stop &&
+         client->callbacks.should_stop(client->callbacks.user_data)))
+    {
+        return 0;
+    }
+
+    const int start_result = freerdp_client_start(context);
+    if (start_result != 0)
     {
         error_code = freerdp_get_last_error(context);
+        if (error_code == 0)
+            error_code = (uint32_t)start_result;
+        ts_emit_state(client, TINY_SHELL_RDP_STATE_FAILED, error_code,
+                      freerdp_get_last_error_string(error_code));
+        (void)freerdp_client_stop(context);
+        return (int)error_code;
+    }
+    if (!freerdp_connect(instance))
+    {
+        error_code = freerdp_get_last_error(context);
+        if (error_code == 0)
+            error_code = FREERDP_ERROR_CONNECT_FAILED;
         ts_emit_state(client, TINY_SHELL_RDP_STATE_FAILED, error_code,
                       freerdp_get_last_error_string(error_code));
         (void)freerdp_client_stop(context);
@@ -581,7 +793,7 @@ int tiny_shell_rdp_client_run(tiny_shell_rdp_client* client)
         count = freerdp_get_event_handles(context, handles, ARRAYSIZE(handles));
         if (count == 0)
             break;
-        if (WaitForMultipleObjects(count, handles, FALSE, 100) == WAIT_FAILED)
+        if (WaitForMultipleObjects(count, handles, FALSE, TINY_SHELL_RDP_EVENT_WAIT_MS) == WAIT_FAILED)
             break;
         if (!freerdp_check_event_handles(context))
             break;
@@ -676,6 +888,43 @@ int tiny_shell_rdp_client_clipboard(tiny_shell_rdp_client* client,
     }
     client->clipboard_text = copy;
     client->clipboard_length = length;
+    free(client->clipboard_files);
+    client->clipboard_files = NULL;
+    client->clipboard_files_length = 0;
+    client->clipboard_file_count = 0;
+    return client->cliprdr && ts_cliprdr_send_format_list(client->cliprdr) == CHANNEL_RC_OK;
+}
+
+int tiny_shell_rdp_client_clipboard_files(tiny_shell_rdp_client* client,
+                                          const uint8_t* paths, size_t length)
+{
+    char* copy = NULL;
+    size_t count = 0;
+    if (!client || !paths || length == 0 || length > (8U * 1024U * 1024U))
+        return 0;
+    for (size_t index = 0; index < length; index++)
+    {
+        if (paths[index] == 0)
+            count++;
+    }
+    if (count == 0 || count > TINY_SHELL_MAX_CLIPBOARD_FILES || paths[length - 1] != 0)
+        return 0;
+    copy = (char*)calloc(length, sizeof(char));
+    if (!copy)
+        return 0;
+    memcpy(copy, paths, length);
+    free(client->clipboard_files);
+    client->clipboard_files = copy;
+    client->clipboard_files_length = length;
+    client->clipboard_file_count = count;
+    if (client->clipboard_text)
+    {
+        SecureZeroMemory(client->clipboard_text,
+                         (client->clipboard_length + 1) * sizeof(uint16_t));
+        free(client->clipboard_text);
+        client->clipboard_text = NULL;
+        client->clipboard_length = 0;
+    }
     return client->cliprdr && ts_cliprdr_send_format_list(client->cliprdr) == CHANNEL_RC_OK;
 }
 
@@ -744,5 +993,6 @@ void tiny_shell_rdp_client_free(tiny_shell_rdp_client* client)
                          (client->clipboard_length + 1) * sizeof(uint16_t));
         free(client->clipboard_text);
     }
+    free(client->clipboard_files);
     free(client);
 }

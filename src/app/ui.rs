@@ -158,6 +158,7 @@ impl TinyShell {
         // Overview and Key Manager pages.
         let main_view_key = self.main_view_key();
         let presentation = self.workspace_mode.presentation(self.sftp_panel.minimized);
+        let hide_rdp_tab_bar = presentation.clean && self.active_kind() == Some(TabKind::Rdp);
         let main_content_raw = if self.workspace().active_system_info_tab_id().is_some() {
             self.render_system_info_page(cx).into_any_element()
         } else if self.workspace().active_tab_id().is_some() && !self.home_page_open {
@@ -249,7 +250,8 @@ impl TinyShell {
                 .relative()
                 .overflow_hidden()
                 .when(
-                    self.active_title_bar_style == crate::session::config::TitleBarStyle::Native,
+                    self.active_title_bar_style == crate::session::config::TitleBarStyle::Native
+                        && !hide_rdp_tab_bar,
                     |this| {
                         this.child(
                             div()
@@ -282,7 +284,8 @@ impl TinyShell {
                             .overflow_hidden()
                             .when(
                                 self.active_title_bar_style
-                                    == crate::session::config::TitleBarStyle::Native,
+                                    == crate::session::config::TitleBarStyle::Native
+                                    && !hide_rdp_tab_bar,
                                 |this| {
                                     this.child(
                                         div()
@@ -325,7 +328,8 @@ impl TinyShell {
                         .overflow_hidden()
                         .when(
                             self.active_title_bar_style
-                                == crate::session::config::TitleBarStyle::Native,
+                                == crate::session::config::TitleBarStyle::Native
+                                && !hide_rdp_tab_bar,
                             |this| {
                                 this.child(
                                     div()
@@ -366,6 +370,11 @@ impl TinyShell {
         let drag_move_view = cx.entity();
         let pane_drag_move_view = drag_move_view.clone();
         let drop_view = drag_move_view.clone();
+        let hide_rdp_tab_bar = self
+            .workspace_mode
+            .presentation(self.sftp_panel.minimized)
+            .clean
+            && self.active_kind() == Some(TabKind::Rdp);
         let workspace_with_tool_panel = self.render_workspace_with_tool_panel(workspace, cx);
 
         v_flex()
@@ -545,9 +554,7 @@ impl TinyShell {
             .on_action(cx.listener(|this, _: &crate::Paste, window, cx| {
                 if window.focused(cx) == Some(this.focus_handle.clone()) {
                     if let Some(clipboard) = cx.read_from_clipboard() {
-                        if let Some(text) = clipboard.text() {
-                            this.paste_into_terminal(&text, window, cx);
-                        }
+                        this.paste_clipboard_item(&clipboard, window, cx);
                     }
                 } else {
                     cx.propagate();
@@ -608,7 +615,9 @@ impl TinyShell {
                                             }),
                                         )
                                     })
-                                    .child(self.render_tab_bar(window.window_handle(), cx)),
+                                    .when(!hide_rdp_tab_bar, |this| {
+                                        this.child(self.render_tab_bar(window.window_handle(), cx))
+                                    }),
                             ),
                     )
                 },

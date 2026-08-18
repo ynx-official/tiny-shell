@@ -211,6 +211,8 @@ pub(crate) struct FrameMailbox {
     published: AtomicU64,
     replaced: AtomicU64,
     consumed: AtomicU64,
+    published_rate: Mutex<FrameRateCounter>,
+    consumed_rate: Mutex<FrameRateCounter>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -218,6 +220,42 @@ pub(crate) struct FrameMailboxStats {
     pub(crate) published: u64,
     pub(crate) replaced: u64,
     pub(crate) consumed: u64,
+    pub(crate) published_fps: u16,
+    pub(crate) consumed_fps: u16,
+}
+
+#[derive(Debug)]
+struct FrameRateCounter {
+    started: std::time::Instant,
+    count: u32,
+    fps: u16,
+}
+
+impl Default for FrameRateCounter {
+    fn default() -> Self {
+        Self {
+            started: std::time::Instant::now(),
+            count: 0,
+            fps: 0,
+        }
+    }
+}
+
+impl FrameRateCounter {
+    fn record(&mut self) {
+        self.count = self.count.saturating_add(1);
+        if self.count < 30 {
+            return;
+        }
+        let elapsed = self.started.elapsed();
+        if !elapsed.is_zero() {
+            self.fps = (f64::from(self.count) / elapsed.as_secs_f64())
+                .round()
+                .clamp(0.0, f64::from(u16::MAX)) as u16;
+        }
+        self.started = std::time::Instant::now();
+        self.count = 0;
+    }
 }
 
 pub(crate) struct RemoteDesktopRequest {
@@ -274,6 +312,7 @@ pub(crate) fn spawn_remote_desktop_terminal(
         mpsc::channel::<BackendCommand>(crate::terminal::BACKEND_COMMAND_QUEUE_CAPACITY);
     let (close, _close_rx) = watch::channel(false);
     let (resize, _resize_rx) = watch::channel(None);
+    let mouse_move = Arc::new(Mutex::new(None));
     let stop_requested = Arc::new(AtomicBool::new(false));
     let task_tab_id = tab_id.clone();
     let mailbox = Arc::new(FrameMailbox::default());
@@ -297,6 +336,7 @@ pub(crate) fn spawn_remote_desktop_terminal(
                 mailbox: worker_mailbox,
                 stop_requested: worker_stop_requested,
                 command_rx,
+                mouse_move: Arc::clone(&mouse_move),
             })
         });
         runtime.spawn(async move {
@@ -355,6 +395,7 @@ pub(crate) fn spawn_remote_desktop_terminal(
             commands,
             close,
             resize,
+            mouse_move,
             stop_requested,
         },
         mailbox,
@@ -365,6 +406,9 @@ impl FrameMailbox {
     /// Publishes a frame and returns whether the UI needs a wake-up event.
     pub(crate) fn publish(&self, frame: DecodedFrame) -> bool {
         self.published.fetch_add(1, Ordering::Relaxed);
+        if let Ok(mut rate) = self.published_rate.lock() {
+            rate.record();
+        }
         let mut slot = self
             .slot
             .lock()
@@ -396,6 +440,9 @@ impl FrameMailbox {
         if frame.is_some() {
             slot.wake_pending = false;
             self.consumed.fetch_add(1, Ordering::Relaxed);
+            if let Ok(mut rate) = self.consumed_rate.lock() {
+                rate.record();
+            }
         }
         frame
     }
@@ -405,6 +452,16 @@ impl FrameMailbox {
             published: self.published.load(Ordering::Relaxed),
             replaced: self.replaced.load(Ordering::Relaxed),
             consumed: self.consumed.load(Ordering::Relaxed),
+            published_fps: self
+                .published_rate
+                .lock()
+                .map(|rate| rate.fps)
+                .unwrap_or_default(),
+            consumed_fps: self
+                .consumed_rate
+                .lock()
+                .map(|rate| rate.fps)
+                .unwrap_or_default(),
         }
     }
 
@@ -447,6 +504,8 @@ mod tests {
                 published: 2,
                 replaced: 1,
                 consumed: 1,
+                published_fps: 0,
+                consumed_fps: 0,
             }
         );
     }

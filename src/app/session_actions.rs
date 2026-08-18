@@ -1407,6 +1407,12 @@ impl TinyShell {
             &tab_id,
             &mut path,
         ) {
+            let previous_tab_id = self.workspace().active_tab_id().map(str::to_owned);
+            if previous_tab_id.as_deref() != Some(tab_id.as_str())
+                && let Some(previous_tab_id) = previous_tab_id
+            {
+                self.release_rdp_modifiers(&previous_tab_id);
+            }
             let changed =
                 self.workspace_state_mut().active_tab_value().as_deref() != Some(tab_id.as_str());
             self.workspace_state_mut().set_focused_pane_path(path);

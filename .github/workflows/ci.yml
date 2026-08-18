@@ -143,6 +143,46 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  freerdp-macos:
+    name: FreeRDP backend (macOS)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install FreeRDP
+        shell: bash
+        run: |
+          set -euo pipefail
+          brew install freerdp
+          FREERDP_PREFIX="$(brew --prefix freerdp)"
+          echo "TINY_SHELL_FREERDP_INCLUDE_DIRS=${FREERDP_PREFIX}/include/freerdp3:${FREERDP_PREFIX}/include/winpr3" >> "$GITHUB_ENV"
+          echo "TINY_SHELL_FREERDP_LIB_DIR=${FREERDP_PREFIX}/lib" >> "$GITHUB_ENV"
+          echo "DYLD_LIBRARY_PATH=${FREERDP_PREFIX}/lib${DYLD_LIBRARY_PATH:+:${DYLD_LIBRARY_PATH}}" >> "$GITHUB_ENV"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: freerdp-macos
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Check embedded FreeRDP backend
+        run: cargo check --locked --all-targets
+
+      - name: Test embedded FreeRDP backend
+        run: cargo test --locked --all-targets
+
+      - name: Check forced and disabled backend modes
+        run: |
+          cargo check --locked --all-targets --no-default-features --features freerdp
+          cargo check --locked --all-targets --no-default-features
+
   build:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}

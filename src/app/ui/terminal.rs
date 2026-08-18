@@ -774,14 +774,18 @@ impl TinyShell {
     ) -> impl IntoElement {
         let view = cx.entity();
         let presentation = self.workspace_mode.presentation(self.sftp_panel.minimized);
+        let is_rdp = self.active_kind() == Some(TabKind::Rdp);
+        let is_rdp_clean = is_rdp && presentation.clean;
         let has_selection = self.active_terminal_selection_text().is_some();
-        let has_clipboard_text = cx
-            .read_from_clipboard()
-            .and_then(|item| item.text())
-            .is_some_and(|text| !text.is_empty());
+        let has_clipboard_content = cx.read_from_clipboard().is_some_and(|item| {
+            item.text().is_some_and(|text| !text.is_empty())
+                || (is_rdp && item.entries().iter().any(|entry| {
+                    matches!(entry, gpui::ClipboardEntry::ExternalPaths(paths) if !paths.0.is_empty())
+                }))
+        });
         let can_use_sftp = self.active_kind() == Some(TabKind::Ssh);
 
-        h_flex()
+        let toolbar = h_flex()
             .absolute()
             .right(px(12.))
             .bottom(px(12.))
@@ -883,10 +887,10 @@ impl TinyShell {
                     .xsmall()
                     .icon(IconName::Inbox)
                     .tooltip(t!("terminal_paste").to_string())
-                    .disabled(!has_clipboard_text)
+                    .disabled(!has_clipboard_content)
                     .on_click(cx.listener(|this, _, window, cx| {
-                        if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
-                            this.paste_into_terminal(&text, window, cx);
+                        if let Some(item) = cx.read_from_clipboard() {
+                            this.paste_clipboard_item(&item, window, cx);
                         }
                     })),
             )
@@ -906,10 +910,52 @@ impl TinyShell {
                         )
                     }),
             )
+            .when(is_rdp, |this| {
+                this.child(
+                    Button::new("rdp-toolbar-clean-mode")
+                        .ghost()
+                        .xsmall()
+                        .icon(if presentation.clean {
+                            IconName::Minimize
+                        } else {
+                            IconName::Maximize
+                        })
+                        .tooltip(if presentation.clean {
+                            t!("workspace_exit_clean_mode").to_string()
+                        } else {
+                            t!("workspace_enter_clean_mode").to_string()
+                        })
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.toggle_clean_mode(cx);
+                        })),
+                )
+            })
             .on_mouse_down(MouseButton::Left, |_, window, cx| {
                 window.prevent_default();
                 cx.stop_propagation();
-            })
+            });
+
+        if is_rdp_clean {
+            div()
+                .absolute()
+                .top_0()
+                .left_0()
+                .right_0()
+                .h(px(36.))
+                .group("rdp-toolbar-zone")
+                .child(
+                    toolbar
+                        .top(px(-28.))
+                        .right_auto()
+                        .bottom_auto()
+                        .left_0()
+                        .opacity(0.18)
+                        .group_hover("rdp-toolbar-zone", |this| this.top(px(6.)).opacity(1.0)),
+                )
+                .into_any_element()
+        } else {
+            toolbar.into_any_element()
+        }
     }
 
     pub(super) fn render_terminal_panel(
@@ -921,7 +967,6 @@ impl TinyShell {
         let pane_tree = self.workspace().pane_root().clone();
         let view = cx.entity();
         let bounds_view = view.clone();
-        let menu_view = view.clone();
 
         let presentation = self.workspace_mode.presentation(self.sftp_panel.minimized);
 
@@ -960,9 +1005,6 @@ impl TinyShell {
                         Self::render_pane_tree(self, &pane_tree, &[], cx).into_any_element()
                     } else {
                         self.render_home_page(cx).into_any_element()
-                    })
-                    .context_menu(move |menu, window, cx| {
-                        Self::build_terminal_context_menu(menu, menu_view.clone(), window, cx)
                     }),
             )
             .when(has_active, |this| {
@@ -1256,6 +1298,8 @@ impl TinyShell {
                                 sequence = surface.sequence,
                                 published = stats.published,
                                 replaced = stats.replaced,
+                                fps = stats.published_fps,
+                                consumed_fps = stats.consumed_fps,
                             )
                             .to_string()
                         })
@@ -1325,6 +1369,9 @@ impl TinyShell {
                         }))
                         .on_key_up(cx.listener(|this, event, window, cx| {
                             this.on_remote_desktop_key_up(event, window, cx);
+                        }))
+                        .on_modifiers_changed(cx.listener(|this, event, window, cx| {
+                            this.on_remote_desktop_modifiers_changed(event, window, cx);
                         }))
                         .child(
                             v_flex()
@@ -1461,6 +1508,7 @@ impl TinyShell {
                 let font_size = px(this.terminal_font_size);
                 let line_height = px(this.terminal_line_height());
                 let cell_width = px(this.terminal_cell_width());
+                let context_menu_view = cx.entity();
                 let is_url_hovered = this
                     .hovered_url
                     .as_ref()
@@ -1648,7 +1696,16 @@ impl TinyShell {
                     );
                 }
 
-                wrapper.into_any_element()
+                wrapper
+                    .context_menu(move |menu, window, cx| {
+                        Self::build_terminal_context_menu(
+                            menu,
+                            context_menu_view.clone(),
+                            window,
+                            cx,
+                        )
+                    })
+                    .into_any_element()
             }
             PaneLayout::Horizontal(children, ratio) => {
                 v_flex()
@@ -2083,10 +2140,13 @@ impl TinyShell {
     ) -> PopupMenu {
         let selection = view.read(cx).active_terminal_selection_text();
         let has_selection = selection.is_some();
-        let has_clipboard_text = cx
-            .read_from_clipboard()
-            .and_then(|item| item.text())
-            .is_some_and(|text| !text.is_empty());
+        let is_rdp = view.read(cx).active_kind() == Some(TabKind::Rdp);
+        let has_clipboard_content = cx.read_from_clipboard().is_some_and(|item| {
+            item.text().is_some_and(|text| !text.is_empty())
+                || (is_rdp && item.entries().iter().any(|entry| {
+                    matches!(entry, gpui::ClipboardEntry::ExternalPaths(paths) if !paths.0.is_empty())
+                }))
+        });
 
         menu.action_context(view.read(cx).focus_handle.clone())
             .item(
@@ -2096,7 +2156,7 @@ impl TinyShell {
             )
             .item(
                 PopupMenuItem::new(t!("terminal_paste").to_string())
-                    .disabled(!has_clipboard_text)
+                    .disabled(!has_clipboard_content)
                     .action(Box::new(crate::Paste)),
             )
             .item(

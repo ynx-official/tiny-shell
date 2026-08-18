@@ -71,6 +71,8 @@ int tiny_shell_rdp_client_text(tiny_shell_rdp_client* client, const uint16_t* te
                                size_t length);
 int tiny_shell_rdp_client_clipboard(tiny_shell_rdp_client* client,
                                     const uint16_t* text, size_t length);
+int tiny_shell_rdp_client_clipboard_files(tiny_shell_rdp_client* client,
+                                          const uint8_t* paths, size_t length);
 int tiny_shell_rdp_client_mouse(tiny_shell_rdp_client* client, uint16_t flags,
                                 uint16_t x, uint16_t y);
 void tiny_shell_rdp_client_stop(tiny_shell_rdp_client* client);

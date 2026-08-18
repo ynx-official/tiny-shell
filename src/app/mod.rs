@@ -438,6 +438,9 @@ pub(crate) struct TinyShell {
     pub(crate) rdp_certificate_requests:
         HashMap<String, crate::backend::remote_desktop::CertificateRequest>,
     pub(crate) rdp_reconnect_attempts: HashMap<String, u8>,
+    /// Last modifier mask sent to each embedded RDP session. macOS reports
+    /// modifier transitions separately from key down/up events.
+    pub(crate) rdp_modifier_state: HashMap<String, u8>,
     /// Bounds of the visible group rows, used to calculate a drop position.
     pub(crate) connection_group_bounds: HashMap<String, Bounds<Pixels>>,
     pub(crate) pending_connection_group_drag: Option<(String, Point<Pixels>)>,
@@ -913,6 +916,7 @@ impl TinyShell {
             remote_desktop_surfaces: RemoteDesktopSurfaceCache::default(),
             rdp_certificate_requests: HashMap::new(),
             rdp_reconnect_attempts: HashMap::new(),
+            rdp_modifier_state: HashMap::new(),
             connection_group_bounds: HashMap::new(),
             pending_connection_group_drag: None,
             dragging_connection_group: None,
@@ -1429,6 +1433,7 @@ impl TinyShell {
                     reason,
                     retryable,
                 } => {
+                    self.rdp_modifier_state.remove(&tab_id);
                     if let Some(request) = self.rdp_certificate_requests.remove(&tab_id) {
                         request.decision.reject();
                     }
@@ -1628,6 +1633,16 @@ impl TinyShell {
         retryable: bool,
         cx: &mut Context<Self>,
     ) -> bool {
+        // Do not leave the last desktop texture above the disconnected/error
+        // state. Retry code also removes it, but failures that are not
+        // retryable (or have exhausted retries) must clear it here as well.
+        if self
+            .terminal_tab(&tab_id)
+            .is_some_and(|tab| tab.kind == TabKind::Rdp)
+        {
+            self.remote_desktop_surfaces.remove(&tab_id);
+            self.rdp_modifier_state.remove(&tab_id);
+        }
         if self.monitoring.remote_sample_in_flight.as_deref() == Some(tab_id.as_str()) {
             self.monitoring.remote_sample_in_flight = None;
         }

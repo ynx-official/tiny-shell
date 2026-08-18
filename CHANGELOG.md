@@ -4,6 +4,23 @@
 
 完整的升级说明、兼容性、已知问题和验证结果统一维护在 [`docs/upgrade/`](docs/upgrade/README.md)。本文件只作为精简索引，避免与版本详情形成两套重复维护的发布说明。
 
+## [1.5.9] - 2026-08-18
+
+### 改进与修复
+
+- Windows RDP 连接改用系统 `mstsc.exe`，复用系统级键盘、剪贴板、磁盘重定向、全屏和重连能力，不再要求 Windows 打包 FreeRDP DLL。
+- 完善 Windows 临时 `.rdp` 配置和凭据管理器交互，不在临时配置文件中保存密码。
+- 收敛 macOS/Linux FreeRDP 与 Windows 原生 RDP 的平台边界，补充 RDP 输入、剪贴板、动态分辨率、证书和连接状态文案。
+- 更新 CI、打包脚本和 README，明确各平台 RDP 依赖及发布产物差异。
+
+### 兼容性
+
+- 配置、会话、同步和 RDP 会话数据格式保持兼容。
+- Windows 需要系统提供 `mstsc.exe`；macOS/Linux 源码构建仍需 FreeRDP 3 开发库才能启用嵌入式 RDP。
+- 按发布要求跳过测试、静态检查和本地构建，最终产物由标签流水线验证。
+
+[1.5.9]: docs/upgrade/v1.5.9/README.md
+
 ## [1.5.8] - 2026-08-17
 
 ### 发布修复
