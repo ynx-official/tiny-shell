@@ -1,14 +1,18 @@
+use std::collections::{HashMap, HashSet};
+
 use gpui::{
     App, AppContext as _, Context, Entity, FocusHandle, Focusable, InteractiveElement as _,
     IntoElement, ParentElement as _, Render, SharedString, StatefulInteractiveElement as _, Styled,
-    Window, WindowOptions, prelude::FluentBuilder as _, px, rems, size,
+    Window, WindowOptions, div, prelude::FluentBuilder as _, px, rems, size,
 };
 use gpui_component::{
-    ActiveTheme as _, Root,
+    ActiveTheme as _, Icon, IconName, Root, Sizable as _, Size,
     button::{Button, ButtonVariants as _},
     h_flex,
     input::{Input, InputEvent, InputState},
     menu::{DropdownMenu as _, PopupMenuItem},
+    popover::{Popover, PopoverState},
+    scroll::ScrollableElement as _,
     v_flex,
 };
 use rust_i18n::t;
@@ -64,6 +68,7 @@ pub(crate) struct SshEditorWindow {
     connection_type: ConnectionType,
     auth: AuthMethod,
     group: Option<String>,
+    group_picker_expanded: HashSet<String>,
     proxy_type: String,
     managed_key_id: Option<String>,
     ssh_config_entries: Vec<SshConfigEntry>,
@@ -281,6 +286,7 @@ impl SshEditorWindow {
             connection_type,
             auth,
             group,
+            group_picker_expanded: HashSet::new(),
             proxy_type,
             managed_key_id,
             ssh_config_entries,
@@ -640,45 +646,22 @@ impl Render for SshEditorWindow {
                             .w(px(230.))
                             .gap_3()
                             .child(gpui::div().child(t!("connection_group").to_string()))
-                            .child(
-                                Button::new("ssh-editor-group")
-                                    .flex_1()
-                                    .label(group_label)
-                                    .dropdown_caret(true)
-                                    .dropdown_menu({
-                                        let groups = groups.clone();
-                                        let editor = editor.clone();
-                                        move |mut menu, window, _| {
-                                            menu = menu.item(
-                                                PopupMenuItem::new(
-                                                    t!("ssh_editor_group_unselected").to_string(),
-                                                )
-                                                .on_click(window.listener_for(
-                                                    &editor,
-                                                    |this, _, _, cx| {
-                                                        this.group = None;
-                                                        cx.notify();
-                                                    },
-                                                )),
-                                            );
-                                            for group in &groups {
-                                                let selected = group.clone();
-                                                menu = menu.item(
-                                                    PopupMenuItem::new(group.clone()).on_click(
-                                                        window.listener_for(
-                                                            &editor,
-                                                            move |this, _, _, cx| {
-                                                                this.group = Some(selected.clone());
-                                                                cx.notify();
-                                                            },
-                                                        ),
-                                                    ),
-                                                );
-                                            }
-                                            menu
-                                        }
-                                    }),
-                            ),
+                            .child({
+                                let editor = editor.clone();
+                                Popover::new("ssh-editor-group-picker")
+                                    .appearance(false)
+                                    .trigger(
+                                        Button::new("ssh-editor-group")
+                                            .flex_1()
+                                            .label(group_label)
+                                            .dropdown_caret(true),
+                                    )
+                                    .anchor(gpui::Anchor::TopLeft)
+                                    .content(move |_, window, cx| {
+                                        let popover = cx.entity();
+                                        render_group_picker(&editor, &popover, &groups, window, cx)
+                                    })
+                            }),
                     ),
             )
             .child(
@@ -1141,6 +1124,200 @@ impl Render for SshEditorWindow {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GroupPickerRow {
+    path: String,
+    depth: usize,
+    has_children: bool,
+    expanded: bool,
+}
+
+fn render_group_picker(
+    editor: &Entity<SshEditorWindow>,
+    popover: &Entity<PopoverState>,
+    groups: &[String],
+    window: &mut Window,
+    cx: &mut Context<PopoverState>,
+) -> gpui::AnyElement {
+    let editor_state = editor.read(cx);
+    let selected = editor_state.group.clone();
+    let rows = group_picker_rows(groups, &editor_state.group_picker_expanded);
+
+    v_flex()
+        .w(px(280.))
+        .h(px(280.))
+        .rounded_md()
+        .border_1()
+        .border_color(cx.theme().border)
+        .bg(cx.theme().popover)
+        .text_color(cx.theme().popover_foreground)
+        .shadow_lg()
+        .p_1()
+        .child(
+            h_flex()
+                .id("ssh-editor-group-none")
+                .h(px(32.))
+                .items_center()
+                .gap_2()
+                .pl(px(10.))
+                .pr_2()
+                .rounded_sm()
+                .cursor_pointer()
+                .text_size(rems(0.78))
+                .text_color(cx.theme().muted_foreground)
+                .when(selected.is_none(), |this| {
+                    this.bg(cx.theme().selection.opacity(0.72))
+                        .text_color(cx.theme().foreground)
+                })
+                .hover(|this| this.bg(cx.theme().secondary.opacity(0.65)))
+                .on_click(window.listener_for(editor, {
+                    let popover = popover.clone();
+                    move |this, _, window, cx| {
+                        this.group = None;
+                        popover.update(cx, |state, cx| state.dismiss(window, cx));
+                        cx.notify();
+                    }
+                }))
+                .child(div().w(px(16.)).h(px(18.)).flex_none())
+                .child(
+                    div()
+                        .w(px(16.))
+                        .h(px(18.))
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(Icon::new(IconName::Folder).with_size(Size::Small)),
+                )
+                .child(t!("ssh_editor_group_unselected").to_string()),
+        )
+        .child(div().mx_1().border_t_1().border_color(cx.theme().border))
+        .child(
+            v_flex()
+                .id("ssh-editor-group-tree-scroll")
+                .flex_1()
+                .min_h(px(0.))
+                .overflow_y_scrollbar()
+                .children(rows.into_iter().enumerate().map(|(index, row)| {
+                    let path = row.path.clone();
+                    let selected_path = row.path.clone();
+                    let popover = popover.clone();
+                    let disclosure_icon = if row.expanded {
+                        IconName::ChevronDown
+                    } else {
+                        IconName::ChevronRight
+                    };
+                    let folder_icon = if row.expanded {
+                        IconName::FolderOpen
+                    } else {
+                        IconName::Folder
+                    };
+
+                    h_flex()
+                        .id(("ssh-editor-group-row", index))
+                        .h(px(32.))
+                        .items_center()
+                        .gap_2()
+                        .pl(px(10. + row.depth as f32 * 16.))
+                        .pr_2()
+                        .rounded_sm()
+                        .cursor_pointer()
+                        .text_size(rems(0.78))
+                        .when(selected.as_deref() == Some(row.path.as_str()), |this| {
+                            this.bg(cx.theme().selection.opacity(0.72))
+                        })
+                        .hover(|this| this.bg(cx.theme().secondary.opacity(0.65)))
+                        .on_click(window.listener_for(editor, move |this, _, window, cx| {
+                            this.group = Some(selected_path.clone());
+                            popover.update(cx, |state, cx| state.dismiss(window, cx));
+                            cx.notify();
+                        }))
+                        .child(
+                            div()
+                                .id(("ssh-editor-group-toggle", index))
+                                .w(px(16.))
+                                .h(px(18.))
+                                .flex_none()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .when(row.has_children, |this| {
+                                    this.cursor_pointer().on_click(window.listener_for(
+                                        editor,
+                                        move |this, _, _, cx| {
+                                            if !this.group_picker_expanded.remove(&path) {
+                                                this.group_picker_expanded.insert(path.clone());
+                                            }
+                                            cx.stop_propagation();
+                                            cx.notify();
+                                        },
+                                    ))
+                                })
+                                .when(row.has_children, |this| {
+                                    this.child(Icon::new(disclosure_icon).with_size(Size::Small))
+                                }),
+                        )
+                        .child(
+                            div()
+                                .w(px(16.))
+                                .h(px(18.))
+                                .flex_none()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .child(Icon::new(folder_icon).with_size(Size::Small)),
+                        )
+                        .child(
+                            div().min_w_0().flex_1().truncate().child(
+                                row.path.rsplit('/').next().unwrap_or(&row.path).to_string(),
+                            ),
+                        )
+                })),
+        )
+        .into_any_element()
+}
+
+fn group_picker_rows(groups: &[String], expanded: &HashSet<String>) -> Vec<GroupPickerRow> {
+    let group_set = groups.iter().collect::<HashSet<_>>();
+    let mut children = HashMap::<Option<String>, Vec<String>>::new();
+    for group in groups {
+        let parent = group
+            .rsplit_once('/')
+            .map(|(parent, _)| parent.to_string())
+            .filter(|parent| group_set.contains(parent));
+        children.entry(parent).or_default().push(group.clone());
+    }
+
+    fn append(
+        parent: Option<&str>,
+        depth: usize,
+        children: &mut HashMap<Option<String>, Vec<String>>,
+        expanded: &HashSet<String>,
+        rows: &mut Vec<GroupPickerRow>,
+    ) {
+        let Some(groups) = children.remove(&parent.map(str::to_string)) else {
+            return;
+        };
+        for group in groups {
+            let has_children = children.contains_key(&Some(group.clone()));
+            let is_expanded = expanded.contains(&group);
+            rows.push(GroupPickerRow {
+                path: group.clone(),
+                depth,
+                has_children,
+                expanded: is_expanded,
+            });
+            if is_expanded {
+                append(Some(&group), depth + 1, children, expanded, rows);
+            }
+        }
+    }
+
+    let mut rows = Vec::new();
+    append(None, 0, &mut children, expanded, &mut rows);
+    rows
+}
+
 fn same_session_revision(left: &Session, right: &Session) -> bool {
     left.id == right.id
         && left.name == right.name
@@ -1264,5 +1441,53 @@ mod tests {
         let mut latest = baseline.clone();
         latest.host = "changed.example.test".to_string();
         assert!(!same_session_revision(&latest, &baseline));
+    }
+
+    #[test]
+    fn group_picker_shows_only_top_level_groups_initially() {
+        let groups = vec![
+            "prod".to_string(),
+            "prod/eu".to_string(),
+            "prod/eu/database".to_string(),
+            "shared".to_string(),
+        ];
+
+        assert_eq!(
+            group_picker_rows(&groups, &HashSet::new()),
+            vec![
+                GroupPickerRow {
+                    path: "prod".to_string(),
+                    depth: 0,
+                    has_children: true,
+                    expanded: false,
+                },
+                GroupPickerRow {
+                    path: "shared".to_string(),
+                    depth: 0,
+                    has_children: false,
+                    expanded: false,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn group_picker_expands_one_level_at_a_time() {
+        let groups = vec![
+            "prod".to_string(),
+            "prod/eu".to_string(),
+            "prod/eu/database".to_string(),
+            "shared".to_string(),
+        ];
+        let expanded = HashSet::from(["prod".to_string()]);
+        let rows = group_picker_rows(&groups, &expanded);
+
+        assert_eq!(
+            rows.iter()
+                .map(|row| (row.path.as_str(), row.depth))
+                .collect::<Vec<_>>(),
+            vec![("prod", 0), ("prod/eu", 1), ("shared", 0)]
+        );
+        assert!(!rows.iter().any(|row| row.path == "prod/eu/database"));
     }
 }

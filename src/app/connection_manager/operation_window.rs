@@ -1,9 +1,9 @@
-use std::path::PathBuf;
+use std::{collections::HashSet, path::PathBuf};
 
 use gpui::{
     App, AppContext as _, Context, Entity, FocusHandle, Focusable, InteractiveElement as _,
-    IntoElement, ParentElement as _, PathPromptOptions, Render, StatefulInteractiveElement as _,
-    Styled, Window, WindowOptions, px, rems, size,
+    IntoElement, MouseButton, MouseDownEvent, ParentElement as _, PathPromptOptions, Render,
+    StatefulInteractiveElement as _, Styled, Window, WindowOptions, px, rems, size,
 };
 use gpui_component::{
     ActiveTheme as _, Icon, IconName, Root, Sizable as _, Size,
@@ -41,6 +41,7 @@ pub(crate) struct ConnectionOperationWindow {
     group_name_input: Option<Entity<InputState>>,
     archive_password_input: Option<Entity<InputState>>,
     focus_handle: FocusHandle,
+    move_picker_expanded: HashSet<String>,
     _owner_subscription: gpui::Subscription,
     _input_subscriptions: Vec<gpui::Subscription>,
 }
@@ -89,6 +90,7 @@ impl ConnectionOperationWindow {
             group_name_input,
             archive_password_input,
             focus_handle: cx.focus_handle(),
+            move_picker_expanded: HashSet::new(),
             _owner_subscription: owner_subscription,
             _input_subscriptions: input_subscriptions,
         }
@@ -414,7 +416,7 @@ impl ConnectionOperationWindow {
     }
 
     fn render_move_picker(
-        &self,
+        &mut self,
         source_label: String,
         groups: Vec<String>,
         is_group: bool,
@@ -426,6 +428,8 @@ impl ConnectionOperationWindow {
         } else {
             t!("connection_group_ungrouped").to_string()
         };
+        let visible_groups = visible_move_targets(&groups, &self.move_picker_expanded);
+
         v_flex()
             .size_full()
             .gap_3()
@@ -456,22 +460,33 @@ impl ConnectionOperationWindow {
                         0,
                         None,
                         is_group,
+                        false,
+                        false,
                         window,
                         cx,
                     ))
-                    .children(groups.into_iter().enumerate().map(|(index, group)| {
-                        let depth = group.matches('/').count();
-                        let label = group.rsplit('/').next().unwrap_or(&group).to_string();
-                        move_target_row(
-                            ("connection-operation-target", index),
-                            label,
-                            depth,
-                            Some(group),
-                            is_group,
-                            window,
-                            cx,
-                        )
-                    })),
+                    .children(visible_groups.into_iter().enumerate().map(
+                        |(index, (group, depth))| {
+                            let label = group.rsplit('/').next().unwrap_or(&group).to_string();
+                            let has_children = groups.iter().any(|candidate| {
+                                candidate
+                                    .strip_prefix(&format!("{group}/"))
+                                    .is_some_and(|rest| !rest.contains('/'))
+                            });
+                            let expanded = self.move_picker_expanded.contains(&group);
+                            move_target_row(
+                                ("connection-operation-target", index),
+                                label,
+                                depth,
+                                Some(group),
+                                is_group,
+                                has_children,
+                                expanded,
+                                window,
+                                cx,
+                            )
+                        },
+                    )),
             )
             .into_any_element()
     }
@@ -521,12 +536,15 @@ impl Render for ConnectionOperationWindow {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn move_target_row(
     id: impl Into<gpui::ElementId>,
     label: String,
     depth: usize,
     target: Option<String>,
     is_group: bool,
+    has_children: bool,
+    expanded: bool,
     _window: &mut Window,
     cx: &mut Context<ConnectionOperationWindow>,
 ) -> gpui::AnyElement {
@@ -536,23 +554,78 @@ fn move_target_row(
         .cursor_pointer()
         .rounded_md()
         .hover(|this| this.bg(cx.theme().secondary))
-        .on_click(cx.listener(move |this, _, window, cx| {
-            if is_group {
-                this.move_group(target.clone(), window, cx);
-            } else {
-                this.move_session(target.clone(), window, cx);
-            }
-        }))
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                if is_group && has_children && event.click_count >= 2 {
+                    if let Some(target) = target.as_deref() {
+                        if !this.move_picker_expanded.remove(target) {
+                            this.move_picker_expanded.insert(target.to_string());
+                        }
+                    }
+                    cx.notify();
+                } else if is_group {
+                    this.move_group(target.clone(), window, cx);
+                } else {
+                    this.move_session(target.clone(), window, cx);
+                }
+            }),
+        )
         .child(
             h_flex()
                 .items_center()
                 .gap_2()
                 .p_2()
                 .pl(px(8. + depth as f32 * 16.))
-                .child(Icon::new(IconName::Folder).with_size(Size::Small))
+                .child(
+                    Icon::new(if expanded {
+                        IconName::ChevronDown
+                    } else if has_children {
+                        IconName::ChevronRight
+                    } else {
+                        IconName::Folder
+                    })
+                    .with_size(Size::Small),
+                )
                 .child(label),
         )
         .into_any_element()
+}
+
+fn visible_move_targets(groups: &[String], expanded: &HashSet<String>) -> Vec<(String, usize)> {
+    let group_set = groups.iter().collect::<HashSet<_>>();
+    let mut children = std::collections::HashMap::<Option<String>, Vec<String>>::new();
+    for group in groups {
+        let parent = group
+            .rsplit_once('/')
+            .map(|(parent, _)| parent.to_string())
+            .filter(|parent| group_set.contains(parent));
+        children.entry(parent).or_default().push(group.clone());
+    }
+
+    fn append(
+        parent: Option<&str>,
+        depth: usize,
+        children: &mut std::collections::HashMap<Option<String>, Vec<String>>,
+        expanded: &HashSet<String>,
+        result: &mut Vec<(String, usize)>,
+    ) {
+        let key = parent.map(str::to_string);
+        let Some(groups) = children.remove(&key) else {
+            return;
+        };
+        for group in groups {
+            let is_expanded = expanded.contains(&group);
+            result.push((group.clone(), depth));
+            if is_expanded {
+                append(Some(&group), depth + 1, children, expanded, result);
+            }
+        }
+    }
+
+    let mut result = Vec::new();
+    append(None, 0, &mut children, expanded, &mut result);
+    result
 }
 
 fn commit_catalog_change(
@@ -676,6 +749,49 @@ pub(crate) fn open(owner: Entity<TinyShell>, operation: ConnectionOperation, cx:
                 error = format!("{error:?}")
             )
             .to_string(),
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::visible_move_targets;
+    use std::collections::HashSet;
+
+    #[test]
+    fn move_picker_shows_only_root_groups_by_default() {
+        let groups = vec![
+            "prod".to_string(),
+            "prod/eu".to_string(),
+            "prod/eu/database".to_string(),
+            "shared".to_string(),
+        ];
+
+        assert_eq!(
+            visible_move_targets(&groups, &HashSet::new()),
+            vec![("prod".to_string(), 0), ("shared".to_string(), 0)]
+        );
+    }
+
+    #[test]
+    fn move_picker_expands_only_the_requested_branch() {
+        let groups = vec![
+            "prod".to_string(),
+            "prod/eu".to_string(),
+            "prod/us".to_string(),
+            "shared".to_string(),
+            "shared/tools".to_string(),
+        ];
+        let expanded = HashSet::from(["prod".to_string()]);
+
+        assert_eq!(
+            visible_move_targets(&groups, &expanded),
+            vec![
+                ("prod".to_string(), 0),
+                ("prod/eu".to_string(), 1),
+                ("prod/us".to_string(), 1),
+                ("shared".to_string(), 0),
+            ]
         );
     }
 }
