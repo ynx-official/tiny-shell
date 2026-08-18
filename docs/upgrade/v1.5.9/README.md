@@ -51,7 +51,7 @@ Windows 用户可以直接覆盖安装，并确认系统启用了“远程桌面
 
 ## 变更依据
 
-- 目标标签：尚未创建 `v1.5.9`
+- 目标标签：`v1.5.9`
 - 最近正式标签：`v1.5.8`
 - Compare：发布后可查看 [v1.5.8...v1.5.9](https://github.com/ynx-official/tiny-shell/compare/v1.5.8...v1.5.9)
 

@@ -326,6 +326,7 @@ pub(crate) fn spawn_remote_desktop_terminal(
         let worker_events = events.clone();
         let worker_stop_requested = Arc::clone(&stop_requested);
         let blocking_runtime = runtime.clone();
+        let worker_mouse_move = Arc::clone(&mouse_move);
         let join = blocking_runtime.spawn_blocking(move || {
             crate::backend::freerdp::run(crate::backend::freerdp::RunRequest {
                 tab_id: worker_tab_id.clone(),
@@ -336,7 +337,7 @@ pub(crate) fn spawn_remote_desktop_terminal(
                 mailbox: worker_mailbox,
                 stop_requested: worker_stop_requested,
                 command_rx,
-                mouse_move: Arc::clone(&mouse_move),
+                mouse_move: worker_mouse_move,
             })
         });
         runtime.spawn(async move {
