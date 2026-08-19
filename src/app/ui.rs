@@ -65,6 +65,8 @@ struct TabDragPreview {
     offset: Point<Pixels>,
 }
 
+const TAB_BAR_HEIGHT: f32 = 34.;
+
 impl Render for TabDragPreview {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         div().pl(self.offset.x).pt(self.offset.y).child(
@@ -256,11 +258,9 @@ impl TinyShell {
                         this.child(
                             div()
                                 .flex_none()
-                                .h(px(32.))
+                                .h(px(TAB_BAR_HEIGHT))
                                 .w_full()
                                 .bg(cx.theme().tab_bar)
-                                .border_b_1()
-                                .border_color(cx.theme().border)
                                 .child(self.render_tab_bar(window.window_handle(), cx)),
                         )
                     },
@@ -290,11 +290,9 @@ impl TinyShell {
                                     this.child(
                                         div()
                                             .flex_none()
-                                            .h(px(32.))
+                                            .h(px(TAB_BAR_HEIGHT))
                                             .w_full()
                                             .bg(cx.theme().tab_bar)
-                                            .border_b_1()
-                                            .border_color(cx.theme().border)
                                             .child(self.render_tab_bar(window.window_handle(), cx)),
                                     )
                                 },
@@ -334,11 +332,9 @@ impl TinyShell {
                                 this.child(
                                     div()
                                         .flex_none()
-                                        .h(px(32.))
+                                        .h(px(TAB_BAR_HEIGHT))
                                         .w_full()
                                         .bg(cx.theme().tab_bar)
-                                        .border_b_1()
-                                        .border_color(cx.theme().border)
                                         .child(self.render_tab_bar(window.window_handle(), cx)),
                                 )
                             },
@@ -568,7 +564,7 @@ impl TinyShell {
                             .id("title-bar")
                             .flex()
                             .items_center()
-                            .h(px(34.))
+                            .h(px(TAB_BAR_HEIGHT))
                             .w_full()
                             .bg(cx.theme().tab_bar)
                             .child(self.render_window_controls(window, cx))

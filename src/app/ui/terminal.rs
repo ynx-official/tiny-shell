@@ -1,7 +1,7 @@
 use super::*;
 
-const NATIVE_TAB_MIN_WIDTH: f32 = 96.;
-const NATIVE_TAB_TITLE_MAX_WIDTH: f32 = 192.;
+const NATIVE_TAB_MIN_WIDTH: f32 = 108.;
+const NATIVE_TAB_TITLE_MAX_WIDTH: f32 = 148.;
 
 struct TabBarGroupData {
     id: String,
@@ -175,12 +175,6 @@ impl TinyShell {
         let home_page_selected = self.workspace().active_system_info_tab_id().is_none()
             && ((show_home_tab && self.home_page_open)
                 || self.workspace().active_tab_id().is_none());
-        let selected =
-            if home_page_selected || self.workspace().active_system_info_tab_id().is_some() {
-                usize::MAX
-            } else {
-                active_group_index.or(active_tab_index).unwrap_or(0)
-            };
         let groups_data: Vec<TabBarGroupData> = self
             .workspace()
             .tab_groups()
@@ -238,13 +232,28 @@ impl TinyShell {
         let is_integrated =
             self.active_title_bar_style == crate::session::config::TitleBarStyle::Integrated;
         let native_tab_title_max_width = px(NATIVE_TAB_TITLE_MAX_WIDTH);
-        let selected_tab_color = Hsla::from(gpui::rgb(0x1586F5));
-        let tab_selection_epoch = self.main_view_key();
+        let active_system_info_index =
+            self.workspace()
+                .active_system_info_tab_id()
+                .and_then(|active_id| {
+                    system_info_tabs_data
+                        .iter()
+                        .position(|(info_id, _, _, _)| info_id == active_id)
+                });
+        let home_tab_index = groups_data.len() + system_info_tabs_data.len();
+        let selected_tab_index = if home_page_selected {
+            home_tab_index
+        } else if let Some(info_index) = active_system_info_index {
+            groups_data.len() + info_index
+        } else {
+            active_group_index.or(active_tab_index).unwrap_or(0)
+        };
 
         h_flex()
             .flex_1()
             .min_w(px(0.))
             .h_full()
+            .relative()
             .on_prepaint({
                 let view = view.clone();
                 move |bounds, _window, cx| {
@@ -254,7 +263,15 @@ impl TinyShell {
                 }
             })
             .items_center()
-            .gap_2()
+            .child(
+                div()
+                    .absolute()
+                    .left_0()
+                    .right_0()
+                    .bottom_0()
+                    .h(px(1.))
+                    .bg(cx.theme().border),
+            )
             .child(
                 div()
                     .h_full()
@@ -285,36 +302,32 @@ impl TinyShell {
                     .overflow_x_hidden()
                     .child({
                         let home_tab = Tab::new()
-                            .min_w(px(92.))
+                            .min_w(px(88.))
                             .when(home_page_selected, |this| {
                                 this.prefix(
                                     div()
                                         .absolute()
                                         .top_0()
+                                        .bottom(px(-1.))
                                         .left_0()
                                         .right_0()
-                                        .bottom_0()
                                         .rounded_tl(px(8.))
                                         .rounded_tr(px(8.))
+                                        .border_1()
+                                        .border_color(cx.theme().border)
                                         .bg(cx.theme().background)
-                                        .child(
-                                            div()
-                                                .absolute()
-                                                .top_0()
-                                                .left_0()
-                                                .right_0()
-                                                .h(px(3.))
-                                                .bg(selected_tab_color)
-                                                .with_animation(
-                                                    ElementId::NamedInteger(
-                                                        "tab-selection-indicator".into(),
-                                                        tab_selection_epoch,
-                                                    ),
-                                                    Animation::new(Duration::from_millis(180))
-                                                        .with_easing(ease_out_quint()),
-                                                    |this, delta| this.opacity(delta * delta),
-                                                ),
-                                        ),
+                                        .shadow_xs(),
+                                )
+                            })
+                            .when(!home_page_selected, |this| {
+                                this.prefix(
+                                    div()
+                                        .absolute()
+                                        .right_0()
+                                        .top(px(6.))
+                                        .bottom(px(6.))
+                                        .w(px(1.))
+                                        .bg(cx.theme().border.opacity(0.72)),
                                 )
                             })
                             .child(
@@ -335,15 +348,6 @@ impl TinyShell {
                             }));
                         let plus_tab = Tab::new()
                             .min_w(px(40.))
-                            .prefix(
-                                div()
-                                    .absolute()
-                                    .left_0()
-                                    .top(px(8.))
-                                    .bottom(px(8.))
-                                    .w(px(1.))
-                                    .bg(cx.theme().border.opacity(0.8)),
-                            )
                             .child(
                                 h_flex()
                                     .h_full()
@@ -365,10 +369,11 @@ impl TinyShell {
                                     let ordinal = group.ordinal;
                                     let title = &group.title;
                                     let label = if pane_ids.len() > 1 {
-                                        format!("{} {} ({})", ordinal, title, pane_ids.len())
+                                        format!("{} ({})", title, pane_ids.len())
                                     } else {
-                                        format!("{} {}", ordinal, title)
+                                        title.clone()
                                     };
+                                    let title_label = title.clone();
                                     let close_id = if self.workspace().active_group_id() == Some(gid.as_str()) {
                                         self.workspace()
                                             .active_tab_id()
@@ -379,7 +384,7 @@ impl TinyShell {
                                     } else {
                                         pane_ids.first().cloned().unwrap_or_default()
                                     };
-                                    let tab_selected = ix == selected;
+                                    let tab_selected = ix == selected_tab_index;
                                     let tab_multi_selected = self.tab_drag.is_selected(&gid);
 
                                     // Status is independent of selection: grey means the
@@ -413,7 +418,8 @@ impl TinyShell {
                                                     .insert(bounds_gid.clone(), bounds);
                                             });
                                         })
-                                        .min_w(px(112.))
+                                        .min_w(px(128.))
+                                        .max_w(px(196.))
                                         .when(!is_integrated, |this| {
                                             this.min_w(px(NATIVE_TAB_MIN_WIDTH))
                                         })
@@ -422,59 +428,41 @@ impl TinyShell {
                                                 div()
                                                     .absolute()
                                                     .top_0()
+                                                    .bottom(px(-1.))
                                                     .left_0()
                                                     .right_0()
-                                                    .bottom_0()
                                                     .rounded_tl(px(8.))
                                                     .rounded_tr(px(8.))
+                                                    .border_1()
+                                                    .border_color(cx.theme().border)
                                                     .bg(cx.theme().background)
-                                                    .child(
-                                                        div()
-                                                            .absolute()
-                                                            .top_0()
-                                                            .left_0()
-                                                            .right_0()
-                                                            .h(px(3.))
-                                                            .bg(selected_tab_color)
-                                                            .with_animation(
-                                                                ElementId::NamedInteger(
-                                                                    "tab-selection-indicator".into(),
-                                                                    tab_selection_epoch,
-                                                                ),
-                                                                Animation::new(Duration::from_millis(180))
-                                                                    .with_easing(ease_out_quint()),
-                                                                |this, delta| this.opacity(delta * delta),
-                                                            ),
-                                                    ),
+                                                    .shadow_xs(),
                                             )
                                         })
-                                        .when(!tab_selected && ix > 0, |this| {
+                                        .when(!tab_selected, |this| {
                                             this.prefix(
                                                 div()
                                                     .absolute()
-                                                    .left_0()
-                                                    .top(px(8.))
-                                                    .bottom(px(8.))
+                                                    .right_0()
+                                                    .top(px(6.))
+                                                    .bottom(px(6.))
                                                     .w(px(1.))
-                                                    .bg(cx.theme().border.opacity(0.8)),
+                                                    .bg(cx.theme().border.opacity(0.72)),
                                             )
                                         })
                                         .child(
                                             h_flex()
                                                 .id(("tab-native-drag", ix))
                                                 .relative()
+                                                .w_full()
                                                 .h_full()
                                                 .items_center()
-                                                .gap_2()
-                                                .px_2()
-                                                .when(!is_integrated, |this| {
-                                                    this.gap_1().px_1()
-                                                })
-                                                .rounded_tl(px(8.))
-                                                .rounded_tr(px(8.))
+                                                .gap_1()
                                                 .when(!tab_selected, |this| {
                                                     this.hover(|this| {
-                                                        this.bg(cx.theme().secondary.opacity(0.55))
+                                                        this.rounded_tl(px(8.))
+                                                            .rounded_tr(px(8.))
+                                                            .bg(cx.theme().secondary.opacity(0.38))
                                                     })
                                                 })
                                                 .on_mouse_down(
@@ -490,7 +478,8 @@ impl TinyShell {
                                                     }),
                                                 )
                                                 .when(tab_multi_selected && !tab_selected, |this| {
-                                                    this.bg(cx.theme().primary.opacity(0.10))
+                                                    this.rounded(px(4.))
+                                                        .bg(cx.theme().primary.opacity(0.08))
                                                 })
                                                 .on_drag(
                                                     drag_payload,
@@ -510,12 +499,9 @@ impl TinyShell {
                                                         })
                                                     },
                                                 )
-                                                .when(tab_selected, |this| {
-                                                    this.font_weight(FontWeight::BOLD)
-                                                })
                                                 .child(
                                                     div()
-                                                        .size(px(8.))
+                                                        .size(px(6.))
                                                         .flex_none()
                                                         .rounded_full()
                                                         .bg(dot_color)
@@ -531,20 +517,66 @@ impl TinyShell {
                                                 )
                                                 .child(
                                                     div()
+                                                        .flex_none()
+                                                        .min_w(px(16.))
+                                                        .h(px(16.))
+                                                        .px_1()
+                                                        .flex()
+                                                        .items_center()
+                                                        .justify_center()
+                                                        .rounded(px(4.))
+                                                        .bg(cx.theme().secondary)
+                                                        .text_color(cx.theme().muted_foreground)
+                                                        .text_size(px(10.))
+                                                        .font_weight(FontWeight::SEMIBOLD)
+                                                        .line_height(relative(1.0))
+                                                        .child(ordinal.to_string()),
+                                                )
+                                                .child(
+                                                    div()
                                                         .id(("native-tab-title", ix))
+                                                        .flex_1()
                                                         .min_w(px(0.))
-                                                        .when(!is_integrated, move |this| {
-                                                            this.flex_none()
-                                                                .max_w(native_tab_title_max_width)
-                                                                .truncate()
-                                                                .tooltip(move |window, cx| {
-                                                                    gpui_component::tooltip::Tooltip::new(
-                                                                        tooltip_label.clone(),
-                                                                    )
-                                                                    .build(window, cx)
-                                                                })
+                                                        .max_w(native_tab_title_max_width)
+                                                        .truncate()
+                                                        .text_size(px(12.))
+                                                        .line_height(relative(1.0))
+                                                        .font_weight(if tab_selected {
+                                                            FontWeight::BOLD
+                                                        } else {
+                                                            FontWeight::NORMAL
                                                         })
-                                                        .child(label),
+                                                        .tooltip(move |window, cx| {
+                                                            gpui_component::tooltip::Tooltip::new(
+                                                                tooltip_label.clone(),
+                                                            )
+                                                            .build(window, cx)
+                                                        })
+                                                        .child(title_label),
+                                                )
+                                                .child(
+                                                    Button::new(("tab-close", ix))
+                                                        .ghost()
+                                                        .xsmall()
+                                                        .icon(IconName::Close)
+                                                        .flex_none()
+                                                        .opacity(if tab_selected { 0.68 } else { 0.48 })
+                                                        .on_mouse_down(
+                                                            MouseButton::Left,
+                                                            |_, window, cx| {
+                                                                window.prevent_default();
+                                                                cx.stop_propagation();
+                                                            },
+                                                        )
+                                                        .on_click(cx.listener(
+                                                            move |this, _, window, cx| {
+                                                                window.prevent_default();
+                                                                cx.stop_propagation();
+                                                                if !close_id.is_empty() {
+                                                                    this.close_tab(close_id.clone(), cx)
+                                                                }
+                                                            },
+                                                        )),
                                                 )
                                                 .context_menu({
                                                     let view = view.clone();
@@ -562,30 +594,6 @@ impl TinyShell {
                                         .on_click(cx.listener(move |this, _, window, cx| {
                                             this.activate_group(gid.clone(), window, cx)
                                         }))
-                                        .suffix(
-                                            Button::new(("tab-close", ix))
-                                                .ghost()
-                                                .xsmall()
-                                                .icon(IconName::Close)
-                                                .mr(px(4.))
-                                                .when(!is_integrated, |this| this.mr(px(0.)))
-                                                .on_mouse_down(
-                                                    MouseButton::Left,
-                                                    |_, window, cx| {
-                                                        window.prevent_default();
-                                                        cx.stop_propagation();
-                                                    },
-                                                )
-                                                .on_click(cx.listener(
-                                                    move |this, _, window, cx| {
-                                                        window.prevent_default();
-                                                        cx.stop_propagation();
-                                                        if !close_id.is_empty() {
-                                                            this.close_tab(close_id.clone(), cx)
-                                                        }
-                                                    },
-                                                )),
-                                        )
                                 },
                             )
                             .chain(system_info_tabs_data.iter().enumerate().map(
@@ -596,57 +604,46 @@ impl TinyShell {
                                     let click_group_id = group_id.clone();
                                     let close_info_id = info_id.clone();
                                     Tab::new()
-                                        .min_w(px(150.))
+                                        .min_w(px(120.))
                                         .when(selected_info, |this| {
                                             this.prefix(
                                                 div()
                                                     .absolute()
                                                     .top_0()
+                                                    .bottom(px(-1.))
                                                     .left_0()
                                                     .right_0()
-                                                    .bottom_0()
                                                     .rounded_tl(px(8.))
                                                     .rounded_tr(px(8.))
+                                                    .border_1()
+                                                    .border_color(cx.theme().border)
                                                     .bg(cx.theme().background)
-                                                    .child(
-                                                        div()
-                                                            .absolute()
-                                                            .top_0()
-                                                            .left_0()
-                                                            .right_0()
-                                                            .h(px(3.))
-                                                            .bg(selected_tab_color)
-                                                            .with_animation(
-                                                                ElementId::NamedInteger(
-                                                                    "tab-selection-indicator".into(),
-                                                                    tab_selection_epoch,
-                                                                ),
-                                                                Animation::new(Duration::from_millis(180))
-                                                                    .with_easing(ease_out_quint()),
-                                                                |this, delta| this.opacity(delta * delta),
-                                                            ),
-                                                    ),
+                                                    .shadow_xs(),
                                             )
                                         })
-                                        .prefix(
-                                            div()
-                                                .absolute()
-                                                .left_0()
-                                                .top(px(8.))
-                                                .bottom(px(8.))
-                                                .w(px(1.))
-                                                .bg(cx.theme().border.opacity(0.8)),
-                                        )
+                                        .when(!selected_info, |this| {
+                                            this.prefix(
+                                                div()
+                                                    .absolute()
+                                                    .right_0()
+                                                    .top(px(6.))
+                                                    .bottom(px(6.))
+                                                    .w(px(1.))
+                                                    .bg(cx.theme().border.opacity(0.72)),
+                                            )
+                                        })
                                         .child(
                                             h_flex()
                                                 .relative()
                                                 .h_full()
                                                 .items_center()
-                                                .gap_2()
-                                                .px_2()
+                                                .gap_1()
+                                                .px_1()
                                                 .when(!selected_info, |this| {
                                                     this.hover(|this| {
-                                                        this.bg(cx.theme().secondary.opacity(0.55))
+                                                        this.rounded_tl(px(8.))
+                                                            .rounded_tr(px(8.))
+                                                            .bg(cx.theme().secondary.opacity(0.38))
                                                     })
                                                 })
                                                 .when(selected_info, |this| {
@@ -2388,7 +2385,7 @@ mod native_tab_width_tests {
 
     #[test]
     fn native_title_can_grow_beyond_the_compact_tab_minimum() {
-        assert_eq!(NATIVE_TAB_MIN_WIDTH, 96.);
-        assert_eq!(NATIVE_TAB_TITLE_MAX_WIDTH, 192.);
+        assert_eq!(NATIVE_TAB_MIN_WIDTH, 108.);
+        assert_eq!(NATIVE_TAB_TITLE_MAX_WIDTH, 148.);
     }
 }
