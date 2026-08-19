@@ -518,15 +518,15 @@ impl TinyShell {
                                                 .child(
                                                     div()
                                                         .flex_none()
-                                                        .min_w(px(16.))
-                                                        .h(px(16.))
-                                                        .px_1()
+                                                        .min_w(px(12.))
                                                         .flex()
                                                         .items_center()
                                                         .justify_center()
-                                                        .rounded(px(4.))
-                                                        .bg(cx.theme().secondary)
-                                                        .text_color(cx.theme().muted_foreground)
+                                                        .text_color(
+                                                            cx.theme()
+                                                                .muted_foreground
+                                                                .opacity(0.78),
+                                                        )
                                                         .text_size(px(10.))
                                                         .font_weight(FontWeight::SEMIBOLD)
                                                         .line_height(relative(1.0))
