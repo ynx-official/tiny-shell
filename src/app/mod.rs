@@ -218,13 +218,17 @@ pub(crate) struct SftpPanelState {
 pub(crate) struct SftpWorkspaceState {
     pub(crate) path_input: Entity<InputState>,
     pub(crate) new_folder_input: Entity<InputState>,
+    pub(crate) quick_command_search_input: Entity<InputState>,
     pub(crate) remote_files_scroll_handle: UniformListScrollHandle,
     pub(crate) tree_scroll_handle: gpui::ScrollHandle,
+    pub(crate) quick_command_category_scroll_handle: gpui::ScrollHandle,
+    pub(crate) quick_command_cards_scroll_handle: gpui::ScrollHandle,
     pub(crate) tree_scroll_target_bounds: Option<(String, Bounds<Pixels>)>,
     pub(crate) file_panels: Entity<ResizableState>,
     pub(crate) delete_scroll_handle: gpui::ScrollHandle,
     pub(crate) pending_path_sync: Option<String>,
     pub(crate) pending_tree_scroll_path: Option<String>,
+    pub(crate) center_pending_tree_scroll: bool,
     pub(crate) context_menu: Option<SftpContextMenuState>,
     pub(crate) creating_folder: bool,
 }
@@ -818,6 +822,9 @@ impl TinyShell {
         let sftp_path_input = cx.new(|cx| InputState::new(window, cx).default_value("/"));
         let sftp_new_folder_input =
             cx.new(|cx| InputState::new(window, cx).placeholder(t!("new_folder").to_string()));
+        let sftp_quick_command_search_input = cx.new(|cx| {
+            InputState::new(window, cx).placeholder(t!("quick_command_search").to_string())
+        });
         let search_input =
             cx.new(|cx| InputState::new(window, cx).placeholder(t!("search").to_string()));
         let docker_search_input = cx.new(|cx| {
@@ -845,6 +852,11 @@ impl TinyShell {
         _subscriptions.extend([
             cx.subscribe_in(&sftp_path_input, window, Self::on_input_event),
             cx.subscribe_in(&sftp_new_folder_input, window, Self::on_input_event),
+            cx.subscribe_in(
+                &sftp_quick_command_search_input,
+                window,
+                Self::on_input_event,
+            ),
             cx.subscribe_in(&search_input, window, Self::on_input_event),
             cx.subscribe_in(&docker_search_input, window, Self::on_input_event),
         ]);
@@ -1009,13 +1021,17 @@ impl TinyShell {
             sftp_workspace: SftpWorkspaceState {
                 path_input: sftp_path_input,
                 new_folder_input: sftp_new_folder_input,
+                quick_command_search_input: sftp_quick_command_search_input,
                 remote_files_scroll_handle: UniformListScrollHandle::new(),
                 tree_scroll_handle: gpui::ScrollHandle::new(),
+                quick_command_category_scroll_handle: gpui::ScrollHandle::new(),
+                quick_command_cards_scroll_handle: gpui::ScrollHandle::new(),
                 tree_scroll_target_bounds: None,
                 file_panels: cx.new(|_| ResizableState::default()),
                 delete_scroll_handle: gpui::ScrollHandle::new(),
                 pending_path_sync: Some("/".into()),
                 pending_tree_scroll_path: None,
+                center_pending_tree_scroll: false,
                 context_menu: None,
                 creating_folder: false,
             },
@@ -1860,6 +1876,7 @@ impl TinyShell {
                     self.sftp_workspace.pending_path_sync = Some(home.clone());
                     self.sftp_workspace.tree_scroll_target_bounds = None;
                     self.sftp_workspace.pending_tree_scroll_path = Some(home);
+                    self.sftp_workspace.center_pending_tree_scroll = false;
                 }
             }
         }

@@ -46,6 +46,14 @@ pub(crate) fn minimal_sftp_tree_scroll_offset_y(
     }
 }
 
+pub(crate) fn centered_sftp_tree_scroll_offset_y(
+    current_offset_y: Pixels,
+    viewport: Bounds<Pixels>,
+    target: Bounds<Pixels>,
+) -> Pixels {
+    current_offset_y + viewport.center().y - target.center().y
+}
+
 pub(crate) fn is_editable_text_file(filename: &str) -> bool {
     let lower = filename.to_lowercase();
     let ext = std::path::Path::new(&lower)
@@ -140,6 +148,7 @@ impl TinyShell {
         });
         self.sftp_workspace.tree_scroll_target_bounds = None;
         self.sftp_workspace.pending_tree_scroll_path = current_path;
+        self.sftp_workspace.center_pending_tree_scroll = false;
     }
 
     /// 双击文本文件时调用:下载文件内容到内存,打开独立编辑器窗口。
@@ -209,6 +218,7 @@ impl TinyShell {
             self.sftp_workspace.tree_scroll_target_bounds = None;
             self.sftp_workspace.pending_path_sync = Some(path.clone());
             self.sftp_workspace.pending_tree_scroll_path = Some(path.clone());
+            self.sftp_workspace.center_pending_tree_scroll = false;
         }
 
         for directory in missing_ancestors {
@@ -253,12 +263,16 @@ impl TinyShell {
             px(0.)
         };
         let current_offset = scroll_handle.offset();
-        let next_offset_y = minimal_sftp_tree_scroll_offset_y(
-            current_offset.y,
-            viewport,
-            target_bounds,
-            bottom_inset,
-        )
+        let next_offset_y = if self.sftp_workspace.center_pending_tree_scroll {
+            centered_sftp_tree_scroll_offset_y(current_offset.y, viewport, target_bounds)
+        } else {
+            minimal_sftp_tree_scroll_offset_y(
+                current_offset.y,
+                viewport,
+                target_bounds,
+                bottom_inset,
+            )
+        }
         .clamp(-max_offset.y, px(0.));
 
         scroll_handle.set_offset(Point {
@@ -266,7 +280,23 @@ impl TinyShell {
             y: next_offset_y,
         });
         self.sftp_workspace.pending_tree_scroll_path = None;
+        self.sftp_workspace.center_pending_tree_scroll = false;
         self.sftp_workspace.tree_scroll_target_bounds = None;
+        cx.notify();
+    }
+
+    pub(crate) fn locate_current_sftp_tree_directory(&mut self, cx: &mut Context<Self>) {
+        let Some(current_path) = self.active_sftp().map(|sftp| sftp.current_path.clone()) else {
+            return;
+        };
+        let current_offset = self.sftp_workspace.tree_scroll_handle.offset();
+        self.sftp_workspace.tree_scroll_handle.set_offset(Point {
+            x: px(0.),
+            y: current_offset.y,
+        });
+        self.sftp_workspace.tree_scroll_target_bounds = None;
+        self.sftp_workspace.pending_tree_scroll_path = Some(current_path);
+        self.sftp_workspace.center_pending_tree_scroll = true;
         cx.notify();
     }
 
@@ -1119,6 +1149,26 @@ pub(crate) fn sftp_tree_paths(
 #[cfg(test)]
 mod tests {
     use crate::TinyShell;
+    use gpui::{Bounds, px};
+
+    fn vertical_bounds(top: f32, height: f32) -> Bounds<gpui::Pixels> {
+        Bounds::new(
+            gpui::point(px(0.), px(top)),
+            gpui::size(px(100.), px(height)),
+        )
+    }
+
+    #[test]
+    fn centers_a_tree_target_for_explicit_location() {
+        assert_eq!(
+            super::centered_sftp_tree_scroll_offset_y(
+                px(-300.),
+                vertical_bounds(100., 200.),
+                vertical_bounds(250., 30.),
+            ),
+            px(-365.)
+        );
+    }
 
     #[test]
     fn builds_remote_path_chain_from_root() {
