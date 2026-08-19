@@ -7,6 +7,7 @@ pub(crate) mod connection_import_window;
 pub(crate) mod connection_manager;
 pub(crate) mod constants;
 pub(crate) mod dialogs;
+pub(crate) mod group_tree_picker;
 pub(crate) mod input_focus;
 pub(crate) mod keybinding_recorder;
 pub(crate) mod managed_keys;

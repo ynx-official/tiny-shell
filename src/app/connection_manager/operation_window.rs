@@ -2,20 +2,19 @@ use std::{collections::HashSet, path::PathBuf};
 
 use gpui::{
     App, AppContext as _, Context, Entity, FocusHandle, Focusable, InteractiveElement as _,
-    IntoElement, ParentElement as _, PathPromptOptions, Render, StatefulInteractiveElement as _,
-    Styled, Window, WindowOptions, prelude::FluentBuilder as _, px, rems, size,
+    IntoElement, ParentElement as _, PathPromptOptions, Render, Styled, Window, WindowOptions, px,
+    rems, size,
 };
 use gpui_component::{
-    ActiveTheme as _, Icon, IconName, Root, Sizable as _, Size,
+    ActiveTheme as _, Root,
     button::{Button, ButtonVariants as _},
     h_flex,
     input::{Input, InputEvent, InputState},
-    scroll::ScrollableElement as _,
     v_flex,
 };
 use rust_i18n::t;
 
-use crate::TinyShell;
+use crate::{TinyShell, app::group_tree_picker::GroupTreePicker};
 
 #[derive(Clone)]
 pub(crate) enum ConnectionOperation {
@@ -429,7 +428,9 @@ impl ConnectionOperationWindow {
         } else {
             t!("connection_group_ungrouped").to_string()
         };
-        let visible_groups = visible_move_targets(&groups, &self.move_picker_expanded);
+        let picker_for_select = cx.entity();
+        let picker_for_toggle = picker_for_select.clone();
+        let expanded = self.move_picker_expanded.clone();
 
         v_flex()
             .size_full()
@@ -456,68 +457,31 @@ impl ConnectionOperationWindow {
                     ),
             )
             .child(
-                v_flex()
-                    .id("connection-operation-targets")
-                    .flex_1()
-                    .min_h(px(0.))
-                    .overflow_hidden()
-                    .rounded_md()
-                    .border_1()
-                    .border_color(cx.theme().border)
-                    .bg(cx.theme().popover)
-                    .text_color(cx.theme().popover_foreground)
-                    .p_1()
-                    .child(move_target_row(
-                        "connection-operation-root",
-                        MoveTargetRow {
-                            label: root_label,
-                            depth: 0,
-                            target: None,
-                            has_children: false,
-                            expanded: false,
-                        },
-                        is_group,
-                        cx,
-                    ))
-                    .child(
-                        gpui::div()
-                            .mx_1()
-                            .flex_none()
-                            .border_t_1()
-                            .border_color(cx.theme().border),
-                    )
-                    .child(
-                        gpui::div().flex_1().min_h(px(0.)).overflow_hidden().child(
-                            v_flex()
-                                .id("connection-operation-target-tree")
-                                .size_full()
-                                .overflow_y_scrollbar()
-                                .children(visible_groups.into_iter().enumerate().map(
-                                    |(index, (group, depth))| {
-                                        let label =
-                                            group.rsplit('/').next().unwrap_or(&group).to_string();
-                                        let has_children = groups.iter().any(|candidate| {
-                                            candidate
-                                                .strip_prefix(&format!("{group}/"))
-                                                .is_some_and(|rest| !rest.contains('/'))
-                                        });
-                                        let expanded = self.move_picker_expanded.contains(&group);
-                                        move_target_row(
-                                            ("connection-operation-target", index),
-                                            MoveTargetRow {
-                                                label,
-                                                depth,
-                                                target: Some(group),
-                                                has_children,
-                                                expanded,
-                                            },
-                                            is_group,
-                                            cx,
-                                        )
-                                    },
-                                )),
-                        ),
-                    ),
+                GroupTreePicker::new(
+                    "connection-operation-group-tree-picker",
+                    groups,
+                    expanded,
+                    root_label,
+                )
+                .root_muted(false)
+                .show_selection(false)
+                .on_select(move |target, window, cx| {
+                    picker_for_select.update(cx, |this, cx| {
+                        if is_group {
+                            this.move_group(target, window, cx);
+                        } else {
+                            this.move_session(target, window, cx);
+                        }
+                    });
+                })
+                .on_toggle(move |path, _, cx| {
+                    picker_for_toggle.update(cx, |this, cx| {
+                        if !this.move_picker_expanded.remove(&path) {
+                            this.move_picker_expanded.insert(path);
+                        }
+                        cx.notify();
+                    });
+                }),
             )
             .child(
                 h_flex().justify_end().child(
@@ -573,131 +537,6 @@ impl Render for ConnectionOperationWindow {
             .child(content)
             .children(Root::render_notification_layer(window, cx))
     }
-}
-
-struct MoveTargetRow {
-    label: String,
-    depth: usize,
-    target: Option<String>,
-    has_children: bool,
-    expanded: bool,
-}
-
-fn move_target_row(
-    id: impl Into<gpui::ElementId>,
-    row: MoveTargetRow,
-    is_group: bool,
-    cx: &mut Context<ConnectionOperationWindow>,
-) -> gpui::AnyElement {
-    let toggle_target = row.target.clone();
-    let toggle_id = row.target.clone().unwrap_or_else(|| "__root__".to_string());
-    let disclosure_icon = if row.expanded {
-        IconName::ChevronDown
-    } else {
-        IconName::ChevronRight
-    };
-    let folder_icon = if row.expanded {
-        IconName::FolderOpen
-    } else {
-        IconName::Folder
-    };
-    let target = row.target;
-
-    h_flex()
-        .id(id)
-        .w_full()
-        .h(px(32.))
-        .flex_none()
-        .items_center()
-        .gap_2()
-        .pl(px(10. + row.depth as f32 * 16.))
-        .pr_2()
-        .cursor_pointer()
-        .rounded_sm()
-        .text_size(rems(0.78))
-        .hover(|this| this.bg(cx.theme().secondary.opacity(0.65)))
-        .on_click(cx.listener(move |this, _, window, cx| {
-            if is_group {
-                this.move_group(target.clone(), window, cx);
-            } else {
-                this.move_session(target.clone(), window, cx);
-            }
-        }))
-        .child(
-            gpui::div()
-                .id(gpui::SharedString::from(format!(
-                    "connection-operation-target-toggle-{toggle_id}"
-                )))
-                .w(px(16.))
-                .h(px(18.))
-                .flex_none()
-                .flex()
-                .items_center()
-                .justify_center()
-                .when(row.has_children, |this| {
-                    this.cursor_pointer()
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            if let Some(target) = toggle_target.as_deref()
-                                && !this.move_picker_expanded.remove(target)
-                            {
-                                this.move_picker_expanded.insert(target.to_string());
-                            }
-                            cx.stop_propagation();
-                            cx.notify();
-                        }))
-                })
-                .when(row.has_children, |this| {
-                    this.child(Icon::new(disclosure_icon).with_size(Size::Small))
-                }),
-        )
-        .child(
-            gpui::div()
-                .w(px(16.))
-                .h(px(18.))
-                .flex_none()
-                .flex()
-                .items_center()
-                .justify_center()
-                .child(Icon::new(folder_icon).with_size(Size::Small)),
-        )
-        .child(gpui::div().min_w_0().flex_1().truncate().child(row.label))
-        .into_any_element()
-}
-
-fn visible_move_targets(groups: &[String], expanded: &HashSet<String>) -> Vec<(String, usize)> {
-    let group_set = groups.iter().collect::<HashSet<_>>();
-    let mut children = std::collections::HashMap::<Option<String>, Vec<String>>::new();
-    for group in groups {
-        let parent = group
-            .rsplit_once('/')
-            .map(|(parent, _)| parent.to_string())
-            .filter(|parent| group_set.contains(parent));
-        children.entry(parent).or_default().push(group.clone());
-    }
-
-    fn append(
-        parent: Option<&str>,
-        depth: usize,
-        children: &mut std::collections::HashMap<Option<String>, Vec<String>>,
-        expanded: &HashSet<String>,
-        result: &mut Vec<(String, usize)>,
-    ) {
-        let key = parent.map(str::to_string);
-        let Some(groups) = children.remove(&key) else {
-            return;
-        };
-        for group in groups {
-            let is_expanded = expanded.contains(&group);
-            result.push((group.clone(), depth));
-            if is_expanded {
-                append(Some(&group), depth + 1, children, expanded, result);
-            }
-        }
-    }
-
-    let mut result = Vec::new();
-    append(None, 0, &mut children, expanded, &mut result);
-    result
 }
 
 fn commit_catalog_change(
@@ -821,49 +660,6 @@ pub(crate) fn open(owner: Entity<TinyShell>, operation: ConnectionOperation, cx:
                 error = format!("{error:?}")
             )
             .to_string(),
-        );
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::visible_move_targets;
-    use std::collections::HashSet;
-
-    #[test]
-    fn move_picker_shows_only_root_groups_by_default() {
-        let groups = vec![
-            "prod".to_string(),
-            "prod/eu".to_string(),
-            "prod/eu/database".to_string(),
-            "shared".to_string(),
-        ];
-
-        assert_eq!(
-            visible_move_targets(&groups, &HashSet::new()),
-            vec![("prod".to_string(), 0), ("shared".to_string(), 0)]
-        );
-    }
-
-    #[test]
-    fn move_picker_expands_only_the_requested_branch() {
-        let groups = vec![
-            "prod".to_string(),
-            "prod/eu".to_string(),
-            "prod/us".to_string(),
-            "shared".to_string(),
-            "shared/tools".to_string(),
-        ];
-        let expanded = HashSet::from(["prod".to_string()]);
-
-        assert_eq!(
-            visible_move_targets(&groups, &expanded),
-            vec![
-                ("prod".to_string(), 0),
-                ("prod/eu".to_string(), 1),
-                ("prod/us".to_string(), 1),
-                ("shared".to_string(), 0),
-            ]
         );
     }
 }
