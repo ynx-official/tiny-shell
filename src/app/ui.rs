@@ -38,8 +38,8 @@ use crate::{
         HomePage, IncomingPaneDrag, IncomingTabDrag, ProcessView, SftpPanelView,
         settings::MonitoringPosition,
     },
-    sftp::format_mtime,
     sftp::ops::is_editable_text_file,
+    sftp::{format_mtime, format_permissions},
     system::format_bytes,
     terminal::{self, TabKind},
 };

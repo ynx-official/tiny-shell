@@ -1380,6 +1380,8 @@ impl TinyShell {
         let icon_col_width = px(14.);
         let size_col_width = px(96.);
         let size_col_min_width = px(56.);
+        let permissions_col_width = px(92.);
+        let permissions_col_min_width = px(80.);
         let modified_col_width = px(152.);
         let modified_col_min_width = px(112.);
         let name_col_min_width = px(56.);
@@ -1444,7 +1446,7 @@ impl TinyShell {
                                 .child(self.render_sftp_directory_tree(sftp, cx)),
                         )
                         .child(
-                            resizable_panel().size_range(px(320.)..Pixels::MAX).child(
+                            resizable_panel().size_range(px(400.)..Pixels::MAX).child(
                                 v_flex()
                                     .w_full()
                                     .h_full()
@@ -1500,6 +1502,15 @@ impl TinyShell {
                                                     .text_size(rems(0.917))
                                                     .text_color(cx.theme().muted_foreground)
                                                     .child(t!("size")),
+                                            )
+                                            .child(
+                                                div()
+                                                    .w(permissions_col_width)
+                                                    .min_w(permissions_col_min_width)
+                                                    .flex_shrink_1()
+                                                    .text_size(rems(0.917))
+                                                    .text_color(cx.theme().muted_foreground)
+                                                    .child(t!("permissions")),
                                             )
                                             .child(
                                                 div()
@@ -1729,6 +1740,18 @@ impl TinyShell {
                                                         } else {
                                                             format_bytes(entry.size)
                                                         }),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .w(permissions_col_width)
+                                                        .min_w(permissions_col_min_width)
+                                                        .flex_shrink_1()
+                                                        .font_family("Maple Mono NF CN")
+                                                        .text_size(rems(0.917))
+                                                        .text_color(theme.muted_foreground)
+                                                        .child(format_permissions(
+                                                            entry.permissions,
+                                                        )),
                                                 )
                                                 .child(
                                                     div()

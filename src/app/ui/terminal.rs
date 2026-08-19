@@ -1996,11 +1996,17 @@ impl TinyShell {
                 move |submenu, window, _| {
                     submenu
                         .item(
-                            PopupMenuItem::new(t!("sftp_text_editor").to_string())
-                                .disabled(!editable)
-                                .on_click(window.listener_for(&view, |this, _, _, cx| {
+                            PopupMenuItem::new(if editable {
+                                t!("sftp_text_editor").to_string()
+                            } else {
+                                t!("sftp_force_text_editor").to_string()
+                            })
+                            .on_click(window.listener_for(
+                                &view,
+                                |this, _, _, cx| {
                                     this.trigger_sftp_context_internal_editor(cx);
-                                })),
+                                },
+                            )),
                         )
                         .item(
                             PopupMenuItem::new(t!("sftp_system_association").to_string()).on_click(
@@ -2021,11 +2027,11 @@ impl TinyShell {
                 move |submenu, window, _| {
                     submenu
                         .item(
-                            PopupMenuItem::new(t!("sftp_internal_editor").to_string())
-                                .disabled(!editable)
-                                .on_click(window.listener_for(&view, |this, _, _, cx| {
+                            PopupMenuItem::new(t!("sftp_internal_editor").to_string()).on_click(
+                                window.listener_for(&view, |this, _, _, cx| {
                                     this.trigger_sftp_context_internal_editor(cx);
-                                })),
+                                }),
+                            ),
                         )
                         .item(
                             PopupMenuItem::new(t!("sftp_external_editor").to_string())

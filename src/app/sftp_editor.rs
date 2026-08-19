@@ -8,23 +8,27 @@
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AppContext, Entity, Focusable as _, InteractiveElement as _, IntoElement, KeyDownEvent,
+    Anchor, AppContext, Entity, Focusable as _, InteractiveElement as _, IntoElement, KeyDownEvent,
     MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement as _, Pixels, Point, Render,
     Styled, Window, px, relative,
 };
 use gpui_component::{
-    ActiveTheme, Disableable as _, Root, Sizable, WindowExt as _,
+    ActiveTheme, Disableable as _, IconName, Root, Sizable, WindowExt as _,
     button::{Button, ButtonVariant, ButtonVariants as _},
     dialog::DialogButtonProps,
     h_flex,
     input::{Input, InputEvent, InputState, Search},
+    menu::{DropdownMenu as _, PopupMenuItem},
     v_flex,
 };
 use rust_i18n::t;
 
 use crate::sftp::{
     SftpHandle,
-    text_file::{RemoteFileRevision, RemoteTextFile, RemoteTextFormat, RemoteTextSave},
+    text_file::{
+        RemoteFileRevision, RemoteTextFile, RemoteTextFormat, RemoteTextSave, TextEncoding,
+        decode_remote_text_with_encoding, encode_remote_text,
+    },
 };
 
 /// 文件扩展名 → Tree Sitter 语言名映射。
@@ -63,11 +67,19 @@ fn base_name(path: &str) -> &str {
     path.rsplit('/').next().unwrap_or(path)
 }
 
+fn text_encoding_label(encoding: TextEncoding) -> String {
+    encoding
+        .locale_key()
+        .map(|key| t!(key).to_string())
+        .unwrap_or_else(|| encoding.label().to_string())
+}
+
 /// 单个文件对应的编辑器状态。
 #[derive(Clone)]
 pub(crate) struct EditorTab {
     remote_path: String,
     input: Entity<InputState>,
+    source_bytes: Vec<u8>,
     revision: RemoteFileRevision,
     format: RemoteTextFormat,
     large_file: bool,
@@ -110,6 +122,7 @@ impl EditorTab {
     ) -> Self {
         let RemoteTextFile {
             content,
+            source_bytes,
             revision,
             format,
             large_file,
@@ -128,6 +141,7 @@ impl EditorTab {
         Self {
             remote_path,
             input,
+            source_bytes,
             revision,
             format,
             large_file,
@@ -364,6 +378,91 @@ impl SftpEditor {
         window.dispatch_action(Box::new(Search), cx);
     }
 
+    fn apply_encoding(
+        &mut self,
+        encoding: TextEncoding,
+        window: &mut Window,
+        cx: &mut gpui::Context<Self>,
+    ) {
+        let Some(tab) = self.tabs.get(self.active_idx) else {
+            return;
+        };
+        if tab.saving || tab.format.encoding == encoding {
+            return;
+        }
+        let source_bytes = tab.source_bytes.clone();
+        let revision = tab.revision.clone();
+        let decoded = match decode_remote_text_with_encoding(&source_bytes, encoding, revision) {
+            Ok(decoded) => decoded,
+            Err(error) => {
+                if let Some(tab) = self.tabs.get_mut(self.active_idx) {
+                    tab.save_error = Some(error.to_string());
+                }
+                cx.notify();
+                return;
+            }
+        };
+
+        let Some(tab) = self.tabs.get_mut(self.active_idx) else {
+            return;
+        };
+        tab.format = decoded.format;
+        tab.large_file = decoded.large_file;
+        tab.saved_text = decoded.content.clone();
+        tab.conflict = None;
+        tab.save_error = None;
+        tab.text_at_save_start = None;
+        tab.input.update(cx, |input, cx| {
+            input.set_value(decoded.content, window, cx);
+        });
+        tab.dirty = false;
+        self.focus_active(window, cx);
+        cx.notify();
+    }
+
+    fn request_encoding_change(
+        &mut self,
+        encoding: TextEncoding,
+        window: &mut Window,
+        cx: &mut gpui::Context<Self>,
+    ) {
+        let Some(tab) = self.tabs.get(self.active_idx) else {
+            return;
+        };
+        if tab.saving || tab.format.encoding == encoding {
+            return;
+        }
+        if !tab.dirty {
+            self.apply_encoding(encoding, window, cx);
+            return;
+        }
+
+        let editor = cx.entity();
+        window.open_alert_dialog(cx, move |dialog, _window, _| {
+            dialog
+                .title(t!("editor_encoding_reload_title").to_string())
+                .description(t!("editor_encoding_reload_desc").to_string())
+                .width(px(460.))
+                .keyboard(false)
+                .button_props(
+                    DialogButtonProps::default()
+                        .cancel_text(t!("editor_close_cancel").to_string())
+                        .show_cancel(true)
+                        .ok_text(t!("editor_encoding_reload").to_string())
+                        .ok_variant(ButtonVariant::Danger),
+                )
+                .on_ok({
+                    let editor = editor.clone();
+                    move |_, window, cx| {
+                        editor.update(cx, |editor, cx| {
+                            editor.apply_encoding(encoding, window, cx);
+                        });
+                        true
+                    }
+                })
+        });
+    }
+
     /// Ctrl+S: 保存当前激活 tab。保存成功事件返回前不清除 dirty。
     pub fn save_active(&mut self, _window: &mut Window, cx: &mut gpui::Context<Self>) {
         self.save_active_with_force(false, cx);
@@ -412,6 +511,9 @@ impl SftpEditor {
                 if let Some(uploaded_text) = uploaded_text {
                     tab.saved_text = uploaded_text.clone();
                     tab.dirty = uploaded_text != current_text;
+                    if let Ok(source_bytes) = encode_remote_text(&uploaded_text, tab.format) {
+                        tab.source_bytes = source_bytes;
+                    }
                 }
                 tab.revision = revision.clone();
                 tab.saving = false;
@@ -448,6 +550,7 @@ impl SftpEditor {
             return;
         };
         tab.revision = remote_file.revision;
+        tab.source_bytes = remote_file.source_bytes;
         tab.format = remote_file.format;
         tab.large_file = remote_file.large_file;
         tab.saved_text = remote_file.content.clone();
@@ -842,8 +945,9 @@ impl Render for SftpEditor {
             .map(|position| (position.line + 1, position.character + 1))
             .unwrap_or((1, 1));
         let encoding = active
-            .map(|tab| tab.format.encoding.label())
-            .unwrap_or("UTF-8");
+            .map(|tab| tab.format.encoding)
+            .unwrap_or(TextEncoding::Utf8);
+        let encoding_label = text_encoding_label(encoding);
         let line_ending = active
             .map(|tab| tab.format.line_ending.label())
             .unwrap_or("LF");
@@ -1156,7 +1260,44 @@ impl Render for SftpEditor {
                                 line = cursor_position.0,
                                 column = cursor_position.1
                             ).to_string())
-                            .child(encoding)
+                            .child(
+                                Button::new("editor-encoding")
+                                    .secondary()
+                                    .xsmall()
+                                    .disabled(saving)
+                                    .label(encoding_label)
+                                    .icon(IconName::ChevronDown)
+                                    .dropdown_menu_with_anchor(Anchor::BottomRight, {
+                                        let editor = cx.entity();
+                                        move |mut menu, window, cx| {
+                                            let current = editor
+                                                .read(cx)
+                                                .active_tab()
+                                                .map(|tab| tab.format.encoding)
+                                                .unwrap_or(TextEncoding::Utf8);
+                                            menu = menu.min_w(220.).max_h(px(320.)).scrollable(true);
+                                            let mut encodings = TextEncoding::ALL.to_vec();
+                                            if !encodings.contains(&current) {
+                                                encodings.insert(0, current);
+                                            }
+                                            for encoding in encodings {
+                                                menu = menu.item(
+                                                    PopupMenuItem::new(text_encoding_label(encoding))
+                                                    .checked(encoding == current)
+                                                    .on_click(window.listener_for(
+                                                        &editor,
+                                                        move |this, _, window, cx| {
+                                                            this.request_encoding_change(
+                                                                encoding, window, cx,
+                                                            );
+                                                        },
+                                                    )),
+                                                );
+                                            }
+                                            menu
+                                        }
+                                    }),
+                            )
                             .child(line_ending)
                             .child(gpui::div().flex_1())
                             .child(
