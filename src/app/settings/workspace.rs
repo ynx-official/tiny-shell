@@ -1,6 +1,6 @@
 use gpui::{
     Anchor, Context, Entity, FontWeight, IntoElement as _, ParentElement as _, PathPromptOptions,
-    Styled as _, Window, div, prelude::FluentBuilder as _, rems,
+    Styled as _, Window, div, prelude::FluentBuilder as _, px, rems,
 };
 use gpui_component::{
     ActiveTheme as _, IconName, Sizable as _,
@@ -13,9 +13,61 @@ use gpui_component::{
 };
 use rust_i18n::t;
 
-use crate::TinyShell;
+use crate::{
+    TinyShell,
+    app::settings::{MonitoringPosition, adjusted_body_panel_sizes, adjusted_lower_panel_height},
+};
 
 impl TinyShell {
+    fn change_monitoring_position(
+        &mut self,
+        previous: MonitoringPosition,
+        next: MonitoringPosition,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if previous == next {
+            return;
+        }
+
+        let presentation = self.workspace_mode.presentation(self.sftp_panel.minimized);
+        let rendered_height = if presentation.sftp_minimized {
+            None
+        } else {
+            let state = self.body_panels.read(cx);
+            (state.container_size().as_f32() > 0.0)
+                .then(|| state.sizes().get(1).copied())
+                .flatten()
+        };
+        let adjusted_rendered_height = rendered_height
+            .map(|height| adjusted_lower_panel_height(height.as_f32(), previous, next));
+
+        let adjusted_saved_sizes =
+            adjusted_body_panel_sizes(self.config.body_panels().map(Vec::as_slice), previous, next);
+        self.config.set_body_panels(adjusted_saved_sizes);
+        self.monitoring.prev_monitoring_size = self
+            .monitoring
+            .prev_monitoring_size
+            .map(|height| px(adjusted_lower_panel_height(height.as_f32(), previous, next)));
+        self.config.set_monitoring_position(next.config_value());
+        self.mark_workspace_layout_preferences_dirty();
+        cx.notify();
+
+        let Some(adjusted_height) = adjusted_rendered_height else {
+            return;
+        };
+        // Let the main workspace apply the new panel constraints before moving
+        // the divider; otherwise the previous mode's minimum can clamp the size.
+        cx.on_next_frame(window, move |_this: &mut TinyShell, window, cx| {
+            cx.on_next_frame(window, move |this: &mut TinyShell, window, cx| {
+                this.body_panels.update(cx, |state, cx| {
+                    state.resize_panel(1, px(adjusted_height), window, cx);
+                });
+                cx.notify();
+            });
+        });
+    }
+
     fn choose_download_directory(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let cancellation = self
             .async_runtime
@@ -213,12 +265,10 @@ pub(crate) fn page(settings_view: &Entity<TinyShell>) -> SettingPage {
                                                 .checked(position == current)
                                                 .on_click(window.listener_for(
                                                     &view,
-                                                    move |this, _, _window, cx| {
-                                                        this.config.set_monitoring_position(
-                                                            position.config_value(),
+                                                    move |this, _, window, cx| {
+                                                        this.change_monitoring_position(
+                                                            current, position, window, cx,
                                                         );
-                                                        this.mark_config_preferences_dirty();
-                                                        cx.notify();
                                                     },
                                                 )),
                                             );

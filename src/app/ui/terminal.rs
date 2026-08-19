@@ -784,38 +784,40 @@ impl TinyShell {
 
         let toolbar = h_flex()
             .absolute()
-            .right(px(12.))
-            .bottom(px(12.))
+            .right(px(8.))
+            .bottom(px(8.))
             .items_center()
             .gap_1()
             .px_1()
             .py_1()
-            .rounded(px(999.))
+            .rounded_md()
             .border_1()
             .border_color(cx.theme().border)
             .bg(cx.theme().background.opacity(0.96))
             .shadow_lg()
-            .opacity(0.56)
+            .opacity(0.72)
             .hover(|this| this.opacity(1.0))
-            .child(
-                Button::new("terminal-toolbar-sftp")
-                    .ghost()
-                    .xsmall()
-                    .icon(if presentation.sftp_minimized {
-                        IconName::ChevronUp
-                    } else {
-                        IconName::ChevronDown
-                    })
-                    .tooltip(if presentation.sftp_minimized {
-                        t!("panel_expand").to_string()
-                    } else {
-                        t!("panel_minimize").to_string()
-                    })
-                    .disabled(!can_use_sftp)
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.toggle_sftp_minimized(window, cx);
-                    })),
-            )
+            .when(presentation.clean, |this| {
+                this.child(
+                    Button::new("terminal-toolbar-sftp")
+                        .ghost()
+                        .xsmall()
+                        .icon(if presentation.sftp_minimized {
+                            IconName::ChevronUp
+                        } else {
+                            IconName::ChevronDown
+                        })
+                        .tooltip(if presentation.sftp_minimized {
+                            t!("panel_expand").to_string()
+                        } else {
+                            t!("panel_minimize").to_string()
+                        })
+                        .disabled(!can_use_sftp)
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.toggle_sftp_minimized(window, cx);
+                        })),
+                )
+            })
             .child(
                 Button::new("terminal-toolbar-search")
                     .ghost()
@@ -971,14 +973,14 @@ impl TinyShell {
             .size_full()
             .relative()
             .when(presentation.clean, |this| this.p_1().gap_1())
-            .when(!presentation.clean, |this| this.p_2().gap_2())
             .bg(cx.theme().muted.opacity(0.18))
             .child(
                 div()
                     .flex_1()
                     .w_full()
                     .min_h(px(0.))
-                    .rounded_lg()
+                    .when(!presentation.clean, |this| this.p_2())
+                    .when(presentation.clean, |this| this.rounded_lg())
                     .bg(cx.theme().background)
                     .on_prepaint(move |bounds, _window, cx| {
                         bounds_view.update(cx, |this, cx| {

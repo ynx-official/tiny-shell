@@ -825,6 +825,10 @@ impl ConfigStore {
         self.cache.body_panels.as_ref()
     }
 
+    pub fn set_body_panels(&mut self, body_panels: Option<Vec<f32>>) {
+        self.cache.body_panels = body_panels;
+    }
+
     pub fn transfers(&self) -> Vec<crate::terminal::Transfer> {
         self.cache.transfers.clone()
     }
@@ -1178,7 +1182,6 @@ impl ConfigStore {
         self.cache.cursor_style = source.cache.cursor_style;
         self.cache.show_hidden_files = source.cache.show_hidden_files;
         self.cache.lock_layout = source.cache.lock_layout;
-        self.cache.monitoring_position = source.cache.monitoring_position.clone();
         self.cache.sidebar_collapsed = source.cache.sidebar_collapsed;
         self.cache.sftp_panel_minimized = source.cache.sftp_panel_minimized;
         self.cache.sftp_panel_view = source.cache.sftp_panel_view.clone();

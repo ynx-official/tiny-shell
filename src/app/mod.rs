@@ -629,6 +629,73 @@ impl TinyShell {
     }
 }
 
+fn body_panel_sizes_for_save(
+    rendered: &[f32],
+    saved: Option<&[f32]>,
+    workspace_mode: WorkspaceMode,
+    normal_sftp_minimized: bool,
+    restore_height: Option<f32>,
+) -> Option<Vec<f32>> {
+    let saved = saved.map(<[f32]>::to_vec);
+    if matches!(workspace_mode, WorkspaceMode::Clean { .. }) {
+        return saved;
+    }
+    if normal_sftp_minimized {
+        let Some(restore_height) = restore_height else {
+            return saved;
+        };
+        let mut sizes = saved
+            .filter(|sizes| sizes.len() > 1)
+            .or_else(|| (rendered.len() > 1).then(|| rendered.to_vec()))?;
+        sizes[1] = restore_height;
+        return Some(sizes);
+    }
+    (rendered.len() > 1).then(|| rendered.to_vec()).or(saved)
+}
+
+fn body_panels_for_full_commit(
+    staged: Option<&[f32]>,
+    current: Option<&[f32]>,
+    workspace_layout_pending: bool,
+) -> (Option<Vec<f32>>, bool) {
+    let staged = staged.map(<[f32]>::to_vec);
+    let current = current.map(<[f32]>::to_vec);
+    let explicitly_changed = staged != current;
+    let includes_workspace_layout = workspace_layout_pending || explicitly_changed;
+    if workspace_layout_pending && !explicitly_changed {
+        (current, includes_workspace_layout)
+    } else {
+        (staged, includes_workspace_layout)
+    }
+}
+
+#[cfg(test)]
+mod layout_persistence_tests {
+    use super::{
+        body_panel_sizes_for_save, body_panels_for_full_commit,
+        workspace_presentation::WorkspaceMode,
+    };
+
+    #[test]
+    fn closing_a_session_that_started_minimized_preserves_the_expanded_height() {
+        let rendered = [660.0, 1.0];
+        let saved = [420.0, 248.0];
+
+        assert_eq!(
+            body_panel_sizes_for_save(&rendered, Some(&saved), WorkspaceMode::Normal, true, None,),
+            Some(saved.to_vec())
+        );
+    }
+
+    #[test]
+    fn an_explicit_layout_reset_wins_over_a_pending_height_save() {
+        assert_eq!(
+            body_panels_for_full_commit(None, Some(&[420.0, 248.0]), true),
+            (None, true)
+        );
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct HoveredUrl {
     pub(crate) url: String,
@@ -855,10 +922,11 @@ impl TinyShell {
         } else {
             SftpPanelView::Files
         };
-        let last_sidebar_width = Some(px(config
-            .workspace_panels()
-            .and_then(|s| s.first().copied())
-            .unwrap_or(constants::SIDEBAR_WIDTH)));
+        let last_sidebar_width = Some(px(constants::resolve_sidebar_width(
+            config
+                .workspace_panels()
+                .and_then(|sizes| sizes.first().copied()),
+        )));
         let runtime = shared_runtime().unwrap_or_else(|error| {
             tracing::error!("cannot initialize application runtime: {error}");
             // TinyShell cannot create backend sessions without a Tokio runtime;
@@ -2278,19 +2346,47 @@ impl TinyShell {
         self.config_persistence.mark_dirty(Instant::now());
     }
 
+    pub(crate) fn mark_workspace_layout_preferences_dirty(&mut self) {
+        self.config_persistence
+            .mark_workspace_layout_dirty(Instant::now());
+    }
+
     pub(crate) fn persist_config_preferences_checked(&mut self) -> anyhow::Result<()> {
         if !self.config_persistence.is_dirty() {
             return Ok(());
         }
         let generation = self.config_persistence.generation();
-        config_persistence::persist_sync(&self.config_repository, &self.config)?;
-        self.config_persistence.mark_saved(generation);
+        let includes_workspace_layout = self.config_persistence.workspace_layout_save_required();
+        if includes_workspace_layout {
+            config_persistence::persist_workspace_layout_sync(
+                &self.config_repository,
+                &self.config,
+            )?;
+        } else {
+            config_persistence::persist_sync(&self.config_repository, &self.config)?;
+        }
+        self.config_persistence
+            .mark_saved(generation, includes_workspace_layout);
         Ok(())
     }
 
     pub(crate) fn persist_config_preferences_async(&mut self, cx: &mut Context<Self>) {
         self.config_persistence.request_immediate_save();
         self.drive_config_preferences_save(cx);
+    }
+
+    fn prepare_full_commit_config(&self, mut staged: ConfigStore) -> (ConfigStore, bool) {
+        let workspace_layout_pending = self.config_persistence.workspace_layout_save_required();
+        let (body_panels, includes_workspace_layout) = body_panels_for_full_commit(
+            staged.body_panels().map(Vec::as_slice),
+            self.config.body_panels().map(Vec::as_slice),
+            workspace_layout_pending,
+        );
+        staged.set_body_panels(body_panels);
+        if workspace_layout_pending {
+            staged.set_monitoring_position(self.config.monitoring_position());
+        }
+        (staged, includes_workspace_layout)
     }
 
     /// Persist a full configuration transaction off the UI thread and expose
@@ -2317,6 +2413,7 @@ impl TinyShell {
         }
 
         let preference_generation = self.config_persistence.generation();
+        let (staged, includes_workspace_layout) = self.prepare_full_commit_config(staged);
         let receipt = match self.config_repository.save_full_async(staged.clone()) {
             Ok(receipt) => receipt,
             Err(error) => {
@@ -2339,8 +2436,16 @@ impl TinyShell {
                         // was being written. Keep those newer UI values in
                         // memory and let the generation driver persist them.
                         committed.merge_interactive_preferences_from(&this.config);
+                        if this
+                            .config_persistence
+                            .workspace_layout_changed_after(preference_generation)
+                        {
+                            committed.set_monitoring_position(this.config.monitoring_position());
+                            committed.set_body_panels(this.config.body_panels().cloned());
+                        }
                         this.config = committed;
-                        this.config_persistence.mark_saved(preference_generation);
+                        this.config_persistence
+                            .mark_saved(preference_generation, includes_workspace_layout);
                         this.note_local_config_saved(cx);
                         this.continue_queued_close_sync(cx);
                         on_committed(this, cx);
@@ -2379,6 +2484,7 @@ impl TinyShell {
         }
 
         let preference_generation = self.config_persistence.generation();
+        let (staged, includes_workspace_layout) = self.prepare_full_commit_config(staged);
         let receipt = match self.config_repository.save_full_async(staged.clone()) {
             Ok(receipt) => receipt,
             Err(error) => {
@@ -2399,8 +2505,16 @@ impl TinyShell {
                     Ok(()) => {
                         let mut committed = staged;
                         committed.merge_interactive_preferences_from(&this.config);
+                        if this
+                            .config_persistence
+                            .workspace_layout_changed_after(preference_generation)
+                        {
+                            committed.set_monitoring_position(this.config.monitoring_position());
+                            committed.set_body_panels(this.config.body_panels().cloned());
+                        }
                         this.config = committed;
-                        this.config_persistence.mark_saved(preference_generation);
+                        this.config_persistence
+                            .mark_saved(preference_generation, includes_workspace_layout);
                         this.note_local_config_saved(cx);
                         this.continue_queued_close_sync(cx);
                         Ok(())
@@ -2427,10 +2541,13 @@ impl TinyShell {
         const PREFERENCE_SAVE_RETRY_DELAY: Duration = Duration::from_secs(2);
 
         let now = Instant::now();
-        if let Some((generation, result)) = self.config_persistence.poll_result() {
+        if let Some((generation, includes_workspace_layout, result)) =
+            self.config_persistence.poll_result()
+        {
             match result {
                 Ok(()) => {
-                    self.config_persistence.mark_saved(generation);
+                    self.config_persistence
+                        .mark_saved(generation, includes_workspace_layout);
                     self.note_local_config_saved(cx);
                 }
                 Err(error) => {
@@ -2447,8 +2564,19 @@ impl TinyShell {
         else {
             return;
         };
-        match self.config_repository.persist_async(self.config.clone()) {
-            Ok(receipt) => self.config_persistence.set_in_flight(generation, receipt),
+        let includes_workspace_layout = self.config_persistence.workspace_layout_save_required();
+        let receipt = if includes_workspace_layout {
+            self.config_repository
+                .persist_workspace_layout_async(self.config.clone())
+        } else {
+            self.config_repository.persist_async(self.config.clone())
+        };
+        match receipt {
+            Ok(receipt) => self.config_persistence.set_in_flight(
+                generation,
+                includes_workspace_layout,
+                receipt,
+            ),
             Err(error) => {
                 tracing::warn!(generation, "failed to queue preference save: {error:#}");
                 self.config_persistence
@@ -2543,23 +2671,22 @@ impl TinyShell {
                 .iter()
                 .map(|s| s.into())
                 .collect();
-            let mut body_sizes: Vec<f32> = self
+            let rendered_body_sizes: Vec<f32> = self
                 .body_panels
                 .read(cx)
                 .sizes()
                 .iter()
                 .map(|s| s.into())
                 .collect();
+            let body_sizes = body_panel_sizes_for_save(
+                &rendered_body_sizes,
+                self.config.body_panels().map(Vec::as_slice),
+                self.workspace_mode,
+                self.sftp_panel.minimized,
+                self.monitoring.prev_monitoring_size.map(Into::into),
+            );
 
-            if self.sftp_panel.minimized {
-                if let Some(prev) = self.monitoring.prev_monitoring_size {
-                    if body_sizes.len() > 1 {
-                        body_sizes[1] = prev.into();
-                    }
-                }
-            }
-
-            config.set_layout_state(Some(saved_bounds), Some(workspace_sizes), Some(body_sizes));
+            config.set_layout_state(Some(saved_bounds), Some(workspace_sizes), body_sizes);
             config.set_sidebar_collapsed(self.sidebar_collapsed);
             config.set_sftp_panel_minimized(self.sftp_panel.minimized);
             config.set_show_hidden_files(self.sftp_panel.show_hidden_files);

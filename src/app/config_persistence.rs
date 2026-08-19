@@ -47,8 +47,15 @@ fn receive_reply(reply: mpsc::Receiver<anyhow::Result<()>>) -> anyhow::Result<()
 }
 
 enum SaveRequest {
-    Preferences(ConfigStore, Reply),
-    Full { config: ConfigStore, reply: Reply },
+    Preferences {
+        source: ConfigStore,
+        include_body_panels: bool,
+        reply: Reply,
+    },
+    Full {
+        config: ConfigStore,
+        reply: Reply,
+    },
     Flush(Reply),
     Shutdown(Reply),
 }
@@ -164,8 +171,27 @@ impl ConfigRepository {
         self: &Arc<Self>,
         source: ConfigStore,
     ) -> anyhow::Result<SaveReceipt> {
+        self.persist_preferences_async(source, false)
+    }
+
+    pub(crate) fn persist_workspace_layout_async(
+        self: &Arc<Self>,
+        source: ConfigStore,
+    ) -> anyhow::Result<SaveReceipt> {
+        self.persist_preferences_async(source, true)
+    }
+
+    fn persist_preferences_async(
+        self: &Arc<Self>,
+        source: ConfigStore,
+        include_body_panels: bool,
+    ) -> anyhow::Result<SaveReceipt> {
         let (reply, result) = mpsc::channel();
-        self.enqueue_async(SaveRequest::Preferences(source, reply))?;
+        self.enqueue_async(SaveRequest::Preferences {
+            source,
+            include_body_panels,
+            reply,
+        })?;
         Ok(SaveReceipt { reply: result })
     }
 
@@ -188,8 +214,24 @@ impl ConfigRepository {
     }
 
     pub(crate) fn persist_sync(&self, source: &ConfigStore) -> anyhow::Result<()> {
+        self.persist_preferences_sync(source, false)
+    }
+
+    pub(crate) fn persist_workspace_layout_sync(&self, source: &ConfigStore) -> anyhow::Result<()> {
+        self.persist_preferences_sync(source, true)
+    }
+
+    fn persist_preferences_sync(
+        &self,
+        source: &ConfigStore,
+        include_body_panels: bool,
+    ) -> anyhow::Result<()> {
         let (reply, result) = mpsc::channel();
-        self.enqueue_blocking(SaveRequest::Preferences(source.clone(), reply))?;
+        self.enqueue_blocking(SaveRequest::Preferences {
+            source: source.clone(),
+            include_body_panels,
+            reply,
+        })?;
         receive_reply(result)
     }
 
@@ -354,9 +396,17 @@ fn worker_loop(io: Io, receiver: mpsc::Receiver<SaveRequest>) {
     let mut last_error: Option<String> = None;
     while let Ok(request) = receiver.recv() {
         let (result, reply, should_stop, records_failure) = match request {
-            SaveRequest::Preferences(source, reply) => {
+            SaveRequest::Preferences {
+                source,
+                include_body_panels,
+                reply,
+            } => {
                 let result = io.load().and_then(|mut config| {
                     config.merge_interactive_preferences_from(&source);
+                    if include_body_panels {
+                        config.set_monitoring_position(source.monitoring_position());
+                        config.set_body_panels(source.body_panels().cloned());
+                    }
                     io.save(&config)?;
                     last_saved = Some(config);
                     Ok(())
@@ -404,6 +454,13 @@ pub(crate) fn persist_sync(
     source: &ConfigStore,
 ) -> anyhow::Result<()> {
     repository.persist_sync(source)
+}
+
+pub(crate) fn persist_workspace_layout_sync(
+    repository: &Arc<ConfigRepository>,
+    source: &ConfigStore,
+) -> anyhow::Result<()> {
+    repository.persist_workspace_layout_sync(source)
 }
 
 pub(crate) fn save_full(
@@ -684,5 +741,43 @@ mod tests {
             io.config.lock().unwrap_or_else(|p| p.into_inner()).locale(),
             "zh-CN"
         );
+    }
+
+    #[test]
+    fn workspace_layout_preferences_persist_monitoring_and_body_height_together() {
+        let (repository, io) = repository();
+        let mut baseline = ConfigStore::in_memory();
+        baseline.set_locale("en");
+        baseline.set_monitoring_position("Bottom");
+        baseline.set_body_panels(Some(vec![420.0, 328.0]));
+        repository.save_full(&baseline).unwrap();
+
+        let mut stale_window = baseline.clone();
+        let mut changed = baseline;
+        changed.set_locale("zh-CN");
+        changed.set_monitoring_position("Sidebar");
+        changed.set_body_panels(Some(vec![420.0, 248.0]));
+        repository
+            .persist_workspace_layout_async(changed)
+            .unwrap()
+            .wait()
+            .unwrap();
+
+        stale_window.set_locale("ja");
+        repository
+            .persist_async(stale_window)
+            .unwrap()
+            .wait()
+            .unwrap();
+
+        let restored = io
+            .config
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        assert_eq!(restored.locale(), "ja");
+        assert_eq!(restored.monitoring_position(), "Sidebar");
+        assert_eq!(restored.body_panels(), Some(&vec![420.0, 248.0]));
+        repository.shutdown().unwrap();
     }
 }

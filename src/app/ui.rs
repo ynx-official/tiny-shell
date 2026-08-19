@@ -30,7 +30,10 @@ use std::{
 
 use crate::{
     PaneLayout, TinyShell,
-    app::constants::{COLLAPSED_SIDEBAR_WIDTH, SIDEBAR_WIDTH, TERMINAL_KEY_CONTEXT},
+    app::constants::{
+        COLLAPSED_SIDEBAR_WIDTH, SFTP_PANEL_DEFAULT_HEIGHT, SFTP_PANEL_MIN_HEIGHT,
+        SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH, TERMINAL_KEY_CONTEXT, resolve_sidebar_width,
+    },
     app::{
         HomePage, IncomingPaneDrag, IncomingTabDrag, ProcessView, SftpPanelView,
         settings::MonitoringPosition,
@@ -58,6 +61,7 @@ enum SftpFooterItem {
     SyncStatus,
     Latency,
     Transfers,
+    PanelToggle,
 }
 
 struct TabDragPreview {
@@ -143,6 +147,29 @@ fn workspace_shell_layout(show_sidebar: bool, sidebar_collapsed: bool) -> Worksp
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct WorkspaceBodyMetrics {
+    minimized_height: f32,
+    min_panel_height: f32,
+    default_panel_height: f32,
+}
+
+fn workspace_body_metrics(
+    monitoring_position: MonitoringPosition,
+    clean_mode: bool,
+) -> WorkspaceBodyMetrics {
+    let monitoring_overhead = monitoring_position.lower_panel_overhead();
+    WorkspaceBodyMetrics {
+        minimized_height: if clean_mode {
+            1.0
+        } else {
+            1.0 + monitoring_overhead
+        },
+        min_panel_height: SFTP_PANEL_MIN_HEIGHT + monitoring_overhead,
+        default_panel_height: SFTP_PANEL_DEFAULT_HEIGHT + monitoring_overhead,
+    }
+}
+
 impl TinyShell {
     /// Erases the deeply nested workspace element before it reaches the native
     /// window shell. On Windows, keeping the complete GPUI tree in one debug
@@ -181,25 +208,16 @@ impl TinyShell {
                         .child(self.render_sftp_panel(window, cx)),
                 );
 
-            let is_monitor_bottom = monitoring_position == MonitoringPosition::Bottom;
-            let minimized_height = if presentation.clean {
-                1.
-            } else if is_monitor_bottom {
-                81.
-            } else {
-                1.
-            };
-            let min_panel_height = if is_monitor_bottom { 260. } else { 180. };
-            let default_panel_height = if is_monitor_bottom { 328. } else { 248. };
+            let body_metrics = workspace_body_metrics(monitoring_position, presentation.clean);
 
             let sftp_size = if presentation.sftp_minimized {
-                px(minimized_height)
+                px(body_metrics.minimized_height)
             } else {
                 px(self
                     .config
                     .body_panels()
                     .and_then(|s| s.get(1).copied())
-                    .unwrap_or(default_panel_height))
+                    .unwrap_or(body_metrics.default_panel_height))
             };
 
             let body = v_resizable("tiny-shell-body")
@@ -210,9 +228,9 @@ impl TinyShell {
                     resizable_panel()
                         .size(sftp_size)
                         .size_range(if presentation.sftp_minimized {
-                            px(minimized_height)..px(minimized_height)
+                            px(body_metrics.minimized_height)..px(body_metrics.minimized_height)
                         } else {
-                            px(min_panel_height)..px(1200.)
+                            px(body_metrics.min_panel_height)..px(1200.)
                         })
                         .child(monitoring_contents),
                 );
@@ -310,12 +328,12 @@ impl TinyShell {
                     };
 
                 let sidebar_area = resizable_panel()
-                    .size(px(self
-                        .config
-                        .workspace_panels()
-                        .and_then(|s| s.first().copied())
-                        .unwrap_or(SIDEBAR_WIDTH)))
-                    .size_range(px(190.)..px(360.))
+                    .size(px(resolve_sidebar_width(
+                        self.config
+                            .workspace_panels()
+                            .and_then(|sizes| sizes.first().copied()),
+                    )))
+                    .size_range(px(SIDEBAR_MIN_WIDTH)..px(SIDEBAR_MAX_WIDTH))
                     .flex_none()
                     .child(sidebar_content);
 
@@ -737,7 +755,8 @@ mod tool_panel;
 
 #[cfg(test)]
 mod tests {
-    use super::{WorkspaceShellLayout, workspace_shell_layout};
+    use super::{WorkspaceShellLayout, workspace_body_metrics, workspace_shell_layout};
+    use crate::app::settings::MonitoringPosition;
 
     #[test]
     fn workspace_shell_layout_follows_sidebar_visibility_and_collapse_state() {
@@ -757,5 +776,21 @@ mod tests {
             workspace_shell_layout(true, false),
             WorkspaceShellLayout::Resizable
         );
+    }
+
+    #[test]
+    fn workspace_body_metrics_keep_sidebar_monitoring_compact() {
+        let sidebar = workspace_body_metrics(MonitoringPosition::Sidebar, false);
+        assert_eq!(sidebar.minimized_height, 1.0);
+        assert_eq!(sidebar.min_panel_height, 180.0);
+        assert_eq!(sidebar.default_panel_height, 248.0);
+
+        let bottom = workspace_body_metrics(MonitoringPosition::Bottom, false);
+        assert_eq!(bottom.minimized_height, 81.0);
+        assert_eq!(bottom.min_panel_height, 260.0);
+        assert_eq!(bottom.default_panel_height, 328.0);
+
+        let clean = workspace_body_metrics(MonitoringPosition::Sidebar, true);
+        assert_eq!(clean.minimized_height, 1.0);
     }
 }

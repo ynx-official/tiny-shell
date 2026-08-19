@@ -219,7 +219,23 @@ impl TinyShell {
                 self.monitoring.prev_monitoring_size = Some(sizes[1]);
             }
         } else {
-            let prev_size = self.monitoring.prev_monitoring_size.unwrap_or(px(328.));
+            let monitoring_position =
+                MonitoringPosition::from_config(self.config.monitoring_position());
+            let prev_size = self
+                .monitoring
+                .prev_monitoring_size
+                .or_else(|| {
+                    self.config
+                        .body_panels()
+                        .and_then(|sizes| sizes.get(1).copied())
+                        .map(px)
+                })
+                .unwrap_or_else(|| {
+                    px(
+                        workspace_body_metrics(monitoring_position, presentation.clean)
+                            .default_panel_height,
+                    )
+                });
 
             cx.on_next_frame(
                 window,
@@ -545,6 +561,7 @@ impl TinyShell {
             SftpFooterItem::SyncStatus => visibility.webdav = !visibility.webdav,
             SftpFooterItem::Latency => visibility.latency = !visibility.latency,
             SftpFooterItem::Transfers => visibility.transfers = !visibility.transfers,
+            SftpFooterItem::PanelToggle => visibility.panel_toggle = !visibility.panel_toggle,
         }
         self.config.set_sftp_footer_visibility(visibility);
         self.mark_config_preferences_dirty();
@@ -632,6 +649,11 @@ impl TinyShell {
                 SftpFooterItem::Transfers,
                 t!("transfers").to_string(),
                 visibility.transfers,
+            ),
+            (
+                SftpFooterItem::PanelToggle,
+                t!("sftp_footer_panel_toggle").to_string(),
+                visibility.panel_toggle,
             ),
         ];
         for (item, label, checked) in items {
@@ -925,6 +947,7 @@ impl TinyShell {
         let dl_summary = self.sftp_transfer_summary(crate::terminal::TransferType::Download);
         let ul_summary = self.sftp_transfer_summary(crate::terminal::TransferType::Upload);
         let has_transfers = dl_summary.is_some() || ul_summary.is_some();
+        let presentation = self.workspace_mode.presentation(self.sftp_panel.minimized);
         let webdav_enabled = self.config.sync_enabled() && self.config.sync_backend() == "webdav";
         let sync_failed = self.sync_runtime.failed;
         let latest_sync_status = self.sync_runtime.status.clone();
@@ -1068,6 +1091,27 @@ impl TinyShell {
                         })),
                 )
             })
+            .when(visibility.panel_toggle, |this| {
+                this.child(
+                    Button::new("sftp-footer-panel-toggle")
+                        .ghost()
+                        .xsmall()
+                        .icon(if presentation.sftp_minimized {
+                            IconName::ChevronUp
+                        } else {
+                            IconName::ChevronDown
+                        })
+                        .tooltip(if presentation.sftp_minimized {
+                            t!("panel_expand").to_string()
+                        } else {
+                            t!("panel_minimize").to_string()
+                        })
+                        .disabled(self.active_kind() != Some(TabKind::Ssh))
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.toggle_sftp_minimized(window, cx);
+                        })),
+                )
+            })
             .context_menu({
                 let view = view.clone();
                 move |menu, window, cx| {
@@ -1083,6 +1127,7 @@ impl TinyShell {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let active_sftp = self.active_sftp();
+        let presentation = self.workspace_mode.presentation(self.sftp_panel.minimized);
         // 目录内容更新不应触发整个面板淡入，否则每次进入子目录都会闪烁。
         // 动画只由面板视图和最小化状态变化触发。
         let sftp_content_epoch = (match self.sftp_panel.view {
@@ -1095,7 +1140,7 @@ impl TinyShell {
 
         let header = h_flex()
             .flex_none()
-            .h(px(34.))
+            .h(px(32.))
             .px_2()
             .items_center()
             .gap_2()
@@ -1274,7 +1319,7 @@ impl TinyShell {
                     v_flex()
                         .flex_1()
                         .min_h(px(0.))
-                        .when(self.sftp_panel.minimized, |this| this.hidden())
+                        .when(presentation.sftp_minimized, |this| this.hidden())
                         .child(header)
                         .child(
                             v_flex()
@@ -1312,7 +1357,7 @@ impl TinyShell {
                     v_flex()
                         .flex_1()
                         .min_h(px(0.))
-                        .when(self.sftp_panel.minimized, |this| this.hidden())
+                        .when(presentation.sftp_minimized, |this| this.hidden())
                         .child(header)
                         .child(self.render_quick_commands(window, cx)),
                 )
@@ -1362,17 +1407,17 @@ impl TinyShell {
             v_flex()
                 .flex_1()
                 .min_h(px(0.))
-                .when(self.sftp_panel.minimized, |this| this.hidden())
+                .when(presentation.sftp_minimized, |this| this.hidden())
                 .child(header)
                 .child(
                     h_flex()
-                        .h(px(36.))
+                        .h(px(32.))
                         .items_center()
-                        .gap_2()
-                        .px_3()
+                        .gap_1()
+                        .px_2()
                         .border_b_1()
                         .border_color(cx.theme().border)
-                        .bg(cx.theme().muted)
+                        .bg(cx.theme().background)
                         .child(
                             Button::new("sftp-up")
                                 .ghost()

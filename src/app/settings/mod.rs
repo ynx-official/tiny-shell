@@ -11,7 +11,10 @@ pub(crate) mod update;
 pub(crate) mod view;
 pub(crate) mod workspace;
 
-use crate::session::config::{CursorStyle, TerminalDisplayStyle, TitleBarStyle, UpdateCheckMode};
+use crate::{
+    app::constants::BOTTOM_MONITORING_HEIGHT,
+    session::config::{CursorStyle, TerminalDisplayStyle, TitleBarStyle, UpdateCheckMode},
+};
 
 pub(crate) const MONITORING_POSITIONS: [MonitoringPosition; 3] = [
     MonitoringPosition::Bottom,
@@ -57,6 +60,35 @@ impl MonitoringPosition {
             Self::Hidden => "position_hidden",
         }
     }
+
+    pub(crate) const fn lower_panel_overhead(self) -> f32 {
+        match self {
+            Self::Bottom => BOTTOM_MONITORING_HEIGHT,
+            Self::Sidebar | Self::Hidden => 0.0,
+        }
+    }
+}
+
+pub(crate) fn adjusted_lower_panel_height(
+    current_height: f32,
+    previous: MonitoringPosition,
+    next: MonitoringPosition,
+) -> f32 {
+    (current_height - previous.lower_panel_overhead() + next.lower_panel_overhead()).max(0.0)
+}
+
+pub(crate) fn adjusted_body_panel_sizes(
+    sizes: Option<&[f32]>,
+    previous: MonitoringPosition,
+    next: MonitoringPosition,
+) -> Option<Vec<f32>> {
+    sizes.map(|sizes| {
+        let mut adjusted = sizes.to_vec();
+        if let Some(height) = adjusted.get_mut(1) {
+            *height = adjusted_lower_panel_height(*height, previous, next);
+        }
+        adjusted
+    })
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -137,6 +169,54 @@ mod tests {
         assert_eq!(
             MonitoringPosition::from_config("unknown"),
             MonitoringPosition::Bottom
+        );
+    }
+
+    #[test]
+    fn monitoring_position_preserves_sftp_height_when_moving_the_monitor_strip() {
+        assert_eq!(
+            adjusted_lower_panel_height(
+                328.0,
+                MonitoringPosition::Bottom,
+                MonitoringPosition::Sidebar,
+            ),
+            248.0
+        );
+        assert_eq!(
+            adjusted_lower_panel_height(
+                248.0,
+                MonitoringPosition::Sidebar,
+                MonitoringPosition::Bottom,
+            ),
+            328.0
+        );
+        assert_eq!(
+            adjusted_lower_panel_height(
+                248.0,
+                MonitoringPosition::Sidebar,
+                MonitoringPosition::Hidden,
+            ),
+            248.0
+        );
+    }
+
+    #[test]
+    fn monitoring_position_adjusts_saved_height_before_the_workspace_is_rendered() {
+        assert_eq!(
+            adjusted_body_panel_sizes(
+                Some(&[520.0, 328.0]),
+                MonitoringPosition::Bottom,
+                MonitoringPosition::Sidebar,
+            ),
+            Some(vec![520.0, 248.0])
+        );
+        assert_eq!(
+            adjusted_body_panel_sizes(
+                Some(&[520.0]),
+                MonitoringPosition::Bottom,
+                MonitoringPosition::Sidebar,
+            ),
+            Some(vec![520.0])
         );
     }
 
