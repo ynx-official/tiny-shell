@@ -731,6 +731,7 @@ impl TinyShell {
             .as_ref()
             .map(|category| category.id.clone());
         let selected_category_id_for_empty_menu = selected_category_id.clone();
+        let selected_category_id_for_command_empty_menu = selected_category_id.clone();
         let selected_category_name = selected_category
             .as_ref()
             .map(|category| category.name.clone())
@@ -1071,17 +1072,28 @@ impl TinyShell {
                                             .when(!quick_command_detail_visible, |this| {
                                                 this.flex_1().h_full().child(
                                                     div()
-                                                    .flex_1()
-                                                    .min_h(px(0.))
-                                                    .overflow_y_scrollbar()
-                                                    .p_3()
-                                                    .child(
-                                                        div()
-                                                            .flex()
-                                                            .flex_wrap()
-                                                            .items_start()
-                                                            .gap_2()
-                                                            .children(filtered_commands.into_iter().enumerate().map(
+                                                        .relative()
+                                                        .flex_1()
+                                                        .min_h(px(0.))
+                                                        .child(
+                                                            v_flex()
+                                                                .id("sftp-quick-command-card-list")
+                                                                .size_full()
+                                                                .track_scroll(
+                                                                    &self
+                                                                        .sftp_workspace
+                                                                        .quick_command_cards_scroll_handle,
+                                                                )
+                                                                .overflow_y_scroll()
+                                                                .p_3()
+                                                                .pr_5()
+                                                                .child(
+                                                                    div()
+                                                                        .flex()
+                                                                        .flex_wrap()
+                                                                        .items_start()
+                                                                        .gap_2()
+                                                                        .children(filtered_commands.into_iter().enumerate().map(
                                                                 |(index, command)| {
                                                                     let category_id = selected_category_id
                                                                         .clone()
@@ -1260,21 +1272,65 @@ impl TinyShell {
                                                                                 ),
                                                                         )
                                                                 },
-                                                            ))
-                                                            .when(!has_matches, |this| {
-                                                                this.child(
-                                                                    v_flex()
-                                                                        .w_full()
-                                                                        .items_center()
-                                                                        .justify_center()
-                                                                        .gap_2()
-                                                                        .py_5()
-                                                                        .text_color(muted_foreground)
-                                                                        .child(Icon::new(IconName::Search).with_size(Size::Large))
-                                                                        .child(empty_label),
+                                                                        ))
+                                                                        .when(!has_matches, |this| {
+                                                                            this.child(
+                                                                                v_flex()
+                                                                                    .w_full()
+                                                                                    .items_center()
+                                                                                    .justify_center()
+                                                                                    .gap_2()
+                                                                                    .py_5()
+                                                                                    .text_color(muted_foreground)
+                                                                                    .child(Icon::new(IconName::Search).with_size(Size::Large))
+                                                                                    .child(empty_label),
+                                                                            )
+                                                                        }),
                                                                 )
-                                                            }),
-                                                    ),
+                                                                .child({
+                                                                    let view = cx.entity();
+                                                                    div()
+                                                                        .id("sftp-quick-command-card-empty-area")
+                                                                        .w_full()
+                                                                        .min_h(px(32.))
+                                                                        .flex_1()
+                                                                        .context_menu(move |menu, window, _| {
+                                                                            let Some(category_id) = selected_category_id_for_command_empty_menu.clone() else {
+                                                                                return menu;
+                                                                            };
+                                                                            menu.item(
+                                                                                PopupMenuItem::new(t!("quick_command_new").to_string())
+                                                                                    .on_click(window.listener_for(&view, move |this, _, window, cx| {
+                                                                                        this.show_quick_command_dialog(
+                                                                                            category_id.clone(),
+                                                                                            None,
+                                                                                            window,
+                                                                                            cx,
+                                                                                        );
+                                                                                    })),
+                                                                            )
+                                                                        })
+                                                                }),
+                                                        )
+                                                        .child(
+                                                            div()
+                                                                .absolute()
+                                                                .top_0()
+                                                                .left_0()
+                                                                .right_0()
+                                                                .bottom_0()
+                                                                .child(
+                                                                    Scrollbar::new(
+                                                                        &self
+                                                                            .sftp_workspace
+                                                                            .quick_command_cards_scroll_handle,
+                                                                    )
+                                                                    .axis(
+                                                                        gpui_component::scroll::ScrollbarAxis::Vertical,
+                                                                    )
+                                                                    .scrollbar_show(ScrollbarShow::Always),
+                                                                ),
+                                                        ),
                                                 )
                                             }),
                             )
