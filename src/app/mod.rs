@@ -26,6 +26,7 @@ pub(crate) mod sftp_editor;
 pub(crate) mod sftp_editor_window;
 pub(crate) mod ssh_key_import;
 pub(crate) mod startup;
+mod startup_window;
 pub(crate) mod sync_dialogs;
 pub(crate) mod sync_handlers;
 pub(crate) mod tab_drag;
