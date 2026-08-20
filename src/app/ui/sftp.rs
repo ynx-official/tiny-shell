@@ -1240,7 +1240,7 @@ impl TinyShell {
                                                                                         .child(
                                                                                             div()
                                                                                                 .truncate()
-                                                                                                .font_family("monospace")
+                                                                                                .font_family(cx.theme().mono_font_family.clone())
                                                                                                 .text_size(rems(0.76))
                                                                                                 .text_color(muted_foreground)
                                                                                                 .child(summary),
@@ -1453,7 +1453,7 @@ impl TinyShell {
                             .border_1()
                             .border_color(cx.theme().border)
                             .bg(cx.theme().muted.opacity(0.22))
-                            .font_family("monospace")
+                            .font_family(cx.theme().mono_font_family.clone())
                             .text_size(rems(0.8))
                             .child(command.command.clone()),
                     )
@@ -2397,7 +2397,7 @@ impl TinyShell {
                                                         .w(permissions_col_width)
                                                         .min_w(permissions_col_min_width)
                                                         .flex_shrink_1()
-                                                        .font_family("Maple Mono NF CN")
+                                                        .font_family(theme.mono_font_family.clone())
                                                         .text_size(rems(0.917))
                                                         .text_color(theme.muted_foreground)
                                                         .child(format_permissions(

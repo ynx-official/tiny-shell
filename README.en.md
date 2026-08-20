@@ -58,7 +58,8 @@ TinyShell is designed for developers, system administrators, and advanced users 
 - **Tabs and split panes**: Organize sessions across multiple tabs and split a tab into multiple panes for a tmux-like workspace.
 - **Consistent local and remote experience**: Local shells and SSH sessions share the same terminal interaction and visual model.
 - **Terminal interaction**: Selection, copy and paste, context-menu actions, and terminal-aware mouse behavior.
-- **Bundled font**: Includes Maple Mono NF CN for reliable CJK text and Nerd Font icon rendering.
+- **Cross-platform fonts**: The UI follows the system font; the terminal prefers Consolas on Windows and Menlo on macOS, with installed fonts used automatically for CJK and emoji glyphs.
+- **Nerd Font support**: Install and select a Nerd Font in terminal settings when Powerline or Nerd Font symbols are required.
 - **Live appearance controls**: Change the terminal font, size, line spacing, and theme without restarting the application.
 
 ### SSH and Connection Management
@@ -322,7 +323,7 @@ src/
 ├── terminal/  Terminal rendering, input, selection, and terminal semantics
 └── main.rs    Application entry point
 
-assets/        Icons, fonts, themes, and platform resources
+assets/        Icons, themes, and platform resources
 locales/       English and Simplified Chinese localization resources
 scripts/       macOS and Windows packaging scripts
 docs/          Release history and focused technical documents

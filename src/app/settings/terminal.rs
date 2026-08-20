@@ -9,7 +9,11 @@ use gpui_component::{
 };
 use rust_i18n::t;
 
-use crate::{TinyShell, session::config::TerminalDisplayStyle};
+use crate::{
+    TinyShell,
+    app::font_preferences::{self, SYSTEM_MONO_FONT, SYSTEM_UI_FONT},
+    session::config::TerminalDisplayStyle,
+};
 
 pub(crate) fn page(settings_view: &Entity<TinyShell>) -> SettingPage {
     use gpui_component::setting::{SettingField, SettingGroup, SettingItem};
@@ -149,73 +153,54 @@ pub(crate) fn page(settings_view: &Entity<TinyShell>) -> SettingPage {
                                 .small()
                                 .icon(IconName::ChevronsUpDown)
                                 .label({
-                                    let current = view.read(cx).ui_font_family.to_string();
-                                    let names = cx.text_system().all_font_names();
-                                    let using_system_maple = crate::app::theme::USING_SYSTEM_MAPLE
-                                        .load(std::sync::atomic::Ordering::Relaxed);
-                                    if current == ".SystemUIFont"
-                                        || current.is_empty()
-                                        || !names.contains(&current)
+                                    let this = view.read(cx);
+                                    let preference = this.config.ui_font_family();
+                                    if preference.is_empty()
+                                        || preference.eq_ignore_ascii_case(SYSTEM_UI_FONT)
                                     {
                                         t!("system_default").to_string()
-                                    } else if !using_system_maple && current == "Maple Mono NF CN" {
-                                        format!("Maple Mono NF CN ({})", t!("software_builtin"))
+                                    } else if !this.ui_font_preference_available {
+                                        t!(
+                                            "font_unavailable_using",
+                                            font = preference,
+                                            fallback = t!("system_default")
+                                        )
+                                        .to_string()
                                     } else {
-                                        current
+                                        this.ui_font_family.to_string()
                                     }
                                 })
                                 .dropdown_menu_with_anchor(Anchor::BottomRight, {
                                     let view = view.clone();
                                     move |mut menu, window, cx| {
-                                        let current = view.read(cx).ui_font_family.to_string();
+                                        let preference =
+                                            view.read(cx).config.ui_font_family().to_string();
                                         let mut names = cx.text_system().all_font_names();
+                                        names.retain(|name| {
+                                            !name.eq_ignore_ascii_case(SYSTEM_UI_FONT)
+                                                && !name.eq_ignore_ascii_case(SYSTEM_MONO_FONT)
+                                        });
                                         menu = menu.min_w(200.).max_h(px(320.)).scrollable(true);
                                         menu = menu.item(
                                             PopupMenuItem::new(t!("system_default").to_string())
                                                 .checked(
-                                                    current == ".SystemUIFont"
-                                                        || current.is_empty(),
+                                                    preference.is_empty()
+                                                        || preference
+                                                            .eq_ignore_ascii_case(SYSTEM_UI_FONT),
                                                 )
                                                 .on_click(window.listener_for(
                                                     &view,
                                                     move |this, _, window, cx| {
                                                         this.change_ui_font_family(
-                                                            ".SystemUIFont",
+                                                            SYSTEM_UI_FONT,
                                                             window,
                                                             cx,
                                                         );
                                                     },
                                                 )),
                                         );
-                                        let maple_font = "Maple Mono NF CN".to_string();
-                                        let using_system_maple =
-                                            crate::app::theme::USING_SYSTEM_MAPLE
-                                                .load(std::sync::atomic::Ordering::Relaxed);
-                                        if !using_system_maple && names.contains(&maple_font) {
-                                            names.retain(|n| n != &maple_font);
-                                            menu = menu
-                                                .item(
-                                                    PopupMenuItem::new(format!(
-                                                        "{} ({})",
-                                                        maple_font,
-                                                        t!("software_builtin")
-                                                    ))
-                                                    .checked(current == maple_font)
-                                                    .on_click(window.listener_for(
-                                                        &view,
-                                                        move |this, _, window, cx| {
-                                                            this.change_ui_font_family(
-                                                                "Maple Mono NF CN",
-                                                                window,
-                                                                cx,
-                                                            );
-                                                        },
-                                                    )),
-                                                )
-                                                .separator();
-                                        }
                                         for name in names {
-                                            let checked = name == current;
+                                            let checked = name.eq_ignore_ascii_case(&preference);
                                             menu = menu.item(
                                                 PopupMenuItem::new(name.clone())
                                                     .checked(checked)
@@ -236,79 +221,118 @@ pub(crate) fn page(settings_view: &Entity<TinyShell>) -> SettingPage {
                         }
                     }),
                 ))
-                .item(SettingItem::new(
-                    t!("terminal_font_family").to_string(),
-                    SettingField::render({
-                        let view = settings_view.clone();
-                        move |_, _window, cx| {
-                            Button::new("terminal-font-dropdown")
-                                .small()
-                                .icon(IconName::ChevronsUpDown)
-                                .label({
-                                    let current = view.read(cx).terminal_font_family.to_string();
-                                    let using_system_maple = crate::app::theme::USING_SYSTEM_MAPLE
-                                        .load(std::sync::atomic::Ordering::Relaxed);
-                                    if !using_system_maple && current == "Maple Mono NF CN" {
-                                        format!("Maple Mono NF CN ({})", t!("software_builtin"))
-                                    } else {
-                                        current
-                                    }
-                                })
-                                .dropdown_menu_with_anchor(Anchor::BottomRight, {
-                                    let view = view.clone();
-                                    move |mut menu, window, cx| {
-                                        let current =
-                                            view.read(cx).terminal_font_family.to_string();
-                                        let mut names = cx.text_system().all_font_names();
-                                        menu = menu.min_w(200.).max_h(px(320.)).scrollable(true);
-                                        let maple_font = "Maple Mono NF CN".to_string();
-                                        let using_system_maple =
-                                            crate::app::theme::USING_SYSTEM_MAPLE
-                                                .load(std::sync::atomic::Ordering::Relaxed);
-                                        if !using_system_maple && names.contains(&maple_font) {
-                                            names.retain(|n| n != &maple_font);
-                                            menu = menu
-                                                .item(
-                                                    PopupMenuItem::new(format!(
-                                                        "{} ({})",
-                                                        maple_font,
-                                                        t!("software_builtin")
-                                                    ))
-                                                    .checked(current == maple_font)
-                                                    .on_click(window.listener_for(
-                                                        &view,
-                                                        move |this, _, _window, cx| {
-                                                            this.change_terminal_font_family(
-                                                                "Maple Mono NF CN",
-                                                                cx,
-                                                            );
-                                                        },
-                                                    )),
+                .item(
+                    SettingItem::new(
+                        t!("terminal_font_family").to_string(),
+                        SettingField::render({
+                            let view = settings_view.clone();
+                            move |_, _window, cx| {
+                                Button::new("terminal-font-dropdown")
+                                    .small()
+                                    .icon(IconName::ChevronsUpDown)
+                                    .label({
+                                        let recommended = font_preferences::system_mono_family(
+                                            &cx.text_system().all_font_names(),
+                                        );
+                                        let this = view.read(cx);
+                                        let preference = this.config.terminal_font_family();
+                                        if preference.is_empty()
+                                            || preference.eq_ignore_ascii_case(SYSTEM_MONO_FONT)
+                                            || (this.terminal_font_preference_available
+                                                && this
+                                                    .terminal_font_family
+                                                    .as_ref()
+                                                    .eq_ignore_ascii_case(recommended.as_ref()))
+                                        {
+                                            t!(
+                                                "system_recommended_font",
+                                                font = recommended.as_ref()
+                                            )
+                                            .to_string()
+                                        } else if !this.terminal_font_preference_available {
+                                            t!(
+                                                "font_unavailable_using",
+                                                font = preference,
+                                                fallback = this.terminal_font_family.as_ref()
+                                            )
+                                            .to_string()
+                                        } else {
+                                            this.terminal_font_family.to_string()
+                                        }
+                                    })
+                                    .dropdown_menu_with_anchor(Anchor::BottomRight, {
+                                        let view = view.clone();
+                                        move |mut menu, window, cx| {
+                                            let (preference, preference_available) = {
+                                                let this = view.read(cx);
+                                                (
+                                                    this.config.terminal_font_family().to_string(),
+                                                    this.terminal_font_preference_available,
                                                 )
-                                                .separator();
-                                        }
-                                        for name in names {
-                                            let checked = name == current;
+                                            };
+                                            let mut names = cx.text_system().all_font_names();
+                                            let recommended =
+                                                font_preferences::system_mono_family(&names)
+                                                    .to_string();
+                                            names.retain(|name| {
+                                                !name.eq_ignore_ascii_case(SYSTEM_UI_FONT)
+                                                    && !name.eq_ignore_ascii_case(SYSTEM_MONO_FONT)
+                                                    && !name.eq_ignore_ascii_case(&recommended)
+                                            });
+                                            menu =
+                                                menu.min_w(200.).max_h(px(320.)).scrollable(true);
                                             menu = menu.item(
-                                                PopupMenuItem::new(name.clone())
-                                                    .checked(checked)
-                                                    .on_click(window.listener_for(
-                                                        &view,
-                                                        move |this, _, _window, cx| {
-                                                            this.change_terminal_font_family(
-                                                                &name, cx,
-                                                            );
-                                                        },
-                                                    )),
+                                                PopupMenuItem::new(
+                                                    t!(
+                                                        "system_recommended_font",
+                                                        font = recommended.clone()
+                                                    )
+                                                    .to_string(),
+                                                )
+                                                .checked(
+                                                    preference.is_empty()
+                                                        || preference
+                                                            .eq_ignore_ascii_case(SYSTEM_MONO_FONT)
+                                                        || (preference_available
+                                                            && preference.eq_ignore_ascii_case(
+                                                                &recommended,
+                                                            )),
+                                                )
+                                                .on_click(window.listener_for(
+                                                    &view,
+                                                    move |this, _, _window, cx| {
+                                                        this.change_terminal_font_family(
+                                                            SYSTEM_MONO_FONT,
+                                                            cx,
+                                                        );
+                                                    },
+                                                )),
                                             );
+                                            for name in names {
+                                                let checked =
+                                                    name.eq_ignore_ascii_case(&preference);
+                                                menu = menu.item(
+                                                    PopupMenuItem::new(name.clone())
+                                                        .checked(checked)
+                                                        .on_click(window.listener_for(
+                                                            &view,
+                                                            move |this, _, _window, cx| {
+                                                                this.change_terminal_font_family(
+                                                                    &name, cx,
+                                                                );
+                                                            },
+                                                        )),
+                                                );
+                                            }
+                                            menu
                                         }
-                                        menu
-                                    }
-                                })
-                                .into_any_element()
-                        }
-                    }),
-                ))
+                                    })
+                                    .into_any_element()
+                            }
+                        }),
+                    )
+                    .description(t!("terminal_font_nerd_hint").to_string()),
+                )
                 .item(SettingItem::new(
                     t!("cursor_style").to_string(),
                     SettingField::render({

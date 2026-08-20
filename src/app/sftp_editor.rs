@@ -1234,7 +1234,7 @@ impl Render for SftpEditor {
                                         .h_full()
                                         .bordered(false)
                                         .focus_bordered(false)
-                                        .font_family("Maple Mono NF CN")
+                                        .font_family(theme.mono_font_family.clone())
                                         .text_size(px(13.))
                                         .line_height(relative(1.5))
                                         .px_1()

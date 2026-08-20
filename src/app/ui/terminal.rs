@@ -1187,7 +1187,11 @@ impl TinyShell {
                                 .min_w_0()
                                 .overflow_hidden()
                                 .whitespace_nowrap()
-                                .font_family(this.terminal_font_family.clone())
+                                .font(gpui::Font {
+                                    family: this.terminal_font_family.clone(),
+                                    fallbacks: this.terminal_font_fallbacks.clone(),
+                                    ..gpui::Font::default()
+                                })
                                 .text_size(rems(0.82))
                                 .child(
                                     div()
@@ -1504,6 +1508,7 @@ impl TinyShell {
                     None
                 };
                 let font_family = this.terminal_font_family.clone();
+                let font_fallbacks = this.terminal_font_fallbacks.clone();
                 let font_size = px(this.terminal_font_size);
                 let line_height = px(this.terminal_line_height());
                 let cell_width = px(this.terminal_cell_width());
@@ -1530,6 +1535,7 @@ impl TinyShell {
                             snapshot,
                             marked_text,
                             font_family,
+                            font_fallbacks,
                             font_size,
                             line_height,
                             cell_width,

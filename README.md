@@ -58,7 +58,8 @@ TinyShell 面向需要同时使用本地 Shell 和远程服务器的开发者、
 - **多标签页与分屏**：在多个标签页中组织会话，并在单个标签页内拆分多个 Pane，构建类似 tmux 的工作区。
 - **本地与远程统一体验**：本地 Shell 和 SSH 会话使用一致的终端交互与视觉风格。
 - **终端交互**：支持选区、复制粘贴、右键操作和终端鼠标语义。
-- **内置字体**：随应用提供 Maple Mono NF CN，兼顾 CJK 字符和 Nerd Font 图标显示。
+- **跨平台字体**：界面默认跟随系统字体；终端在 Windows 优先使用 Consolas、在 macOS 优先使用 Menlo，并自动使用已安装字体补充中文与 Emoji 字形。
+- **Nerd Font 支持**：需要 Powerline/Nerd Font 图标时，请安装并在终端字体设置中选择对应的 Nerd Font。
 - **实时外观调整**：可修改终端字体、字号、行间距和主题，无需重启应用。
 
 ### SSH 与连接管理
@@ -322,7 +323,7 @@ src/
 ├── terminal/  终端渲染、输入、选区和终端语义
 └── main.rs    应用入口
 
-assets/        图标、字体、主题和平台资源
+assets/        图标、主题和平台资源
 locales/       中文与英文国际化资源
 scripts/       macOS 与 Windows 打包脚本
 docs/          版本升级记录和专项文档

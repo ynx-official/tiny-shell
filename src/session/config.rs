@@ -889,7 +889,7 @@ impl ConfigStore {
 
     pub fn terminal_font_family(&self) -> &str {
         if self.cache.terminal_font_family.is_empty() {
-            "Maple Mono NF CN"
+            crate::session::config_file::SYSTEM_MONO_FONT
         } else {
             &self.cache.terminal_font_family
         }

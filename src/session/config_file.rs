@@ -268,8 +268,10 @@ pub fn default_ui_font_family() -> String {
     ".SystemUIFont".to_string()
 }
 
+pub(crate) const SYSTEM_MONO_FONT: &str = ".SystemMonoFont";
+
 pub(crate) fn default_terminal_font_family() -> String {
-    "Maple Mono NF CN".to_string()
+    SYSTEM_MONO_FONT.to_string()
 }
 
 impl Default for ConfigFile {
@@ -374,6 +376,7 @@ mod tests {
             TerminalDisplayStyle::Standard
         );
         assert_eq!(config.ui_font_size, 14.0);
+        assert_eq!(config.terminal_font_family, SYSTEM_MONO_FONT);
         assert_eq!(config.update_check_mode, UpdateCheckMode::Startup);
         assert_eq!(config.update_interval_hours, 24);
         assert!(config.update_notify);
@@ -393,6 +396,15 @@ mod tests {
             config.terminal_display_style,
             TerminalDisplayStyle::Standard
         );
+        assert_eq!(config.terminal_font_family, SYSTEM_MONO_FONT);
+    }
+
+    #[test]
+    fn legacy_maple_font_preference_is_preserved() {
+        let config: ConfigFile =
+            serde_json::from_str(r#"{"terminal_font_family":"Maple Mono NF CN"}"#).unwrap();
+
+        assert_eq!(config.terminal_font_family, "Maple Mono NF CN");
     }
 
     #[test]

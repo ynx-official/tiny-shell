@@ -7,6 +7,7 @@ pub(crate) mod connection_import_window;
 pub(crate) mod connection_manager;
 pub(crate) mod constants;
 pub(crate) mod dialogs;
+pub(crate) mod font_preferences;
 pub(crate) mod group_tree_picker;
 pub(crate) mod input_focus;
 pub(crate) mod keybinding_recorder;
@@ -81,8 +82,8 @@ use crate::app::{
 };
 use futures::{FutureExt as _, pin_mut, select_biased};
 use gpui::{
-    AnyWindowHandle, App, AppContext as _, Bounds, Context, Entity, FocusHandle, Pixels, Point,
-    SharedString, UniformListScrollHandle, Window, point, px, size,
+    AnyWindowHandle, App, AppContext as _, Bounds, Context, Entity, FocusHandle, FontFallbacks,
+    Pixels, Point, SharedString, UniformListScrollHandle, Window, point, px, size,
 };
 use gpui_component::{
     Theme, ThemeMode, ThemeRegistry, WindowExt,
@@ -426,6 +427,9 @@ pub(crate) struct TinyShell {
     pub(crate) terminal_zoom_accumulator: f32,
     pub(crate) ui_font_family: SharedString,
     pub(crate) terminal_font_family: SharedString,
+    pub(crate) ui_font_preference_available: bool,
+    pub(crate) terminal_font_preference_available: bool,
+    pub(crate) terminal_font_fallbacks: Option<FontFallbacks>,
     pub(crate) session_store: Entity<crate::session::store::SessionStore>,
     pub(crate) session_owner_id: crate::session::store::WindowOwnerId,
     pub(crate) window_state: WindowState,
@@ -927,8 +931,14 @@ impl TinyShell {
                 tracing::warn!("failed to initialize built-in quick commands: {err:#}");
             }
         }
-        let ui_font_family: SharedString = config.ui_font_family().into();
-        let terminal_font_family: SharedString = config.terminal_font_family().into();
+        let available_fonts = cx.text_system().all_font_names();
+        let ui_font = font_preferences::resolve_ui_font(config.ui_font_family(), &available_fonts);
+        let terminal_font = font_preferences::resolve_terminal_font(
+            config.terminal_font_family(),
+            &available_fonts,
+        );
+        let ui_font_family = ui_font.family;
+        let terminal_font_family = terminal_font.selection.family;
         let sftp_panel_view = if config.sftp_panel_view() == "commands" {
             SftpPanelView::Commands
         } else {
@@ -982,6 +992,9 @@ impl TinyShell {
             cursor_style: config.cursor_style(),
             ui_font_family,
             terminal_font_family,
+            ui_font_preference_available: ui_font.preference_available,
+            terminal_font_preference_available: terminal_font.selection.preference_available,
+            terminal_font_fallbacks: terminal_font.fallbacks,
             session_store,
             session_owner_id: SESSION_OWNER_SEQ.fetch_add(1, Ordering::Relaxed),
             window_state: WindowState::new(),

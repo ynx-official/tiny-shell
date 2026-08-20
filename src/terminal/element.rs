@@ -3,10 +3,10 @@ use alacritty_terminal::{
     vte::ansi::{Color as AnsiColor, CursorShape, NamedColor},
 };
 use gpui::{
-    App, Bounds, Element, ElementId, Entity, FocusHandle, Font, FontStyle, FontWeight,
-    GlobalElementId, Hsla, InputHandler, IntoElement, LayoutId, Pixels, Point, Rgba, SharedString,
-    StrikethroughStyle, TextRun, TextStyle, UTF16Selection, UnderlineStyle, Window, fill, point,
-    px, relative, rgb,
+    App, Bounds, Element, ElementId, Entity, FocusHandle, Font, FontFallbacks, FontStyle,
+    FontWeight, GlobalElementId, Hsla, InputHandler, IntoElement, LayoutId, Pixels, Point, Rgba,
+    SharedString, StrikethroughStyle, TextRun, TextStyle, UTF16Selection, UnderlineStyle, Window,
+    fill, point, px, relative, rgb,
 };
 use gpui_component::ActiveTheme as _;
 
@@ -18,6 +18,21 @@ use crate::terminal::{RenderSnapshot, ViewportSelection};
 struct TerminalMetrics {
     cell_width: Pixels,
     line_height: Pixels,
+}
+
+fn terminal_run_font(
+    family: &SharedString,
+    fallbacks: Option<&FontFallbacks>,
+    weight: FontWeight,
+    style: FontStyle,
+) -> Font {
+    Font {
+        family: family.clone(),
+        fallbacks: fallbacks.cloned(),
+        weight,
+        style,
+        ..Font::default()
+    }
 }
 
 #[derive(Clone)]
@@ -149,6 +164,7 @@ pub(crate) struct TerminalElementProps {
     pub(crate) snapshot: RenderSnapshot,
     pub(crate) marked_text: Option<String>,
     pub(crate) font_family: SharedString,
+    pub(crate) font_fallbacks: Option<FontFallbacks>,
     pub(crate) font_size: Pixels,
     pub(crate) line_height: Pixels,
     pub(crate) cell_width: Pixels,
@@ -162,6 +178,7 @@ pub(crate) struct TerminalElement {
     snapshot: RenderSnapshot,
     marked_text: Option<String>,
     font_family: SharedString,
+    font_fallbacks: Option<FontFallbacks>,
     font_size: Pixels,
     line_height: Pixels,
     cell_width: Pixels,
@@ -304,6 +321,7 @@ impl TerminalElement {
             snapshot: props.snapshot,
             marked_text: props.marked_text,
             font_family: props.font_family,
+            font_fallbacks: props.font_fallbacks,
             font_size: props.font_size,
             line_height: props.line_height,
             cell_width: props.cell_width,
@@ -316,6 +334,7 @@ impl TerminalElement {
         TextStyle {
             color: cx.theme().foreground,
             font_family: self.font_family.clone(),
+            font_fallbacks: self.font_fallbacks.clone(),
             font_size: self.font_size.into(),
             line_height: self.line_height.into(),
             ..Default::default()
@@ -363,12 +382,12 @@ impl TerminalElement {
             len: cell.c.len_utf8(),
             color: fg,
             background_color: None,
-            font: Font {
-                family: self.font_family.clone(),
+            font: terminal_run_font(
+                &self.font_family,
+                self.font_fallbacks.as_ref(),
                 weight,
                 style,
-                ..Font::default()
-            },
+            ),
             underline,
             strikethrough,
         }
@@ -726,10 +745,12 @@ impl Element for TerminalElement {
                     self.font_size,
                     &[TextRun {
                         len: marked_text.len(),
-                        font: Font {
-                            family: self.font_family.clone(),
-                            ..Font::default()
-                        },
+                        font: terminal_run_font(
+                            &self.font_family,
+                            self.font_fallbacks.as_ref(),
+                            FontWeight::NORMAL,
+                            FontStyle::Normal,
+                        ),
                         color: base_style.color,
                         underline: base_style.underline,
                         ..Default::default()
@@ -944,5 +965,31 @@ fn named_color(named: NamedColor, _foreground: bool, cx: &App) -> Hsla {
         NamedColor::DimMagenta => Hsla::from(rgb(0xb48ead)),
         NamedColor::DimCyan => Hsla::from(rgb(0x88c0d0)),
         NamedColor::DimWhite => Hsla::from(rgb(0xe5e9f0)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn terminal_run_styles_keep_the_same_fallback_chain() {
+        let family: SharedString = "Consolas".into();
+        let fallbacks = FontFallbacks::from_fonts(vec![
+            "Microsoft YaHei UI".to_string(),
+            "Segoe UI Emoji".to_string(),
+        ]);
+
+        for (weight, style) in [
+            (FontWeight::NORMAL, FontStyle::Normal),
+            (FontWeight::BOLD, FontStyle::Normal),
+            (FontWeight::NORMAL, FontStyle::Italic),
+        ] {
+            let font = terminal_run_font(&family, Some(&fallbacks), weight, style);
+            assert_eq!(font.family, family);
+            assert_eq!(font.fallbacks.as_ref(), Some(&fallbacks));
+            assert_eq!(font.weight, weight);
+            assert_eq!(font.style, style);
+        }
     }
 }
