@@ -15,7 +15,9 @@ use rust_i18n::t;
 use crate::TinyShell;
 use crate::{
     app::{
-        startup_window::{StartupExpansion, StartupWindow, startup_window_bounds},
+        startup_window::{
+            StartupExpansion, StartupWindow, move_startup_window, startup_window_bounds,
+        },
         tab_transfer::{GroupTransfer, validate_transfer_batch},
     },
     session::{
@@ -398,7 +400,7 @@ pub(crate) fn open_main_window(cx: &mut App) {
 
     let mut window_options = build_window_options(&config, cx, None);
     let target_bounds = window_options.window_bounds;
-    window_options.window_bounds = startup_window_bounds(target_bounds);
+    window_options.window_bounds = startup_window_bounds(target_bounds, cx);
     let session_store = cx.new(|_| SessionStore::new());
     let config_repository = crate::app::config_persistence::ConfigRepository::new();
     open_startup_window(
@@ -491,11 +493,8 @@ fn initialize_startup_workspace(
         reveal_startup_workspace(startup, view, window, cx);
         return;
     };
-    let expansion = StartupExpansion::new(
-        window.viewport_size(),
-        target_bounds.get_bounds().size,
-        Instant::now(),
-    );
+    let expansion =
+        StartupExpansion::new(window.bounds(), target_bounds.get_bounds(), Instant::now());
     advance_startup_expansion(startup, view, target_bounds, expansion, window, cx);
 }
 
@@ -508,7 +507,8 @@ fn advance_startup_expansion(
     cx: &mut App,
 ) {
     let frame = expansion.frame_at(Instant::now());
-    window.resize(frame.size);
+    window.resize(frame.bounds.size);
+    move_startup_window(window, frame.bounds.origin);
     if frame.complete {
         match target_bounds {
             gpui::WindowBounds::Windowed(_) => {}

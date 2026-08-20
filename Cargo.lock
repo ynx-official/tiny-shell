@@ -7625,7 +7625,7 @@ dependencies = [
 
 [[package]]
 name = "tiny-shell"
-version = "1.5.12"
+version = "1.5.13"
 dependencies = [
  "alacritty_terminal",
  "anyhow",
@@ -7653,6 +7653,7 @@ dependencies = [
  "pkg-config",
  "portable-pty",
  "rand 0.8.6",
+ "raw-window-handle",
  "reqwest",
  "rfd",
  "russh",

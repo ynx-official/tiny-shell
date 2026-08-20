@@ -1,6 +1,6 @@
 [package]
 name = "tiny-shell"
-version = "1.5.12"
+version = "1.5.13"
 edition = "2024"
 authors = ["tiny-shell contributors"]
 description = "A modern, fast, GPUI Component-based desktop terminal client"
@@ -67,8 +67,9 @@ sha1 = "0.10"
 sha2 = "0.10"
 
 [target.'cfg(windows)'.dependencies]
+raw-window-handle = "0.6"
 winreg = "0.55"
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security_Credentials"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_Security_Credentials", "Win32_UI_WindowsAndMessaging"] }
 
 [package.metadata.deb]
 maintainer = "tiny-shell contributors"
