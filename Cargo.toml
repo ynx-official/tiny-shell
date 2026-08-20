@@ -71,6 +71,11 @@ raw-window-handle = "0.6"
 winreg = "0.55"
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_Security_Credentials", "Win32_UI_WindowsAndMessaging"] }
 
+[target.'cfg(target_os = "macos")'.dependencies]
+cocoa = "0.26"
+objc = "0.2"
+raw-window-handle = "0.6"
+
 [package.metadata.deb]
 maintainer = "tiny-shell contributors"
 license-file = ["LICENSE"]
