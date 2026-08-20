@@ -12,6 +12,7 @@ use std::sync::{
     atomic::{AtomicBool, AtomicU64, Ordering},
 };
 
+use image::{Frame, ImageBuffer, Rgba};
 use tokio::sync::{mpsc, watch};
 
 use crate::{
@@ -93,6 +94,44 @@ impl DecodedFrame {
             size,
             pixels: pixels.into(),
         })
+    }
+
+    /// Convert the native BGRA frame into the format consumed by GPUI.
+    ///
+    /// FreeRDP may pad every row to a larger stride. `RenderImage` requires a
+    /// tightly packed image buffer, so the padding is removed here while the
+    /// frame is already on the UI side of the mailbox. Both FreeRDP's GDI
+    /// backend and GPUI use BGRA byte order, therefore no channel swap is
+    /// needed.
+    pub(crate) fn into_render_image(self) -> Result<Arc<gpui::RenderImage>, FrameError> {
+        let row_bytes = self
+            .size
+            .width
+            .checked_mul(4)
+            .ok_or(FrameError::InvalidSize)? as usize;
+        let height = self.size.height as usize;
+        let stride = self.size.stride as usize;
+        let expected = row_bytes
+            .checked_mul(height)
+            .ok_or(FrameError::InvalidSize)?;
+        let mut tightly_packed = Vec::with_capacity(expected);
+        for row in self.pixels.chunks_exact(stride).take(height) {
+            tightly_packed.extend_from_slice(&row[..row_bytes]);
+        }
+        if tightly_packed.len() != expected {
+            return Err(FrameError::IncompletePixels {
+                expected,
+                actual: tightly_packed.len(),
+            });
+        }
+        let buffer = ImageBuffer::<Rgba<u8>, Vec<u8>>::from_raw(
+            self.size.width,
+            self.size.height,
+            tightly_packed,
+        )
+        .ok_or(FrameError::InvalidSize)?;
+        let frame = Frame::new(buffer);
+        Ok(Arc::new(gpui::RenderImage::new([frame])))
     }
 }
 
@@ -273,8 +312,8 @@ impl FrameMailbox {
     }
 
     /// Read metadata without removing the frame. The UI uses this to expose
-    /// connection/decoder health while a future texture renderer consumes the
-    /// owned pixel buffer.
+    /// connection/decoder health while the latest owned pixel buffer is
+    /// converted into a persistent GPUI image.
     pub(crate) fn latest_metadata(&self) -> Option<(u64, FrameSize)> {
         self.latest
             .lock()
@@ -323,5 +362,25 @@ mod tests {
         );
         assert_eq!(FrameSize::new(0, 1, 4), Err(FrameError::InvalidSize));
         assert_eq!(FrameSize::new(2, 1, 4), Err(FrameError::InvalidStride));
+    }
+
+    #[test]
+    fn render_image_removes_stride_padding_without_swapping_bgra() {
+        let size = FrameSize::new(2, 2, 12).unwrap();
+        let pixels = vec![
+            1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, // row 1 + padding
+            13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, // row 2 + padding
+        ];
+        let image = DecodedFrame::new(1, size, pixels)
+            .unwrap()
+            .into_render_image()
+            .unwrap();
+
+        assert_eq!(image.size(0).width, 2);
+        assert_eq!(image.size(0).height, 2);
+        assert_eq!(
+            image.as_bytes(0),
+            Some(&[1, 2, 3, 4, 5, 6, 7, 8, 13, 14, 15, 16, 17, 18, 19, 20][..])
+        );
     }
 }

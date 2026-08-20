@@ -2114,11 +2114,21 @@ impl TinyShell {
     }
 
     fn handle_remote_desktop_frame_ready(&mut self, tab_id: String, cx: &mut Context<Self>) {
-        if self
+        let active = self
             .workspace()
             .active_tab_id()
-            .is_some_and(|active_id| active_id == tab_id.as_str())
-        {
+            .is_some_and(|active_id| active_id == tab_id.as_str());
+        let updated = match self.terminal_tab_mut(&tab_id) {
+            Some(tab) => match tab.update_remote_desktop_frame() {
+                Ok(updated) => updated,
+                Err(error) => {
+                    tracing::warn!(tab_id = %tab_id, ?error, "failed to prepare RDP frame");
+                    false
+                }
+            },
+            None => false,
+        };
+        if active && updated {
             cx.notify();
         }
     }

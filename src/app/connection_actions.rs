@@ -439,6 +439,7 @@ impl TinyShell {
                 let tab = &mut self.window_state_mut().workspace_state_mut().tabs_mut()[ix];
                 tab.set_backend(backend);
                 tab.remote_desktop_mailbox = Some(mailbox);
+                tab.remote_desktop_render_image = None;
                 tab.connected = false;
                 tab.status =
                     t!("starting_connection").to_string();

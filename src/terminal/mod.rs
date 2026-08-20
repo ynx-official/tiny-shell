@@ -712,6 +712,9 @@ pub(crate) struct TerminalTab {
     /// Latest decoded RDP frame. The renderer consumes this mailbox without
     /// placing frame-sized buffers on the generic backend event queue.
     pub(crate) remote_desktop_mailbox: Option<Arc<FrameMailbox>>,
+    /// GPUI image generated from the latest RDP frame. Keeping this on the
+    /// tab avoids rebuilding a texture when unrelated UI state changes.
+    pub(crate) remote_desktop_render_image: Option<Arc<gpui::RenderImage>>,
     pub scroll_pixel_y: f32,
     pub(crate) highlight_cache: std::cell::RefCell<HighlightCache>,
     render_revision: u64,
@@ -903,12 +906,27 @@ impl TerminalTab {
             rows: 30,
             backend: shared_backend,
             remote_desktop_mailbox: None,
+            remote_desktop_render_image: None,
             scroll_pixel_y: 0.0,
             highlight_cache: std::cell::RefCell::new(None),
             render_revision: 0,
             render_cache: std::cell::RefCell::new(None),
             pending_render_damage: std::cell::RefCell::new(RenderDamage::Full),
         }
+    }
+
+    pub(crate) fn update_remote_desktop_frame(
+        &mut self,
+    ) -> Result<bool, crate::backend::remote_desktop::FrameError> {
+        let Some(frame) = self
+            .remote_desktop_mailbox
+            .as_ref()
+            .and_then(|mailbox| mailbox.take_latest())
+        else {
+            return Ok(false);
+        };
+        self.remote_desktop_render_image = Some(frame.into_render_image()?);
+        Ok(true)
     }
 
     fn invalidate_render_cache(&mut self) {

@@ -1,4 +1,5 @@
 use super::*;
+use gpui::{ImageSource, img};
 
 const NATIVE_TAB_MIN_WIDTH: f32 = 96.;
 const NATIVE_TAB_TITLE_MAX_WIDTH: f32 = 192.;
@@ -1241,6 +1242,7 @@ impl TinyShell {
                     let foreground = cx.theme().foreground;
                     let muted = cx.theme().muted_foreground;
                     let accent = cx.theme().primary;
+                    let render_image = tab.remote_desktop_render_image.clone();
                     let frame_text = stats
                         .and_then(|(stats, metadata)| metadata.map(|(seq, size)| (stats, seq, size)))
                         .map(|(stats, sequence, size)| {
@@ -1250,6 +1252,36 @@ impl TinyShell {
                             )
                         })
                         .unwrap_or_else(|| t!("rdp_waiting_for_frame").to_string());
+                    let content = if let Some(render_image) = render_image {
+                        div()
+                            .size_full()
+                            .child(img(ImageSource::Render(render_image)).size_full())
+                    } else {
+                        v_flex()
+                            .size_full()
+                            .items_center()
+                            .justify_center()
+                            .gap_2()
+                            .text_color(foreground)
+                            .child(
+                                gpui::div()
+                                    .text_size(rems(1.1))
+                                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                                    .child(t!("rdp_surface_title").to_string()),
+                            )
+                            .child(
+                                gpui::div()
+                                    .text_color(if connected { accent } else { muted })
+                                    .child(status),
+                            )
+                            .child(gpui::div().text_color(muted).child(frame_text))
+                            .child(
+                                gpui::div()
+                                    .text_color(muted)
+                                    .text_size(rems(0.78))
+                                    .child(t!("rdp_surface_pending").to_string()),
+                            )
+                    };
                     return div()
                         .size_full()
                         .bg(background)
@@ -1263,32 +1295,7 @@ impl TinyShell {
                                 }
                             }),
                         )
-                        .child(
-                            v_flex()
-                                .size_full()
-                                .items_center()
-                                .justify_center()
-                                .gap_2()
-                                .text_color(foreground)
-                                .child(
-                                    gpui::div()
-                                        .text_size(rems(1.1))
-                                        .font_weight(gpui::FontWeight::SEMIBOLD)
-                                        .child(t!("rdp_surface_title").to_string()),
-                                )
-                                .child(
-                                    gpui::div()
-                                        .text_color(if connected { accent } else { muted })
-                                        .child(status),
-                                )
-                                .child(gpui::div().text_color(muted).child(frame_text))
-                                .child(
-                                    gpui::div()
-                                        .text_color(muted)
-                                        .text_size(rems(0.78))
-                                        .child(t!("rdp_surface_pending").to_string()),
-                                ),
-                        )
+                        .child(content)
                         .into_any_element();
                 }
                 let completion_cursor = snapshot.cursor;
