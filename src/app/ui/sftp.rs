@@ -731,7 +731,8 @@ impl TinyShell {
             .as_ref()
             .map(|category| category.id.clone());
         let selected_category_id_for_empty_menu = selected_category_id.clone();
-        let selected_category_id_for_command_empty_menu = selected_category_id.clone();
+        let selected_category_id_for_command_filler_menu = selected_category_id.clone();
+        let selected_category_id_for_command_full_empty_menu = selected_category_id.clone();
         let selected_category_name = selected_category
             .as_ref()
             .map(|category| category.name.clone())
@@ -1272,44 +1273,66 @@ impl TinyShell {
                                                                                 ),
                                                                         )
                                                                 },
-                                                                        ))
-                                                                        .when(!has_matches, |this| {
-                                                                            this.child(
-                                                                                v_flex()
-                                                                                    .w_full()
-                                                                                    .items_center()
-                                                                                    .justify_center()
-                                                                                    .gap_2()
-                                                                                    .py_5()
-                                                                                    .text_color(muted_foreground)
-                                                                                    .child(Icon::new(IconName::Search).with_size(Size::Large))
-                                                                                    .child(empty_label),
-                                                                            )
-                                                                        }),
+                                                                        )),
                                                                 )
-                                                                .child({
+                                                                .when(has_matches, |this| {
+                                                                    this.child({
+                                                                        let view = cx.entity();
+                                                                        div()
+                                                                            .id("sftp-quick-command-card-empty-area")
+                                                                            .w_full()
+                                                                            .min_h(px(32.))
+                                                                            .flex_1()
+                                                                            .context_menu(move |menu, window, _| {
+                                                                                let Some(category_id) = selected_category_id_for_command_filler_menu.clone() else {
+                                                                                    return menu;
+                                                                                };
+                                                                                menu.item(
+                                                                                    PopupMenuItem::new(t!("quick_command_new").to_string())
+                                                                                        .on_click(window.listener_for(&view, move |this, _, window, cx| {
+                                                                                            this.show_quick_command_dialog(
+                                                                                                category_id.clone(),
+                                                                                                None,
+                                                                                                window,
+                                                                                                cx,
+                                                                                            );
+                                                                                        })),
+                                                                                )
+                                                                            })
+                                                                    })
+                                                                })
+                                                                .when(!has_matches, |this| {
                                                                     let view = cx.entity();
-                                                                    div()
-                                                                        .id("sftp-quick-command-card-empty-area")
-                                                                        .w_full()
-                                                                        .min_h(px(32.))
-                                                                        .flex_1()
-                                                                        .context_menu(move |menu, window, _| {
-                                                                            let Some(category_id) = selected_category_id_for_command_empty_menu.clone() else {
-                                                                                return menu;
-                                                                            };
-                                                                            menu.item(
-                                                                                PopupMenuItem::new(t!("quick_command_new").to_string())
-                                                                                    .on_click(window.listener_for(&view, move |this, _, window, cx| {
-                                                                                        this.show_quick_command_dialog(
-                                                                                            category_id.clone(),
-                                                                                            None,
-                                                                                            window,
-                                                                                            cx,
-                                                                                        );
-                                                                                    })),
-                                                                            )
-                                                                        })
+                                                                    let empty_label = empty_label.clone();
+                                                                    this.child(
+                                                                        v_flex()
+                                                                            .id("sftp-quick-command-full-empty-area")
+                                                                            .w_full()
+                                                                            .flex_1()
+                                                                            .min_h(px(0.))
+                                                                            .items_center()
+                                                                            .justify_center()
+                                                                            .gap_2()
+                                                                            .text_color(muted_foreground)
+                                                                            .child(Icon::new(IconName::Search).with_size(Size::Large))
+                                                                            .child(empty_label)
+                                                                            .context_menu(move |menu, window, _| {
+                                                                                let Some(category_id) = selected_category_id_for_command_full_empty_menu.clone() else {
+                                                                                    return menu;
+                                                                                };
+                                                                                menu.item(
+                                                                                    PopupMenuItem::new(t!("quick_command_new").to_string())
+                                                                                        .on_click(window.listener_for(&view, move |this, _, window, cx| {
+                                                                                            this.show_quick_command_dialog(
+                                                                                                category_id.clone(),
+                                                                                                None,
+                                                                                                window,
+                                                                                                cx,
+                                                                                            );
+                                                                                        })),
+                                                                                )
+                                                                            }),
+                                                                    )
                                                                 }),
                                                         )
                                                         .child(
