@@ -997,7 +997,7 @@ impl TinyShell {
                                             .border_1()
                                             .border_color(cx.theme().border)
                                             .bg(cx.theme().muted.opacity(0.22))
-                                            .font_family("monospace")
+                                            .font_family(cx.theme().mono_font_family.clone())
                                             .text_size(rems(0.82))
                                             .child(command.command.clone()),
                                     ),
@@ -1225,7 +1225,7 @@ impl TinyShell {
                                                 div()
                                                     .w_full()
                                                     .text_right()
-                                                    .font_family("monospace")
+                                                    .font_family(cx.theme().mono_font_family.clone())
                                                     .text_size(rems(0.8))
                                                     .text_color(
                                                         cx.theme().muted_foreground,
@@ -1338,7 +1338,7 @@ impl TinyShell {
                                                 div()
                                                     .w_full()
                                                     .text_right()
-                                                    .font_family("monospace")
+                                                    .font_family(cx.theme().mono_font_family.clone())
                                                     .text_size(rems(0.8))
                                                     .text_color(
                                                         cx.theme().muted_foreground,
@@ -1534,7 +1534,7 @@ impl TinyShell {
                                                                 .whitespace_nowrap()
                                                                 .text_ellipsis()
                                                                 .text_size(rems(0.833))
-                                                                .font_family("monospace")
+                                                                .font_family(cx.theme().mono_font_family.clone())
                                                                 .tooltip({
                                                                     let command =
                                                                         run_command.clone();

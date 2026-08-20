@@ -56,15 +56,15 @@ jobs:
             target: x86_64-pc-windows-msvc
             name: windows-x86_64
             bin: tiny-shell.exe
-          - os: ubuntu-22.04 # build on the oldest supported runner for broader glibc compatibility
+          - os: ubuntu-24.04 # FreeRDP 3 development packages are available on Noble.
             target: x86_64-unknown-linux-gnu
             name: linux-x86_64
             bin: tiny-shell
-          - os: macos-14 # Apple Silicon
+          - os: macos-14 # Apple Silicon; keep the Sonoma deployment baseline.
             target: aarch64-apple-darwin
             name: macos-aarch64
             bin: tiny-shell
-          - os: macos-14 # Intel (cross-compiled from Apple Silicon to avoid queue delays)
+          - os: macos-15-intel # Native Intel runner so Homebrew FreeRDP matches the target.
             target: x86_64-apple-darwin
             name: macos-x86_64
             bin: tiny-shell
@@ -94,12 +94,26 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            build-essential pkg-config cmake \
+            build-essential pkg-config cmake curl desktop-file-utils file \
+            freerdp3-dev patchelf \
             libfontconfig1-dev libfreetype6-dev \
             libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev \
             libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev \
             libgl1-mesa-dev libegl1-mesa-dev libgtk-3-dev \
             libudev-dev
+
+          echo "TINY_SHELL_FREERDP_INCLUDE_DIRS=/usr/include/freerdp3:/usr/include/winpr3" >> "$GITHUB_ENV"
+
+      - name: Install FreeRDP build dependencies (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          brew install freerdp dylibbundler
+          FREERDP_PREFIX="$(brew --prefix freerdp)"
+          echo "MACOSX_DEPLOYMENT_TARGET=14.0" >> "$GITHUB_ENV"
+          echo "TINY_SHELL_FREERDP_INCLUDE_DIRS=${FREERDP_PREFIX}/include/freerdp3:${FREERDP_PREFIX}/include/winpr3" >> "$GITHUB_ENV"
+          echo "TINY_SHELL_FREERDP_LIB_DIR=${FREERDP_PREFIX}/lib" >> "$GITHUB_ENV"
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -112,8 +126,13 @@ jobs:
           # Matches CI so a recent release build can warm the tag build.
           shared-key: ${{ matrix.name }}
 
-      - name: Build (release)
-        run: cargo build --locked --release --target ${{ matrix.target }}
+      - name: Build (release, Windows native RDP)
+        if: runner.os == 'Windows'
+        run: cargo build --locked --release --target ${{ matrix.target }} --no-default-features
+
+      - name: Build (release, FreeRDP)
+        if: runner.os != 'Windows'
+        run: cargo build --locked --release --target ${{ matrix.target }} --features freerdp
 
       - name: Ensure Inno Setup is available
         if: runner.os == 'Windows'
@@ -141,7 +160,7 @@ jobs:
 
             APP="TinyShell.app"
             CONTENTS="$APP/Contents"
-            mkdir -p "$CONTENTS/MacOS" "$CONTENTS/Resources"
+            mkdir -p "$CONTENTS/MacOS" "$CONTENTS/Resources" "$CONTENTS/Frameworks"
 
             cp "target/${{ matrix.target }}/release/tiny-shell" "$CONTENTS/MacOS/"
             cp "assets/icons/tiny-shell.icns" "$CONTENTS/Resources/tiny-shell.icns"
@@ -154,6 +173,15 @@ jobs:
               "assets/macos/Info.plist" > "$CONTENTS/Info.plist"
 
             printf 'APPL????' > "$CONTENTS/PkgInfo"
+
+            # Copy every non-system dynamic dependency (including FreeRDP,
+            # WinPR and their Homebrew dependencies) into the application and
+            # rewrite load commands to resolve from Contents/Frameworks.
+            dylibbundler \
+              -od -b \
+              -x "$CONTENTS/MacOS/tiny-shell" \
+              -d "$CONTENTS/Frameworks" \
+              -p @executable_path/../Frameworks/
 
             # Ad-hoc code-sign the assembled bundle.
             codesign --force --deep --sign - "$APP"
@@ -189,8 +217,38 @@ jobs:
             # Linux
             mkdir "$STAGE"
             cp "target/${{ matrix.target }}/release/${{ matrix.bin }}" "$STAGE/"
+            mkdir "$STAGE/lib"
+            while read -r soname resolved; do
+              if [[ "$soname" == libfreerdp*.so* || "$soname" == libwinpr*.so* ]]; then
+                cp -L "$resolved" "$STAGE/lib/$soname"
+              fi
+            done < <(ldd "$STAGE/${{ matrix.bin }}" | awk '$2 == "=>" && $3 ~ /^\// { print $1, $3 }')
+            if ! compgen -G "$STAGE/lib/libfreerdp*.so*" >/dev/null || \
+               ! compgen -G "$STAGE/lib/libwinpr*.so*" >/dev/null; then
+              echo "FreeRDP runtime libraries were not found in the linked binary" >&2
+              exit 1
+            fi
+            patchelf --set-rpath '$ORIGIN/lib' "$STAGE/${{ matrix.bin }}"
+            if LD_LIBRARY_PATH="$PWD/$STAGE/lib" ldd "$STAGE/${{ matrix.bin }}" | grep -q "not found"; then
+              echo "Packaged Linux binary has unresolved dynamic libraries" >&2
+              LD_LIBRARY_PATH="$PWD/$STAGE/lib" ldd "$STAGE/${{ matrix.bin }}"
+              exit 1
+            fi
             tar -czf "${STAGE}.tar.gz" "$STAGE"
-            echo "ASSETS=${STAGE}.tar.gz" >> "$GITHUB_ENV"
+
+            bash scripts/package-linux-appimage.sh \
+              --version "$VERSION" \
+              --target "${{ matrix.target }}" \
+              --output-dir . \
+              --binary "target/${{ matrix.target }}/release/${{ matrix.bin }}" \
+              --skip-build
+
+            APPIMAGE="${STAGE}.AppImage"
+            test -x "$APPIMAGE"
+            echo "ASSETS<<EOF" >> "$GITHUB_ENV"
+            echo "${STAGE}.tar.gz" >> "$GITHUB_ENV"
+            echo "$APPIMAGE" >> "$GITHUB_ENV"
+            echo "EOF" >> "$GITHUB_ENV"
           fi
 
       - name: Package Windows portable and installer editions

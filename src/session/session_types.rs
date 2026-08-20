@@ -285,6 +285,7 @@ impl Session {
     /// Build a Windows Remote Desktop connection using password credentials.
     /// RDP-specific options are intentionally added in a later migration so
     /// the first schema change remains backward-compatible with SSH sessions.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn rdp(host: String, port: u16, user: String, password: String) -> Self {
         let mut session = Self::password(host, port, user, password);
         session.connection_type = ConnectionType::Rdp;

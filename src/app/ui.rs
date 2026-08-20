@@ -2,9 +2,10 @@ use crate::app::resizable::{h_resizable, resizable_panel, v_resizable};
 use gpui::{
     Anchor, Animation, AnimationExt as _, AnyElement, AppContext as _, Context, ElementId,
     Focusable as _, FontWeight, Hsla, InteractiveElement as _, IntoElement, MouseButton,
-    MouseDownEvent, ParentElement as _, PathBuilder, Pixels, Point, Render,
-    StatefulInteractiveElement as _, Styled as _, Window, canvas, div, ease_out_quint, hsla, point,
-    prelude::FluentBuilder as _, px, relative, rems, uniform_list,
+    MouseDownEvent, ObjectFit, ParentElement as _, PathBuilder, Pixels, Point, Render,
+    StatefulInteractiveElement as _, Styled as _, StyledImage as _, Window, canvas, div,
+    ease_out_quint, hsla, img, point, prelude::FluentBuilder as _, px, relative, rems,
+    uniform_list,
 };
 use gpui_component::{
     ActiveTheme, Disableable as _, ElementExt, Icon, IconName, InteractiveElementExt as _, Root,
@@ -29,13 +30,16 @@ use std::{
 
 use crate::{
     PaneLayout, TinyShell,
-    app::constants::{COLLAPSED_SIDEBAR_WIDTH, SIDEBAR_WIDTH, TERMINAL_KEY_CONTEXT},
+    app::constants::{
+        COLLAPSED_SIDEBAR_WIDTH, SFTP_PANEL_DEFAULT_HEIGHT, SFTP_PANEL_MIN_HEIGHT,
+        SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH, TERMINAL_KEY_CONTEXT, resolve_sidebar_width,
+    },
     app::{
         HomePage, IncomingPaneDrag, IncomingTabDrag, ProcessView, SftpPanelView,
         settings::MonitoringPosition,
     },
-    sftp::format_mtime,
     sftp::ops::is_editable_text_file,
+    sftp::{format_mtime, format_permissions},
     system::format_bytes,
     terminal::{self, TabKind},
 };
@@ -57,12 +61,15 @@ enum SftpFooterItem {
     SyncStatus,
     Latency,
     Transfers,
+    PanelToggle,
 }
 
 struct TabDragPreview {
     label: String,
     offset: Point<Pixels>,
 }
+
+const TAB_BAR_HEIGHT: f32 = 34.;
 
 impl Render for TabDragPreview {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
@@ -140,6 +147,29 @@ fn workspace_shell_layout(show_sidebar: bool, sidebar_collapsed: bool) -> Worksp
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct WorkspaceBodyMetrics {
+    minimized_height: f32,
+    min_panel_height: f32,
+    default_panel_height: f32,
+}
+
+fn workspace_body_metrics(
+    monitoring_position: MonitoringPosition,
+    clean_mode: bool,
+) -> WorkspaceBodyMetrics {
+    let monitoring_overhead = monitoring_position.lower_panel_overhead();
+    WorkspaceBodyMetrics {
+        minimized_height: if clean_mode {
+            1.0
+        } else {
+            1.0 + monitoring_overhead
+        },
+        min_panel_height: SFTP_PANEL_MIN_HEIGHT + monitoring_overhead,
+        default_panel_height: SFTP_PANEL_DEFAULT_HEIGHT + monitoring_overhead,
+    }
+}
+
 impl TinyShell {
     /// Erases the deeply nested workspace element before it reaches the native
     /// window shell. On Windows, keeping the complete GPUI tree in one debug
@@ -157,6 +187,7 @@ impl TinyShell {
         // Overview and Key Manager pages.
         let main_view_key = self.main_view_key();
         let presentation = self.workspace_mode.presentation(self.sftp_panel.minimized);
+        let hide_rdp_tab_bar = presentation.clean && self.active_kind() == Some(TabKind::Rdp);
         let main_content_raw = if self.workspace().active_system_info_tab_id().is_some() {
             self.render_system_info_page(cx).into_any_element()
         } else if self.workspace().active_tab_id().is_some() && !self.home_page_open {
@@ -177,25 +208,16 @@ impl TinyShell {
                         .child(self.render_sftp_panel(window, cx)),
                 );
 
-            let is_monitor_bottom = monitoring_position == MonitoringPosition::Bottom;
-            let minimized_height = if presentation.clean {
-                1.
-            } else if is_monitor_bottom {
-                81.
-            } else {
-                1.
-            };
-            let min_panel_height = if is_monitor_bottom { 260. } else { 180. };
-            let default_panel_height = if is_monitor_bottom { 328. } else { 248. };
+            let body_metrics = workspace_body_metrics(monitoring_position, presentation.clean);
 
             let sftp_size = if presentation.sftp_minimized {
-                px(minimized_height)
+                px(body_metrics.minimized_height)
             } else {
                 px(self
                     .config
                     .body_panels()
                     .and_then(|s| s.get(1).copied())
-                    .unwrap_or(default_panel_height))
+                    .unwrap_or(body_metrics.default_panel_height))
             };
 
             let body = v_resizable("tiny-shell-body")
@@ -206,9 +228,9 @@ impl TinyShell {
                     resizable_panel()
                         .size(sftp_size)
                         .size_range(if presentation.sftp_minimized {
-                            px(minimized_height)..px(minimized_height)
+                            px(body_metrics.minimized_height)..px(body_metrics.minimized_height)
                         } else {
-                            px(min_panel_height)..px(1200.)
+                            px(body_metrics.min_panel_height)..px(1200.)
                         })
                         .child(monitoring_contents),
                 );
@@ -248,16 +270,15 @@ impl TinyShell {
                 .relative()
                 .overflow_hidden()
                 .when(
-                    self.active_title_bar_style == crate::session::config::TitleBarStyle::Native,
+                    self.active_title_bar_style == crate::session::config::TitleBarStyle::Native
+                        && !hide_rdp_tab_bar,
                     |this| {
                         this.child(
                             div()
                                 .flex_none()
-                                .h(px(32.))
+                                .h(px(TAB_BAR_HEIGHT))
                                 .w_full()
                                 .bg(cx.theme().tab_bar)
-                                .border_b_1()
-                                .border_color(cx.theme().border)
                                 .child(self.render_tab_bar(window.window_handle(), cx)),
                         )
                     },
@@ -281,16 +302,15 @@ impl TinyShell {
                             .overflow_hidden()
                             .when(
                                 self.active_title_bar_style
-                                    == crate::session::config::TitleBarStyle::Native,
+                                    == crate::session::config::TitleBarStyle::Native
+                                    && !hide_rdp_tab_bar,
                                 |this| {
                                     this.child(
                                         div()
                                             .flex_none()
-                                            .h(px(32.))
+                                            .h(px(TAB_BAR_HEIGHT))
                                             .w_full()
                                             .bg(cx.theme().tab_bar)
-                                            .border_b_1()
-                                            .border_color(cx.theme().border)
                                             .child(self.render_tab_bar(window.window_handle(), cx)),
                                     )
                                 },
@@ -308,12 +328,12 @@ impl TinyShell {
                     };
 
                 let sidebar_area = resizable_panel()
-                    .size(px(self
-                        .config
-                        .workspace_panels()
-                        .and_then(|s| s.first().copied())
-                        .unwrap_or(SIDEBAR_WIDTH)))
-                    .size_range(px(190.)..px(360.))
+                    .size(px(resolve_sidebar_width(
+                        self.config
+                            .workspace_panels()
+                            .and_then(|sizes| sizes.first().copied()),
+                    )))
+                    .size_range(px(SIDEBAR_MIN_WIDTH)..px(SIDEBAR_MAX_WIDTH))
                     .flex_none()
                     .child(sidebar_content);
 
@@ -324,16 +344,15 @@ impl TinyShell {
                         .overflow_hidden()
                         .when(
                             self.active_title_bar_style
-                                == crate::session::config::TitleBarStyle::Native,
+                                == crate::session::config::TitleBarStyle::Native
+                                && !hide_rdp_tab_bar,
                             |this| {
                                 this.child(
                                     div()
                                         .flex_none()
-                                        .h(px(32.))
+                                        .h(px(TAB_BAR_HEIGHT))
                                         .w_full()
                                         .bg(cx.theme().tab_bar)
-                                        .border_b_1()
-                                        .border_color(cx.theme().border)
                                         .child(self.render_tab_bar(window.window_handle(), cx)),
                                 )
                             },
@@ -365,6 +384,11 @@ impl TinyShell {
         let drag_move_view = cx.entity();
         let pane_drag_move_view = drag_move_view.clone();
         let drop_view = drag_move_view.clone();
+        let hide_rdp_tab_bar = self
+            .workspace_mode
+            .presentation(self.sftp_panel.minimized)
+            .clean
+            && self.active_kind() == Some(TabKind::Rdp);
         let workspace_with_tool_panel = self.render_workspace_with_tool_panel(workspace, cx);
 
         v_flex()
@@ -544,9 +568,7 @@ impl TinyShell {
             .on_action(cx.listener(|this, _: &crate::Paste, window, cx| {
                 if window.focused(cx) == Some(this.focus_handle.clone()) {
                     if let Some(clipboard) = cx.read_from_clipboard() {
-                        if let Some(text) = clipboard.text() {
-                            this.paste_into_terminal(&text, window, cx);
-                        }
+                        this.paste_clipboard_item(&clipboard, window, cx);
                     }
                 } else {
                     cx.propagate();
@@ -560,7 +582,7 @@ impl TinyShell {
                             .id("title-bar")
                             .flex()
                             .items_center()
-                            .h(px(34.))
+                            .h(px(TAB_BAR_HEIGHT))
                             .w_full()
                             .bg(cx.theme().tab_bar)
                             .child(self.render_window_controls(window, cx))
@@ -607,7 +629,9 @@ impl TinyShell {
                                             }),
                                         )
                                     })
-                                    .child(self.render_tab_bar(window.window_handle(), cx)),
+                                    .when(!hide_rdp_tab_bar, |this| {
+                                        this.child(self.render_tab_bar(window.window_handle(), cx))
+                                    }),
                             ),
                     )
                 },
@@ -628,8 +652,14 @@ impl TinyShell {
                         | gpui::WindowBounds::Windowed(b) => b,
                     };
                     let is_window_active = window.is_window_active();
+                    let now = std::time::Instant::now();
 
                     view.update(cx, |this, cx| {
+                        let resumed_after_idle =
+                            crate::app::config_sync::should_reconcile_after_idle(
+                                this.last_prepaint_at,
+                                now,
+                            );
                         if this.last_registered_window_bounds != Some(screen_bounds) {
                             this.last_registered_window_bounds = Some(screen_bounds);
                             crate::app::update_window_bounds(handle, screen_bounds);
@@ -637,8 +667,15 @@ impl TinyShell {
                         if is_window_active && !this.was_window_active {
                             crate::app::mark_window_active(handle);
                             this.reconcile_on_window_activation(cx);
+                        } else if is_window_active && resumed_after_idle {
+                            // A sleeping device may wake while its native window
+                            // remains active, so no activation edge is emitted.
+                            // Reconcile once after the idle gap to catch remote
+                            // changes and let the normal ETag/merge path decide.
+                            this.request_automatic_sync(cx);
                         }
                         this.was_window_active = is_window_active;
+                        this.last_prepaint_at = Some(now);
 
                         this.open_pending_dialog(window, cx);
                         this.sync_tool_panel_target(cx);
@@ -700,6 +737,11 @@ impl TinyShell {
 impl Render for TinyShell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let workspace = self.render_workspace_shell(window, cx);
+        for image in self.remote_desktop_surfaces.take_retired_images() {
+            if let Err(error) = window.drop_image(image) {
+                tracing::warn!("failed to evict retired RDP texture: {error:#}");
+            }
+        }
         self.render_root_shell(workspace, window, cx)
     }
 }
@@ -713,7 +755,8 @@ mod tool_panel;
 
 #[cfg(test)]
 mod tests {
-    use super::{WorkspaceShellLayout, workspace_shell_layout};
+    use super::{WorkspaceShellLayout, workspace_body_metrics, workspace_shell_layout};
+    use crate::app::settings::MonitoringPosition;
 
     #[test]
     fn workspace_shell_layout_follows_sidebar_visibility_and_collapse_state() {
@@ -733,5 +776,21 @@ mod tests {
             workspace_shell_layout(true, false),
             WorkspaceShellLayout::Resizable
         );
+    }
+
+    #[test]
+    fn workspace_body_metrics_keep_sidebar_monitoring_compact() {
+        let sidebar = workspace_body_metrics(MonitoringPosition::Sidebar, false);
+        assert_eq!(sidebar.minimized_height, 1.0);
+        assert_eq!(sidebar.min_panel_height, 180.0);
+        assert_eq!(sidebar.default_panel_height, 248.0);
+
+        let bottom = workspace_body_metrics(MonitoringPosition::Bottom, false);
+        assert_eq!(bottom.minimized_height, 81.0);
+        assert_eq!(bottom.min_panel_height, 260.0);
+        assert_eq!(bottom.default_panel_height, 328.0);
+
+        let clean = workspace_body_metrics(MonitoringPosition::Sidebar, true);
+        assert_eq!(clean.minimized_height, 1.0);
     }
 }

@@ -320,11 +320,13 @@ impl TinyShell {
     }
 
     pub(crate) fn open_rdp_session(&mut self, mut session: Session, cx: &mut Context<Self>) {
-        self.set_active_system_info_tab(None);
-        self.home_page_open = false;
-        let ordinal = self.allocate_tab_group_ordinal();
+        #[cfg(not(target_os = "windows"))]
+        {
+            self.set_active_system_info_tab(None);
+            self.home_page_open = false;
+        }
         tracing::info!(
-            "[session] opening RDP tab for session '{}' ({}@{})",
+            "[session] opening RDP session '{}' ({}@{})",
             session.name,
             session.user,
             session.host
@@ -344,37 +346,62 @@ impl TinyShell {
             );
         }
 
-        let id = Uuid::new_v4().to_string();
-        let events = self.backend_events_sender(cx);
-        self.register_backend_route(id.clone(), cx);
-        let (backend, mailbox) = remote_desktop::spawn_remote_desktop_terminal(
-            self.runtime.handle(),
-            remote_desktop::RemoteDesktopRequest::new(
-                id.clone(),
-                session.clone(),
-                remote_desktop::DEFAULT_REMOTE_DESKTOP_WIDTH,
-                remote_desktop::DEFAULT_REMOTE_DESKTOP_HEIGHT,
-                1,
-            ),
-            events.clone(),
-        );
-        let tab = TerminalTab::new_rdp(id.clone(), &session, backend, events.clone(), mailbox);
-        let group = TabGroup {
-            id: Uuid::new_v4().to_string(),
-            drag_id: crate::app::next_tab_drag_id(),
-            ordinal,
-            title: session.name.clone(),
-            pane_root: PaneLayout::Single(id.clone()),
-            sftp: None,
-        };
-        self.install_terminal_tab(tab, group);
-        if let Some(tab) = self.terminal_tab_mut(&id) {
-            tab.feed_status_line(&rust_i18n::t!("starting_connection"));
+        #[cfg(target_os = "windows")]
+        {
+            match crate::backend::windows_rdp::launch(&session) {
+                Ok(()) => self.status = t!("rdp_system_started").into(),
+                Err(error) => {
+                    tracing::error!("failed to launch Windows Remote Desktop: {error:#}");
+                    self.status = t!("rdp_system_start_failed").into();
+                }
+            }
+            cx.notify();
         }
-        self.tabs_scroll_handle
-            .scroll_to_item(self.terminal_tab_count() - 1);
-        self.status = t!("rdp_tab_opened").into();
-        cx.notify();
+
+        #[cfg(not(target_os = "windows"))]
+        let ordinal = self.allocate_tab_group_ordinal();
+
+        #[cfg(not(target_os = "windows"))]
+        {
+            tracing::info!(
+                "[session] opening FreeRDP tab for session '{}' ({}@{})",
+                session.name,
+                session.user,
+                session.host
+            );
+
+            let id = Uuid::new_v4().to_string();
+            let events = self.backend_events_sender(cx);
+            self.register_backend_route(id.clone(), cx);
+            let (backend, mailbox) = remote_desktop::spawn_remote_desktop_terminal(
+                self.runtime.handle(),
+                remote_desktop::RemoteDesktopRequest::new(
+                    id.clone(),
+                    session.clone(),
+                    remote_desktop::DEFAULT_REMOTE_DESKTOP_WIDTH,
+                    remote_desktop::DEFAULT_REMOTE_DESKTOP_HEIGHT,
+                    1,
+                ),
+                events.clone(),
+            );
+            let tab = TerminalTab::new_rdp(id.clone(), &session, backend, events.clone(), mailbox);
+            let group = TabGroup {
+                id: Uuid::new_v4().to_string(),
+                drag_id: crate::app::next_tab_drag_id(),
+                ordinal,
+                title: session.name.clone(),
+                pane_root: PaneLayout::Single(id.clone()),
+                sftp: None,
+            };
+            self.install_terminal_tab(tab, group);
+            if let Some(tab) = self.terminal_tab_mut(&id) {
+                tab.feed_status_line(&rust_i18n::t!("starting_connection"));
+            }
+            self.tabs_scroll_handle
+                .scroll_to_item(self.terminal_tab_count() - 1);
+            self.status = t!("rdp_tab_opened").into();
+            cx.notify();
+        }
     }
 
     /// Retry a single disconnected tab by its ID.
@@ -385,6 +412,28 @@ impl TinyShell {
     /// The existing `TerminalTab` (including its `term` scrollback history)
     /// is preserved — only the backend is swapped via `set_backend()`.
     pub(crate) fn retry_disconnected_tab(&mut self, tab_id: &str, cx: &mut Context<Self>) {
+        self.rdp_reconnect_attempts.remove(tab_id);
+        self.retry_disconnected_tab_impl(tab_id, cx);
+    }
+
+    pub(crate) fn retry_disconnected_tab_automatically(
+        &mut self,
+        tab_id: &str,
+        expected_generation: u64,
+        cx: &mut Context<Self>,
+    ) {
+        let should_retry = self.terminal_tab(tab_id).is_some_and(|tab| {
+            tab.kind == crate::terminal::TabKind::Rdp
+                && tab.backend_generation == expected_generation
+                && !tab.connected
+                && tab.disconnected_reason.is_some()
+        });
+        if should_retry {
+            self.retry_disconnected_tab_impl(tab_id, cx);
+        }
+    }
+
+    fn retry_disconnected_tab_impl(&mut self, tab_id: &str, cx: &mut Context<Self>) {
         let Some(ix) = self
             .window_state_mut()
             .workspace_state_mut()
@@ -402,6 +451,7 @@ impl TinyShell {
             return;
         }
         self.terminal_completions.remove(tab_id);
+        self.remote_desktop_surfaces.remove(tab_id);
 
         let tab_kind = self.window_state_mut().workspace_state_mut().tabs_mut()[ix].kind;
         let is_ssh = tab_kind == crate::terminal::TabKind::Ssh;
@@ -439,10 +489,8 @@ impl TinyShell {
                 let tab = &mut self.window_state_mut().workspace_state_mut().tabs_mut()[ix];
                 tab.set_backend(backend);
                 tab.remote_desktop_mailbox = Some(mailbox);
-                tab.remote_desktop_render_image = None;
                 tab.connected = false;
-                tab.status =
-                    t!("starting_connection").to_string();
+                tab.status = t!("starting_connection").to_string();
                 tab.disconnected_reason = None;
                 tab.backend_generation = new_generation;
                 tab.feed_status_line(&rust_i18n::t!("starting_connection"));

@@ -10,7 +10,9 @@ use directories::BaseDirs;
 use uuid::Uuid;
 
 use crate::session::{
-    config_file::{default_terminal_font_size, default_ui_font_size},
+    config_file::{
+        default_sync_interval_minutes, default_terminal_font_size, default_ui_font_size,
+    },
     crypto::{decrypt_config, encrypt_config},
 };
 
@@ -210,6 +212,7 @@ impl ConfigStore {
             ConfigFile::default()
         };
 
+        cache.migrate_sync_interval();
         if cache.sync_device_id.is_empty() {
             cache.sync_device_id = Uuid::new_v4().to_string();
         }
@@ -612,12 +615,22 @@ impl ConfigStore {
         self.cache.sync_enabled = enabled;
     }
 
-    pub fn sync_interval_hours(&self) -> u32 {
-        self.cache.sync_interval_hours.clamp(1, 8_760)
+    pub fn sync_interval_minutes(&self) -> u32 {
+        self.cache
+            .sync_interval_minutes
+            .or_else(|| {
+                self.cache
+                    .sync_interval_hours
+                    .map(|hours| hours.saturating_mul(60))
+            })
+            .unwrap_or_else(default_sync_interval_minutes)
+            .clamp(1, 525_600)
     }
 
-    pub fn set_sync_interval_hours(&mut self, hours: u32) {
-        self.cache.sync_interval_hours = hours.clamp(1, 8_760);
+    pub fn set_sync_interval_minutes(&mut self, minutes: u32) {
+        let minutes = minutes.clamp(1, 525_600);
+        self.cache.sync_interval_minutes = Some(minutes);
+        self.cache.sync_interval_hours = Some(minutes.div_ceil(60));
     }
 
     pub fn sync_last_synced_at(&self) -> i64 {
@@ -633,7 +646,7 @@ impl ConfigStore {
             0
         } else {
             self.sync_last_synced_at()
-                .saturating_add(i64::from(self.sync_interval_hours()).saturating_mul(3_600))
+                .saturating_add(i64::from(self.sync_interval_minutes()).saturating_mul(60))
         }
     }
 
@@ -812,6 +825,10 @@ impl ConfigStore {
         self.cache.body_panels.as_ref()
     }
 
+    pub fn set_body_panels(&mut self, body_panels: Option<Vec<f32>>) {
+        self.cache.body_panels = body_panels;
+    }
+
     pub fn transfers(&self) -> Vec<crate::terminal::Transfer> {
         self.cache.transfers.clone()
     }
@@ -872,7 +889,7 @@ impl ConfigStore {
 
     pub fn terminal_font_family(&self) -> &str {
         if self.cache.terminal_font_family.is_empty() {
-            "Maple Mono NF CN"
+            crate::session::config_file::SYSTEM_MONO_FONT
         } else {
             &self.cache.terminal_font_family
         }
@@ -1165,7 +1182,6 @@ impl ConfigStore {
         self.cache.cursor_style = source.cache.cursor_style;
         self.cache.show_hidden_files = source.cache.show_hidden_files;
         self.cache.lock_layout = source.cache.lock_layout;
-        self.cache.monitoring_position = source.cache.monitoring_position.clone();
         self.cache.sidebar_collapsed = source.cache.sidebar_collapsed;
         self.cache.sftp_panel_minimized = source.cache.sftp_panel_minimized;
         self.cache.sftp_panel_view = source.cache.sftp_panel_view.clone();
@@ -1183,6 +1199,7 @@ impl ConfigStore {
         self.cache.global_proxy_user = source.cache.global_proxy_user.clone();
         self.cache.global_proxy_password = source.cache.global_proxy_password.clone();
         self.cache.sync_enabled = source.cache.sync_enabled;
+        self.cache.sync_interval_minutes = source.cache.sync_interval_minutes;
         self.cache.sync_interval_hours = source.cache.sync_interval_hours;
         self.cache.sync_last_synced_at = source.cache.sync_last_synced_at;
         self.cache.sync_webdav_password_sealed = source.cache.sync_webdav_password_sealed.clone();
@@ -1406,10 +1423,10 @@ mod tests {
         let mut store = ConfigStore::in_memory();
         assert_eq!(store.sync_next_at(), 0);
 
-        store.set_sync_interval_hours(6);
+        store.set_sync_interval_minutes(6);
         store.set_sync_last_synced_at(1_700_000_000);
 
-        assert_eq!(store.sync_next_at(), 1_700_021_600);
+        assert_eq!(store.sync_next_at(), 1_700_000_360);
     }
 
     #[test]

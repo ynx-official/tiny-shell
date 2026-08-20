@@ -3,8 +3,131 @@ use std::{
     collections::HashMap,
 };
 
-use crate::app::{PaneLayout, SystemInfoTab, TabGroup};
 use crate::terminal::TerminalTab;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PaneDirection {
+    Left,
+    Right,
+    Up,
+    Down,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) enum PaneLayout {
+    Empty,
+    Single(String),
+    Horizontal(Vec<PaneLayout>, f32), // children, split_ratio (0.0-1.0)
+    Vertical(Vec<PaneLayout>, f32),   // children, split_ratio (0.0-1.0)
+}
+
+#[derive(Clone)]
+pub(crate) struct TabGroup {
+    pub(crate) id: String,
+    /// Stable identity for drag sessions; it must not change on every render.
+    pub(crate) drag_id: u64,
+    /// Monotonic per-window label used to distinguish similarly named hosts.
+    pub(crate) ordinal: u64,
+    pub(crate) title: String,
+    pub(crate) pane_root: PaneLayout,
+    pub(crate) sftp: Option<crate::terminal::SftpUiState>,
+}
+
+#[derive(Clone)]
+pub(crate) struct SystemInfoTab {
+    pub(crate) id: String,
+    pub(crate) source_tab_id: String,
+    pub(crate) title: String,
+}
+
+impl PaneLayout {
+    pub fn tab_ids(&self) -> Vec<&str> {
+        match self {
+            PaneLayout::Empty => Vec::new(),
+            PaneLayout::Single(id) => vec![id.as_str()],
+            PaneLayout::Horizontal(children, _) | PaneLayout::Vertical(children, _) => {
+                children.iter().flat_map(|c| c.tab_ids()).collect()
+            }
+        }
+    }
+
+    pub fn contains(&self, tab_id: &str) -> bool {
+        match self {
+            PaneLayout::Empty => false,
+            PaneLayout::Single(id) => id == tab_id,
+            PaneLayout::Horizontal(children, _) | PaneLayout::Vertical(children, _) => {
+                children.iter().any(|c| c.contains(tab_id))
+            }
+        }
+    }
+
+    pub fn focused_tab_id(&self, path: &[usize]) -> Option<&str> {
+        match self {
+            PaneLayout::Empty => None,
+            PaneLayout::Single(id) if path.is_empty() => Some(id.as_str()),
+            PaneLayout::Horizontal(children, _) | PaneLayout::Vertical(children, _) => {
+                let (&first, rest) = path.split_first()?;
+                children.get(first).and_then(|c| c.focused_tab_id(rest))
+            }
+            _ => None,
+        }
+    }
+
+    pub fn replace_at(&mut self, path: &[usize], replacement: PaneLayout) {
+        match (self, path) {
+            (this @ PaneLayout::Empty, []) | (this @ PaneLayout::Single(_), []) => {
+                *this = replacement
+            }
+            (
+                PaneLayout::Horizontal(children, _) | PaneLayout::Vertical(children, _),
+                [first, rest @ ..],
+            ) => {
+                if let Some(child) = children.get_mut(*first) {
+                    child.replace_at(rest, replacement);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    pub fn remove_tab(&mut self, tab_id: &str) -> bool {
+        match self {
+            PaneLayout::Empty => false,
+            PaneLayout::Single(id) if id == tab_id => {
+                *self = PaneLayout::Empty;
+                true
+            }
+            PaneLayout::Single(_) => false,
+            PaneLayout::Horizontal(children, _) | PaneLayout::Vertical(children, _) => {
+                let mut changed = false;
+                for child in children.iter_mut() {
+                    changed |= child.remove_tab(tab_id);
+                }
+                children.retain(|child| !matches!(child, PaneLayout::Empty));
+                match children.len() {
+                    0 => *self = PaneLayout::Empty,
+                    1 => {
+                        if let Some(replacement) = children.pop() {
+                            *self = replacement;
+                        }
+                    }
+                    _ => {}
+                }
+                changed
+            }
+        }
+    }
+
+    pub fn total_panes(&self) -> usize {
+        match self {
+            PaneLayout::Empty => 0,
+            PaneLayout::Single(_) => 1,
+            PaneLayout::Horizontal(children, _) | PaneLayout::Vertical(children, _) => {
+                children.iter().map(|c| c.total_panes()).sum()
+            }
+        }
+    }
+}
 
 #[derive(Default)]
 struct WorkspaceIndexes {
@@ -551,6 +674,7 @@ mod tests {
         assert!(layout.remove_tab("b"));
         assert_eq!(layout.tab_ids(), vec!["a", "c"]);
         assert!(matches!(layout, PaneLayout::Horizontal(_, _)));
+        assert_eq!(layout.total_panes(), 2);
     }
 
     #[test]

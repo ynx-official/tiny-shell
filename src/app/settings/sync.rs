@@ -38,6 +38,7 @@ pub(crate) fn page(view: &Entity<TinyShell>, inputs: SyncSettingsInputs) -> Sett
                             automatic_enabled,
                             last_synced,
                             next_sync,
+                            pending_local_changes,
                             include_secrets,
                             conflicts,
                         ) = {
@@ -56,6 +57,7 @@ pub(crate) fn page(view: &Entity<TinyShell>, inputs: SyncSettingsInputs) -> Sett
                                     state.config.sync_next_at(),
                                 )
                                 .unwrap_or_else(|| t!("sync_time_pending").to_string()),
+                                state.sync_runtime.has_unsynced_local_changes(),
                                 state.config.sync_include_secrets(),
                                 state
                                     .sync_runtime
@@ -106,6 +108,14 @@ pub(crate) fn page(view: &Entity<TinyShell>, inputs: SyncSettingsInputs) -> Sett
                                         t!("sync_webdav_password").to_string(),
                                         inputs.webdav_password.clone(),
                                     ))
+                                    .when(pending_local_changes, |content| {
+                                        content.child(
+                                            div()
+                                                .text_xs()
+                                                .text_color(cx.theme().warning)
+                                                .child(t!("sync_pending_local_changes").to_string()),
+                                        )
+                                    })
                                     .child(
                                         Button::new("sync-verify-connection")
                                             .small()
@@ -351,23 +361,27 @@ fn automatic_sync_controls(
         .child(
             v_flex()
                 .gap_1()
-                .child(div().text_sm().child(t!("sync_interval_hours").to_string()))
+                .child(
+                    div()
+                        .text_sm()
+                        .child(t!("sync_interval_minutes").to_string()),
+                )
                 .child(
                     h_flex()
                         .items_center()
                         .gap_2()
                         .child(
-                            Input::new(&inputs.interval_hours)
+                            Input::new(&inputs.interval_minutes)
                                 .small()
                                 .w(px(96.))
                                 .disabled(!enabled),
                         )
-                        .child(div().text_sm().child(t!("update_hours_unit").to_string())),
+                        .child(div().text_sm().child(t!("sync_minutes_unit").to_string())),
                 )
                 .child(
                     div()
                         .text_xs()
-                        .child(t!("sync_interval_hours_desc").to_string()),
+                        .child(t!("sync_interval_minutes_desc").to_string()),
                 ),
         )
 }

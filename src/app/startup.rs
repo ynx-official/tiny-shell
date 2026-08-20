@@ -5,6 +5,7 @@ use std::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
+    time::Instant,
 };
 
 use gpui::{App, AppContext as _, Bounds, Entity, WindowOptions, point, px, size};
@@ -13,7 +14,12 @@ use rust_i18n::t;
 
 use crate::TinyShell;
 use crate::{
-    app::session_actions::GroupTransfer,
+    app::{
+        startup_window::{
+            StartupExpansion, StartupWindow, move_startup_window, startup_window_bounds,
+        },
+        tab_transfer::{GroupTransfer, validate_transfer_batch},
+    },
     session::{
         config::{ConfigStore, Session},
         store::{SessionStore, WindowOwnerId},
@@ -392,10 +398,153 @@ pub(crate) fn open_main_window(cx: &mut App) {
         })
     });
 
-    let window_options = build_window_options(&config, cx, None);
+    let mut window_options = build_window_options(&config, cx, None);
+    let target_bounds = window_options.window_bounds;
+    window_options.window_bounds = startup_window_bounds(target_bounds, cx);
     let session_store = cx.new(|_| SessionStore::new());
     let config_repository = crate::app::config_persistence::ConfigRepository::new();
-    open_window_with_options(window_options, None, session_store, config_repository, cx);
+    open_startup_window(
+        window_options,
+        target_bounds,
+        session_store,
+        config_repository,
+        cx,
+    );
+}
+
+fn open_startup_window(
+    window_options: WindowOptions,
+    target_bounds: Option<gpui::WindowBounds>,
+    session_store: Entity<SessionStore>,
+    config_repository: Arc<crate::app::config_persistence::ConfigRepository>,
+    cx: &mut App,
+) {
+    let result = cx.open_window(window_options, move |window, cx| {
+        window.set_window_title(&t!("app_name"));
+        let startup = cx.new(|_| StartupWindow::new());
+
+        let startup_for_initialization = startup.clone();
+        let session_store_for_initialization = session_store.clone();
+        let config_repository_for_initialization = config_repository.clone();
+        // Let one platform frame present the lightweight loading surface before
+        // the heavier workspace construction begins on the following frame.
+        window.on_next_frame(move |window, _cx| {
+            window.on_next_frame(move |window, cx| {
+                initialize_startup_workspace(
+                    startup_for_initialization,
+                    target_bounds,
+                    session_store_for_initialization,
+                    config_repository_for_initialization,
+                    window,
+                    cx,
+                );
+            });
+            window.refresh();
+        });
+        window.refresh();
+
+        let startup_for_close = startup.clone();
+        window.on_window_should_close(cx, move |window, cx| {
+            let Some(view) = startup_for_close.read(cx).workspace() else {
+                return true;
+            };
+            view.update(cx, |this, cx| {
+                if this.close_finalized {
+                    return true;
+                }
+                this.request_main_window_close(window, cx);
+                false
+            })
+        });
+
+        cx.new(|cx| Root::new(startup, window, cx))
+    });
+
+    if let Err(error) = result {
+        tracing::error!(?error, "failed to open startup window");
+    }
+}
+
+fn initialize_startup_workspace(
+    startup: Entity<StartupWindow>,
+    target_bounds: Option<gpui::WindowBounds>,
+    session_store: Entity<SessionStore>,
+    config_repository: Arc<crate::app::config_persistence::ConfigRepository>,
+    window: &mut gpui::Window,
+    cx: &mut App,
+) {
+    let lease = match config_repository.register_window() {
+        Ok(lease) => lease,
+        Err(error) => {
+            tracing::error!(%error, "failed to register startup config window");
+            window.remove_window();
+            return;
+        }
+    };
+    let view =
+        cx.new(|cx| TinyShell::new(window, session_store, config_repository.clone(), lease, cx));
+    crate::app::register_window(window.window_handle(), view.clone());
+    startup.update(cx, |startup, _| {
+        startup.install_workspace(view.clone());
+    });
+    tracing::info!("[ui] application workspace initialized");
+
+    let Some(target_bounds) = target_bounds else {
+        reveal_startup_workspace(startup, view, window, cx);
+        return;
+    };
+    let expansion =
+        StartupExpansion::new(window.bounds(), target_bounds.get_bounds(), Instant::now());
+    advance_startup_expansion(startup, view, target_bounds, expansion, window, cx);
+}
+
+fn advance_startup_expansion(
+    startup: Entity<StartupWindow>,
+    view: Entity<TinyShell>,
+    target_bounds: gpui::WindowBounds,
+    expansion: StartupExpansion,
+    window: &mut gpui::Window,
+    cx: &mut App,
+) {
+    let frame = expansion.frame_at(Instant::now());
+    window.resize(frame.bounds.size);
+    move_startup_window(window, frame.bounds.origin);
+    if frame.complete {
+        match target_bounds {
+            gpui::WindowBounds::Windowed(_) => {}
+            gpui::WindowBounds::Maximized(_) => window.zoom_window(),
+            gpui::WindowBounds::Fullscreen(_) => window.toggle_fullscreen(),
+        }
+        reveal_startup_workspace(startup, view, window, cx);
+        return;
+    }
+
+    window.on_next_frame(move |window, cx| {
+        advance_startup_expansion(startup, view, target_bounds, expansion, window, cx);
+    });
+    window.refresh();
+}
+
+fn reveal_startup_workspace(
+    startup: Entity<StartupWindow>,
+    view: Entity<TinyShell>,
+    window: &mut gpui::Window,
+    cx: &mut App,
+) {
+    startup.update(cx, |startup, cx| {
+        startup.reveal();
+        cx.notify();
+    });
+    let focus_handle = view.read(cx).focus_handle.clone();
+    window.focus(&focus_handle, cx);
+
+    if !STARTUP_UPDATE_CHECK_STARTED.swap(true, Ordering::AcqRel) {
+        let window_handle = window.window_handle();
+        view.update(cx, |this, cx| {
+            this.schedule_automatic_update_checks(window_handle, true, cx);
+            this.schedule_automatic_sync(true, cx);
+        });
+    }
 }
 
 /// Open a new window, optionally auto-connecting to a session.
@@ -458,7 +607,10 @@ fn build_window_options(
     cx: &App,
     offset: Option<(gpui::Pixels, gpui::Pixels)>,
 ) -> WindowOptions {
-    let mut window_options = WindowOptions::default();
+    let mut window_options = WindowOptions {
+        app_id: Some(crate::app::platform::APP_ID.to_string()),
+        ..WindowOptions::default()
+    };
 
     if config.title_bar_style() == crate::session::config::TitleBarStyle::Integrated {
         window_options.titlebar = Some(gpui::TitlebarOptions {
@@ -564,6 +716,9 @@ pub(crate) fn open_new_window_with_groups(
     if transfers.is_empty() {
         return Ok(());
     }
+    if let Err(message) = validate_transfer_batch(&transfers) {
+        return Err((message.to_string(), transfers));
+    }
     let config = ConfigStore::load().unwrap_or_else(|_| ConfigStore::in_memory());
     let window_options = build_window_options(&config, cx, Some((px(40.), px(40.))));
     let (target_window, target) = match open_window_with_initializer(
@@ -577,19 +732,24 @@ pub(crate) fn open_new_window_with_groups(
         Err(message) => return Err((message, transfers)),
     };
 
-    let mut remaining = transfers.into_iter();
-    while let Some(transfer) = remaining.next() {
-        if let Err((message, transfer)) = target.update(cx, |this, cx| {
-            this.receive_group_transfer(transfer, source_owner_id, cx)
-        }) {
-            let mut failed = vec![*transfer];
-            failed.extend(remaining);
-            return Err((message, failed));
+    match target.update(cx, |this, cx| {
+        this.receive_group_transfers(
+            transfers,
+            source_owner_id,
+            crate::app::tab_drag::DockZone::Center,
+            cx,
+        )
+    }) {
+        Ok(()) => {
+            let focus_handle = target.read(cx).focus_handle.clone();
+            crate::app::activate_window_with_retry(target_window, focus_handle, cx);
+            Ok(())
+        }
+        Err((message, transfers)) => {
+            close_failed_transfer_window(target_window, target, cx);
+            Err((message, transfers))
         }
     }
-    let focus_handle = target.read(cx).focus_handle.clone();
-    crate::app::activate_window_with_retry(target_window, focus_handle, cx);
-    Ok(())
 }
 
 pub(crate) fn open_new_window_with_group(
@@ -625,18 +785,24 @@ pub(crate) fn open_new_window_with_group(
             Ok(())
         }
         Err((message, transfer)) => {
-            if let Err(error) = target_window.update(cx, |_, window, cx| {
-                target.update(cx, |this, cx| {
-                    this.finalize_main_window_close(window, cx);
-                });
-                window.remove_window();
-            }) {
-                tracing::warn!(
-                    "[ui] failed to close empty window after group transfer failure: {error:?}"
-                );
-            }
+            close_failed_transfer_window(target_window, target, cx);
             Err((message, transfer))
         }
+    }
+}
+
+fn close_failed_transfer_window(
+    target_window: gpui::AnyWindowHandle,
+    target: Entity<TinyShell>,
+    cx: &mut App,
+) {
+    if let Err(error) = target_window.update(cx, |_, window, cx| {
+        target.update(cx, |this, cx| {
+            this.finalize_main_window_close(window, cx);
+        });
+        window.remove_window();
+    }) {
+        tracing::warn!("[ui] failed to close empty window after group transfer failure: {error:?}");
     }
 }
 
@@ -670,8 +836,10 @@ fn open_window_with_initializer(
             let window_handle = window.window_handle();
             view.update(cx, |this, cx| {
                 this.schedule_automatic_update_checks(window_handle, true, cx);
-                this.schedule_automatic_sync(false, cx);
-                this.request_automatic_sync(cx);
+                // The first workspace window must reconcile immediately. The
+                // scheduler itself owns this request so startup cannot race a
+                // second direct request and enqueue a duplicate sync.
+                this.schedule_automatic_sync(true, cx);
             });
         }
 

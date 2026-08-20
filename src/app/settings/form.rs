@@ -25,7 +25,7 @@ pub(crate) struct SyncSettingsInputs {
     pub(crate) s3_secret_key: Entity<InputState>,
     pub(crate) s3_session_token: Entity<InputState>,
     pub(crate) privacy_password: Entity<InputState>,
-    pub(crate) interval_hours: Entity<InputState>,
+    pub(crate) interval_minutes: Entity<InputState>,
 }
 
 #[derive(Clone)]
@@ -144,10 +144,10 @@ impl SettingsInputs {
                 }
                 state
             }),
-            interval_hours: cx.new(|cx| {
+            interval_minutes: cx.new(|cx| {
                 InputState::new(window, cx)
                     .placeholder(t!("sync_interval_placeholder").to_string())
-                    .default_value(config.sync_interval_hours().to_string())
+                    .default_value(config.sync_interval_minutes().to_string())
             }),
         };
         let update = UpdateSettingsInputs {
@@ -181,7 +181,7 @@ impl SettingsInputs {
             self.sync.s3_secret_key.clone(),
             self.sync.s3_session_token.clone(),
             self.sync.privacy_password.clone(),
-            self.sync.interval_hours.clone(),
+            self.sync.interval_minutes.clone(),
             self.update.interval_hours.clone(),
         ]
         .into_iter()

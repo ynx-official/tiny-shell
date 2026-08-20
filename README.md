@@ -58,7 +58,8 @@ TinyShell 面向需要同时使用本地 Shell 和远程服务器的开发者、
 - **多标签页与分屏**：在多个标签页中组织会话，并在单个标签页内拆分多个 Pane，构建类似 tmux 的工作区。
 - **本地与远程统一体验**：本地 Shell 和 SSH 会话使用一致的终端交互与视觉风格。
 - **终端交互**：支持选区、复制粘贴、右键操作和终端鼠标语义。
-- **内置字体**：随应用提供 Maple Mono NF CN，兼顾 CJK 字符和 Nerd Font 图标显示。
+- **跨平台字体**：界面默认跟随系统字体；终端在 Windows 优先使用 Consolas、在 macOS 优先使用 Menlo，并自动使用已安装字体补充中文与 Emoji 字形。
+- **Nerd Font 支持**：需要 Powerline/Nerd Font 图标时，请安装并在终端字体设置中选择对应的 Nerd Font。
 - **实时外观调整**：可修改终端字体、字号、行间距和主题，无需重启应用。
 
 ### SSH 与连接管理
@@ -100,6 +101,7 @@ SSH 连接建立后，可以直接使用内置 SFTP 文件管理器处理远程�
 ### 配置同步与迁移
 
 - **WebDAV 与 S3**：通过常见的远程存储后端同步连接和应用配置。
+- **WebDAV 自动对账**：启动、保存、窗口激活、休眠恢复和分钟级周期检查时自动拉取、合并并按需推送。
 - **同步前检查**：上传前验证配置和凭据，减少无效配置导致的失败。
 - **隐私密码验证**：同步敏感字段前检查隐私密码，及时识别密码缺失或不一致。
 - **冲突合并**：同步模型包含更新时间和删除状态，用于跨设备合并连接目录。
@@ -145,7 +147,7 @@ TinyShell 可以从 GitHub Releases 检查并安装新版本，且会校验下�
 | --- | --- | --- |
 | Windows | x86_64 | 安装版 `.exe`、便携版 `.zip` |
 | macOS | Apple Silicon / Intel | 安装版 `.pkg`、便携版 `.zip` |
-| Linux | x86_64 | 通用 `.tar.gz` |
+| Linux | x86_64 | 单文件 `.AppImage`、通用 `.tar.gz` |
 
 ### macOS
 
@@ -169,7 +171,14 @@ sudo xattr -cr /Applications/TinyShell.app
 
 ### Linux
 
-下载 `tiny-shell-*-linux-x86_64.tar.gz`，然后执行：
+推荐下载 `tiny-shell-*-linux-x86_64.AppImage`，赋予执行权限后直接启动：
+
+```bash
+chmod +x tiny-shell-*-linux-x86_64.AppImage
+./tiny-shell-*-linux-x86_64.AppImage
+```
+
+AppImage 版本会被应用内更新器识别；更新时会校验 SHA-256，原子替换外层 AppImage 文件并从该文件重新启动。若系统没有 FUSE 2 兼容层（Ubuntu 24.04 对应 `libfuse2t64`），可安装发行版对应的软件包，或改用 `.tar.gz`：
 
 ```bash
 tar -xzf tiny-shell-*-linux-x86_64.tar.gz
@@ -177,9 +186,9 @@ cd tiny-shell-*-linux-x86_64
 ./tiny-shell
 ```
 
-如果系统缺少 GPUI 所需的图形或字体运行库，请通过发行版包管理器安装对应的 X11、Wayland、Fontconfig、FreeType、OpenGL 和 GTK 运行库。
+AppImage 会携带 TinyShell、FreeRDP/WinPR 及其非系统动态依赖，但不会捆绑 glibc、显卡驱动或 Mesa/Vulkan 等主机图形栈。Linux 发布仍以 Ubuntu 24.04 的 glibc 为基线；系统缺少图形或字体运行库时，请通过发行版包管理器安装对应的 X11、Wayland、Fontconfig、FreeType 和 OpenGL 运行库。
 
-> 仓库保留了 Debian 包元数据，开发者可以使用 `cargo-deb` 从源码生成 `.deb`；当前 GitHub Release 流水线默认发布的是通用 `.tar.gz`。
+> 仓库保留了 Debian 包元数据，开发者可以使用 `cargo-deb` 从源码生成 `.deb`；GitHub Release 同时保留 `.tar.gz`，便于无法运行 AppImage 的环境使用。
 
 ---
 
@@ -203,9 +212,9 @@ TinyShell 会处理 SSH 密码、私钥和代理凭据等敏感信息。使用�
 - [Rust](https://www.rust-lang.org/tools/install) `1.85.0` 或更高版本。
 - 支持 Rust 2024 Edition 的 Cargo。
 - Git，用于获取仓库及 Git 依赖。
-- Windows：MSVC Build Tools。
-- macOS：Xcode Command Line Tools。
-- Linux：C/C++ 构建工具及 GPUI 所需的 X11、Wayland、字体和图形开发库。
+- Windows：MSVC Build Tools；Windows 远程桌面由系统自带的 `mstsc.exe` 提供，无需安装 FreeRDP。
+- macOS：Xcode Command Line Tools；如需从源码使用 Windows 远程桌面，还需安装可由 `pkg-config` 发现的 FreeRDP 3 开发库。
+- Linux：C/C++ 构建工具及 GPUI 所需的 X11、Wayland、字体和图形开发库；如需从源码使用 Windows 远程桌面，还需 FreeRDP 3 开发库。
 
 ### Linux 构建依赖
 
@@ -222,6 +231,14 @@ sudo apt-get install -y --no-install-recommends \
   libudev-dev
 ```
 
+在提供该软件包的 Debian/Ubuntu 版本上，可额外安装 FreeRDP 3 开发库：
+
+```bash
+sudo apt-get install -y freerdp3-dev
+```
+
+Windows 连接会由 TinyShell 生成临时 `.rdp` 配置并调用系统 `mstsc.exe`；请确保系统启用了“远程桌面连接”组件。
+
 ### 获取代码并运行
 
 ```bash
@@ -229,6 +246,19 @@ git clone https://github.com/ynx-official/tiny-shell.git
 cd tiny-shell
 cargo run
 ```
+
+默认特性 `freerdp-auto` 仅用于 macOS/Linux，通过 `pkg-config` 查找 `freerdp-client3`、`freerdp3` 和 `winpr3`。Windows 不编译 FreeRDP，而是在双击 RDP 连接时调用系统 `mstsc.exe`。未发现 macOS/Linux FreeRDP 时仍可构建和运行，但会使用不包含 RDP 后端的回退版本。
+
+需要保证原生后端存在时使用强制模式；依赖缺失会立即构建失败。若明确只需无 RDP 后端的版本，则关闭默认特性：
+
+```bash
+cargo run --features freerdp # macOS/Linux
+cargo run --no-default-features
+```
+
+macOS/Linux 的非标准 FreeRDP 安装目录可以通过 `TINY_SHELL_FREERDP_INCLUDE_DIRS`、`TINY_SHELL_FREERDP_LIB_DIR` 指定，详见 [FreeRDP 对接说明](docs/02-design/remote-desktop-freerdp.md)。
+
+macOS/Linux 的嵌入式 RDP 支持 Cmd/Ctrl、数字键和文本剪贴板；Mac 本地系统剪贴板中的文件也可以粘贴到远程 Windows。RDP 纯净模式会隐藏侧栏与标签栏，并在顶部自动收起工具栏。Windows 本机仍完全使用系统 `mstsc.exe`，不使用这套 FreeRDP 输入和剪贴板路径。
 
 构建优化版本：
 
@@ -238,7 +268,7 @@ cargo build --locked --release
 
 ### 质量检查
 
-项目 CI 会在 Windows、macOS 和 Linux 上执行格式检查、Clippy、测试和 release 构建。提交修改前至少运行：
+项目 CI 会在 Windows、macOS 和 Linux 上执行格式检查、Clippy、测试和 release 构建；Ubuntu 24.04 门禁还会生成、解包并通过 Xvfb 冒烟启动 AppImage。提交修改前至少运行：
 
 ```bash
 cargo fmt --all -- --check
@@ -254,11 +284,23 @@ macOS App Bundle：
 ./scripts/package-macos-app.sh
 ```
 
+若默认构建发现并链接了 FreeRDP，脚本会使用 `dylibbundler` 将其动态库收入 App Bundle；请先运行 `brew install dylibbundler`。
+
 Windows 安装版与便携版（需要 Inno Setup 6）：
 
 ```powershell
 ./scripts/package-windows.ps1
 ```
+
+Windows 安装包不携带 FreeRDP DLL，运行时使用系统 `mstsc.exe`。
+
+Linux AppImage（需要 FreeRDP 3 开发包、`curl`、`desktop-file-utils`、`file` 和 `patchelf`）：
+
+```bash
+bash scripts/package-linux-appimage.sh
+```
+
+脚本固定使用 `linuxdeploy 1-alpha-20251107-1` 并校验下载文件的 SHA-256；也可通过 `--linuxdeploy <path>` 使用已准备好的工具。输出为 `dist/tiny-shell-vX.Y.Z-linux-x86_64.AppImage`。
 
 可选 Debian 包：
 
@@ -281,7 +323,7 @@ src/
 ├── terminal/  终端渲染、输入、选区和终端语义
 └── main.rs    应用入口
 
-assets/        图标、字体、主题和平台资源
+assets/        图标、主题和平台资源
 locales/       中文与英文国际化资源
 scripts/       macOS 与 Windows 打包脚本
 docs/          版本升级记录和专项文档

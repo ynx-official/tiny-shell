@@ -21,6 +21,9 @@ pub(crate) fn page() -> SettingPage {
         crate::app::updater::InstallationKind::MacInstaller => {
             t!("installation_macos_pkg").to_string()
         }
+        crate::app::updater::InstallationKind::LinuxAppImage => {
+            t!("installation_appimage").to_string()
+        }
         crate::app::updater::InstallationKind::LinuxPackage => {
             t!("installation_system_package").to_string()
         }

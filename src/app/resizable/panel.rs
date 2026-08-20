@@ -154,7 +154,6 @@ pub(crate) struct ResizablePanel {
     /// size range limit of this panel.
     size_range: Range<Pixels>,
     children: Vec<AnyElement>,
-    visible: bool,
     style: StyleRefinement,
     locked: bool,
 }
@@ -169,16 +168,9 @@ impl ResizablePanel {
             size_range: (PANEL_MIN_SIZE..Pixels::MAX),
             axis: Axis::Horizontal,
             children: vec![],
-            visible: true,
             style: StyleRefinement::default(),
             locked: false,
         }
-    }
-
-    /// Set the visibility of the panel, default is true.
-    pub fn visible(mut self, visible: bool) -> Self {
-        self.visible = visible;
-        self
     }
 
     /// Set the initial size of the panel.
@@ -210,10 +202,6 @@ impl ParentElement for ResizablePanel {
 
 impl RenderOnce for ResizablePanel {
     fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
-        if !self.visible {
-            return div().id(("resizable-panel", self.panel_ix));
-        }
-
         let Some(state) = self.state else {
             tracing::warn!(
                 panel_ix = self.panel_ix,

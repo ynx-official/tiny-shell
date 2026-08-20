@@ -22,14 +22,37 @@ use std::{
 const PRIVACY_PASSWORD_MIN_LEN: usize = 8;
 const LOCAL_CHANGE_SYNC_DEBOUNCE: Duration = Duration::from_secs(3);
 const WINDOW_ACTIVATION_SYNC_THROTTLE: Duration = Duration::from_secs(30);
+const WINDOW_WAKE_SYNC_THRESHOLD: Duration = Duration::from_secs(120);
 
-pub(crate) fn automatic_sync_delay(interval_hours: u32, last_synced_at: i64, now: i64) -> Duration {
+pub(crate) fn should_reconcile_after_idle(last_prepaint_at: Option<Instant>, now: Instant) -> bool {
+    last_prepaint_at
+        .is_some_and(|last| now.saturating_duration_since(last) >= WINDOW_WAKE_SYNC_THRESHOLD)
+}
+
+pub(crate) fn automatic_sync_delay(
+    interval_minutes: u32,
+    last_synced_at: i64,
+    now: i64,
+) -> Duration {
     if last_synced_at <= 0 {
         return Duration::ZERO;
     }
-    let interval_seconds = i64::from(interval_hours.clamp(1, 8_760)).saturating_mul(3_600);
+    let interval_seconds = i64::from(interval_minutes.clamp(1, 525_600)).saturating_mul(60);
     let elapsed = now.saturating_sub(last_synced_at).max(0);
     Duration::from_secs(interval_seconds.saturating_sub(elapsed).max(0) as u64)
+}
+
+pub(crate) fn automatic_sync_initial_delay(
+    run_immediately: bool,
+    interval_minutes: u32,
+    last_synced_at: i64,
+    now: i64,
+) -> Duration {
+    if run_immediately {
+        Duration::ZERO
+    } else {
+        automatic_sync_delay(interval_minutes, last_synced_at, now)
+    }
 }
 
 pub(crate) fn open_webdav_password(sealed: &str) -> anyhow::Result<String> {
@@ -580,16 +603,13 @@ impl TinyShell {
         let cancellation = self.async_runtime.supervisor.start("automatic-sync");
 
         let interval =
-            Duration::from_secs(u64::from(self.config.sync_interval_hours()).saturating_mul(3_600));
-        let initial_delay = if run_immediately {
-            Duration::ZERO
-        } else {
-            automatic_sync_delay(
-                self.config.sync_interval_hours(),
-                self.config.sync_last_synced_at(),
-                chrono::Utc::now().timestamp(),
-            )
-        };
+            Duration::from_secs(u64::from(self.config.sync_interval_minutes()).saturating_mul(60));
+        let initial_delay = automatic_sync_initial_delay(
+            run_immediately,
+            self.config.sync_interval_minutes(),
+            self.config.sync_last_synced_at(),
+            chrono::Utc::now().timestamp(),
+        );
 
         cx.spawn(async move |this, cx| {
             if cancellation.is_cancelled() {
@@ -1114,19 +1134,59 @@ mod tests {
 
     #[test]
     fn automatic_sync_delay_runs_immediately_without_previous_success() {
-        assert_eq!(automatic_sync_delay(24, 0, 1_700_000_000), Duration::ZERO);
+        assert_eq!(
+            automatic_sync_delay(24 * 60, 0, 1_700_000_000),
+            Duration::ZERO
+        );
     }
 
     #[test]
     fn automatic_sync_delay_uses_remaining_interval() {
         assert_eq!(
-            automatic_sync_delay(6, 1_700_000_000, 1_700_003_600),
-            Duration::from_secs(18_000)
+            automatic_sync_delay(6, 1_700_000_000, 1_700_000_120),
+            Duration::from_secs(240)
         );
         assert_eq!(
-            automatic_sync_delay(6, 1_700_000_000, 1_700_021_600),
+            automatic_sync_delay(6, 1_700_000_000, 1_700_000_360),
             Duration::ZERO
         );
+    }
+
+    #[test]
+    fn automatic_sync_delay_uses_minutes() {
+        assert_eq!(
+            automatic_sync_delay(5, 1_700_000_000, 1_700_000_120),
+            Duration::from_secs(180)
+        );
+    }
+
+    #[test]
+    fn startup_sync_ignores_the_previous_schedule() {
+        assert_eq!(
+            automatic_sync_initial_delay(true, 5, 1_700_000_000, 1_700_000_001),
+            Duration::ZERO
+        );
+        assert_eq!(
+            automatic_sync_initial_delay(false, 5, 1_700_000_000, 1_700_000_120),
+            Duration::from_secs(180)
+        );
+    }
+
+    #[test]
+    fn idle_gap_triggers_reconciliation_after_wake() {
+        let last = Instant::now();
+        assert!(should_reconcile_after_idle(
+            Some(last),
+            last + Duration::from_secs(120)
+        ));
+        assert!(!should_reconcile_after_idle(
+            Some(last),
+            last + Duration::from_secs(119)
+        ));
+        assert!(!should_reconcile_after_idle(
+            None,
+            last + Duration::from_secs(600)
+        ));
     }
 
     #[test]

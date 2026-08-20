@@ -1,4 +1,3 @@
-use anyhow::{Context as _, Result};
 use gpui::{App, Context, SharedString, Window, px};
 use gpui_component::{ActiveTheme as _, Theme, ThemeMode, ThemeRegistry};
 use rust_i18n::t;
@@ -19,7 +18,6 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 
-pub(crate) static USING_SYSTEM_MAPLE: AtomicBool = AtomicBool::new(false);
 static PROCESS_FOLLOW_SYSTEM_THEME: OnceLock<AtomicBool> = OnceLock::new();
 static LAST_SYSTEM_THEME_SYNC: Mutex<Option<Instant>> = Mutex::new(None);
 
@@ -57,28 +55,6 @@ fn set_process_follows_system_theme(follow: bool) {
         .store(follow, Ordering::Relaxed);
 }
 
-pub(crate) fn load_fonts(cx: &mut App) -> Result<()> {
-    let has_system_maple = cx
-        .text_system()
-        .all_font_names()
-        .contains(&"Maple Mono NF CN".to_string());
-    if has_system_maple {
-        USING_SYSTEM_MAPLE.store(true, Ordering::Relaxed);
-    } else {
-        let regular = std::borrow::Cow::Borrowed(
-            include_bytes!("../../assets/fonts/MapleMono-NF-CN-Regular.ttf").as_slice(),
-        );
-        let bold = std::borrow::Cow::Borrowed(
-            include_bytes!("../../assets/fonts/MapleMono-NF-CN-Bold.ttf").as_slice(),
-        );
-        cx.text_system()
-            .add_fonts(vec![regular, bold])
-            .context("load Maple Mono NF CN fonts")?;
-    }
-    set_theme_font_names(cx.global_mut::<Theme>(), ".SystemUIFont");
-    Ok(())
-}
-
 pub(crate) fn load_embedded_themes(cx: &mut App) {
     let registry = ThemeRegistry::global_mut(cx);
     for theme_json in EMBEDDED_THEME_JSONS {
@@ -88,9 +64,13 @@ pub(crate) fn load_embedded_themes(cx: &mut App) {
     }
 }
 
-pub(crate) fn set_theme_font_names(theme: &mut Theme, ui_font_family: &str) {
+pub(crate) fn set_theme_font_names(
+    theme: &mut Theme,
+    ui_font_family: &str,
+    terminal_font_family: &str,
+) {
     theme.font_family = ui_font_family.into();
-    theme.mono_font_family = ui_font_family.into();
+    theme.mono_font_family = terminal_font_family.into();
 }
 
 impl TinyShell {
@@ -190,7 +170,7 @@ impl TinyShell {
         theme.light_theme = light_theme;
         theme.dark_theme = dark_theme;
         theme.font_size = px(self.ui_font_size);
-        set_theme_font_names(theme, &self.ui_font_family);
+        set_theme_font_names(theme, &self.ui_font_family, &self.terminal_font_family);
 
         if self.follow_system_theme {
             Theme::sync_system_appearance(Some(window), cx);

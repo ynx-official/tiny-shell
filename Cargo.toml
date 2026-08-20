@@ -1,6 +1,6 @@
 [package]
 name = "tiny-shell"
-version = "1.5.3"
+version = "1.5.13"
 edition = "2024"
 authors = ["tiny-shell contributors"]
 description = "A modern, fast, GPUI Component-based desktop terminal client"
@@ -8,7 +8,11 @@ license = "GPL-3.0-or-later"
 rust-version = "1.85.0"
 
 [features]
-default = []
+# macOS/Linux source builds use FreeRDP when native dependencies can be
+# discovered. Windows launches the system mstsc.exe client instead.
+# `freerdp` remains the force-on mode for macOS/Linux release builds.
+default = ["freerdp-auto"]
+freerdp-auto = []
 freerdp = []
 
 [dependencies]
@@ -17,6 +21,7 @@ tokio-socks = "0.5"
 alacritty_terminal = { git = "https://github.com/zed-industries/alacritty", rev = "fcf32feacb367b75ec84dd40f041e4fd411d3cc1" }
 async-trait = "0.1"
 chrono = { version = "0.4", features = ["serde"] }
+chardetng = "1"
 directories = "5"
 encoding_rs = "0.8"
 flate2 = "1"
@@ -62,7 +67,9 @@ sha1 = "0.10"
 sha2 = "0.10"
 
 [target.'cfg(windows)'.dependencies]
+raw-window-handle = "0.6"
 winreg = "0.55"
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_Security_Credentials", "Win32_UI_WindowsAndMessaging"] }
 
 [package.metadata.deb]
 maintainer = "tiny-shell contributors"
@@ -73,7 +80,7 @@ priority = "optional"
 assets = [
     ["target/release/tiny-shell", "usr/bin/", "755"],
     ["assets/tiny-shell.desktop", "usr/share/applications/", "644"],
-    ["assets/icons/tiny-shell.png", "usr/share/icons/hicolor/256x256/apps/", "644"],
+    ["assets/icons/256x256/tiny-shell.png", "usr/share/icons/hicolor/256x256/apps/", "644"],
 ]
 
 [profile.release]
@@ -101,6 +108,7 @@ opt-level = 1
 
 [build-dependencies]
 cc = "1.2.63"
+pkg-config = "0.3"
 winres = "0.1.12"
 
 [patch.crates-io]

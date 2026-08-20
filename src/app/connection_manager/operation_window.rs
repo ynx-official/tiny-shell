@@ -1,12 +1,12 @@
-use std::path::PathBuf;
+use std::{collections::HashSet, path::PathBuf};
 
 use gpui::{
     App, AppContext as _, Context, Entity, FocusHandle, Focusable, InteractiveElement as _,
-    IntoElement, ParentElement as _, PathPromptOptions, Render, StatefulInteractiveElement as _,
-    Styled, Window, WindowOptions, px, rems, size,
+    IntoElement, ParentElement as _, PathPromptOptions, Render, Styled, Window, WindowOptions, px,
+    rems, size,
 };
 use gpui_component::{
-    ActiveTheme as _, Icon, IconName, Root, Sizable as _, Size,
+    ActiveTheme as _, Root,
     button::{Button, ButtonVariants as _},
     h_flex,
     input::{Input, InputEvent, InputState},
@@ -14,7 +14,7 @@ use gpui_component::{
 };
 use rust_i18n::t;
 
-use crate::TinyShell;
+use crate::{TinyShell, app::group_tree_picker::GroupTreePicker};
 
 #[derive(Clone)]
 pub(crate) enum ConnectionOperation {
@@ -41,6 +41,7 @@ pub(crate) struct ConnectionOperationWindow {
     group_name_input: Option<Entity<InputState>>,
     archive_password_input: Option<Entity<InputState>>,
     focus_handle: FocusHandle,
+    move_picker_expanded: HashSet<String>,
     _owner_subscription: gpui::Subscription,
     _input_subscriptions: Vec<gpui::Subscription>,
 }
@@ -89,6 +90,7 @@ impl ConnectionOperationWindow {
             group_name_input,
             archive_password_input,
             focus_handle: cx.focus_handle(),
+            move_picker_expanded: HashSet::new(),
             _owner_subscription: owner_subscription,
             _input_subscriptions: input_subscriptions,
         }
@@ -414,11 +416,11 @@ impl ConnectionOperationWindow {
     }
 
     fn render_move_picker(
-        &self,
+        &mut self,
         source_label: String,
         groups: Vec<String>,
         is_group: bool,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let root_label = if is_group {
@@ -426,52 +428,68 @@ impl ConnectionOperationWindow {
         } else {
             t!("connection_group_ungrouped").to_string()
         };
+        let picker_for_select = cx.entity();
+        let picker_for_toggle = picker_for_select.clone();
+        let expanded = self.move_picker_expanded.clone();
+
         v_flex()
             .size_full()
             .gap_3()
             .child(
-                gpui::div()
-                    .text_size(rems(0.917))
-                    .text_color(cx.theme().muted_foreground)
-                    .child(format!(
-                        "{}: {}",
-                        t!("connection_group_move_source"),
-                        source_label
-                    )),
+                h_flex()
+                    .h(px(32.))
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        gpui::div()
+                            .text_size(rems(0.78))
+                            .text_color(cx.theme().muted_foreground)
+                            .child(t!("connection_group_move_source")),
+                    )
+                    .child(
+                        gpui::div()
+                            .min_w_0()
+                            .flex_1()
+                            .truncate()
+                            .text_size(rems(0.875))
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .child(source_label),
+                    ),
             )
             .child(
-                v_flex()
-                    .id("connection-operation-targets")
-                    .flex_1()
-                    .min_h(px(0.))
-                    .overflow_y_scroll()
-                    .rounded_md()
-                    .border_1()
-                    .border_color(cx.theme().border)
-                    .p_2()
-                    .gap_1()
-                    .child(move_target_row(
-                        "connection-operation-root",
-                        root_label,
-                        0,
-                        None,
-                        is_group,
-                        window,
-                        cx,
-                    ))
-                    .children(groups.into_iter().enumerate().map(|(index, group)| {
-                        let depth = group.matches('/').count();
-                        let label = group.rsplit('/').next().unwrap_or(&group).to_string();
-                        move_target_row(
-                            ("connection-operation-target", index),
-                            label,
-                            depth,
-                            Some(group),
-                            is_group,
-                            window,
-                            cx,
-                        )
-                    })),
+                GroupTreePicker::new(
+                    "connection-operation-group-tree-picker",
+                    groups,
+                    expanded,
+                    root_label,
+                )
+                .root_muted(false)
+                .show_selection(false)
+                .on_select(move |target, window, cx| {
+                    picker_for_select.update(cx, |this, cx| {
+                        if is_group {
+                            this.move_group(target, window, cx);
+                        } else {
+                            this.move_session(target, window, cx);
+                        }
+                    });
+                })
+                .on_toggle(move |path, _, cx| {
+                    picker_for_toggle.update(cx, |this, cx| {
+                        if !this.move_picker_expanded.remove(&path) {
+                            this.move_picker_expanded.insert(path);
+                        }
+                        cx.notify();
+                    });
+                }),
+            )
+            .child(
+                h_flex().justify_end().child(
+                    Button::new("connection-operation-move-cancel")
+                        .secondary()
+                        .label(t!("cancel").to_string())
+                        .on_click(|_, window, _| Self::close_window(window)),
+                ),
             )
             .into_any_element()
     }
@@ -521,40 +539,6 @@ impl Render for ConnectionOperationWindow {
     }
 }
 
-fn move_target_row(
-    id: impl Into<gpui::ElementId>,
-    label: String,
-    depth: usize,
-    target: Option<String>,
-    is_group: bool,
-    _window: &mut Window,
-    cx: &mut Context<ConnectionOperationWindow>,
-) -> gpui::AnyElement {
-    gpui::div()
-        .id(id)
-        .w_full()
-        .cursor_pointer()
-        .rounded_md()
-        .hover(|this| this.bg(cx.theme().secondary))
-        .on_click(cx.listener(move |this, _, window, cx| {
-            if is_group {
-                this.move_group(target.clone(), window, cx);
-            } else {
-                this.move_session(target.clone(), window, cx);
-            }
-        }))
-        .child(
-            h_flex()
-                .items_center()
-                .gap_2()
-                .p_2()
-                .pl(px(8. + depth as f32 * 16.))
-                .child(Icon::new(IconName::Folder).with_size(Size::Small))
-                .child(label),
-        )
-        .into_any_element()
-}
-
 fn commit_catalog_change(
     owner: &Entity<TinyShell>,
     window: &mut Window,
@@ -596,7 +580,7 @@ fn window_options(cx: &mut App, compact: bool) -> WindowOptions {
     let (preferred_size, min_size) = if compact {
         (size(px(420.), px(220.)), size(px(380.), px(180.)))
     } else {
-        (size(px(480.), px(560.)), size(px(440.), px(420.)))
+        (size(px(440.), px(440.)), size(px(400.), px(340.)))
     };
     crate::app::platform::auxiliary_window_options(
         cx,

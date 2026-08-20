@@ -13,12 +13,12 @@
 
 ## UI design system
 
-- Scope: 快速连接窗口（`src/app/connection_manager/`）
+- Scope: 快速连接窗口（`src/app/connection_manager/`）与主终端工作区（`src/app/ui.rs`、`src/app/ui/`）
 - Skill: `awesome-design-md`
 - Source: `VoltAgent/awesome-design-md`
 - Style ID: `sentry`
 - Style reference: `C:/Users/Administrator/.codex/skills/awesome-design-md/references/design-md/sentry/DESIGN.md`
-- Implementation note: 保持原生桌面应用的紧凑信息密度，使用 Sentry 规范的 8px 间距节奏和清晰技术层级；项目主题色与既有组件状态优先。
+- Implementation note: 保持原生桌面应用的紧凑信息密度，使用 Sentry 规范的 8px 间距节奏、平面分栏和清晰技术层级；项目主题色与既有组件状态优先。
 
 ## 2. 基本开发规范
 

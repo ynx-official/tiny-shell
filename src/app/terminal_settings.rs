@@ -60,18 +60,34 @@ impl TinyShell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.ui_font_family = family.into();
         self.config.set_ui_font_family(family);
+        let resolved = crate::app::font_preferences::resolve_ui_font(
+            family,
+            &cx.text_system().all_font_names(),
+        );
+        self.ui_font_family = resolved.family;
+        self.ui_font_preference_available = resolved.preference_available;
         self.mark_config_preferences_dirty();
-        theme::set_theme_font_names(Theme::global_mut(cx), &self.ui_font_family);
+        theme::set_theme_font_names(
+            Theme::global_mut(cx),
+            &self.ui_font_family,
+            &self.terminal_font_family,
+        );
         cx.notify();
         window.refresh();
     }
 
     pub(crate) fn change_terminal_font_family(&mut self, family: &str, cx: &mut Context<Self>) {
-        self.terminal_font_family = family.into();
         self.config.set_terminal_font_family(family);
+        let resolved = crate::app::font_preferences::resolve_terminal_font(
+            family,
+            &cx.text_system().all_font_names(),
+        );
+        self.terminal_font_family = resolved.selection.family;
+        self.terminal_font_preference_available = resolved.selection.preference_available;
+        self.terminal_font_fallbacks = resolved.fallbacks;
         self.mark_config_preferences_dirty();
+        Theme::global_mut(cx).mono_font_family = self.terminal_font_family.clone();
         cx.notify();
     }
 

@@ -58,55 +58,49 @@ impl TinyShell {
             .overflow_hidden()
             .child(
                 h_flex()
+                    .h(px(32.))
                     .items_center()
                     .gap_2()
-                    .child(div().w(px(56.)))
+                    .px_1()
                     .child(
-                        div()
+                        h_flex()
+                            .id("sidebar-brand-version")
                             .flex_1()
-                            .flex()
-                            .justify_center()
+                            .min_w(px(0.))
+                            .items_center()
+                            .gap_1()
+                            .cursor_pointer()
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.show_update_dialog(window, cx)
+                            }))
                             .child(
-                                h_flex()
-                                    .id("sidebar-brand-version")
-                                    .items_center()
-                                    .gap_1()
-                                    .cursor_pointer()
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.show_update_dialog(window, cx)
-                                    }))
-                                    .child(
-                                        div()
-                                            .font_weight(FontWeight::BOLD)
-                                            .text_size(rems(1.25))
-                                            .child(t!("app_name")),
-                                    )
-                                    .child(
-                                        div()
-                                            .relative()
-                                            .px_1()
-                                            .py(px(1.))
-                                            .rounded_full()
-                                            .bg(cx.theme().muted)
-                                            .text_size(rems(0.58))
-                                            .font_weight(FontWeight::MEDIUM)
-                                            .text_color(cx.theme().muted_foreground)
-                                            .child(format!(
-                                                "v{}",
-                                                env!("CARGO_PKG_VERSION")
-                                            ))
-                                            .when(show_update_error_badge, |this| {
-                                                this.child(
-                                                    div()
-                                                        .absolute()
-                                                        .top(px(-2.))
-                                                        .right(px(-2.))
-                                                        .size(px(6.))
-                                                        .rounded_full()
-                                                        .bg(cx.theme().danger),
-                                                )
-                                            }),
-                                    ),
+                                div()
+                                    .font_weight(FontWeight::BOLD)
+                                    .text_size(rems(1.25))
+                                    .child(t!("app_name")),
+                            )
+                            .child(
+                                div()
+                                    .relative()
+                                    .px_1()
+                                    .py(px(1.))
+                                    .rounded_full()
+                                    .bg(cx.theme().muted)
+                                    .text_size(rems(0.58))
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(format!("v{}", env!("CARGO_PKG_VERSION")))
+                                    .when(show_update_error_badge, |this| {
+                                        this.child(
+                                            div()
+                                                .absolute()
+                                                .top(px(-2.))
+                                                .right(px(-2.))
+                                                .size(px(6.))
+                                                .rounded_full()
+                                                .bg(cx.theme().danger),
+                                        )
+                                    }),
                             ),
                     )
                     .child(
@@ -126,7 +120,7 @@ impl TinyShell {
             .child(
                 v_flex()
                     .gap_2()
-                    .px_2()
+                    .px_1()
                     .py_2()
                     .border_b_1()
                     .border_color(cx.theme().border)
@@ -326,13 +320,22 @@ impl TinyShell {
                                     .text_size(rems(0.8))
                                     .child(t!("connection_address")),
                             )
-                            .child(
+                            .child({
+                                let tooltip = connection_text.clone();
                                 div()
+                                    .id("sidebar-connection-address")
                                     .flex_1()
                                     .min_w(px(0.))
+                                    .overflow_hidden()
+                                    .whitespace_nowrap()
+                                    .text_ellipsis()
                                     .text_size(rems(0.75))
-                                    .child(connection_text),
-                            ),
+                                    .tooltip(move |window, cx| {
+                                        gpui_component::tooltip::Tooltip::new(tooltip.clone())
+                                            .build(window, cx)
+                                    })
+                                    .child(connection_text)
+                            }),
                     )
                     .child(
                         h_flex()
@@ -360,7 +363,7 @@ impl TinyShell {
                         .id("sidebar-system-information")
                         .relative()
                         .w_full()
-                        .h(px(26.))
+                        .h(px(32.))
                         .px_2()
                         .items_center()
                         .justify_center()
