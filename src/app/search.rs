@@ -201,9 +201,8 @@ impl TinyShell {
         let tab = self.terminal_tab_mut(&tab_id);
 
         if let Some(tab) = tab {
-            let snapshot = tab.render_snapshot(false);
-            let display_offset = snapshot.display_offset as i32;
-            let rows = snapshot.rows as i32;
+            let display_offset = tab.display_offset() as i32;
+            let rows = tab.rows as i32;
 
             // viewport row = grid_line + display_offset
             let vp_row = target_grid_line + display_offset;
@@ -213,10 +212,10 @@ impl TinyShell {
                 // Scroll so the target grid line appears near the top.
                 // display_offset = -grid_line puts it at viewport row 0.
                 let new_offset = (-target_grid_line).max(0) as usize;
-                if new_offset > snapshot.display_offset {
-                    tab.scroll_up_by(new_offset - snapshot.display_offset);
-                } else if new_offset < snapshot.display_offset {
-                    tab.scroll_down_by(snapshot.display_offset - new_offset);
+                if new_offset > display_offset as usize {
+                    tab.scroll_up_by(new_offset - display_offset as usize);
+                } else if new_offset < display_offset as usize {
+                    tab.scroll_down_by(display_offset as usize - new_offset);
                 }
             }
         }
@@ -248,9 +247,8 @@ impl TinyShell {
         let target_id =
             search_target_tab_id(self.window_state.search_target_tab.as_deref(), &tab_ids)?;
         let tab = self.terminal_tab(target_id)?;
-        let snapshot = tab.render_snapshot(false);
-        let display_offset = snapshot.display_offset as i32;
-        let rows = snapshot.rows as i32;
+        let display_offset = tab.display_offset() as i32;
+        let rows = tab.rows as i32;
 
         let mut map = HashMap::new();
 

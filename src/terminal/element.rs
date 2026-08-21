@@ -12,7 +12,7 @@ use gpui_component::ActiveTheme as _;
 
 use crate::TinyShell;
 use crate::terminal::custom_blocks::{is_custom_block_supported, paint_custom_block};
-use crate::terminal::{RenderSnapshot, ViewportSelection};
+use crate::terminal::{RenderSnapshot, ViewportSelection, highlight::HighlightCellStyle};
 
 #[derive(Clone, Copy)]
 struct TerminalMetrics {
@@ -33,6 +33,35 @@ fn terminal_run_font(
         style,
         ..Font::default()
     }
+}
+
+fn apply_keyword_style(style: &mut TextRun, highlight: HighlightCellStyle) {
+    if let Some(foreground) = highlight.foreground {
+        style.color = foreground;
+        if let Some(underline) = style.underline.as_mut() {
+            underline.color = Some(foreground);
+        }
+    }
+    if highlight.bold {
+        style.font.weight = FontWeight::BOLD;
+    }
+    if highlight.underline && style.underline.is_none() {
+        style.underline = Some(UnderlineStyle {
+            color: Some(style.color),
+            thickness: px(1.0),
+            wavy: false,
+        });
+    }
+}
+
+/// Background precedence is explicit: selection > search > keyword > ANSI.
+fn resolved_cell_background(
+    ansi: Option<Hsla>,
+    keyword: Option<Hsla>,
+    search: Option<Hsla>,
+    selection: Option<Hsla>,
+) -> Option<Hsla> {
+    selection.or(search).or(keyword).or(ansi)
 }
 
 #[derive(Clone)]
@@ -411,17 +440,6 @@ impl TerminalElement {
         let mut underlines = Vec::new();
         let mut current_run: Option<BatchedTextRun> = None;
 
-        // 仅在有搜索高亮需要合并时才 clone，避免每帧克隆整个 highlights HashMap
-        let mut merged_highlights: std::collections::HashMap<(i32, i32), gpui::Hsla>;
-        let highlights: &std::collections::HashMap<(i32, i32), gpui::Hsla> =
-            if let Some(sm) = self.search_highlights.as_ref().filter(|sm| !sm.is_empty()) {
-                merged_highlights = self.snapshot.highlights.as_ref().clone();
-                merged_highlights.extend(sm.iter().map(|(k, v)| (*k, *v)));
-                &merged_highlights
-            } else {
-                self.snapshot.highlights.as_ref()
-            };
-
         for render_cell in self.snapshot.cells.iter() {
             let cell = &render_cell.cell;
             if cell.flags.intersects(
@@ -433,8 +451,27 @@ impl TerminalElement {
             let selected = self.snapshot.selection.is_some_and(|selection| {
                 selection_contains(selection, render_cell.row, render_cell.col)
             });
-            let bg = color_to_hsla(cell.bg, false, cx);
-            if selected || !is_default_bg(cell.bg) || cell.flags.contains(Flags::INVERSE) {
+            let coordinate = (render_cell.row, render_cell.col);
+            let keyword_style = self.snapshot.highlights.get(&coordinate).copied();
+            let search_background = self
+                .search_highlights
+                .as_ref()
+                .and_then(|highlights| highlights.get(&coordinate))
+                .copied();
+            let ansi_background = if cell.flags.contains(Flags::INVERSE) {
+                Some(color_to_hsla(cell.fg, true, cx))
+            } else if !is_default_bg(cell.bg) {
+                Some(color_to_hsla(cell.bg, false, cx))
+            } else {
+                None
+            };
+            let background = resolved_cell_background(
+                ansi_background,
+                keyword_style.and_then(|style| style.background),
+                search_background,
+                selected.then_some(cx.theme().selection),
+            );
+            if let Some(color) = background {
                 rects.push(LayoutRect {
                     row: render_cell.row,
                     col: render_cell.col,
@@ -443,13 +480,7 @@ impl TerminalElement {
                     } else {
                         1
                     },
-                    color: if selected {
-                        cx.theme().selection
-                    } else if cell.flags.contains(Flags::INVERSE) {
-                        color_to_hsla(cell.fg, true, cx)
-                    } else {
-                        bg
-                    },
+                    color,
                 });
             }
 
@@ -462,9 +493,8 @@ impl TerminalElement {
 
             let mut style = self.cell_run_style(cell, cx);
 
-            // Apply keyword highlight color if this cell was matched.
-            if let Some(&hl_color) = highlights.get(&(render_cell.row, render_cell.col)) {
-                style.color = hl_color;
+            if let Some(highlight) = keyword_style {
+                apply_keyword_style(&mut style, highlight);
             }
 
             // Apply hover underline if mouse is hovering over this URL
@@ -991,5 +1021,70 @@ mod tests {
             assert_eq!(font.weight, weight);
             assert_eq!(font.style, style);
         }
+    }
+
+    #[test]
+    fn keyword_style_overlays_only_explicit_runtime_attributes() {
+        let ansi_color = Hsla::from(rgb(0x123456));
+        let highlight_color = Hsla::from(rgb(0xabcdef));
+        let mut run = TextRun {
+            len: 1,
+            color: ansi_color,
+            background_color: None,
+            font: terminal_run_font(
+                &"Consolas".into(),
+                None,
+                FontWeight::NORMAL,
+                FontStyle::Italic,
+            ),
+            underline: None,
+            strikethrough: None,
+        };
+
+        apply_keyword_style(
+            &mut run,
+            HighlightCellStyle {
+                foreground: Some(highlight_color),
+                background: Some(Hsla::from(rgb(0x334455))),
+                bold: true,
+                underline: true,
+            },
+        );
+
+        assert_eq!(run.color, highlight_color);
+        assert_eq!(run.font.weight, FontWeight::BOLD);
+        assert_eq!(run.font.style, FontStyle::Italic);
+        assert_eq!(
+            run.underline.as_ref().and_then(|style| style.color),
+            Some(highlight_color)
+        );
+        // Background is painted as a cell rectangle so blank and wide cells
+        // receive the same layer ordering as text cells.
+        assert_eq!(run.background_color, None);
+    }
+
+    #[test]
+    fn selection_and_search_backgrounds_have_explicit_precedence() {
+        let ansi = Hsla::from(rgb(0x111111));
+        let keyword = Hsla::from(rgb(0x222222));
+        let search = Hsla::from(rgb(0x333333));
+        let selection = Hsla::from(rgb(0x444444));
+
+        assert_eq!(
+            resolved_cell_background(Some(ansi), Some(keyword), Some(search), Some(selection)),
+            Some(selection)
+        );
+        assert_eq!(
+            resolved_cell_background(Some(ansi), Some(keyword), Some(search), None),
+            Some(search)
+        );
+        assert_eq!(
+            resolved_cell_background(Some(ansi), Some(keyword), None, None),
+            Some(keyword)
+        );
+        assert_eq!(
+            resolved_cell_background(Some(ansi), None, None, None),
+            Some(ansi)
+        );
     }
 }

@@ -1,5 +1,7 @@
 use std::{
+    collections::hash_map::DefaultHasher,
     fs::{self, OpenOptions},
+    hash::{Hash, Hasher},
     io::Write,
     path::{Path, PathBuf},
     sync::{Arc, OnceLock},
@@ -21,6 +23,7 @@ pub use crate::session::config_file::{
     UpdateCheckMode,
 };
 pub(crate) use crate::session::crypto::hardware_uuid;
+pub use crate::session::highlight_rules::{HighlightRule, default_highlight_rules};
 pub use crate::session::proxy::{ENV_PROXY, EnvProxy, active_proxy, connect_proxy};
 pub use crate::session::session_types::{
     AuthMethod, ConnectionType, DeletedConnectionGroup, DeletedSession, ManagedKey, QuickCommand,
@@ -887,6 +890,65 @@ impl ConfigStore {
         self.cache.keyword_highlight = val;
     }
 
+    pub fn highlight_rules(&self) -> &[HighlightRule] {
+        &self.cache.highlight_rules
+    }
+
+    /// Fingerprint used to invalidate compiled matcher and render caches.
+    ///
+    /// The value is process-local cache metadata, not a persisted identifier.
+    pub fn highlight_rules_fingerprint(&self) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        self.cache.highlight_rules.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    pub fn replace_highlight_rules(&mut self, rules: Vec<HighlightRule>) {
+        self.cache.highlight_rules = rules;
+    }
+
+    pub fn upsert_highlight_rule(&mut self, rule: HighlightRule) {
+        if let Some(existing) = self
+            .cache
+            .highlight_rules
+            .iter_mut()
+            .find(|existing| existing.id == rule.id)
+        {
+            *existing = rule;
+        } else {
+            self.cache.highlight_rules.push(rule);
+        }
+    }
+
+    pub fn remove_highlight_rule(&mut self, rule_id: &str) -> bool {
+        let previous_len = self.cache.highlight_rules.len();
+        self.cache.highlight_rules.retain(|rule| rule.id != rule_id);
+        self.cache.highlight_rules.len() != previous_len
+    }
+
+    pub fn move_highlight_rule(&mut self, rule_id: &str, target_index: usize) -> bool {
+        let Some(source_index) = self
+            .cache
+            .highlight_rules
+            .iter()
+            .position(|rule| rule.id == rule_id)
+        else {
+            return false;
+        };
+        let target_index = target_index.min(self.cache.highlight_rules.len().saturating_sub(1));
+        if source_index == target_index {
+            return false;
+        }
+
+        let rule = self.cache.highlight_rules.remove(source_index);
+        self.cache.highlight_rules.insert(target_index, rule);
+        true
+    }
+
+    pub fn reset_highlight_rules(&mut self) {
+        self.cache.highlight_rules = default_highlight_rules();
+    }
+
     pub fn terminal_font_family(&self) -> &str {
         if self.cache.terminal_font_family.is_empty() {
             crate::session::config_file::SYSTEM_MONO_FONT
@@ -1176,6 +1238,7 @@ impl ConfigStore {
         self.cache.terminal_display_style = source.cache.terminal_display_style;
         self.cache.ui_font_size = source.cache.ui_font_size;
         self.cache.keyword_highlight = source.cache.keyword_highlight;
+        self.cache.highlight_rules = source.cache.highlight_rules.clone();
         self.cache.ui_font_family = source.cache.ui_font_family.clone();
         self.cache.terminal_font_family = source.cache.terminal_font_family.clone();
         self.cache.title_bar_style = source.cache.title_bar_style;
@@ -1355,6 +1418,9 @@ mod tests {
     use super::*;
 
     use crate::session::crypto::decrypt_config;
+    use crate::session::highlight_rules::{
+        HighlightMatchKind, HighlightRuleStyle, HighlightTarget,
+    };
 
     #[test]
     fn merging_preferences_preserves_connection_data() {
@@ -1368,6 +1434,17 @@ mod tests {
         source.set_update_interval_hours(12);
         source.set_update_notify(false);
         source.set_download_directory(Some(Path::new("downloads")));
+        source.replace_highlight_rules(vec![HighlightRule {
+            id: "custom".to_string(),
+            name: "Custom".to_string(),
+            enabled: true,
+            pattern: "custom".to_string(),
+            match_kind: HighlightMatchKind::Literal,
+            case_sensitive: false,
+            whole_word: true,
+            target: HighlightTarget::Match,
+            style: HighlightRuleStyle::default(),
+        }]);
         latest.merge_interactive_preferences_from(&source);
 
         assert_eq!(latest.cache.connection_groups, ["production"]);
@@ -1383,6 +1460,56 @@ mod tests {
             latest.download_directory(),
             Some(PathBuf::from("downloads"))
         );
+        assert_eq!(latest.highlight_rules(), source.highlight_rules());
+    }
+
+    #[test]
+    fn highlight_rules_support_ordered_crud_reset_and_fingerprinting() {
+        let mut store = ConfigStore::in_memory();
+        let defaults = store.highlight_rules().to_vec();
+        let default_fingerprint = store.highlight_rules_fingerprint();
+        let custom = HighlightRule {
+            id: "custom".to_string(),
+            name: "Custom".to_string(),
+            enabled: true,
+            pattern: "custom".to_string(),
+            match_kind: HighlightMatchKind::Literal,
+            case_sensitive: false,
+            whole_word: true,
+            target: HighlightTarget::Match,
+            style: HighlightRuleStyle::default(),
+        };
+
+        store.upsert_highlight_rule(custom.clone());
+        assert_eq!(store.highlight_rules().last(), Some(&custom));
+        assert_ne!(store.highlight_rules_fingerprint(), default_fingerprint);
+
+        let mut updated = custom.clone();
+        updated.name = "Updated".to_string();
+        store.upsert_highlight_rule(updated.clone());
+        assert_eq!(
+            store
+                .highlight_rules()
+                .iter()
+                .filter(|rule| rule.id == custom.id)
+                .count(),
+            1
+        );
+        assert_eq!(store.highlight_rules().last(), Some(&updated));
+
+        assert!(store.move_highlight_rule("custom", 0));
+        assert_eq!(store.highlight_rules()[0], updated);
+        assert!(!store.move_highlight_rule("missing", 0));
+
+        assert!(store.remove_highlight_rule("custom"));
+        assert!(!store.remove_highlight_rule("custom"));
+        assert_eq!(store.highlight_rules(), defaults);
+
+        store.replace_highlight_rules(Vec::new());
+        assert!(store.highlight_rules().is_empty());
+        store.reset_highlight_rules();
+        assert_eq!(store.highlight_rules(), defaults);
+        assert_eq!(store.highlight_rules_fingerprint(), default_fingerprint);
     }
 
     #[test]

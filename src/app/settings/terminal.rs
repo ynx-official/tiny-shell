@@ -1,7 +1,7 @@
 use gpui::{Anchor, Entity, IntoElement as _, ParentElement as _, Styled as _, div, px};
 use gpui_component::{
-    IconName, Sizable as _,
-    button::Button,
+    ActiveTheme as _, IconName, Sizable as _,
+    button::{Button, ButtonVariants as _},
     h_flex,
     menu::{DropdownMenu as _, PopupMenuItem},
     setting::SettingPage,
@@ -383,22 +383,64 @@ pub(crate) fn page(settings_view: &Entity<TinyShell>) -> SettingPage {
         .group(
             SettingGroup::new()
                 .title(t!("settings_group_terminal_behavior").to_string())
-                .item(SettingItem::new(
-                    t!("keyword_highlight").to_string(),
-                    SettingField::render({
-                        let view = settings_view.clone();
-                        move |_, window, cx| {
-                            Switch::new("keyword-highlight")
-                                .small()
-                                .checked(view.read(cx).config.keyword_highlight())
-                                .on_click(window.listener_for(&view, |this, checked, _, cx| {
-                                    this.config.set_keyword_highlight(*checked);
-                                    this.mark_config_preferences_dirty();
-                                    cx.notify();
-                                }))
-                                .into_any_element()
-                        }
-                    }),
-                )),
+                .item(
+                    SettingItem::new(
+                        t!("keyword_highlight").to_string(),
+                        SettingField::render({
+                            let view = settings_view.clone();
+                            move |_, window, cx| {
+                                let enabled_count = view
+                                    .read(cx)
+                                    .config
+                                    .highlight_rules()
+                                    .iter()
+                                    .filter(|rule| rule.enabled)
+                                    .count();
+                                h_flex()
+                                    .items_center()
+                                    .gap_2()
+                                    .child(
+                                        div()
+                                            .text_sm()
+                                            .text_color(cx.theme().muted_foreground)
+                                            .child(
+                                                t!(
+                                                    "highlight_rules_enabled_count",
+                                                    count = enabled_count
+                                                )
+                                                .to_string(),
+                                            ),
+                                    )
+                                    .child(
+                                        Button::new("manage-highlight-rules")
+                                            .small()
+                                            .secondary()
+                                            .label(t!("highlight_rules_manage").to_string())
+                                            .on_click(window.listener_for(
+                                                &view,
+                                                |this, _, window, cx| {
+                                                    this.open_highlight_rules_dialog(window, cx);
+                                                },
+                                            )),
+                                    )
+                                    .child(
+                                        Switch::new("keyword-highlight")
+                                            .small()
+                                            .checked(view.read(cx).config.keyword_highlight())
+                                            .on_click(window.listener_for(
+                                                &view,
+                                                |this, checked, _, cx| {
+                                                    this.config.set_keyword_highlight(*checked);
+                                                    this.mark_config_preferences_dirty();
+                                                    cx.notify();
+                                                },
+                                            )),
+                                    )
+                                    .into_any_element()
+                            }
+                        }),
+                    )
+                    .description(t!("keyword_highlight_hint").to_string()),
+                ),
         )
 }

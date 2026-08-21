@@ -26,14 +26,76 @@ use alacritty_terminal::{
 use gpui::Keystroke;
 
 use crate::backend::remote_desktop::{CertificateRequest, FrameMailbox};
-use crate::session::config::Session;
+use crate::session::{config::Session, highlight_rules::HighlightRule};
 use crate::sftp::{
     RemoteEntry,
     text_file::{RemoteFileRevision, RemoteTextFile},
 };
 use crate::system::SystemSnapshot;
 
-type HighlightCache = Option<(u64, Arc<HashMap<(i32, i32), gpui::Hsla>>)>;
+#[derive(Debug)]
+struct HighlightCache {
+    compiled: Option<Arc<highlight::CompiledRuleSet>>,
+    highlights: Arc<highlight::HighlightMap>,
+    pending_damage: RenderDamage,
+}
+
+impl Default for HighlightCache {
+    fn default() -> Self {
+        Self {
+            compiled: None,
+            highlights: Arc::new(HashMap::new()),
+            pending_damage: RenderDamage::Full,
+        }
+    }
+}
+
+impl HighlightCache {
+    fn note_render_damage(&mut self, damage: &RenderDamage) {
+        self.pending_damage.merge_render(damage);
+    }
+
+    fn resolve(
+        &mut self,
+        cells: &[RenderCell],
+        rows: usize,
+        fingerprint: u64,
+        rules: &[HighlightRule],
+    ) -> Arc<highlight::HighlightMap> {
+        let rules_changed = self
+            .compiled
+            .as_ref()
+            .is_none_or(|compiled| compiled.fingerprint() != fingerprint);
+        if rules_changed {
+            self.compiled = Some(Arc::new(highlight::CompiledRuleSet::compile(
+                fingerprint,
+                rules,
+            )));
+            self.pending_damage = RenderDamage::Full;
+        }
+
+        let Some(compiled) = self.compiled.as_ref() else {
+            return Arc::new(HashMap::new());
+        };
+        let damage = std::mem::take(&mut self.pending_damage);
+        let computed = match damage {
+            RenderDamage::Full => highlight::highlight_cells(cells, rows, compiled),
+            RenderDamage::Partial(lines) if lines.is_empty() => return self.highlights.clone(),
+            RenderDamage::Partial(lines) => {
+                let damaged_rows = lines.into_iter().map(|line| line.line).collect::<Vec<_>>();
+                highlight::update_highlights_for_rows(
+                    cells,
+                    rows,
+                    compiled,
+                    self.highlights.as_ref(),
+                    &damaged_rows,
+                )
+            }
+        };
+        self.highlights = Arc::new(computed);
+        self.highlights.clone()
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TabKind {
@@ -898,13 +960,13 @@ pub(crate) struct TerminalTab {
     pub(crate) remote_desktop_mailbox: Option<Arc<FrameMailbox>>,
     remote_desktop_size: Option<(u32, u32)>,
     pub scroll_pixel_y: f32,
-    pub(crate) highlight_cache: std::cell::RefCell<HighlightCache>,
+    highlight_cache: std::cell::RefCell<HighlightCache>,
     render_revision: u64,
-    render_cache: std::cell::RefCell<Option<(u64, bool, RenderSnapshot)>>,
+    render_cache: std::cell::RefCell<Option<(u64, bool, u64, RenderSnapshot)>>,
     pending_render_damage: std::cell::RefCell<RenderDamage>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 enum RenderDamage {
     Full,
     Partial(Vec<LineDamageBounds>),
@@ -930,6 +992,25 @@ impl RenderDamage {
                         existing.right = existing.right.max(line.right);
                     } else {
                         pending.push(line);
+                    }
+                }
+            }
+        }
+    }
+
+    fn merge_render(&mut self, damage: &Self) {
+        match damage {
+            Self::Full => *self = Self::Full,
+            Self::Partial(lines) => {
+                let Self::Partial(pending) = self else {
+                    return;
+                };
+                for line in lines {
+                    if let Some(existing) = pending.iter_mut().find(|item| item.line == line.line) {
+                        existing.left = existing.left.min(line.left);
+                        existing.right = existing.right.max(line.right);
+                    } else {
+                        pending.push(*line);
                     }
                 }
             }
@@ -962,7 +1043,7 @@ pub(crate) struct RenderSnapshot {
     pub history_size: usize,
     pub rows: usize,
     pub cols: usize,
-    pub highlights: Arc<HashMap<(i32, i32), gpui::Hsla>>,
+    pub highlights: Arc<highlight::HighlightMap>,
 }
 
 #[derive(Clone, Copy)]
@@ -1091,7 +1172,7 @@ impl TerminalTab {
             remote_desktop_mailbox: None,
             remote_desktop_size: None,
             scroll_pixel_y: 0.0,
-            highlight_cache: std::cell::RefCell::new(None),
+            highlight_cache: std::cell::RefCell::new(HighlightCache::default()),
             render_revision: 0,
             render_cache: std::cell::RefCell::new(None),
             pending_render_damage: std::cell::RefCell::new(RenderDamage::Full),
@@ -1225,11 +1306,26 @@ impl TerminalTab {
         self.term.mode().contains(TermMode::ALT_SCREEN)
     }
 
-    pub fn render_snapshot(&self, keyword_highlight: bool) -> RenderSnapshot {
-        if let Some((revision, cached_keyword_highlight, snapshot)) =
+    pub fn render_snapshot(
+        &self,
+        keyword_highlight: bool,
+        highlight_rules: &[HighlightRule],
+        highlight_rules_fingerprint: u64,
+    ) -> RenderSnapshot {
+        // Full-screen TUIs such as vim/htop own their color semantics. Keeping
+        // persistent keyword rules out of the alternate screen avoids
+        // repainting application UI labels while URL hit-testing still works.
+        let keyword_highlight = keyword_highlight && !self.is_alternate_screen();
+        let effective_fingerprint = if keyword_highlight {
+            highlight_rules_fingerprint
+        } else {
+            0
+        };
+        if let Some((revision, cached_keyword_highlight, cached_fingerprint, snapshot)) =
             self.render_cache.borrow().as_ref()
             && *revision == self.render_revision
             && *cached_keyword_highlight == keyword_highlight
+            && *cached_fingerprint == effective_fingerprint
         {
             return snapshot.clone();
         }
@@ -1240,15 +1336,23 @@ impl TerminalTab {
         let display_offset = content.display_offset as i32;
         let previous = self.render_cache.borrow_mut().take();
         let damage = std::mem::take(&mut *self.pending_render_damage.borrow_mut());
-        let can_reuse = previous.as_ref().is_some_and(|(_, _, snapshot)| {
+        let can_reuse = previous.as_ref().is_some_and(|(_, _, _, snapshot)| {
             snapshot.rows == rows as usize
                 && snapshot.cols == cols as usize
                 && snapshot.display_offset == content.display_offset
                 && snapshot.cells.len() == rows as usize * cols as usize
         });
+        let render_damage = if can_reuse {
+            damage
+        } else {
+            RenderDamage::Full
+        };
+        self.highlight_cache
+            .borrow_mut()
+            .note_render_damage(&render_damage);
         let mut cells = if can_reuse {
             match previous {
-                Some((_, _, snapshot)) => {
+                Some((_, _, _, snapshot)) => {
                     Arc::try_unwrap(snapshot.cells).unwrap_or_else(|cells| cells.as_ref().clone())
                 }
                 None => Vec::new(),
@@ -1257,7 +1361,7 @@ impl TerminalTab {
             Vec::with_capacity((rows as usize) * (cols as usize))
         };
 
-        let damaged_lines = match damage {
+        let damaged_lines = match render_damage {
             RenderDamage::Full => {
                 cells.clear();
                 Some((0..rows as usize).collect::<Vec<_>>())
@@ -1296,20 +1400,13 @@ impl TerminalTab {
             }
         }
 
-        // Get highlights from cache or recompute, only if keyword_highlight is enabled.
-        let is_enabled = keyword_highlight;
-
-        let highlights = if is_enabled {
-            let mut cache = self.highlight_cache.borrow_mut();
-            if let Some((cached_revision, highlights)) = cache.as_ref()
-                && *cached_revision == self.render_revision
-            {
-                highlights.clone()
-            } else {
-                let computed = Arc::new(self::highlight::highlight_cells(&cells, rows as usize));
-                *cache = Some((self.render_revision, computed.clone()));
-                computed
-            }
+        let highlights = if keyword_highlight {
+            self.highlight_cache.borrow_mut().resolve(
+                &cells,
+                rows as usize,
+                highlight_rules_fingerprint,
+                highlight_rules,
+            )
         } else {
             Arc::new(HashMap::new())
         };
@@ -1329,8 +1426,12 @@ impl TerminalTab {
             cols: self.cols as usize,
             highlights,
         };
-        *self.render_cache.borrow_mut() =
-            Some((self.render_revision, keyword_highlight, snapshot.clone()));
+        *self.render_cache.borrow_mut() = Some((
+            self.render_revision,
+            keyword_highlight,
+            effective_fingerprint,
+            snapshot.clone(),
+        ));
         snapshot
     }
 
@@ -1412,7 +1513,7 @@ impl TerminalTab {
         self.term.reset_damage();
         self.scroll_pixel_y = 0.0;
         self.clear_selection();
-        *self.highlight_cache.borrow_mut() = None;
+        *self.highlight_cache.borrow_mut() = HighlightCache::default();
         self.send_backend(BackendCommand::Input(vec![b'\x0c']));
     }
 
@@ -1471,6 +1572,7 @@ impl TerminalTab {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::session::highlight_rules::default_highlight_rules;
 
     #[test]
     fn terminal_title_is_available_in_the_same_output_cycle() {
@@ -1512,11 +1614,11 @@ mod tests {
             tab.feed(format!("line {line}\r\n").as_bytes());
         }
         tab.scroll_pixel_y = 7.0;
-        assert!(tab.render_snapshot(false).history_size > 0);
+        assert!(tab.render_snapshot(false, &[], 0).history_size > 0);
 
         tab.clear_contents();
 
-        let snapshot = tab.render_snapshot(false);
+        let snapshot = tab.render_snapshot(false, &[], 0);
         assert_eq!(snapshot.history_size, 0);
         assert_eq!(snapshot.display_offset, 0);
         assert_eq!(
@@ -1553,13 +1655,113 @@ mod tests {
         );
 
         tab.feed(b"hello");
-        let first = tab.render_snapshot(false);
-        let second = tab.render_snapshot(false);
+        let first = tab.render_snapshot(false, &[], 0);
+        let second = tab.render_snapshot(false, &[], 0);
         assert!(Arc::ptr_eq(&first.cells, &second.cells));
 
         tab.feed(b" world");
-        let changed = tab.render_snapshot(false);
+        let changed = tab.render_snapshot(false, &[], 0);
         assert!(!Arc::ptr_eq(&first.cells, &changed.cells));
+    }
+
+    #[test]
+    fn keyword_highlight_can_be_enabled_after_a_plain_snapshot() {
+        let (backend_tx, _backend_rx) =
+            std::sync::mpsc::sync_channel(BACKEND_COMMAND_QUEUE_CAPACITY);
+        let (event_tx, _event_rx) = backend_event_channel();
+        let mut tab = TerminalTab::new_local(
+            "test".to_string(),
+            "Test".to_string(),
+            BackendTx::Local {
+                commands: backend_tx,
+                close: Arc::new(AtomicBool::new(false)),
+                resize: Arc::new(Mutex::new(None)),
+            },
+            event_tx,
+        );
+        let rules = default_highlight_rules();
+        tab.feed(b"ERROR");
+
+        let plain = tab.render_snapshot(false, &rules, 11);
+        let highlighted = tab.render_snapshot(true, &rules, 11);
+
+        assert!(plain.highlights.is_empty());
+        assert!((0..5).all(|col| highlighted.highlights.contains_key(&(0, col))));
+    }
+
+    #[test]
+    fn alternate_screen_preserves_tui_color_semantics() {
+        let (backend_tx, _backend_rx) =
+            std::sync::mpsc::sync_channel(BACKEND_COMMAND_QUEUE_CAPACITY);
+        let (event_tx, _event_rx) = backend_event_channel();
+        let mut tab = TerminalTab::new_local(
+            "test".to_string(),
+            "Test".to_string(),
+            BackendTx::Local {
+                commands: backend_tx,
+                close: Arc::new(AtomicBool::new(false)),
+                resize: Arc::new(Mutex::new(None)),
+            },
+            event_tx,
+        );
+        let rules = default_highlight_rules();
+
+        tab.feed(b"\x1b[?1049hERROR");
+        let snapshot = tab.render_snapshot(true, &rules, 12);
+
+        assert!(tab.is_alternate_screen());
+        assert!(snapshot.highlights.is_empty());
+    }
+
+    #[test]
+    fn rule_fingerprint_invalidates_styles_without_recompiling_on_terminal_damage() {
+        let (backend_tx, _backend_rx) =
+            std::sync::mpsc::sync_channel(BACKEND_COMMAND_QUEUE_CAPACITY);
+        let (event_tx, _event_rx) = backend_event_channel();
+        let mut tab = TerminalTab::new_local(
+            "test".to_string(),
+            "Test".to_string(),
+            BackendTx::Local {
+                commands: backend_tx,
+                close: Arc::new(AtomicBool::new(false)),
+                resize: Arc::new(Mutex::new(None)),
+            },
+            event_tx,
+        );
+        let rules = default_highlight_rules();
+        tab.feed(b"ERROR");
+        let first = tab.render_snapshot(true, &rules, 21);
+        let first_compiled = tab
+            .highlight_cache
+            .borrow()
+            .compiled
+            .as_ref()
+            .cloned()
+            .unwrap();
+
+        tab.feed(b"!");
+        let second = tab.render_snapshot(true, &rules, 21);
+        let second_compiled = tab
+            .highlight_cache
+            .borrow()
+            .compiled
+            .as_ref()
+            .cloned()
+            .unwrap();
+        let after_rule_change = tab.render_snapshot(true, &[], 22);
+
+        assert!(!first.highlights.is_empty());
+        assert!(!second.highlights.is_empty());
+        assert!(Arc::ptr_eq(&first_compiled, &second_compiled));
+        assert!(after_rule_change.highlights.is_empty());
+        assert_eq!(
+            tab.highlight_cache
+                .borrow()
+                .compiled
+                .as_ref()
+                .map(|compiled| compiled.fingerprint()),
+            Some(22)
+        );
     }
 
     #[test]
@@ -1577,7 +1779,7 @@ mod tests {
             },
             event_tx,
         );
-        let _ = tab.render_snapshot(false);
+        let _ = tab.render_snapshot(false, &[], 0);
 
         tab.feed(b"hello");
 
@@ -1605,11 +1807,11 @@ mod tests {
             },
             event_tx,
         );
-        let _ = tab.render_snapshot(false);
+        let _ = tab.render_snapshot(false, &[], 0);
         let started = std::time::Instant::now();
         for _ in 0..10_000 {
             tab.feed(b"x");
-            std::hint::black_box(tab.render_snapshot(false));
+            std::hint::black_box(tab.render_snapshot(false, &[], 0));
         }
         eprintln!("10k incremental terminal renders: {:?}", started.elapsed());
     }
