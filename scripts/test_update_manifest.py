@@ -42,7 +42,7 @@ class UpdateManifestTest(unittest.TestCase):
             "https://github.com/ynx-official/tiny-shell/releases/download/"
             f"{self.tag}/release-notes.md",
         )
-        self.assertEqual(len(manifest["assets"]), 8)
+        self.assertEqual(len(manifest["assets"]), 12)
         names = [asset["name"] for asset in manifest["assets"]]
         self.assertEqual(names, sorted(names))
         self.assertIn(

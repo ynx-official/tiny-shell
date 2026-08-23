@@ -2,7 +2,7 @@ use gpui::{
     AnyWindowHandle, App, AppContext as _, Context, Entity, FocusHandle, ParentElement as _,
     Render, Styled as _, Window, WindowOptions, px, size,
 };
-use gpui_component::{Root, input::InputEvent};
+use gpui_component::{Root, WindowExt as _, input::InputEvent};
 use rust_i18n::t;
 
 use crate::{TinyShell, app::settings::form::SettingsInputs, session::config::ConfigStore};
@@ -164,7 +164,10 @@ pub(crate) fn open(
         let settings_window = cx.new(|cx| {
             SettingsWindow::new(owner_for_window.clone(), config, main_window, window, cx)
         });
-        window.on_window_should_close(cx, move |_window, cx| {
+        window.on_window_should_close(cx, move |window, cx| {
+            if window.has_active_dialog(cx) {
+                return false;
+            }
             owner_for_close.update(cx, |this, cx| {
                 crate::app::keybinding_recorder::unbind_workspace_keys_from_config(
                     cx,

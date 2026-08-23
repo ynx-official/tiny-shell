@@ -49,11 +49,13 @@ fn unique_temp_suffix() -> String {
 }
 #[cfg(target_os = "windows")]
 const INNO_UNINSTALL_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\{8E091D1C-6D7C-4C29-9CA2-8B3D84A42CF8}_is1";
-// Matches the --identifier passed to pkgbuild in release.yml. pkgutil records
-// a receipt under this id only when the .pkg is installed via installer or
-// the GUI installer, which lets us distinguish it from a portable .app.
+// Matches the --identifier passed to pkgbuild for the base macOS package.
+// The RDP edition has its own receipt so switching editions does not change
+// which updater path the current binary expects.
 #[cfg(target_os = "macos")]
 const MACOS_PKG_IDENTIFIER: &str = "dev.tiny-shell.app";
+#[cfg(target_os = "macos")]
+const MACOS_RDP_PKG_IDENTIFIER: &str = "dev.tiny-shell.rdp";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(dead_code)] // Variants are platform-specific; not all are constructed on every OS.
@@ -188,12 +190,21 @@ pub(crate) fn automatic_update_delay(
 #[cfg(target_os = "macos")]
 fn macos_pkg_receipt_present() -> bool {
     // pkgutil returns a non-zero exit when no receipt exists for the id, so
-    // success is a reliable signal that the .pkg installer was used.
-    std::process::Command::new("pkgutil")
-        .args(["--pkg-info-plist", MACOS_PKG_IDENTIFIER])
-        .output()
-        .map(|output| output.status.success())
-        .unwrap_or(false)
+    // success is a reliable signal that the .pkg installer was used. The RDP
+    // build also accepts the legacy base receipt so existing RDP installs can
+    // transition to the split package without losing installer updates.
+    let identifiers: &[&str] = if cfg!(tiny_shell_freerdp_backend) {
+        &[MACOS_RDP_PKG_IDENTIFIER, MACOS_PKG_IDENTIFIER]
+    } else {
+        &[MACOS_PKG_IDENTIFIER]
+    };
+    identifiers.iter().any(|identifier| {
+        std::process::Command::new("pkgutil")
+            .args(["--pkg-info-plist", identifier])
+            .output()
+            .map(|output| output.status.success())
+            .unwrap_or(false)
+    })
 }
 
 #[cfg(target_os = "windows")]
@@ -324,14 +335,19 @@ fn select_release_asset<'a>(
         }
     } else if platform.starts_with("macos-") {
         // macOS releases contain a portable .zip and a .pkg installer.
-        // Mirror Windows: a .pkg-installed app updates via the .pkg, every
-        // other .app (portable zip) updates via the portable .zip.
+        // Each macOS release now contains a small base edition and an
+        // optional FreeRDP edition. Keep updates on the edition that produced
+        // the running binary, then mirror Windows: a .pkg-installed app
+        // updates via the .pkg, every other .app via the portable .zip.
         match installation_kind {
             InstallationKind::MacInstaller => assets
                 .iter()
-                .find(|asset| asset.name.contains(platform) && asset.name.ends_with("-setup.pkg")),
+                .find(|asset| {
+                    macos_asset_matches_current_edition(&asset.name, platform)
+                        && asset.name.ends_with("-setup.pkg")
+                }),
             _ => assets.iter().find(|asset| {
-                asset.name.contains(platform)
+                macos_asset_matches_current_edition(&asset.name, platform)
                     && asset.name.contains("-portable.")
                     && asset.name.ends_with(asset_extension)
             }),
@@ -339,6 +355,14 @@ fn select_release_asset<'a>(
     } else {
         assets.iter().find(is_archive)
     }
+}
+
+fn macos_asset_matches_current_edition(name: &str, platform: &str) -> bool {
+    if !name.contains(platform) {
+        return false;
+    }
+    let rdp_marker = format!("{platform}-rdp-");
+    name.contains(&rdp_marker) == cfg!(tiny_shell_freerdp_backend)
 }
 
 #[derive(Debug, Clone)]
@@ -537,7 +561,14 @@ where
     // installation path.
     let direct_payload_name = match installation_kind {
         InstallationKind::WindowsInstaller => Some(format!("tiny-shell-v{version}-setup.exe")),
-        InstallationKind::MacInstaller => Some(format!("tiny-shell-v{version}-setup.pkg")),
+        InstallationKind::MacInstaller => {
+            let edition_suffix = if cfg!(tiny_shell_freerdp_backend) {
+                "-rdp"
+            } else {
+                ""
+            };
+            Some(format!("tiny-shell-v{version}{edition_suffix}-setup.pkg"))
+        }
         InstallationKind::LinuxAppImage => {
             Some(format!("tiny-shell-v{version}-linux-x86_64.AppImage"))
         }
@@ -1559,6 +1590,7 @@ mod tests {
     #[test]
     fn macos_installer_selects_pkg_asset() {
         let assets = vec![
+            asset("tiny-shell-v1.1.0-macos-aarch64-rdp-setup.pkg"),
             asset("tiny-shell-v1.1.0-macos-aarch64-portable.zip"),
             asset("tiny-shell-v1.1.0-macos-aarch64-setup.pkg"),
         ];
@@ -1576,6 +1608,7 @@ mod tests {
     #[test]
     fn macos_portable_selects_zip_asset() {
         let assets = vec![
+            asset("tiny-shell-v1.1.0-macos-aarch64-rdp-portable.zip"),
             asset("tiny-shell-v1.1.0-macos-aarch64-portable.zip"),
             asset("tiny-shell-v1.1.0-macos-aarch64-setup.pkg"),
         ];

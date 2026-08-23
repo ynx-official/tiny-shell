@@ -882,10 +882,19 @@ impl TinyShell {
     }
 
     pub(crate) fn active_snapshot(&self) -> Option<RenderSnapshot> {
+        let keyword_highlight = self.config.keyword_highlight();
+        let highlight_rules = self.config.highlight_rules();
+        let highlight_rules_fingerprint = self.config.highlight_rules_fingerprint();
         self.workspace()
             .active_tab_id()
             .and_then(|id| self.workspace().terminal_tab(id))
-            .map(|t| t.render_snapshot(self.config.keyword_highlight()))
+            .map(|tab| {
+                tab.render_snapshot(
+                    keyword_highlight,
+                    highlight_rules,
+                    highlight_rules_fingerprint,
+                )
+            })
     }
 
     pub(crate) fn active_kind(&self) -> Option<TabKind> {

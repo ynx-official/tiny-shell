@@ -130,9 +130,22 @@ jobs:
         if: runner.os == 'Windows'
         run: cargo build --locked --release --target ${{ matrix.target }} --no-default-features
 
-      - name: Build (release, FreeRDP)
-        if: runner.os != 'Windows'
+      - name: Build (release, FreeRDP Linux)
+        if: runner.os == 'Linux'
         run: cargo build --locked --release --target ${{ matrix.target }} --features freerdp
+
+      - name: Build (release, macOS base and RDP editions)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --locked --release --target "${{ matrix.target }}" --features freerdp
+          cp "target/${{ matrix.target }}/release/tiny-shell" \
+            "target/${{ matrix.target }}/release/tiny-shell-rdp"
+
+          cargo build --locked --release --target "${{ matrix.target }}" --no-default-features
+          cp "target/${{ matrix.target }}/release/tiny-shell" \
+            "target/${{ matrix.target }}/release/tiny-shell-base"
 
       - name: Ensure Inno Setup is available
         if: runner.os == 'Windows'
@@ -152,65 +165,52 @@ jobs:
           STAGE="tiny-shell-${VERSION}-${{ matrix.name }}"
 
           if [ "${{ runner.os }}" = "macOS" ]; then
-            # ── Build a proper .app bundle ────────────────────────────────────
-            # Note: scripts/package-macos-app.sh now accepts --target and shares
-            # the Info.plist template, but we still inline the bundle assembly
-            # here so matrix builds keep a single shell step and full control
-            # over the staging directory used by ditto/pkgbuild below.
+            # Build each edition from its own binary, then share one packaging
+            # script so local packages and release packages stay identical.
+            : > "${RUNNER_TEMP}/tiny-shell-macos-assets"
+            for EDITION in base rdp; do
+              if [ "$EDITION" = "rdp" ]; then
+                EDITION_SUFFIX="-rdp"
+                BINARY_SUFFIX="rdp"
+                PKG_IDENTIFIER="dev.tiny-shell.rdp"
+              else
+                EDITION_SUFFIX=""
+                BINARY_SUFFIX="base"
+                PKG_IDENTIFIER="dev.tiny-shell.app"
+              fi
 
-            APP="TinyShell.app"
-            CONTENTS="$APP/Contents"
-            mkdir -p "$CONTENTS/MacOS" "$CONTENTS/Resources" "$CONTENTS/Frameworks"
+              APP_DIR="${RUNNER_TEMP}/tiny-shell-macos-${{ matrix.name }}-${EDITION}"
+              APP="$(bash scripts/package-macos-app.sh \
+                --edition "$EDITION" \
+                --version "$VERSION" \
+                --target "${{ matrix.target }}" \
+                --output-dir "$APP_DIR" \
+                --binary "target/${{ matrix.target }}/release/tiny-shell-${BINARY_SUFFIX}" \
+                --skip-build)"
+              VERSION_NUM="${VERSION#v}"
+              EDITION_STAGE="${STAGE}${EDITION_SUFFIX}"
+              # ditto preserves code-signature and bundle metadata.
+              ditto -c -k --keepParent "$APP" "${EDITION_STAGE}-portable.zip"
 
-            cp "target/${{ matrix.target }}/release/tiny-shell" "$CONTENTS/MacOS/"
-            cp "assets/icons/tiny-shell.icns" "$CONTENTS/Resources/tiny-shell.icns"
+              # No Developer ID Installer cert is available in CI, so the
+              # .pkg is unsigned; macOS will prompt on first launch.
+              PKG_STAGING="$(mktemp -d)"
+              cp -R "$APP" "$PKG_STAGING/"
+              pkgbuild \
+                --root "$PKG_STAGING" \
+                --identifier "$PKG_IDENTIFIER" \
+                --version "$VERSION_NUM" \
+                --install-location "/Applications" \
+                "${EDITION_STAGE}-setup.pkg"
+              rm -rf "$PKG_STAGING"
 
-            VERSION_NUM="${VERSION#v}"
-            # Info.plist lives as a template in the repo (assets/macos/Info.plist)
-            # with a {{VERSION}} placeholder; substituting here keeps the
-            # workflow and the local packaging script in sync from one source.
-            sed "s/{{VERSION}}/${VERSION_NUM}/g" \
-              "assets/macos/Info.plist" > "$CONTENTS/Info.plist"
-
-            printf 'APPL????' > "$CONTENTS/PkgInfo"
-
-            # Copy every non-system dynamic dependency (including FreeRDP,
-            # WinPR and their Homebrew dependencies) into the application and
-            # rewrite load commands to resolve from Contents/Frameworks.
-            dylibbundler \
-              -od -b \
-              -x "$CONTENTS/MacOS/tiny-shell" \
-              -d "$CONTENTS/Frameworks" \
-              -p @executable_path/../Frameworks/
-
-            # Ad-hoc code-sign the assembled bundle.
-            codesign --force --deep --sign - "$APP"
-            codesign --verify --verbose "$APP"
-
-            # ── Portable edition: zip of the signed .app bundle ──────
-            # ditto preserves code-signature and bundle metadata.
-            ditto -c -k --keepParent "$APP" "${STAGE}-portable.zip"
-
-            # ── Installer edition: .pkg that installs into /Applications
-            # pkgbuild wraps the .app in an Apple installer package.
-            # No Developer ID Installer cert is available in CI, so the
-            # .pkg is unsigned; Gatekeeper will prompt on first launch
-            # (same as the ad-hoc signed .app) — users allow it via
-            # System Settings > Privacy & Security.
-            PKG_STAGING="$(mktemp -d)"
-            cp -R "$APP" "$PKG_STAGING/"
-            pkgbuild \
-              --root "$PKG_STAGING" \
-              --identifier "dev.tiny-shell.app" \
-              --version "$VERSION_NUM" \
-              --install-location "/Applications" \
-              "${STAGE}-setup.pkg"
-            rm -rf "$PKG_STAGING"
+              echo "${EDITION_STAGE}-portable.zip" >> "${RUNNER_TEMP}/tiny-shell-macos-assets"
+              echo "${EDITION_STAGE}-setup.pkg" >> "${RUNNER_TEMP}/tiny-shell-macos-assets"
+            done
 
             # upload-artifact accepts multiple newline-separated paths.
             echo "ASSETS<<EOF" >> "$GITHUB_ENV"
-            echo "${STAGE}-portable.zip" >> "$GITHUB_ENV"
-            echo "${STAGE}-setup.pkg" >> "$GITHUB_ENV"
+            cat "${RUNNER_TEMP}/tiny-shell-macos-assets" >> "$GITHUB_ENV"
             echo "EOF" >> "$GITHUB_ENV"
 
           else

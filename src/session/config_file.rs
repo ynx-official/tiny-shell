@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
+use crate::session::highlight_rules::{HighlightRule, default_highlight_rules};
 use crate::session::session_types::{
     DeletedConnectionGroup, DeletedSession, ManagedKey, QuickCommandCategory, Session,
     SftpFooterVisibility, SftpToolbarVisibility,
@@ -86,6 +87,8 @@ pub struct ConfigFile {
     pub ui_font_size: f32,
     #[serde(default)]
     pub keyword_highlight: bool,
+    #[serde(default = "default_highlight_rules")]
+    pub highlight_rules: Vec<HighlightRule>,
     #[serde(default = "default_ui_font_family")]
     pub ui_font_family: String,
     #[serde(default = "default_terminal_font_family")]
@@ -286,6 +289,7 @@ impl Default for ConfigFile {
             terminal_display_style: TerminalDisplayStyle::default(),
             ui_font_size: default_ui_font_size(),
             keyword_highlight: false,
+            highlight_rules: default_highlight_rules(),
             ui_font_family: default_ui_font_family(),
             terminal_font_family: default_terminal_font_family(),
             title_bar_style: TitleBarStyle::default(),
@@ -397,6 +401,20 @@ mod tests {
             TerminalDisplayStyle::Standard
         );
         assert_eq!(config.terminal_font_family, SYSTEM_MONO_FONT);
+    }
+
+    #[test]
+    fn missing_highlight_rules_receive_recommended_defaults() {
+        let config: ConfigFile = serde_json::from_str("{}").unwrap();
+
+        assert_eq!(config.highlight_rules, default_highlight_rules());
+    }
+
+    #[test]
+    fn explicitly_empty_highlight_rules_are_preserved() {
+        let config: ConfigFile = serde_json::from_str(r#"{"highlight_rules":[]}"#).unwrap();
+
+        assert!(config.highlight_rules.is_empty());
     }
 
     #[test]
