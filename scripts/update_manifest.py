@@ -27,8 +27,12 @@ def expected_asset_names(tag: str) -> set[str]:
         f"tiny-shell-{tag}-linux-x86_64.tar.gz",
         f"tiny-shell-{tag}-macos-aarch64-portable.zip",
         f"tiny-shell-{tag}-macos-aarch64-setup.pkg",
+        f"tiny-shell-{tag}-macos-aarch64-rdp-portable.zip",
+        f"tiny-shell-{tag}-macos-aarch64-rdp-setup.pkg",
         f"tiny-shell-{tag}-macos-x86_64-portable.zip",
         f"tiny-shell-{tag}-macos-x86_64-setup.pkg",
+        f"tiny-shell-{tag}-macos-x86_64-rdp-portable.zip",
+        f"tiny-shell-{tag}-macos-x86_64-rdp-setup.pkg",
         f"tiny-shell-{tag}-windows-x86_64-portable.zip",
         f"tiny-shell-{tag}-windows-x86_64-setup.exe",
     }
