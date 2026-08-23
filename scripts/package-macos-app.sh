@@ -169,11 +169,15 @@ if [[ "$LINKED_FREERDP" == true ]]; then
     echo "Install it with: brew install dylibbundler" >&2
     exit 1
   fi
+  # The release workflow captures this script's stdout as the app path.
+  # Keep dylibbundler's progress output on stderr so that contract remains
+  # unambiguous for both local callers and CI packaging.
   dylibbundler \
     -od -b \
     -x "$MACOS_DIR/$APP_NAME" \
     -d "$FRAMEWORKS_DIR" \
-    -p @executable_path/../Frameworks/
+    -p @executable_path/../Frameworks/ \
+    >&2
 fi
 
 if command -v codesign >/dev/null 2>&1; then
