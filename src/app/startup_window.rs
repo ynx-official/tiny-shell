@@ -13,7 +13,7 @@ use crate::TinyShell;
 
 const STARTUP_WIDTH: f32 = 320.;
 const STARTUP_HEIGHT: f32 = 184.;
-const EXPANSION_DURATION: Duration = Duration::from_millis(220);
+const EXPANSION_DURATION: Duration = Duration::from_millis(520);
 
 /// Lightweight first-frame content that stays visible while the full workspace
 /// is initialized and the native window expands to its persisted size.
@@ -95,11 +95,22 @@ pub(crate) fn startup_window_bounds(
 ) -> Option<WindowBounds> {
     target.map(|target| {
         let target = target.get_bounds();
-        let display = target_display_bounds(target, cx);
-        WindowBounds::Windowed(startup_bounds_for_platform(target, display))
+        WindowBounds::Windowed(startup_bounds_for_platform(target, cx))
     })
 }
 
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn startup_bounds_for_platform(target: Bounds<Pixels>, cx: &App) -> Bounds<Pixels> {
+    let display = target_display_bounds(target, cx);
+    visible_centered_startup_bounds(target, display)
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn startup_bounds_for_platform(target: Bounds<Pixels>, _cx: &App) -> Bounds<Pixels> {
+    Bounds::new(target.origin, compact_startup_size(target))
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn target_display_bounds(target: Bounds<Pixels>, cx: &App) -> Bounds<Pixels> {
     cx.displays()
         .into_iter()
@@ -110,6 +121,7 @@ fn target_display_bounds(target: Bounds<Pixels>, cx: &App) -> Bounds<Pixels> {
         .unwrap_or(target)
 }
 
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn overlap_area(left: Bounds<Pixels>, right: Bounds<Pixels>) -> f32 {
     let width = (left.right().min(right.right()) - left.left().max(right.left()))
         .as_f32()
@@ -120,23 +132,22 @@ fn overlap_area(left: Bounds<Pixels>, right: Bounds<Pixels>) -> f32 {
     width * height
 }
 
-#[cfg(target_os = "windows")]
-fn startup_bounds_for_platform(target: Bounds<Pixels>, display: Bounds<Pixels>) -> Bounds<Pixels> {
-    centered_startup_bounds(target, display)
-}
-
-#[cfg(not(target_os = "windows"))]
-fn startup_bounds_for_platform(target: Bounds<Pixels>, _display: Bounds<Pixels>) -> Bounds<Pixels> {
-    Bounds::new(target.origin, compact_startup_size(target))
-}
-
-#[cfg(any(target_os = "windows", test))]
-fn centered_startup_bounds(target: Bounds<Pixels>, display: Bounds<Pixels>) -> Bounds<Pixels> {
+#[cfg(any(target_os = "macos", target_os = "windows", test))]
+fn visible_centered_startup_bounds(
+    target: Bounds<Pixels>,
+    display: Bounds<Pixels>,
+) -> Bounds<Pixels> {
     let compact_size = compact_startup_size(target);
+    let centered_origin = point(
+        target.origin.x + (target.size.width - compact_size.width) / 2.,
+        target.origin.y + (target.size.height - compact_size.height) / 2.,
+    );
+    let max_x = (display.right() - compact_size.width).max(display.left());
+    let max_y = (display.bottom() - compact_size.height).max(display.top());
     Bounds::new(
         point(
-            display.origin.x + (display.size.width - compact_size.width) / 2.,
-            display.origin.y + (display.size.height - compact_size.height) / 2.,
+            centered_origin.x.clamp(display.left(), max_x),
+            centered_origin.y.clamp(display.top(), max_y),
         ),
         compact_size,
     )
@@ -169,7 +180,7 @@ impl StartupExpansion {
         let progress = now.saturating_duration_since(self.started_at).as_secs_f32()
             / EXPANSION_DURATION.as_secs_f32();
         let progress = progress.clamp(0., 1.);
-        let eased = 1. - (1. - progress).powi(5);
+        let eased = 1. - (1. - progress).powi(3);
         StartupExpansionFrame {
             bounds: Bounds::new(
                 point(
@@ -218,6 +229,49 @@ pub(crate) fn move_startup_window(window: &Window, origin: Point<Pixels>) {
     {
         tracing::warn!(%error, "failed to animate startup window position");
     }
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn move_startup_window(window: &Window, origin: Point<Pixels>) {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    static MOVE_WARNING_REPORTED: AtomicBool = AtomicBool::new(false);
+
+    if let Err(error) = move_macos_window(window, origin)
+        && !MOVE_WARNING_REPORTED.swap(true, Ordering::AcqRel)
+    {
+        tracing::warn!(%error, "failed to animate startup window position");
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[allow(unexpected_cfgs)]
+fn move_macos_window(window: &Window, origin: Point<Pixels>) -> anyhow::Result<()> {
+    use anyhow::{anyhow, bail};
+    use cocoa::{appkit::NSWindow, base::id, foundation::NSPoint};
+    use objc::{msg_send, sel, sel_impl};
+    use raw_window_handle::RawWindowHandle;
+
+    let handle = raw_window_handle::HasWindowHandle::window_handle(window).map_err(|error| {
+        anyhow!("GPUI did not expose a native startup window handle: {error:?}")
+    })?;
+    let RawWindowHandle::AppKit(handle) = handle.as_raw() else {
+        bail!("startup window is not backed by AppKit");
+    };
+    let view = handle.ns_view.as_ptr() as id;
+    let native_window: id = unsafe { msg_send![view, window] };
+    if native_window.is_null() {
+        bail!("startup AppKit view is not attached to a window");
+    }
+
+    let current = window.bounds();
+    let frame = unsafe { NSWindow::frame(native_window) };
+    let top_left = NSPoint::new(
+        frame.origin.x + (origin.x - current.origin.x).as_f32() as f64,
+        frame.origin.y + frame.size.height - (origin.y - current.origin.y).as_f32() as f64,
+    );
+    unsafe { NSWindow::setFrameTopLeftPoint_(native_window, top_left) };
+    Ok(())
 }
 
 #[cfg(target_os = "windows")]
@@ -272,7 +326,7 @@ fn move_windows_window(window: &Window, origin: Point<Pixels>) -> anyhow::Result
     Ok(())
 }
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub(crate) fn move_startup_window(_window: &Window, _origin: Point<Pixels>) {}
 
 fn lerp(start: f32, target: f32, progress: f32) -> f32 {
@@ -285,16 +339,15 @@ mod tests {
 
     use gpui::{Bounds, point, px, size};
 
-    use super::{StartupExpansion, centered_startup_bounds};
+    use super::{StartupExpansion, visible_centered_startup_bounds};
 
     #[test]
-    fn startup_window_uses_compact_size_and_centers_on_target_display() {
+    fn startup_window_uses_compact_size_and_keeps_target_center() {
         let target = Bounds::new(point(px(120.), px(80.)), size(px(1200.), px(760.)));
         let display = Bounds::new(point(px(0.), px(0.)), size(px(1920.), px(1080.)));
-
         assert_eq!(
-            centered_startup_bounds(target, display),
-            Bounds::new(point(px(800.), px(448.)), size(px(320.), px(184.)))
+            visible_centered_startup_bounds(target, display),
+            Bounds::new(point(px(560.), px(368.)), size(px(320.), px(184.)))
         );
     }
 
@@ -302,10 +355,17 @@ mod tests {
     fn startup_window_never_grows_beyond_a_small_target() {
         let target = Bounds::new(point(px(12.), px(16.)), size(px(280.), px(160.)));
         let display = Bounds::new(point(px(0.), px(0.)), size(px(1920.), px(1080.)));
+        assert_eq!(visible_centered_startup_bounds(target, display), target);
+    }
+
+    #[test]
+    fn startup_window_stays_visible_when_target_center_is_offscreen() {
+        let target = Bounds::new(point(px(-1150.), px(80.)), size(px(1200.), px(760.)));
+        let display = Bounds::new(point(px(0.), px(0.)), size(px(1920.), px(1080.)));
 
         assert_eq!(
-            centered_startup_bounds(target, display),
-            Bounds::new(point(px(820.), px(460.)), target.size)
+            visible_centered_startup_bounds(target, display),
+            Bounds::new(point(px(0.), px(368.)), size(px(320.), px(184.)))
         );
     }
 
@@ -320,14 +380,14 @@ mod tests {
         assert_eq!(first.bounds, start);
         assert!(!first.complete);
 
-        let midpoint = expansion.frame_at(started_at + Duration::from_millis(110));
+        let midpoint = expansion.frame_at(started_at + Duration::from_millis(260));
         assert!(midpoint.bounds.origin.x < start.origin.x);
         assert!(midpoint.bounds.origin.x > target.origin.x);
         assert!(midpoint.bounds.size.width > px(760.));
         assert!(midpoint.bounds.size.width < px(1200.));
         assert!(!midpoint.complete);
 
-        let final_frame = expansion.frame_at(started_at + Duration::from_millis(220));
+        let final_frame = expansion.frame_at(started_at + Duration::from_millis(520));
         assert_eq!(final_frame.bounds, target);
         assert!(final_frame.complete);
     }

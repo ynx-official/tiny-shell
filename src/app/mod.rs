@@ -183,6 +183,7 @@ pub(crate) enum DialogKind {
     ConnectionGroup,
     QuickCommandCategory,
     QuickCommand,
+    HighlightRules,
     /// 校验隐私密码后才允许启用敏感信息同步。
     VerifySyncSecretsPassword,
     /// 上传预检发现远端敏感字段无法解密。
@@ -401,6 +402,7 @@ pub(crate) struct TinyShell {
     pub(crate) ssh_proxy_type: String,
     pub(crate) global_proxy_type: String,
     pub(crate) settings_inputs: SettingsInputs,
+    pub(crate) highlight_rules_dialog_window: Option<AnyWindowHandle>,
     pub(crate) sync_runtime: SyncRuntimeState,
     pub(crate) ssh_auth_method: AuthMethod,
     pub(crate) ssh_config_entries: Vec<SshConfigEntry>,
@@ -969,6 +971,7 @@ impl TinyShell {
             ssh_proxy_type: "none".to_string(),
             global_proxy_type: config.global_proxy_type().to_string(),
             settings_inputs,
+            highlight_rules_dialog_window: None,
             sync_runtime: SyncRuntimeState::new(t!("sync_not_run").into()),
             ssh_auth_method: AuthMethod::Password,
             ssh_config_entries: crate::session::ssh_config::parse_ssh_config().unwrap_or_default(),

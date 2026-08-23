@@ -70,6 +70,7 @@ fn main() {
 
     #[cfg(windows)]
     {
+        println!("cargo:rerun-if-changed=assets/icons/tiny-shell.ico");
         let mut res = winres::WindowsResource::new();
         res.set_icon("assets/icons/tiny-shell.ico");
         res.set("FileDescription", "TinyShell");

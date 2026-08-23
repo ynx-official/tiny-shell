@@ -1266,10 +1266,15 @@ impl TinyShell {
             PaneLayout::Single(tab_id) => {
                 let is_focused = path == this.workspace().focused_pane_path();
                 let keyword_highlight = this.config.keyword_highlight();
-                let snapshot = this
-                    .workspace()
-                    .terminal_tab(tab_id)
-                    .map(|t| t.render_snapshot(keyword_highlight));
+                let highlight_rules = this.config.highlight_rules();
+                let highlight_rules_fingerprint = this.config.highlight_rules_fingerprint();
+                let snapshot = this.workspace().terminal_tab(tab_id).map(|tab| {
+                    tab.render_snapshot(
+                        keyword_highlight,
+                        highlight_rules,
+                        highlight_rules_fingerprint,
+                    )
+                });
                 let Some(snapshot) = snapshot else {
                     return div().into_any_element();
                 };
