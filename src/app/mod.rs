@@ -7,11 +7,14 @@ pub(crate) mod connection_import_window;
 pub(crate) mod connection_manager;
 pub(crate) mod constants;
 pub(crate) mod dialogs;
+pub(crate) mod font_preferences;
+pub(crate) mod group_tree_picker;
 pub(crate) mod input_focus;
 pub(crate) mod keybinding_recorder;
 pub(crate) mod managed_keys;
 pub(crate) mod monitoring;
 pub(crate) mod platform;
+mod remote_desktop_surface;
 pub(crate) mod resizable;
 pub(crate) mod runtime_state;
 pub(crate) mod search;
@@ -23,10 +26,14 @@ pub(crate) mod sftp_editor;
 pub(crate) mod sftp_editor_window;
 pub(crate) mod ssh_key_import;
 pub(crate) mod startup;
+mod startup_window;
 pub(crate) mod sync_dialogs;
 pub(crate) mod sync_handlers;
 pub(crate) mod tab_drag;
+pub(crate) mod tab_transfer;
 pub(crate) mod terminal_completion;
+mod terminal_path;
+mod terminal_scrollbar;
 pub(crate) mod terminal_settings;
 pub(crate) mod terminal_workspace;
 pub(crate) mod theme;
@@ -34,15 +41,26 @@ pub(crate) mod tool_panel;
 pub(crate) mod transfer_manager;
 pub(crate) mod ui;
 pub(crate) mod updater;
+mod window_registry;
 pub(crate) mod workspace_presentation;
 
+pub(crate) use terminal_scrollbar::TerminalScrollbarHandle;
+pub(crate) use terminal_workspace::{PaneDirection, PaneLayout, SystemInfoTab, TabGroup};
+pub(crate) use window_registry::{
+    IncomingPaneDrag, IncomingTabDrag, activate_window_with_retry, clear_all_incoming_tab_drags,
+    clear_incoming_tab_drag_except, clear_tab_drag_hover, clear_tab_drag_hover_for_drag,
+    clear_tab_drag_hover_for_target, close_auxiliary_windows, config_repository_for_open_window,
+    deregister_auxiliary_window, deregister_window, find_window_at_screen_pos, mark_window_active,
+    next_tab_drag_id, other_main_windows, register_auxiliary_window, register_window,
+    set_tab_drag_hover, tab_drag_hover_exists, tab_drag_hover_is_current, tab_drag_hover_targets,
+    update_window_bounds, window_registry,
+};
+
 use std::{
-    cell::{Cell, RefCell},
     collections::{HashMap, VecDeque},
     ops::Range,
-    rc::Rc,
     sync::{
-        Arc, Mutex, MutexGuard, OnceLock,
+        Arc, OnceLock,
         atomic::{AtomicU64, Ordering},
     },
     time::{Duration, Instant},
@@ -52,6 +70,7 @@ use crate::app::{
     backend_events::coalesce_backend_events,
     connection_manager::{actions::ConnectionManagerActions, state::ConnectionManagerState},
     monitoring::{MonitoringState, MonitoringVisibilityContext, metrics_visible, push_bounded},
+    remote_desktop_surface::RemoteDesktopSurfaceCache,
     resizable::ResizableState,
     runtime_state::{
         AsyncRuntimeState, AuxiliaryWindowsState, ConfigPersistenceState, DialogToken,
@@ -64,14 +83,13 @@ use crate::app::{
 };
 use futures::{FutureExt as _, pin_mut, select_biased};
 use gpui::{
-    AnyWindowHandle, App, AppContext as _, Bounds, Context, Entity, FocusHandle, Pixels, Point,
-    SharedString, Size, UniformListScrollHandle, Window, point, px, size,
+    AnyWindowHandle, App, AppContext as _, Bounds, Context, Entity, FocusHandle, FontFallbacks,
+    Pixels, Point, SharedString, UniformListScrollHandle, Window, point, px, size,
 };
 use gpui_component::{
     Theme, ThemeMode, ThemeRegistry, WindowExt,
     dialog::Dialog,
     input::{InputEvent, InputState},
-    scroll::ScrollbarHandle,
 };
 use rust_i18n::t;
 use tokio::runtime::Runtime;
@@ -84,7 +102,7 @@ use crate::{
     },
     system::{SharedSystemSampler, SystemSampler, SystemSnapshot},
     terminal::{
-        self, BackendCommand, BackendEvent, BackendEventSender, TabKind, TerminalTab,
+        BackendCommand, BackendEvent, BackendEventSender, TabKind, TerminalTab,
         backend_event_channel,
     },
 };
@@ -119,604 +137,7 @@ pub(crate) fn shared_system_sampler() -> Arc<std::sync::Mutex<SharedSystemSample
         .clone()
 }
 
-// ─── Cross-window registry ────────────────────────────────────────
-// Each open tiny-shell window registers its `WindowHandle` + `Entity<TinyShell>`
-// + current screen-space bounds here. This lets a tab being dragged in
-// one window find another window to merge into by hit-testing the
-// cursor's screen position against every other window's bounds.
-
-pub(crate) struct WindowEntry {
-    pub window_handle: AnyWindowHandle,
-    pub entity: Entity<TinyShell>,
-    pub screen_bounds: Bounds<Pixels>,
-    pub activation_seq: u64,
-}
-
-#[derive(Clone)]
-pub(crate) struct IncomingTabDrag {
-    pub(crate) drag_id: u64,
-    pub(crate) source_window: AnyWindowHandle,
-    pub(crate) source: Entity<TinyShell>,
-    pub(crate) group_id: String,
-}
-
-#[derive(Clone)]
-pub(crate) struct IncomingPaneDrag {
-    pub(crate) group_id: String,
-    pub(crate) tab_id: String,
-}
-
-static WINDOW_REGISTRY: OnceLock<Arc<Mutex<Vec<WindowEntry>>>> = OnceLock::new();
-static AUXILIARY_WINDOW_REGISTRY: OnceLock<Arc<Mutex<Vec<AuxiliaryWindowEntry>>>> = OnceLock::new();
-static TAB_DRAG_HOVER: OnceLock<Mutex<Option<(u64, AnyWindowHandle, u64)>>> = OnceLock::new();
-static WINDOW_ACTIVATION_SEQ: AtomicU64 = AtomicU64::new(1);
-static TAB_DRAG_SEQ: AtomicU64 = AtomicU64::new(1);
-static TAB_DRAG_HOVER_SEQ: AtomicU64 = AtomicU64::new(1);
 static SESSION_OWNER_SEQ: AtomicU64 = AtomicU64::new(1);
-
-#[derive(Clone, Copy)]
-struct AuxiliaryWindowEntry {
-    owner_id: crate::session::store::WindowOwnerId,
-    window: AnyWindowHandle,
-}
-fn lock_recover<'a, T>(mutex: &'a Mutex<T>, name: &str) -> MutexGuard<'a, T> {
-    match mutex.lock() {
-        Ok(guard) => guard,
-        Err(poisoned) => {
-            tracing::warn!("{name} lock was poisoned; recovering its state");
-            poisoned.into_inner()
-        }
-    }
-}
-
-pub(crate) fn window_registry() -> Arc<Mutex<Vec<WindowEntry>>> {
-    WINDOW_REGISTRY
-        .get_or_init(|| Arc::new(Mutex::new(Vec::new())))
-        .clone()
-}
-
-fn auxiliary_window_registry() -> Arc<Mutex<Vec<AuxiliaryWindowEntry>>> {
-    AUXILIARY_WINDOW_REGISTRY
-        .get_or_init(|| Arc::new(Mutex::new(Vec::new())))
-        .clone()
-}
-
-pub(crate) fn register_auxiliary_window(
-    window: AnyWindowHandle,
-    owner_id: crate::session::store::WindowOwnerId,
-) {
-    let registry = auxiliary_window_registry();
-    let mut guard = lock_recover(&registry, "auxiliary window registry");
-    if !guard.iter().any(|entry| entry.window == window) {
-        guard.push(AuxiliaryWindowEntry { owner_id, window });
-    }
-}
-
-pub(crate) fn deregister_auxiliary_window(window: AnyWindowHandle) {
-    let registry = auxiliary_window_registry();
-    lock_recover(&registry, "auxiliary window registry").retain(|entry| entry.window != window);
-}
-
-/// Close every independent window owned by the application. Handles are
-/// removed from the registry before calling into GPUI so close callbacks can
-/// safely update their owner without re-entering this registry.
-pub(crate) fn close_auxiliary_windows(
-    owner_id: crate::session::store::WindowOwnerId,
-    cx: &mut App,
-) {
-    crate::app::sftp_editor_window::force_close_all(owner_id, cx);
-    let windows = {
-        let registry = auxiliary_window_registry();
-        let mut guard = lock_recover(&registry, "auxiliary window registry");
-        let mut windows = Vec::new();
-        guard.retain(|entry| {
-            if entry.owner_id == owner_id {
-                windows.push(entry.window);
-                false
-            } else {
-                true
-            }
-        });
-        windows
-    };
-    for window in windows {
-        if let Err(error) = window.update(cx, |_, window, _| window.remove_window()) {
-            tracing::debug!("independent window was already closed: {error:?}");
-        }
-    }
-}
-
-fn select_config_repository(
-    entries: impl IntoIterator<Item = (bool, u64, Arc<config_persistence::ConfigRepository>)>,
-) -> Option<Arc<config_persistence::ConfigRepository>> {
-    entries
-        .into_iter()
-        .filter(|(is_open, _, _)| *is_open)
-        .max_by_key(|(_, activation_seq, _)| *activation_seq)
-        .map(|(_, _, repository)| repository)
-}
-
-/// Reuse the repository owned by an already-open application window.
-///
-/// The registry is the application-level source of truth for window ownership;
-/// keeping this lookup here avoids introducing a second process-global
-/// repository singleton solely for the macOS reopen callback.
-pub(crate) fn config_repository_for_open_window(
-    cx: &App,
-) -> Option<Arc<config_persistence::ConfigRepository>> {
-    let entries = {
-        let registry = window_registry();
-        lock_recover(&registry, "window registry")
-            .iter()
-            .map(|entry| {
-                (
-                    cx.windows().contains(&entry.window_handle),
-                    entry.activation_seq,
-                    entry.entity.read(cx).config_repository.clone(),
-                )
-            })
-            .collect::<Vec<_>>()
-    };
-
-    select_config_repository(entries)
-}
-
-pub(crate) fn next_tab_drag_id() -> u64 {
-    TAB_DRAG_SEQ.fetch_add(1, Ordering::Relaxed)
-}
-
-pub(crate) fn set_tab_drag_hover(drag_id: u64, target_window: AnyWindowHandle) -> u64 {
-    let generation = TAB_DRAG_HOVER_SEQ.fetch_add(1, Ordering::Relaxed);
-    let hover = TAB_DRAG_HOVER.get_or_init(|| Mutex::new(None));
-    *lock_recover(hover, "tab drag hover") = Some((drag_id, target_window, generation));
-    generation
-}
-
-pub(crate) fn tab_drag_hover_is_current(
-    drag_id: u64,
-    target_window: AnyWindowHandle,
-    generation: u64,
-) -> bool {
-    let hover = TAB_DRAG_HOVER.get_or_init(|| Mutex::new(None));
-    lock_recover(hover, "tab drag hover")
-        .as_ref()
-        .is_some_and(|current| *current == (drag_id, target_window, generation))
-}
-
-pub(crate) fn tab_drag_hover_targets(drag_id: u64, target_window: AnyWindowHandle) -> bool {
-    let hover = TAB_DRAG_HOVER.get_or_init(|| Mutex::new(None));
-    lock_recover(hover, "tab drag hover")
-        .as_ref()
-        .is_some_and(|current| current.0 == drag_id && current.1 == target_window)
-}
-
-pub(crate) fn tab_drag_hover_exists(drag_id: u64) -> bool {
-    let hover = TAB_DRAG_HOVER.get_or_init(|| Mutex::new(None));
-    lock_recover(hover, "tab drag hover")
-        .as_ref()
-        .is_some_and(|current| current.0 == drag_id)
-}
-
-pub(crate) fn clear_tab_drag_hover_for_drag(drag_id: u64) -> bool {
-    let hover = TAB_DRAG_HOVER.get_or_init(|| Mutex::new(None));
-    let mut hover = lock_recover(hover, "tab drag hover");
-    if hover.as_ref().is_some_and(|current| current.0 == drag_id) {
-        *hover = None;
-        true
-    } else {
-        false
-    }
-}
-
-pub(crate) fn clear_tab_drag_hover_for_target(
-    drag_id: u64,
-    target_window: AnyWindowHandle,
-) -> bool {
-    let hover = TAB_DRAG_HOVER.get_or_init(|| Mutex::new(None));
-    let mut hover = lock_recover(hover, "tab drag hover");
-    if hover
-        .as_ref()
-        .is_some_and(|current| current.0 == drag_id && current.1 == target_window)
-    {
-        *hover = None;
-        true
-    } else {
-        false
-    }
-}
-
-pub(crate) fn clear_tab_drag_hover() {
-    let hover = TAB_DRAG_HOVER.get_or_init(|| Mutex::new(None));
-    *lock_recover(hover, "tab drag hover") = None;
-}
-
-/// Register a window when it opens.
-pub(crate) fn register_window(window_handle: AnyWindowHandle, entity: Entity<TinyShell>) {
-    let registry = window_registry();
-    let mut guard = lock_recover(&registry, "window registry");
-    if let Some(entry) = guard.iter_mut().find(|e| e.window_handle == window_handle) {
-        entry.entity = entity;
-    } else {
-        guard.push(WindowEntry {
-            window_handle,
-            entity,
-            screen_bounds: Bounds::default(),
-            activation_seq: WINDOW_ACTIVATION_SEQ.fetch_add(1, Ordering::Relaxed),
-        });
-    }
-}
-
-/// Deregister a window when it closes and remove stale drag references.
-pub(crate) fn deregister_window(window_handle: AnyWindowHandle, cx: &mut App) {
-    let remaining = {
-        let registry = window_registry();
-        let mut guard = lock_recover(&registry, "window registry");
-        guard.retain(|entry| entry.window_handle != window_handle);
-        guard
-            .iter()
-            .map(|entry| entry.entity.clone())
-            .collect::<Vec<_>>()
-    };
-
-    for entity in remaining {
-        entity.update(cx, |window, cx| {
-            if window
-                .incoming_tab_drag
-                .as_ref()
-                .is_some_and(|drag| drag.source_window == window_handle)
-            {
-                window.incoming_tab_drag = None;
-            }
-            cx.notify();
-        });
-    }
-}
-
-pub(crate) fn mark_window_active(window_handle: AnyWindowHandle) {
-    let registry = window_registry();
-    if let Ok(mut guard) = registry.lock()
-        && let Some(entry) = guard
-            .iter_mut()
-            .find(|entry| entry.window_handle == window_handle)
-    {
-        entry.activation_seq = WINDOW_ACTIVATION_SEQ.fetch_add(1, Ordering::Relaxed);
-    }
-}
-
-/// Activate a target window after a cross-window operation and verify that the
-/// platform accepted the foreground request. Windows can reject the first
-/// request while the source window is still completing its mouse-up event.
-pub(crate) fn activate_window_with_retry(
-    window_handle: AnyWindowHandle,
-    focus_handle: FocusHandle,
-    cx: &mut App,
-) {
-    cx.spawn(async move |cx| {
-        const RETRY_DELAYS_MS: [u64; 4] = [0, 40, 80, 160];
-
-        for delay_ms in RETRY_DELAYS_MS {
-            if delay_ms > 0 {
-                cx.background_executor()
-                    .timer(Duration::from_millis(delay_ms))
-                    .await;
-            }
-
-            if window_handle
-                .update(cx, |_, window, cx| {
-                    window.activate_window();
-                    window.focus(&focus_handle, cx);
-                })
-                .is_err()
-            {
-                return;
-            }
-
-            cx.background_executor()
-                .timer(Duration::from_millis(30))
-                .await;
-            match window_handle.update(cx, |_, window, _| window.is_window_active()) {
-                Ok(true) => return,
-                Ok(false) => {}
-                Err(_) => return,
-            }
-        }
-
-        tracing::warn!("[ui] target window did not become active after retries");
-    })
-    .detach();
-}
-
-/// Update the stored screen bounds for `window_handle`.
-pub(crate) fn update_window_bounds(window_handle: AnyWindowHandle, bounds: Bounds<Pixels>) {
-    let registry = window_registry();
-    if let Ok(mut guard) = registry.lock() {
-        if let Some(entry) = guard.iter_mut().find(|e| e.window_handle == window_handle) {
-            entry.screen_bounds = bounds;
-        }
-    }
-}
-
-/// Find another window (other than `exclude`) whose screen bounds contain
-/// `screen_pos`. Returns the target's entity and a clone of its bounds.
-pub(crate) fn find_window_at_screen_pos(
-    exclude: &AnyWindowHandle,
-    screen_pos: Point<Pixels>,
-) -> Option<(AnyWindowHandle, Entity<TinyShell>, Bounds<Pixels>)> {
-    let registry = window_registry();
-    let guard = lock_recover(&registry, "window registry");
-    guard
-        .iter()
-        .filter(|entry| {
-            &entry.window_handle != exclude && entry.screen_bounds.contains(&screen_pos)
-        })
-        .max_by_key(|entry| entry.activation_seq)
-        .map(|entry| {
-            (
-                entry.window_handle,
-                entry.entity.clone(),
-                entry.screen_bounds,
-            )
-        })
-}
-
-pub(crate) fn other_main_windows(
-    exclude: AnyWindowHandle,
-) -> Vec<(AnyWindowHandle, Entity<TinyShell>)> {
-    let registry = window_registry();
-    let guard = lock_recover(&registry, "window registry");
-    let mut entries = guard
-        .iter()
-        .filter(|entry| entry.window_handle != exclude)
-        .map(|entry| {
-            (
-                entry.activation_seq,
-                entry.window_handle,
-                entry.entity.clone(),
-            )
-        })
-        .collect::<Vec<_>>();
-    entries.sort_by_key(|(activation_seq, _, _)| std::cmp::Reverse(*activation_seq));
-    entries
-        .into_iter()
-        .map(|(_, handle, entity)| (handle, entity))
-        .collect()
-}
-
-pub(crate) fn clear_incoming_tab_drag_except(
-    drag_id: u64,
-    keep_window: Option<AnyWindowHandle>,
-    cx: &mut App,
-) {
-    let targets = {
-        let registry = window_registry();
-        let guard = lock_recover(&registry, "window registry");
-        guard
-            .iter()
-            .filter(|entry| keep_window != Some(entry.window_handle))
-            .map(|entry| entry.entity.clone())
-            .collect::<Vec<_>>()
-    };
-
-    for target in targets {
-        target.update(cx, |target, cx| {
-            if target
-                .incoming_tab_drag
-                .as_ref()
-                .is_some_and(|drag| drag.drag_id == drag_id)
-            {
-                target.incoming_tab_drag = None;
-                target.incoming_tab_drop_zone = None;
-                cx.notify();
-            }
-        });
-    }
-}
-
-pub(crate) fn clear_all_incoming_tab_drags(cx: &mut App) {
-    clear_tab_drag_hover();
-    let targets = {
-        let registry = window_registry();
-        let guard = lock_recover(&registry, "window registry");
-        guard
-            .iter()
-            .map(|entry| entry.entity.clone())
-            .collect::<Vec<_>>()
-    };
-
-    for target in targets {
-        target.update(cx, |target, cx| {
-            if target.incoming_tab_drag.take().is_some() {
-                target.incoming_tab_drop_zone = None;
-                cx.notify();
-            }
-        });
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum PaneDirection {
-    Left,
-    Right,
-    Up,
-    Down,
-}
-
-#[derive(Clone, Debug)]
-pub(crate) enum PaneLayout {
-    Empty,
-    Single(String),
-    Horizontal(Vec<PaneLayout>, f32), // children, split_ratio (0.0-1.0)
-    Vertical(Vec<PaneLayout>, f32),   // children, split_ratio (0.0-1.0)
-}
-
-#[derive(Clone)]
-pub(crate) struct TabGroup {
-    pub(crate) id: String,
-    /// Stable identity for drag sessions; it must not change on every render.
-    pub(crate) drag_id: u64,
-    /// Monotonic per-window label used to distinguish similarly named hosts.
-    pub(crate) ordinal: u64,
-    pub(crate) title: String,
-    pub(crate) pane_root: PaneLayout,
-    pub(crate) sftp: Option<crate::terminal::SftpUiState>,
-}
-
-#[derive(Clone)]
-pub(crate) struct SystemInfoTab {
-    pub(crate) id: String,
-    pub(crate) source_tab_id: String,
-    pub(crate) title: String,
-}
-
-impl PaneLayout {
-    pub fn tab_ids(&self) -> Vec<&str> {
-        match self {
-            PaneLayout::Empty => Vec::new(),
-            PaneLayout::Single(id) => vec![id.as_str()],
-            PaneLayout::Horizontal(children, _) | PaneLayout::Vertical(children, _) => {
-                children.iter().flat_map(|c| c.tab_ids()).collect()
-            }
-        }
-    }
-
-    pub fn contains(&self, tab_id: &str) -> bool {
-        match self {
-            PaneLayout::Empty => false,
-            PaneLayout::Single(id) => id == tab_id,
-            PaneLayout::Horizontal(children, _) | PaneLayout::Vertical(children, _) => {
-                children.iter().any(|c| c.contains(tab_id))
-            }
-        }
-    }
-
-    pub fn focused_tab_id(&self, path: &[usize]) -> Option<&str> {
-        match self {
-            PaneLayout::Empty => None,
-            PaneLayout::Single(id) if path.is_empty() => Some(id.as_str()),
-            PaneLayout::Horizontal(children, _) | PaneLayout::Vertical(children, _) => {
-                let (&first, rest) = path.split_first()?;
-                children.get(first).and_then(|c| c.focused_tab_id(rest))
-            }
-            _ => None,
-        }
-    }
-
-    pub fn replace_at(&mut self, path: &[usize], replacement: PaneLayout) {
-        match (self, path) {
-            (this @ PaneLayout::Empty, []) | (this @ PaneLayout::Single(_), []) => {
-                *this = replacement
-            }
-            (
-                PaneLayout::Horizontal(children, _) | PaneLayout::Vertical(children, _),
-                [first, rest @ ..],
-            ) => {
-                if let Some(child) = children.get_mut(*first) {
-                    child.replace_at(rest, replacement);
-                }
-            }
-            _ => {}
-        }
-    }
-
-    pub fn remove_tab(&mut self, tab_id: &str) -> bool {
-        match self {
-            PaneLayout::Empty => false,
-            PaneLayout::Single(id) if id == tab_id => {
-                *self = PaneLayout::Empty;
-                true
-            }
-            PaneLayout::Single(_) => false,
-            PaneLayout::Horizontal(children, _) | PaneLayout::Vertical(children, _) => {
-                let mut changed = false;
-                for child in children.iter_mut() {
-                    changed |= child.remove_tab(tab_id);
-                }
-                children.retain(|child| !matches!(child, PaneLayout::Empty));
-                match children.len() {
-                    0 => *self = PaneLayout::Empty,
-                    1 => {
-                        if let Some(replacement) = children.pop() {
-                            *self = replacement;
-                        }
-                    }
-                    _ => {}
-                }
-                changed
-            }
-        }
-    }
-
-    pub fn total_panes(&self) -> usize {
-        match self {
-            PaneLayout::Empty => 0,
-            PaneLayout::Single(_) => 1,
-            PaneLayout::Horizontal(children, _) | PaneLayout::Vertical(children, _) => {
-                children.iter().map(|c| c.total_panes()).sum()
-            }
-        }
-    }
-}
-
-pub(crate) struct TerminalScrollbarState {
-    line_height: Pixels,
-    total_lines: usize,
-    viewport_lines: usize,
-    display_offset: usize,
-}
-
-#[derive(Clone, Default)]
-pub(crate) struct TerminalScrollbarHandle {
-    state: Rc<RefCell<Option<TerminalScrollbarState>>>,
-    pub(crate) future_display_offset: Rc<Cell<Option<usize>>>,
-}
-
-impl TerminalScrollbarHandle {
-    pub(crate) fn update(&self, snapshot: &terminal::RenderSnapshot, line_height: Pixels) {
-        self.state.replace(Some(TerminalScrollbarState {
-            line_height,
-            total_lines: snapshot.history_size + snapshot.rows,
-            viewport_lines: snapshot.rows,
-            display_offset: snapshot.display_offset,
-        }));
-    }
-}
-
-impl ScrollbarHandle for TerminalScrollbarHandle {
-    fn offset(&self) -> Point<Pixels> {
-        let state_ref = self.state.borrow();
-        let Some(state) = state_ref.as_ref() else {
-            return point(px(0.), px(0.));
-        };
-        let scroll_offset = state
-            .total_lines
-            .saturating_sub(state.viewport_lines)
-            .saturating_sub(state.display_offset);
-        point(px(0.), -(scroll_offset as f32 * state.line_height))
-    }
-
-    fn set_offset(&self, offset: Point<Pixels>) {
-        let state_ref = self.state.borrow();
-        let Some(state) = state_ref.as_ref() else {
-            return;
-        };
-        let offset_delta = (offset.y / state.line_height).round() as i32;
-        let max_offset = state.total_lines.saturating_sub(state.viewport_lines);
-        let display_offset = (max_offset as i32 + offset_delta).clamp(0, max_offset as i32);
-        self.future_display_offset
-            .set(Some(display_offset as usize));
-    }
-
-    fn content_size(&self) -> Size<Pixels> {
-        let state_ref = self.state.borrow();
-        let Some(state) = state_ref.as_ref() else {
-            return size(px(0.), px(0.));
-        };
-        size(
-            px(0.),
-            state.total_lines.max(state.viewport_lines) as f32 * state.line_height,
-        )
-    }
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SyncSecretsPasswordDialogStatus {
@@ -762,6 +183,7 @@ pub(crate) enum DialogKind {
     ConnectionGroup,
     QuickCommandCategory,
     QuickCommand,
+    HighlightRules,
     /// 校验隐私密码后才允许启用敏感信息同步。
     VerifySyncSecretsPassword,
     /// 上传预检发现远端敏感字段无法解密。
@@ -799,13 +221,17 @@ pub(crate) struct SftpPanelState {
 pub(crate) struct SftpWorkspaceState {
     pub(crate) path_input: Entity<InputState>,
     pub(crate) new_folder_input: Entity<InputState>,
+    pub(crate) quick_command_search_input: Entity<InputState>,
     pub(crate) remote_files_scroll_handle: UniformListScrollHandle,
     pub(crate) tree_scroll_handle: gpui::ScrollHandle,
+    pub(crate) quick_command_category_scroll_handle: gpui::ScrollHandle,
+    pub(crate) quick_command_cards_scroll_handle: gpui::ScrollHandle,
     pub(crate) tree_scroll_target_bounds: Option<(String, Bounds<Pixels>)>,
     pub(crate) file_panels: Entity<ResizableState>,
     pub(crate) delete_scroll_handle: gpui::ScrollHandle,
     pub(crate) pending_path_sync: Option<String>,
     pub(crate) pending_tree_scroll_path: Option<String>,
+    pub(crate) center_pending_tree_scroll: bool,
     pub(crate) context_menu: Option<SftpContextMenuState>,
     pub(crate) creating_folder: bool,
 }
@@ -976,6 +402,7 @@ pub(crate) struct TinyShell {
     pub(crate) ssh_proxy_type: String,
     pub(crate) global_proxy_type: String,
     pub(crate) settings_inputs: SettingsInputs,
+    pub(crate) highlight_rules_dialog_window: Option<AnyWindowHandle>,
     pub(crate) sync_runtime: SyncRuntimeState,
     pub(crate) ssh_auth_method: AuthMethod,
     pub(crate) ssh_config_entries: Vec<SshConfigEntry>,
@@ -1003,6 +430,9 @@ pub(crate) struct TinyShell {
     pub(crate) terminal_zoom_accumulator: f32,
     pub(crate) ui_font_family: SharedString,
     pub(crate) terminal_font_family: SharedString,
+    pub(crate) ui_font_preference_available: bool,
+    pub(crate) terminal_font_preference_available: bool,
+    pub(crate) terminal_font_fallbacks: Option<FontFallbacks>,
     pub(crate) session_store: Entity<crate::session::store::SessionStore>,
     pub(crate) session_owner_id: crate::session::store::WindowOwnerId,
     pub(crate) window_state: WindowState,
@@ -1016,6 +446,13 @@ pub(crate) struct TinyShell {
     pub(crate) selected_quick_command: Option<(String, String)>,
     pub(crate) quick_command_parameter_inputs: Vec<Entity<InputState>>,
     pub(crate) terminal_completions: HashMap<String, terminal_completion::TerminalCompletionState>,
+    pub(crate) remote_desktop_surfaces: RemoteDesktopSurfaceCache,
+    pub(crate) rdp_certificate_requests:
+        HashMap<String, crate::backend::remote_desktop::CertificateRequest>,
+    pub(crate) rdp_reconnect_attempts: HashMap<String, u8>,
+    /// Last modifier mask sent to each embedded RDP session. macOS reports
+    /// modifier transitions separately from key down/up events.
+    pub(crate) rdp_modifier_state: HashMap<String, u8>,
     /// Bounds of the visible group rows, used to calculate a drop position.
     pub(crate) connection_group_bounds: HashMap<String, Bounds<Pixels>>,
     pub(crate) pending_connection_group_drag: Option<(String, Point<Pixels>)>,
@@ -1093,6 +530,7 @@ pub(crate) struct TinyShell {
     pub(crate) last_window_size: Option<gpui::Size<Pixels>>,
     pub(crate) last_registered_window_bounds: Option<Bounds<Pixels>>,
     pub(crate) was_window_active: bool,
+    pub(crate) last_prepaint_at: Option<Instant>,
     pub(crate) last_sidebar_width: Option<Pixels>,
     pub(crate) should_move_window: bool,
     pub(crate) hovered_url: Option<HoveredUrl>,
@@ -1199,6 +637,73 @@ impl TinyShell {
         }
         window.close_dialog(cx);
         true
+    }
+}
+
+fn body_panel_sizes_for_save(
+    rendered: &[f32],
+    saved: Option<&[f32]>,
+    workspace_mode: WorkspaceMode,
+    normal_sftp_minimized: bool,
+    restore_height: Option<f32>,
+) -> Option<Vec<f32>> {
+    let saved = saved.map(<[f32]>::to_vec);
+    if matches!(workspace_mode, WorkspaceMode::Clean { .. }) {
+        return saved;
+    }
+    if normal_sftp_minimized {
+        let Some(restore_height) = restore_height else {
+            return saved;
+        };
+        let mut sizes = saved
+            .filter(|sizes| sizes.len() > 1)
+            .or_else(|| (rendered.len() > 1).then(|| rendered.to_vec()))?;
+        sizes[1] = restore_height;
+        return Some(sizes);
+    }
+    (rendered.len() > 1).then(|| rendered.to_vec()).or(saved)
+}
+
+fn body_panels_for_full_commit(
+    staged: Option<&[f32]>,
+    current: Option<&[f32]>,
+    workspace_layout_pending: bool,
+) -> (Option<Vec<f32>>, bool) {
+    let staged = staged.map(<[f32]>::to_vec);
+    let current = current.map(<[f32]>::to_vec);
+    let explicitly_changed = staged != current;
+    let includes_workspace_layout = workspace_layout_pending || explicitly_changed;
+    if workspace_layout_pending && !explicitly_changed {
+        (current, includes_workspace_layout)
+    } else {
+        (staged, includes_workspace_layout)
+    }
+}
+
+#[cfg(test)]
+mod layout_persistence_tests {
+    use super::{
+        body_panel_sizes_for_save, body_panels_for_full_commit,
+        workspace_presentation::WorkspaceMode,
+    };
+
+    #[test]
+    fn closing_a_session_that_started_minimized_preserves_the_expanded_height() {
+        let rendered = [660.0, 1.0];
+        let saved = [420.0, 248.0];
+
+        assert_eq!(
+            body_panel_sizes_for_save(&rendered, Some(&saved), WorkspaceMode::Normal, true, None,),
+            Some(saved.to_vec())
+        );
+    }
+
+    #[test]
+    fn an_explicit_layout_reset_wins_over_a_pending_height_save() {
+        assert_eq!(
+            body_panels_for_full_commit(None, Some(&[420.0, 248.0]), true),
+            (None, true)
+        );
     }
 }
 
@@ -1324,6 +829,9 @@ impl TinyShell {
         let sftp_path_input = cx.new(|cx| InputState::new(window, cx).default_value("/"));
         let sftp_new_folder_input =
             cx.new(|cx| InputState::new(window, cx).placeholder(t!("new_folder").to_string()));
+        let sftp_quick_command_search_input = cx.new(|cx| {
+            InputState::new(window, cx).placeholder(t!("quick_command_search").to_string())
+        });
         let search_input =
             cx.new(|cx| InputState::new(window, cx).placeholder(t!("search").to_string()));
         let docker_search_input = cx.new(|cx| {
@@ -1351,6 +859,11 @@ impl TinyShell {
         _subscriptions.extend([
             cx.subscribe_in(&sftp_path_input, window, Self::on_input_event),
             cx.subscribe_in(&sftp_new_folder_input, window, Self::on_input_event),
+            cx.subscribe_in(
+                &sftp_quick_command_search_input,
+                window,
+                Self::on_input_event,
+            ),
             cx.subscribe_in(&search_input, window, Self::on_input_event),
             cx.subscribe_in(&docker_search_input, window, Self::on_input_event),
         ]);
@@ -1421,17 +934,24 @@ impl TinyShell {
                 tracing::warn!("failed to initialize built-in quick commands: {err:#}");
             }
         }
-        let ui_font_family: SharedString = config.ui_font_family().into();
-        let terminal_font_family: SharedString = config.terminal_font_family().into();
+        let available_fonts = cx.text_system().all_font_names();
+        let ui_font = font_preferences::resolve_ui_font(config.ui_font_family(), &available_fonts);
+        let terminal_font = font_preferences::resolve_terminal_font(
+            config.terminal_font_family(),
+            &available_fonts,
+        );
+        let ui_font_family = ui_font.family;
+        let terminal_font_family = terminal_font.selection.family;
         let sftp_panel_view = if config.sftp_panel_view() == "commands" {
             SftpPanelView::Commands
         } else {
             SftpPanelView::Files
         };
-        let last_sidebar_width = Some(px(config
-            .workspace_panels()
-            .and_then(|s| s.first().copied())
-            .unwrap_or(constants::SIDEBAR_WIDTH)));
+        let last_sidebar_width = Some(px(constants::resolve_sidebar_width(
+            config
+                .workspace_panels()
+                .and_then(|sizes| sizes.first().copied()),
+        )));
         let runtime = shared_runtime().unwrap_or_else(|error| {
             tracing::error!("cannot initialize application runtime: {error}");
             // TinyShell cannot create backend sessions without a Tokio runtime;
@@ -1451,6 +971,7 @@ impl TinyShell {
             ssh_proxy_type: "none".to_string(),
             global_proxy_type: config.global_proxy_type().to_string(),
             settings_inputs,
+            highlight_rules_dialog_window: None,
             sync_runtime: SyncRuntimeState::new(t!("sync_not_run").into()),
             ssh_auth_method: AuthMethod::Password,
             ssh_config_entries: crate::session::ssh_config::parse_ssh_config().unwrap_or_default(),
@@ -1475,6 +996,9 @@ impl TinyShell {
             cursor_style: config.cursor_style(),
             ui_font_family,
             terminal_font_family,
+            ui_font_preference_available: ui_font.preference_available,
+            terminal_font_preference_available: terminal_font.selection.preference_available,
+            terminal_font_fallbacks: terminal_font.fallbacks,
             session_store,
             session_owner_id: SESSION_OWNER_SEQ.fetch_add(1, Ordering::Relaxed),
             window_state: WindowState::new(),
@@ -1488,6 +1012,10 @@ impl TinyShell {
             selected_quick_command: None,
             quick_command_parameter_inputs,
             terminal_completions: HashMap::new(),
+            remote_desktop_surfaces: RemoteDesktopSurfaceCache::default(),
+            rdp_certificate_requests: HashMap::new(),
+            rdp_reconnect_attempts: HashMap::new(),
+            rdp_modifier_state: HashMap::new(),
             connection_group_bounds: HashMap::new(),
             pending_connection_group_drag: None,
             dragging_connection_group: None,
@@ -1510,13 +1038,17 @@ impl TinyShell {
             sftp_workspace: SftpWorkspaceState {
                 path_input: sftp_path_input,
                 new_folder_input: sftp_new_folder_input,
+                quick_command_search_input: sftp_quick_command_search_input,
                 remote_files_scroll_handle: UniformListScrollHandle::new(),
                 tree_scroll_handle: gpui::ScrollHandle::new(),
+                quick_command_category_scroll_handle: gpui::ScrollHandle::new(),
+                quick_command_cards_scroll_handle: gpui::ScrollHandle::new(),
                 tree_scroll_target_bounds: None,
                 file_panels: cx.new(|_| ResizableState::default()),
                 delete_scroll_handle: gpui::ScrollHandle::new(),
                 pending_path_sync: Some("/".into()),
                 pending_tree_scroll_path: None,
+                center_pending_tree_scroll: false,
                 context_menu: None,
                 creating_folder: false,
             },
@@ -1610,6 +1142,7 @@ impl TinyShell {
             last_window_size: None,
             last_registered_window_bounds: None,
             was_window_active: false,
+            last_prepaint_at: None,
             last_sidebar_width,
             should_move_window: false,
             hovered_url: None,
@@ -1662,23 +1195,23 @@ impl TinyShell {
                 }
                 _ => {}
             }
-        } else if input == &self.settings_inputs.sync.interval_hours {
+        } else if input == &self.settings_inputs.sync.interval_minutes {
             match event {
                 InputEvent::Change => {
-                    if let Some(hours) =
-                        settings::actions::parse_hour_interval(input.read(cx).value().as_ref())
+                    if let Some(minutes) =
+                        settings::actions::parse_minute_interval(input.read(cx).value().as_ref())
                     {
-                        self.config.set_sync_interval_hours(hours);
+                        self.config.set_sync_interval_minutes(minutes);
                         self.mark_config_preferences_dirty();
                         self.schedule_automatic_sync(false, cx);
                     }
                 }
                 InputEvent::Blur | InputEvent::PressEnter { .. } => {
-                    let hours = self.config.sync_interval_hours().to_string();
+                    let minutes = self.config.sync_interval_minutes().to_string();
                     self.settings_inputs
                         .sync
-                        .interval_hours
-                        .update(cx, |input, cx| input.set_value(hours, window, cx));
+                        .interval_minutes
+                        .update(cx, |input, cx| input.set_value(minutes, window, cx));
                     if matches!(event, InputEvent::PressEnter { .. }) {
                         window.prevent_default();
                         cx.stop_propagation();
@@ -1980,17 +1513,50 @@ impl TinyShell {
                 BackendEvent::Output { tab_id, bytes } => {
                     self.handle_terminal_output(tab_id, bytes, cx);
                 }
+                BackendEvent::RemoteDesktopFrameReady { tab_id, sequence } => {
+                    let _ = sequence;
+                    self.handle_remote_desktop_frame_ready(tab_id, cx);
+                }
                 BackendEvent::Status { tab_id, text } => {
                     self.handle_terminal_status(tab_id, text, cx);
                 }
+                BackendEvent::RemoteDesktopCertificateRequest(request) => {
+                    self.rdp_certificate_requests
+                        .insert(request.tab_id.clone(), *request);
+                }
+                BackendEvent::RemoteDesktopClipboard { tab_id, text } => {
+                    if self.preferred_terminal_tab_id().as_deref() == Some(tab_id.as_str()) {
+                        let current = cx.read_from_clipboard().and_then(|item| item.text());
+                        if current.as_deref() != Some(text.as_str()) {
+                            cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
+                        }
+                    }
+                }
+                BackendEvent::RemoteDesktopClosed {
+                    tab_id,
+                    reason,
+                    retryable,
+                } => {
+                    self.rdp_modifier_state.remove(&tab_id);
+                    if let Some(request) = self.rdp_certificate_requests.remove(&tab_id) {
+                        request.decision.reject();
+                    }
+                    if self.handle_terminal_closed(tab_id, reason, retryable, cx) {
+                        continue;
+                    }
+                }
                 BackendEvent::Connected { tab_id } => {
+                    self.rdp_reconnect_attempts.remove(&tab_id);
                     self.handle_terminal_connected(tab_id, cx);
                 }
                 BackendEvent::TerminalTitleChanged { tab_id, title } => {
                     self.handle_terminal_title_changed(tab_id, title, cx);
                 }
                 BackendEvent::Closed { tab_id, reason } => {
-                    if self.handle_terminal_closed(tab_id, reason, cx) {
+                    if let Some(request) = self.rdp_certificate_requests.remove(&tab_id) {
+                        request.decision.reject();
+                    }
+                    if self.handle_terminal_closed(tab_id, reason, false, cx) {
                         continue;
                     }
                 }
@@ -2110,9 +1676,36 @@ impl TinyShell {
         self.status = text.into();
     }
 
+    fn handle_remote_desktop_frame_ready(&mut self, tab_id: String, cx: &mut Context<Self>) {
+        let frame = self
+            .workspace()
+            .terminal_tab(&tab_id)
+            .and_then(|tab| tab.remote_desktop_mailbox.as_ref())
+            .and_then(|mailbox| mailbox.take_latest());
+        if let Some(frame) = frame
+            && let Err(error) = self.remote_desktop_surfaces.update(tab_id.clone(), frame)
+        {
+            tracing::warn!(
+                tab_id,
+                "failed to prepare RDP frame for rendering: {error:#}"
+            );
+        }
+        if self
+            .workspace()
+            .active_tab_id()
+            .is_some_and(|active_id| active_id == tab_id.as_str())
+        {
+            cx.notify();
+        }
+    }
+
     fn handle_terminal_connected(&mut self, tab_id: String, _cx: &mut Context<Self>) {
+        let success = t!("connection_succeeded").to_string();
         if let Some(tab) = self.terminal_tab_mut(&tab_id) {
-            tab.feed_status_line(&t!("connection_succeeded"));
+            tab.feed_status_line(&success);
+            if tab.kind == TabKind::Rdp {
+                tab.status = success;
+            }
             tab.connected = true;
             tab.disconnected_reason = None;
         }
@@ -2141,8 +1734,19 @@ impl TinyShell {
         &mut self,
         tab_id: String,
         reason: String,
+        retryable: bool,
         cx: &mut Context<Self>,
     ) -> bool {
+        // Do not leave the last desktop texture above the disconnected/error
+        // state. Retry code also removes it, but failures that are not
+        // retryable (or have exhausted retries) must clear it here as well.
+        if self
+            .terminal_tab(&tab_id)
+            .is_some_and(|tab| tab.kind == TabKind::Rdp)
+        {
+            self.remote_desktop_surfaces.remove(&tab_id);
+            self.rdp_modifier_state.remove(&tab_id);
+        }
         if self.monitoring.remote_sample_in_flight.as_deref() == Some(tab_id.as_str()) {
             self.monitoring.remote_sample_in_flight = None;
         }
@@ -2182,6 +1786,36 @@ impl TinyShell {
             tab.status = reason.clone();
             tab.disconnected_reason = Some(reason.clone());
             self.disconnect_epoch = self.disconnect_epoch.wrapping_add(1);
+        }
+        let should_auto_retry = self
+            .terminal_tab(&tab_id)
+            .is_some_and(|tab| tab.kind == TabKind::Rdp)
+            && !was_manually_disconnected
+            && retryable;
+        if should_auto_retry {
+            let attempt = self
+                .rdp_reconnect_attempts
+                .entry(tab_id.clone())
+                .or_insert(0);
+            if *attempt < 3 {
+                *attempt += 1;
+                let delay = std::time::Duration::from_millis(500 * u64::from(*attempt));
+                let retry_tab_id = tab_id.clone();
+                let retry_generation = self
+                    .terminal_tab(&tab_id)
+                    .map_or(0, |tab| tab.backend_generation);
+                cx.spawn(async move |this, cx| {
+                    cx.background_executor().timer(delay).await;
+                    this.update(cx, |this, cx| {
+                        this.retry_disconnected_tab_automatically(
+                            &retry_tab_id,
+                            retry_generation,
+                            cx,
+                        );
+                    })
+                })
+                .detach();
+            }
         }
         if self.system_tab_id.as_deref() == Some(tab_id.as_str()) {
             self.monitoring.system_status = Some(reason.clone().into());
@@ -2259,6 +1893,7 @@ impl TinyShell {
                     self.sftp_workspace.pending_path_sync = Some(home.clone());
                     self.sftp_workspace.tree_scroll_target_bounds = None;
                     self.sftp_workspace.pending_tree_scroll_path = Some(home);
+                    self.sftp_workspace.center_pending_tree_scroll = false;
                 }
             }
         }
@@ -2691,7 +2326,8 @@ impl TinyShell {
         if require_follow_enabled && !sftp.follow_terminal_cwd {
             return false;
         }
-        let Some(path) = Self::parse_path_from_title(&tab.dynamic_title, &sftp.home_dir) else {
+        let Some(path) = terminal_path::parse_path_from_title(&tab.dynamic_title, &sftp.home_dir)
+        else {
             return false;
         };
         if sftp.current_path == path {
@@ -2723,7 +2359,8 @@ impl TinyShell {
         if sftp.initial_terminal_cwd_synced || sftp.home_dir.is_empty() {
             return false;
         }
-        let Some(path) = Self::parse_path_from_title(&tab.dynamic_title, &sftp.home_dir) else {
+        let Some(path) = terminal_path::parse_path_from_title(&tab.dynamic_title, &sftp.home_dir)
+        else {
             return false;
         };
         let group_id = group.id.clone();
@@ -2739,45 +2376,13 @@ impl TinyShell {
         true
     }
 
-    fn parse_path_from_title(title: &str, home_dir: &str) -> Option<String> {
-        const CWD_MARKERS: [&str; 2] = ["TINY_SHELL_CWD:", "ASHELL_CWD:"];
-        let title = title.trim();
-        let path_part = CWD_MARKERS
-            .iter()
-            .find_map(|marker| title.rsplit_once(marker).map(|(_, path)| path.trim()))
-            .or_else(|| {
-                title
-                    .match_indices(':')
-                    .rev()
-                    .map(|(index, _)| title[index + 1..].trim())
-                    .find(|candidate| Self::looks_like_terminal_path(candidate))
-            })
-            .or_else(|| Self::looks_like_terminal_path(title).then_some(title))?;
-
-        let path_part = [" — ", " | "]
-            .into_iter()
-            .filter_map(|separator| path_part.split_once(separator).map(|(path, _)| path.trim()))
-            .next()
-            .unwrap_or(path_part);
-
-        if path_part.starts_with('/') {
-            Some(path_part.to_string())
-        } else if path_part == "~" {
-            Some(home_dir.to_string())
-        } else if let Some(rest) = path_part.strip_prefix("~/") {
-            let home = home_dir.trim_end_matches('/');
-            Some(format!("{}/{}", home, rest))
-        } else {
-            None
-        }
-    }
-
-    fn looks_like_terminal_path(candidate: &str) -> bool {
-        candidate.starts_with('/') || candidate == "~" || candidate.starts_with("~/")
-    }
-
     pub(crate) fn mark_config_preferences_dirty(&mut self) {
         self.config_persistence.mark_dirty(Instant::now());
+    }
+
+    pub(crate) fn mark_workspace_layout_preferences_dirty(&mut self) {
+        self.config_persistence
+            .mark_workspace_layout_dirty(Instant::now());
     }
 
     pub(crate) fn persist_config_preferences_checked(&mut self) -> anyhow::Result<()> {
@@ -2785,14 +2390,37 @@ impl TinyShell {
             return Ok(());
         }
         let generation = self.config_persistence.generation();
-        config_persistence::persist_sync(&self.config_repository, &self.config)?;
-        self.config_persistence.mark_saved(generation);
+        let includes_workspace_layout = self.config_persistence.workspace_layout_save_required();
+        if includes_workspace_layout {
+            config_persistence::persist_workspace_layout_sync(
+                &self.config_repository,
+                &self.config,
+            )?;
+        } else {
+            config_persistence::persist_sync(&self.config_repository, &self.config)?;
+        }
+        self.config_persistence
+            .mark_saved(generation, includes_workspace_layout);
         Ok(())
     }
 
     pub(crate) fn persist_config_preferences_async(&mut self, cx: &mut Context<Self>) {
         self.config_persistence.request_immediate_save();
         self.drive_config_preferences_save(cx);
+    }
+
+    fn prepare_full_commit_config(&self, mut staged: ConfigStore) -> (ConfigStore, bool) {
+        let workspace_layout_pending = self.config_persistence.workspace_layout_save_required();
+        let (body_panels, includes_workspace_layout) = body_panels_for_full_commit(
+            staged.body_panels().map(Vec::as_slice),
+            self.config.body_panels().map(Vec::as_slice),
+            workspace_layout_pending,
+        );
+        staged.set_body_panels(body_panels);
+        if workspace_layout_pending {
+            staged.set_monitoring_position(self.config.monitoring_position());
+        }
+        (staged, includes_workspace_layout)
     }
 
     /// Persist a full configuration transaction off the UI thread and expose
@@ -2819,6 +2447,7 @@ impl TinyShell {
         }
 
         let preference_generation = self.config_persistence.generation();
+        let (staged, includes_workspace_layout) = self.prepare_full_commit_config(staged);
         let receipt = match self.config_repository.save_full_async(staged.clone()) {
             Ok(receipt) => receipt,
             Err(error) => {
@@ -2841,8 +2470,16 @@ impl TinyShell {
                         // was being written. Keep those newer UI values in
                         // memory and let the generation driver persist them.
                         committed.merge_interactive_preferences_from(&this.config);
+                        if this
+                            .config_persistence
+                            .workspace_layout_changed_after(preference_generation)
+                        {
+                            committed.set_monitoring_position(this.config.monitoring_position());
+                            committed.set_body_panels(this.config.body_panels().cloned());
+                        }
                         this.config = committed;
-                        this.config_persistence.mark_saved(preference_generation);
+                        this.config_persistence
+                            .mark_saved(preference_generation, includes_workspace_layout);
                         this.note_local_config_saved(cx);
                         this.continue_queued_close_sync(cx);
                         on_committed(this, cx);
@@ -2881,6 +2518,7 @@ impl TinyShell {
         }
 
         let preference_generation = self.config_persistence.generation();
+        let (staged, includes_workspace_layout) = self.prepare_full_commit_config(staged);
         let receipt = match self.config_repository.save_full_async(staged.clone()) {
             Ok(receipt) => receipt,
             Err(error) => {
@@ -2901,8 +2539,16 @@ impl TinyShell {
                     Ok(()) => {
                         let mut committed = staged;
                         committed.merge_interactive_preferences_from(&this.config);
+                        if this
+                            .config_persistence
+                            .workspace_layout_changed_after(preference_generation)
+                        {
+                            committed.set_monitoring_position(this.config.monitoring_position());
+                            committed.set_body_panels(this.config.body_panels().cloned());
+                        }
                         this.config = committed;
-                        this.config_persistence.mark_saved(preference_generation);
+                        this.config_persistence
+                            .mark_saved(preference_generation, includes_workspace_layout);
                         this.note_local_config_saved(cx);
                         this.continue_queued_close_sync(cx);
                         Ok(())
@@ -2929,10 +2575,13 @@ impl TinyShell {
         const PREFERENCE_SAVE_RETRY_DELAY: Duration = Duration::from_secs(2);
 
         let now = Instant::now();
-        if let Some((generation, result)) = self.config_persistence.poll_result() {
+        if let Some((generation, includes_workspace_layout, result)) =
+            self.config_persistence.poll_result()
+        {
             match result {
                 Ok(()) => {
-                    self.config_persistence.mark_saved(generation);
+                    self.config_persistence
+                        .mark_saved(generation, includes_workspace_layout);
                     self.note_local_config_saved(cx);
                 }
                 Err(error) => {
@@ -2949,8 +2598,19 @@ impl TinyShell {
         else {
             return;
         };
-        match self.config_repository.persist_async(self.config.clone()) {
-            Ok(receipt) => self.config_persistence.set_in_flight(generation, receipt),
+        let includes_workspace_layout = self.config_persistence.workspace_layout_save_required();
+        let receipt = if includes_workspace_layout {
+            self.config_repository
+                .persist_workspace_layout_async(self.config.clone())
+        } else {
+            self.config_repository.persist_async(self.config.clone())
+        };
+        match receipt {
+            Ok(receipt) => self.config_persistence.set_in_flight(
+                generation,
+                includes_workspace_layout,
+                receipt,
+            ),
             Err(error) => {
                 tracing::warn!(generation, "failed to queue preference save: {error:#}");
                 self.config_persistence
@@ -3045,23 +2705,22 @@ impl TinyShell {
                 .iter()
                 .map(|s| s.into())
                 .collect();
-            let mut body_sizes: Vec<f32> = self
+            let rendered_body_sizes: Vec<f32> = self
                 .body_panels
                 .read(cx)
                 .sizes()
                 .iter()
                 .map(|s| s.into())
                 .collect();
+            let body_sizes = body_panel_sizes_for_save(
+                &rendered_body_sizes,
+                self.config.body_panels().map(Vec::as_slice),
+                self.workspace_mode,
+                self.sftp_panel.minimized,
+                self.monitoring.prev_monitoring_size.map(Into::into),
+            );
 
-            if self.sftp_panel.minimized {
-                if let Some(prev) = self.monitoring.prev_monitoring_size {
-                    if body_sizes.len() > 1 {
-                        body_sizes[1] = prev.into();
-                    }
-                }
-            }
-
-            config.set_layout_state(Some(saved_bounds), Some(workspace_sizes), Some(body_sizes));
+            config.set_layout_state(Some(saved_bounds), Some(workspace_sizes), body_sizes);
             config.set_sidebar_collapsed(self.sidebar_collapsed);
             config.set_sftp_panel_minimized(self.sftp_panel.minimized);
             config.set_show_hidden_files(self.sftp_panel.show_hidden_files);
@@ -3073,120 +2732,5 @@ impl TinyShell {
             );
         }
         Ok(())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use std::sync::Arc;
-
-    use super::{PaneLayout, TinyShell, config_persistence, select_config_repository};
-
-    #[test]
-    fn selects_latest_open_window_repository_and_ignores_stale_entries() {
-        let stale = config_persistence::ConfigRepository::new();
-        let older = config_persistence::ConfigRepository::new();
-        let newest = config_persistence::ConfigRepository::new();
-        let selected = select_config_repository([
-            (false, 99, stale.clone()),
-            (true, 1, older.clone()),
-            (true, 2, newest.clone()),
-        ])
-        .expect("an open repository should be selected");
-        assert!(Arc::ptr_eq(&selected, &newest));
-        stale.shutdown().unwrap();
-        older.shutdown().unwrap();
-        newest.shutdown().unwrap();
-    }
-
-    #[test]
-    fn parses_absolute_terminal_path() {
-        assert_eq!(
-            TinyShell::parse_path_from_title("user@host:/srv/app", "/home/user"),
-            Some("/srv/app".to_string())
-        );
-    }
-
-    #[test]
-    fn expands_home_terminal_path() {
-        assert_eq!(
-            TinyShell::parse_path_from_title("TINY_SHELL_CWD:~/projects", "/home/user"),
-            Some("/home/user/projects".to_string())
-        );
-    }
-
-    #[test]
-    fn parses_path_after_decorated_title_prefix() {
-        assert_eq!(
-            TinyShell::parse_path_from_title("ssh: user@host:/srv/app", "/home/user"),
-            Some("/srv/app".to_string())
-        );
-    }
-
-    #[test]
-    fn parses_path_before_common_title_suffix() {
-        assert_eq!(
-            TinyShell::parse_path_from_title("user@host:/srv/app — zsh", "/home/user"),
-            Some("/srv/app".to_string())
-        );
-        assert_eq!(
-            TinyShell::parse_path_from_title("~/projects | main", "/home/user"),
-            Some("/home/user/projects".to_string())
-        );
-    }
-
-    #[test]
-    fn accepts_legacy_explicit_cwd_marker() {
-        assert_eq!(
-            TinyShell::parse_path_from_title("ASHELL_CWD:~/legacy", "/home/user"),
-            Some("/home/user/legacy".to_string())
-        );
-    }
-
-    #[test]
-    fn rejects_titles_without_a_remote_path() {
-        assert_eq!(
-            TinyShell::parse_path_from_title("user@host", "/home/user"),
-            None
-        );
-    }
-
-    #[test]
-    fn removing_missing_tab_reports_no_change() {
-        let mut layout = PaneLayout::Single("a".into());
-
-        assert!(!layout.remove_tab("missing"));
-        assert_eq!(layout.tab_ids(), vec!["a"]);
-    }
-
-    #[test]
-    fn removing_last_tab_uses_empty_layout_without_empty_id() {
-        let mut layout = PaneLayout::Single("a".into());
-
-        assert!(layout.remove_tab("a"));
-        assert!(matches!(layout, PaneLayout::Empty));
-        assert!(layout.tab_ids().is_empty());
-        assert_eq!(layout.total_panes(), 0);
-    }
-
-    #[test]
-    fn removing_nested_tab_collapses_single_child_and_preserves_order() {
-        let mut layout = PaneLayout::Horizontal(
-            vec![
-                PaneLayout::Single("a".into()),
-                PaneLayout::Vertical(
-                    vec![
-                        PaneLayout::Single("b".into()),
-                        PaneLayout::Single("c".into()),
-                    ],
-                    0.5,
-                ),
-            ],
-            0.5,
-        );
-
-        assert!(layout.remove_tab("b"));
-        assert_eq!(layout.tab_ids(), vec!["a", "c"]);
-        assert_eq!(layout.total_panes(), 2);
     }
 }

@@ -2,6 +2,7 @@ param(
     [string]$Version = "",
     [string]$Target = "x86_64-pc-windows-msvc",
     [string]$OutputDir = "dist",
+    [string]$RuntimeDir = "",
     [switch]$SkipBuild
 )
 
@@ -29,6 +30,28 @@ if (-not (Test-Path -LiteralPath $sourceExe -PathType Leaf)) {
     throw "Compiled executable not found: $sourceExe"
 }
 
+if ([string]::IsNullOrWhiteSpace($RuntimeDir)) {
+    $buildRoot = Join-Path $root "target\$Target\release\build"
+    $coreRuntimeFiles = @("freerdp-client3.dll", "freerdp3.dll", "winpr3.dll")
+    $buildOutputs = Get-ChildItem -LiteralPath $buildRoot -Directory -Filter "tiny-shell-*" -ErrorAction SilentlyContinue |
+        Sort-Object LastWriteTime -Descending
+    foreach ($buildOutput in $buildOutputs) {
+        $candidate = Join-Path $buildOutput.FullName "out"
+        $hasCoreRuntime = $true
+        foreach ($runtimeFile in $coreRuntimeFiles) {
+            if (-not (Test-Path -LiteralPath (Join-Path $candidate $runtimeFile) -PathType Leaf)) {
+                $hasCoreRuntime = $false
+                break
+            }
+        }
+        if ($hasCoreRuntime) {
+            $RuntimeDir = $candidate
+            Write-Host "Using FreeRDP runtime copied by Cargo: $RuntimeDir"
+            break
+        }
+    }
+}
+
 if (-not [System.IO.Path]::IsPathRooted($OutputDir)) {
     $OutputDir = Join-Path $root $OutputDir
 }
@@ -53,6 +76,17 @@ Remove-Item -LiteralPath $portableArchive -Force -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Path $portableDir -Force | Out-Null
 Copy-Item -LiteralPath $sourceExe -Destination (Join-Path $portableDir "tiny-shell.exe")
 Copy-Item -LiteralPath (Join-Path $root "LICENSE") -Destination $portableDir
+if (-not [string]::IsNullOrWhiteSpace($RuntimeDir)) {
+    $RuntimeDir = [System.IO.Path]::GetFullPath($RuntimeDir)
+    if (-not (Test-Path -LiteralPath $RuntimeDir -PathType Container)) {
+        throw "Runtime directory not found: $RuntimeDir"
+    }
+    $runtimeFiles = Get-ChildItem -LiteralPath $RuntimeDir -File -Filter "*.dll"
+    if (-not $runtimeFiles) {
+        throw "Runtime directory does not contain DLL files: $RuntimeDir"
+    }
+    $runtimeFiles | Copy-Item -Destination $portableDir
+}
 Compress-Archive -LiteralPath $portableDir -DestinationPath $portableArchive -CompressionLevel Optimal
 
 $innoCandidates = @()
@@ -75,14 +109,19 @@ Remove-Item -LiteralPath $installerPath -Force -ErrorAction SilentlyContinue
 $issFile = Join-Path $root "scripts\windows\tiny-shell.iss"
 $setupIcon = Join-Path $root "assets\icons\tiny-shell.ico"
 $licenseFile = Join-Path $root "LICENSE"
-& $iscc `
-    "/DMyAppVersion=$normalizedVersion" `
-    "/DSourceExe=$sourceExe" `
-    "/DSetupIcon=$setupIcon" `
-    "/DLicenseFile=$licenseFile" `
-    "/DOutputDir=$OutputDir" `
-    "/DOutputBaseFilename=$installerBaseName" `
-    $issFile
+$isccArgs = @(
+    "/DMyAppVersion=$normalizedVersion",
+    "/DSourceExe=$sourceExe",
+    "/DSetupIcon=$setupIcon",
+    "/DLicenseFile=$licenseFile",
+    "/DOutputDir=$OutputDir",
+    "/DOutputBaseFilename=$installerBaseName"
+)
+if (-not [string]::IsNullOrWhiteSpace($RuntimeDir)) {
+    $isccArgs += "/DRuntimeDir=$RuntimeDir"
+}
+$isccArgs += $issFile
+& $iscc @isccArgs
 if ($LASTEXITCODE -ne 0) {
     throw "Inno Setup failed with exit code $LASTEXITCODE"
 }

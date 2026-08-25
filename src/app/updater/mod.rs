@@ -49,11 +49,13 @@ fn unique_temp_suffix() -> String {
 }
 #[cfg(target_os = "windows")]
 const INNO_UNINSTALL_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\{8E091D1C-6D7C-4C29-9CA2-8B3D84A42CF8}_is1";
-// Matches the --identifier passed to pkgbuild in release.yml. pkgutil records
-// a receipt under this id only when the .pkg is installed via installer or
-// the GUI installer, which lets us distinguish it from a portable .app.
+// Matches the --identifier passed to pkgbuild for the base macOS package.
+// The RDP edition has its own receipt so switching editions does not change
+// which updater path the current binary expects.
 #[cfg(target_os = "macos")]
 const MACOS_PKG_IDENTIFIER: &str = "dev.tiny-shell.app";
+#[cfg(target_os = "macos")]
+const MACOS_RDP_PKG_IDENTIFIER: &str = "dev.tiny-shell.rdp";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(dead_code)] // Variants are platform-specific; not all are constructed on every OS.
@@ -62,6 +64,7 @@ pub(crate) enum InstallationKind {
     Portable,
     MacApp,
     MacInstaller,
+    LinuxAppImage,
     LinuxPackage,
 }
 
@@ -93,18 +96,64 @@ pub(crate) fn installation_kind() -> InstallationKind {
 
     #[cfg(target_os = "linux")]
     {
-        if std::env::current_exe()
-            .ok()
-            .is_some_and(|path| path.starts_with("/usr/bin") || path.starts_with("/opt"))
-        {
-            InstallationKind::LinuxPackage
-        } else {
-            InstallationKind::Portable
-        }
+        let current_exe = std::env::current_exe().ok();
+        classify_linux_installation(linux_appimage_path().as_deref(), current_exe.as_deref())
     }
 
     #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
     InstallationKind::Portable
+}
+
+#[cfg(target_os = "linux")]
+fn linux_appimage_path() -> Option<PathBuf> {
+    resolve_linux_appimage_path(
+        std::env::var_os("APPIMAGE").map(PathBuf::from),
+        std::env::var_os("APPDIR").map(PathBuf::from),
+        std::env::current_exe().ok(),
+    )
+}
+
+#[cfg(target_os = "linux")]
+fn resolve_linux_appimage_path(
+    appimage_path: Option<PathBuf>,
+    appdir: Option<PathBuf>,
+    current_exe: Option<PathBuf>,
+) -> Option<PathBuf> {
+    let appimage_path = appimage_path.filter(|path| path.is_absolute())?;
+    let appdir = appdir.filter(|path| path.is_absolute())?;
+    let current_exe = current_exe.filter(|path| path.is_absolute())?;
+
+    let appimage_path = std::fs::canonicalize(appimage_path)
+        .ok()
+        .filter(|path| path.is_file())?;
+    let appdir = std::fs::canonicalize(appdir)
+        .ok()
+        .filter(|path| path.is_dir())?;
+    let current_exe = std::fs::canonicalize(current_exe)
+        .ok()
+        .filter(|path| path.is_file())?;
+
+    // APPIMAGE and APPDIR are inherited by child processes. Trust the outer
+    // image path only when this executable actually lives inside the mounted
+    // AppDir; otherwise launching TinyShell from an unrelated AppImage could
+    // make the updater overwrite its parent application.
+    current_exe.starts_with(&appdir).then_some(appimage_path)
+}
+
+#[cfg(target_os = "linux")]
+fn classify_linux_installation(
+    appimage_path: Option<&Path>,
+    current_exe: Option<&Path>,
+) -> InstallationKind {
+    if appimage_path.is_some() {
+        InstallationKind::LinuxAppImage
+    } else if current_exe
+        .is_some_and(|path| path.starts_with("/usr/bin") || path.starts_with("/opt"))
+    {
+        InstallationKind::LinuxPackage
+    } else {
+        InstallationKind::Portable
+    }
 }
 
 pub(crate) fn runtime_environment_label() -> String {
@@ -141,12 +190,21 @@ pub(crate) fn automatic_update_delay(
 #[cfg(target_os = "macos")]
 fn macos_pkg_receipt_present() -> bool {
     // pkgutil returns a non-zero exit when no receipt exists for the id, so
-    // success is a reliable signal that the .pkg installer was used.
-    std::process::Command::new("pkgutil")
-        .args(["--pkg-info-plist", MACOS_PKG_IDENTIFIER])
-        .output()
-        .map(|output| output.status.success())
-        .unwrap_or(false)
+    // success is a reliable signal that the .pkg installer was used. The RDP
+    // build also accepts the legacy base receipt so existing RDP installs can
+    // transition to the split package without losing installer updates.
+    let identifiers: &[&str] = if cfg!(tiny_shell_freerdp_backend) {
+        &[MACOS_RDP_PKG_IDENTIFIER, MACOS_PKG_IDENTIFIER]
+    } else {
+        &[MACOS_PKG_IDENTIFIER]
+    };
+    identifiers.iter().any(|identifier| {
+        std::process::Command::new("pkgutil")
+            .args(["--pkg-info-plist", identifier])
+            .output()
+            .map(|output| output.status.success())
+            .unwrap_or(false)
+    })
 }
 
 #[cfg(target_os = "windows")]
@@ -215,8 +273,10 @@ fn platform_name() -> &'static str {
     }
 }
 
-fn archive_extension() -> &'static str {
-    if cfg!(target_os = "linux") {
+fn release_asset_extension(installation_kind: InstallationKind) -> &'static str {
+    if installation_kind == InstallationKind::LinuxAppImage {
+        "AppImage"
+    } else if cfg!(target_os = "linux") {
         "tar.gz"
     } else {
         "zip"
@@ -253,11 +313,11 @@ fn prepare_update_dir(temp_root: &Path, version: &str) -> anyhow::Result<PathBuf
 fn select_release_asset<'a>(
     assets: &'a [release_source::ReleaseAssetMetadata],
     platform: &str,
-    archive_extension: &str,
+    asset_extension: &str,
     installation_kind: InstallationKind,
 ) -> Option<&'a release_source::ReleaseAssetMetadata> {
     let is_archive = |asset: &&release_source::ReleaseAssetMetadata| {
-        asset.name.contains(platform) && asset.name.ends_with(archive_extension)
+        asset.name.contains(platform) && asset.name.ends_with(asset_extension)
     };
 
     // Windows releases contain both a setup executable and a portable ZIP.
@@ -270,26 +330,39 @@ fn select_release_asset<'a>(
             _ => assets.iter().find(|asset| {
                 asset.name.contains(platform)
                     && asset.name.contains("-portable.")
-                    && asset.name.ends_with(archive_extension)
+                    && asset.name.ends_with(asset_extension)
             }),
         }
     } else if platform.starts_with("macos-") {
         // macOS releases contain a portable .zip and a .pkg installer.
-        // Mirror Windows: a .pkg-installed app updates via the .pkg, every
-        // other .app (portable zip) updates via the portable .zip.
+        // Each macOS release now contains a small base edition and an
+        // optional FreeRDP edition. Keep updates on the edition that produced
+        // the running binary, then mirror Windows: a .pkg-installed app
+        // updates via the .pkg, every other .app via the portable .zip.
         match installation_kind {
             InstallationKind::MacInstaller => assets
                 .iter()
-                .find(|asset| asset.name.contains(platform) && asset.name.ends_with("-setup.pkg")),
+                .find(|asset| {
+                    macos_asset_matches_current_edition(&asset.name, platform)
+                        && asset.name.ends_with("-setup.pkg")
+                }),
             _ => assets.iter().find(|asset| {
-                asset.name.contains(platform)
+                macos_asset_matches_current_edition(&asset.name, platform)
                     && asset.name.contains("-portable.")
-                    && asset.name.ends_with(archive_extension)
+                    && asset.name.ends_with(asset_extension)
             }),
         }
     } else {
         assets.iter().find(is_archive)
     }
+}
+
+fn macos_asset_matches_current_edition(name: &str, platform: &str) -> bool {
+    if !name.contains(platform) {
+        return false;
+    }
+    let rdp_marker = format!("{platform}-rdp-");
+    name.contains(&rdp_marker) == cfg!(tiny_shell_freerdp_backend)
 }
 
 #[derive(Debug, Clone)]
@@ -374,8 +447,8 @@ pub(crate) async fn check_for_update() -> anyhow::Result<UpdateCheckResult> {
     }
 
     let platform = platform_name();
-    let ext = archive_extension();
     let installation_kind = installation_kind();
+    let ext = release_asset_extension(installation_kind);
     let asset = select_release_asset(&release.assets, platform, ext, installation_kind);
 
     let Some(asset) = asset else {
@@ -483,35 +556,44 @@ where
     // search can then select a stale executable instead of the downloaded one.
     let temp_dir = prepare_update_dir(&std::env::temp_dir(), version)?;
 
-    // Installer editions (Windows setup.exe, macOS .pkg) are not unpacked —
-    // they are handed to the platform installer verbatim. Persist the bytes to
-    // a stable path and fsync so a crash before launch does not leave a
-    // half-written installer on disk.
-    let installer_suffix = match installation_kind {
-        InstallationKind::WindowsInstaller => Some("exe"),
-        InstallationKind::MacInstaller => Some("pkg"),
+    // Native installer payloads and AppImages are not archives. Persist their
+    // verified bytes verbatim and fsync before handing them to the platform
+    // installation path.
+    let direct_payload_name = match installation_kind {
+        InstallationKind::WindowsInstaller => Some(format!("tiny-shell-v{version}-setup.exe")),
+        InstallationKind::MacInstaller => {
+            let edition_suffix = if cfg!(tiny_shell_freerdp_backend) {
+                "-rdp"
+            } else {
+                ""
+            };
+            Some(format!("tiny-shell-v{version}{edition_suffix}-setup.pkg"))
+        }
+        InstallationKind::LinuxAppImage => {
+            Some(format!("tiny-shell-v{version}-linux-x86_64.AppImage"))
+        }
         _ => None,
     };
-    if let Some(suffix) = installer_suffix {
-        let installer_path = temp_dir.join(format!("tiny-shell-v{version}-setup.{suffix}"));
-        std::fs::write(&installer_path, &bytes).with_context(|| {
+    if let Some(file_name) = direct_payload_name {
+        let payload_path = temp_dir.join(file_name);
+        std::fs::write(&payload_path, &bytes).with_context(|| {
             format!(
-                "failed to write downloaded installer {}",
-                installer_path.display()
+                "failed to write downloaded update payload {}",
+                payload_path.display()
             )
         })?;
         std::fs::OpenOptions::new()
             .write(true)
-            .open(&installer_path)
+            .open(&payload_path)
             .with_context(|| {
                 format!(
-                    "failed to open downloaded installer {}",
-                    installer_path.display()
+                    "failed to open downloaded update payload {}",
+                    payload_path.display()
                 )
             })?
             .sync_all()
-            .context("failed to flush downloaded installer to disk")?;
-        return Ok(installer_path);
+            .context("failed to flush downloaded update payload to disk")?;
+        return Ok(payload_path);
     }
 
     let cursor = std::io::Cursor::new(bytes);
@@ -648,10 +730,18 @@ pub(crate) fn install_and_restart(
 ) -> anyhow::Result<()> {
     let current_exe = std::env::current_exe().context("failed to get current executable path")?;
     #[cfg(target_os = "linux")]
-    let _ = (expected_version, installation_kind);
+    let _ = expected_version;
 
     #[cfg(target_os = "linux")]
     {
+        if installation_kind == InstallationKind::LinuxAppImage {
+            let install_target = linux_appimage_path().context(
+                "APPIMAGE does not point to the outer AppImage; refusing to replace the read-only mounted executable",
+            )?;
+            let rollback = install_linux_appimage(new_path, &install_target)?;
+            launch_linux_appimage_replacement(&rollback)?;
+            std::process::exit(0);
+        }
         install_linux(new_path, &current_exe)?;
     }
 
@@ -680,6 +770,7 @@ pub(crate) fn install_and_restart(
 
 /// Restart the application by launching the new binary and exiting.
 fn restart() -> ! {
+    #[cfg(not(target_os = "windows"))]
     let current_exe = match std::env::current_exe() {
         Ok(p) => p,
         Err(e) => {
@@ -688,18 +779,20 @@ fn restart() -> ! {
         }
     };
 
-    tracing::info!("restarting application: {}", current_exe.display());
-
     #[cfg(target_os = "linux")]
     {
-        let error =
-            std::os::unix::process::CommandExt::exec(&mut std::process::Command::new(&current_exe));
+        let restart_path = linux_appimage_path().unwrap_or(current_exe);
+        tracing::info!("restarting application: {}", restart_path.display());
+        let error = std::os::unix::process::CommandExt::exec(&mut std::process::Command::new(
+            &restart_path,
+        ));
         tracing::error!("exec failed: {error}");
         std::process::exit(1);
     }
 
     #[cfg(target_os = "macos")]
     {
+        tracing::info!("restarting application: {}", current_exe.display());
         // On macOS, relaunch the app bundle.
         if let Some(app_path) = current_exe
             .ancestors()
@@ -729,30 +822,201 @@ fn restart() -> ! {
 // ── Platform-specific installation ──────────────────────────────────────────
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
+fn unique_update_sibling(target: &Path, suffix: &str) -> anyhow::Result<PathBuf> {
+    let parent = target
+        .parent()
+        .context("installed executable has no parent directory")?;
+    let file_name = target
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("tiny-shell");
+    Ok(parent.join(format!(".{file_name}.{}.{}", uuid::Uuid::new_v4(), suffix)))
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn copy_exclusive_with_mode(source: &Path, destination: &Path, mode: u32) -> anyhow::Result<u64> {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let mut source_file = std::fs::File::open(source)
+        .with_context(|| format!("failed to open update source {}", source.display()))?;
+    let mut destination_file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(destination)
+        .with_context(|| {
+            format!(
+                "failed to create exclusive update file {}",
+                destination.display()
+            )
+        })?;
+    let copied_size = std::io::copy(&mut source_file, &mut destination_file)
+        .with_context(|| format!("failed to copy update to {}", destination.display()))?;
+    if copied_size == 0 {
+        anyhow::bail!("downloaded update binary is empty");
+    }
+    destination_file
+        .set_permissions(std::fs::Permissions::from_mode(mode))
+        .context("failed to set executable permissions")?;
+    destination_file
+        .sync_all()
+        .context("failed to flush staged update to disk")?;
+    Ok(copied_size)
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn install_linux(
     new_binary: &std::path::Path,
     current_exe: &std::path::Path,
 ) -> anyhow::Result<()> {
-    // Write the new binary next to the old one with a .new suffix, then rename.
-    // On Linux, rename() over an in-use file is safe — the old inode stays alive
-    // until the last file descriptor is closed, so the running process is fine.
-    let new_temp = current_exe.with_extension("new");
-    std::fs::copy(new_binary, &new_temp)
-        .with_context(|| format!("failed to copy new binary to {}", new_temp.display()))?;
-
-    // Make it executable.
-    use std::os::unix::fs::PermissionsExt;
-    let mut perms = std::fs::metadata(&new_temp)
-        .context("failed to get metadata of new binary")?
-        .permissions();
-    perms.set_mode(0o755);
-    std::fs::set_permissions(&new_temp, perms).context("failed to set executable permissions")?;
-
-    // Atomic rename.
-    std::fs::rename(&new_temp, current_exe).context("failed to rename new binary into place")?;
+    // A unique create-new sibling prevents predictable-path symlink attacks and
+    // lets multiple application instances stage independently. rename() over
+    // an in-use Unix executable is safe because the old inode remains alive.
+    let new_temp = unique_update_sibling(current_exe, "new")?;
+    let install_result = (|| {
+        copy_exclusive_with_mode(new_binary, &new_temp, 0o755)?;
+        std::fs::rename(&new_temp, current_exe)
+            .context("failed to rename new binary into place")?;
+        Ok::<_, anyhow::Error>(())
+    })();
+    if install_result.is_err() {
+        std::fs::remove_file(&new_temp).ok();
+    }
+    install_result?;
 
     tracing::info!("update installed to {}", current_exe.display());
     Ok(())
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Debug)]
+struct LinuxAppImageRollback {
+    target: PathBuf,
+    backup: PathBuf,
+}
+
+#[cfg(target_os = "linux")]
+fn validate_linux_appimage_payload(path: &Path) -> anyhow::Result<()> {
+    use std::io::Read as _;
+
+    let mut header = [0_u8; 20];
+    let mut payload = std::fs::File::open(path)
+        .with_context(|| format!("failed to open AppImage payload {}", path.display()))?;
+    if payload.read_exact(&mut header).is_err() {
+        anyhow::bail!(
+            "downloaded update is not a valid x86_64 Type 2 AppImage: {}",
+            path.display()
+        );
+    }
+    let is_x86_64_type_2 = header[0..4] == *b"\x7fELF"
+        && header[4] == 2
+        && header[5] == 1
+        && header[8..11] == *b"AI\x02"
+        && u16::from_le_bytes([header[18], header[19]]) == 62;
+    if !is_x86_64_type_2 {
+        anyhow::bail!(
+            "downloaded update is not a valid x86_64 Type 2 AppImage: {}",
+            path.display()
+        );
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn install_linux_appimage(
+    new_appimage: &Path,
+    current_appimage: &Path,
+) -> anyhow::Result<LinuxAppImageRollback> {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    validate_linux_appimage_payload(new_appimage)?;
+    let backup = unique_update_sibling(current_appimage, "backup")?;
+    let current_mode = std::fs::metadata(current_appimage)
+        .with_context(|| {
+            format!(
+                "failed to read current AppImage metadata {}",
+                current_appimage.display()
+            )
+        })?
+        .permissions()
+        .mode();
+    copy_exclusive_with_mode(current_appimage, &backup, current_mode)?;
+
+    if let Err(error) = install_linux(new_appimage, current_appimage) {
+        std::fs::remove_file(&backup).ok();
+        return Err(error);
+    }
+
+    Ok(LinuxAppImageRollback {
+        target: current_appimage.to_path_buf(),
+        backup,
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn restore_linux_appimage(rollback: &LinuxAppImageRollback) -> anyhow::Result<()> {
+    std::fs::rename(&rollback.backup, &rollback.target).with_context(|| {
+        format!(
+            "failed to restore previous AppImage from {} to {}",
+            rollback.backup.display(),
+            rollback.target.display()
+        )
+    })?;
+    tracing::warn!(
+        "restored previous AppImage after replacement launch failed: {}",
+        rollback.target.display()
+    );
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn appimage_launch_error(
+    rollback: &LinuxAppImageRollback,
+    reason: impl std::fmt::Display,
+) -> anyhow::Error {
+    match restore_linux_appimage(rollback) {
+        Ok(()) => anyhow::anyhow!(
+            "updated AppImage failed to start and the previous version was restored: {reason}"
+        ),
+        Err(restore_error) => anyhow::anyhow!(
+            "updated AppImage failed to start ({reason}); rollback also failed ({restore_error}); previous image remains at {}",
+            rollback.backup.display()
+        ),
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn launch_linux_appimage_replacement(rollback: &LinuxAppImageRollback) -> anyhow::Result<()> {
+    let mut child = std::process::Command::new(&rollback.target)
+        .spawn()
+        .map_err(|error| appimage_launch_error(rollback, error))?;
+
+    // AppImage runtime failures such as a missing FUSE compatibility layer
+    // happen immediately after exec. Keep the current process alive briefly so
+    // an early exit can be rolled back instead of stranding the user.
+    std::thread::sleep(Duration::from_secs(1));
+    match child.try_wait() {
+        Ok(None) => {
+            if let Err(error) = std::fs::remove_file(&rollback.backup) {
+                tracing::warn!(
+                    "updated AppImage started but backup cleanup failed at {}: {error}",
+                    rollback.backup.display()
+                );
+            }
+            Ok(())
+        }
+        Ok(Some(status)) => Err(appimage_launch_error(
+            rollback,
+            format!("replacement exited early with status {status}"),
+        )),
+        Err(error) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            Err(appimage_launch_error(
+                rollback,
+                format!("failed to observe replacement process: {error}"),
+            ))
+        }
+    }
 }
 
 /// Recursively copy a directory tree. Unlike `std::fs::rename`, this works
@@ -1210,13 +1474,18 @@ mod tests {
     use super::release_source::ReleaseAssetMetadata;
     use super::{
         DownloadCancellation, InstallationKind, is_newer_version, prepare_update_dir,
-        select_release_asset, verify_download_digest,
+        release_asset_extension, select_release_asset, verify_download_digest,
     };
     #[cfg(target_os = "windows")]
     use super::{
         WindowsSetupUpdateScriptPlan, WindowsUpdateScriptPlan, build_windows_setup_update_script,
         build_windows_update_script, powershell_path_literal, powershell_string_literal,
         stage_windows_portable_binary_at,
+    };
+    #[cfg(target_os = "linux")]
+    use super::{
+        classify_linux_installation, install_linux, install_linux_appimage,
+        launch_linux_appimage_replacement, resolve_linux_appimage_path,
     };
 
     fn asset(name: &str) -> ReleaseAssetMetadata {
@@ -1321,6 +1590,7 @@ mod tests {
     #[test]
     fn macos_installer_selects_pkg_asset() {
         let assets = vec![
+            asset("tiny-shell-v1.1.0-macos-aarch64-rdp-setup.pkg"),
             asset("tiny-shell-v1.1.0-macos-aarch64-portable.zip"),
             asset("tiny-shell-v1.1.0-macos-aarch64-setup.pkg"),
         ];
@@ -1338,6 +1608,7 @@ mod tests {
     #[test]
     fn macos_portable_selects_zip_asset() {
         let assets = vec![
+            asset("tiny-shell-v1.1.0-macos-aarch64-rdp-portable.zip"),
             asset("tiny-shell-v1.1.0-macos-aarch64-portable.zip"),
             asset("tiny-shell-v1.1.0-macos-aarch64-setup.pkg"),
         ];
@@ -1349,6 +1620,225 @@ mod tests {
             selected.name,
             "tiny-shell-v1.1.0-macos-aarch64-portable.zip"
         );
+    }
+
+    #[test]
+    fn linux_appimage_selects_appimage_asset() {
+        let assets = vec![
+            asset("tiny-shell-v1.1.0-linux-x86_64.tar.gz"),
+            asset("tiny-shell-v1.1.0-linux-x86_64.AppImage"),
+        ];
+
+        let selected = select_release_asset(
+            &assets,
+            "linux-x86_64",
+            "AppImage",
+            InstallationKind::LinuxAppImage,
+        )
+        .unwrap();
+        assert_eq!(selected.name, "tiny-shell-v1.1.0-linux-x86_64.AppImage");
+    }
+
+    #[test]
+    fn linux_portable_keeps_selecting_tar_archive() {
+        let assets = vec![
+            asset("tiny-shell-v1.1.0-linux-x86_64.AppImage"),
+            asset("tiny-shell-v1.1.0-linux-x86_64.tar.gz"),
+        ];
+
+        let selected = select_release_asset(
+            &assets,
+            "linux-x86_64",
+            "tar.gz",
+            InstallationKind::Portable,
+        )
+        .unwrap();
+        assert_eq!(selected.name, "tiny-shell-v1.1.0-linux-x86_64.tar.gz");
+    }
+
+    #[test]
+    fn appimage_installation_uses_appimage_release_payload() {
+        assert_eq!(
+            release_asset_extension(InstallationKind::LinuxAppImage),
+            "AppImage"
+        );
+        assert_eq!(
+            release_asset_extension(InstallationKind::Portable),
+            if cfg!(target_os = "linux") {
+                "tar.gz"
+            } else {
+                "zip"
+            }
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn appimage_environment_takes_precedence_over_mounted_executable() {
+        assert_eq!(
+            classify_linux_installation(
+                Some(std::path::Path::new("/home/user/TinyShell.AppImage")),
+                Some(std::path::Path::new(
+                    "/tmp/.mount_TinyShell/usr/bin/tiny-shell"
+                )),
+            ),
+            InstallationKind::LinuxAppImage
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn appimage_path_is_canonicalized_and_outer_file_is_replaced() {
+        use std::os::unix::fs::{PermissionsExt as _, symlink};
+
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let temp_root = std::env::temp_dir().join(format!(
+            "tiny-shell-appimage-update-test-{}-{unique}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&temp_root).unwrap();
+        let current = temp_root.join("TinyShell.AppImage");
+        let launch_link = temp_root.join("tiny-shell-current.AppImage");
+        let downloaded = temp_root.join("downloaded.AppImage");
+        let appdir = temp_root.join("mounted");
+        let mounted_exe = appdir.join("usr/bin/tiny-shell");
+        std::fs::create_dir_all(mounted_exe.parent().unwrap()).unwrap();
+        std::fs::write(&current, b"old AppImage").unwrap();
+        std::fs::write(&downloaded, b"new AppImage").unwrap();
+        std::fs::write(&mounted_exe, b"mounted executable").unwrap();
+        symlink(&current, &launch_link).unwrap();
+
+        let resolved =
+            resolve_linux_appimage_path(Some(launch_link), Some(appdir), Some(mounted_exe))
+                .unwrap();
+        assert_eq!(resolved, std::fs::canonicalize(&current).unwrap());
+
+        install_linux(&downloaded, &resolved).unwrap();
+
+        assert_eq!(std::fs::read(&current).unwrap(), b"new AppImage");
+        assert_eq!(
+            std::fs::metadata(&current).unwrap().permissions().mode() & 0o777,
+            0o755
+        );
+        assert!(!current.with_extension("new").exists());
+        std::fs::remove_dir_all(temp_root).unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn inherited_appimage_environment_from_an_unrelated_parent_is_ignored() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let temp_root = std::env::temp_dir().join(format!(
+            "tiny-shell-appimage-parent-test-{}-{unique}",
+            std::process::id()
+        ));
+        let appimage = temp_root.join("Parent.AppImage");
+        let appdir = temp_root.join("parent-mount");
+        let tiny_shell = temp_root.join("tiny-shell");
+        std::fs::create_dir_all(&appdir).unwrap();
+        std::fs::write(&appimage, b"parent AppImage").unwrap();
+        std::fs::write(&tiny_shell, b"standalone TinyShell").unwrap();
+
+        assert!(
+            resolve_linux_appimage_path(Some(appimage), Some(appdir), Some(tiny_shell)).is_none()
+        );
+
+        std::fs::remove_dir_all(temp_root).unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn portable_install_does_not_follow_a_predictable_staging_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let temp_root = std::env::temp_dir().join(format!(
+            "tiny-shell-update-symlink-test-{}-{unique}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&temp_root).unwrap();
+        let current = temp_root.join("TinyShell.AppImage");
+        let downloaded = temp_root.join("downloaded.AppImage");
+        let sentinel = temp_root.join("must-not-change");
+        let predictable_staging_path = current.with_extension("new");
+        std::fs::write(&current, b"old AppImage").unwrap();
+        std::fs::write(&downloaded, b"new AppImage").unwrap();
+        std::fs::write(&sentinel, b"sentinel").unwrap();
+        symlink(&sentinel, &predictable_staging_path).unwrap();
+
+        install_linux(&downloaded, &current).unwrap();
+
+        assert_eq!(std::fs::read(&current).unwrap(), b"new AppImage");
+        assert_eq!(std::fs::read(&sentinel).unwrap(), b"sentinel");
+        assert!(predictable_staging_path.is_symlink());
+        std::fs::remove_dir_all(temp_root).unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn appimage_install_rejects_invalid_payload_without_replacing_current_image() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let temp_root = std::env::temp_dir().join(format!(
+            "tiny-shell-invalid-appimage-test-{}-{unique}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&temp_root).unwrap();
+        let current = temp_root.join("TinyShell.AppImage");
+        let downloaded = temp_root.join("downloaded.AppImage");
+        std::fs::write(&current, b"old AppImage").unwrap();
+        std::fs::write(&downloaded, b"not an AppImage").unwrap();
+
+        let error = install_linux_appimage(&downloaded, &current).unwrap_err();
+
+        assert!(error.to_string().contains("x86_64 Type 2 AppImage"));
+        assert_eq!(std::fs::read(&current).unwrap(), b"old AppImage");
+        std::fs::remove_dir_all(temp_root).unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn appimage_launch_failure_restores_the_previous_image() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let temp_root = std::env::temp_dir().join(format!(
+            "tiny-shell-appimage-rollback-test-{}-{unique}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&temp_root).unwrap();
+        let current = temp_root.join("TinyShell.AppImage");
+        let downloaded = temp_root.join("downloaded.AppImage");
+        let mut valid_appimage_header = [0_u8; 64];
+        valid_appimage_header[0..4].copy_from_slice(b"\x7fELF");
+        valid_appimage_header[4] = 2;
+        valid_appimage_header[5] = 1;
+        valid_appimage_header[8..11].copy_from_slice(b"AI\x02");
+        valid_appimage_header[18..20].copy_from_slice(&62_u16.to_le_bytes());
+        std::fs::write(&current, b"old AppImage").unwrap();
+        std::fs::write(&downloaded, valid_appimage_header).unwrap();
+
+        let rollback = install_linux_appimage(&downloaded, &current).unwrap();
+        assert_eq!(std::fs::read(&current).unwrap(), valid_appimage_header);
+        assert_eq!(std::fs::read(&rollback.backup).unwrap(), b"old AppImage");
+
+        let error = launch_linux_appimage_replacement(&rollback).unwrap_err();
+        assert!(error.to_string().contains("previous version was restored"));
+        assert_eq!(std::fs::read(&current).unwrap(), b"old AppImage");
+        assert!(!rollback.backup.exists());
+        std::fs::remove_dir_all(temp_root).unwrap();
     }
 
     #[test]

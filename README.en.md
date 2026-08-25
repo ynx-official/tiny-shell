@@ -58,7 +58,9 @@ TinyShell is designed for developers, system administrators, and advanced users 
 - **Tabs and split panes**: Organize sessions across multiple tabs and split a tab into multiple panes for a tmux-like workspace.
 - **Consistent local and remote experience**: Local shells and SSH sessions share the same terminal interaction and visual model.
 - **Terminal interaction**: Selection, copy and paste, context-menu actions, and terminal-aware mouse behavior.
-- **Bundled font**: Includes Maple Mono NF CN for reliable CJK text and Nerd Font icon rendering.
+- **Content highlight rules**: Configure prioritized literal or regular-expression matches with whole-word and case controls, text/background/bold/underline styles, and live preview; full-screen TUIs keep their native colors.
+- **Cross-platform fonts**: The UI follows the system font; the terminal prefers Consolas on Windows and Menlo on macOS, with installed fonts used automatically for CJK and emoji glyphs.
+- **Nerd Font support**: Install and select a Nerd Font in terminal settings when Powerline or Nerd Font symbols are required.
 - **Live appearance controls**: Change the terminal font, size, line spacing, and theme without restarting the application.
 
 ### SSH and Connection Management
@@ -100,6 +102,7 @@ After an SSH connection is established, the built-in SFTP manager can handle rem
 ### Configuration Sync and Migration
 
 - **WebDAV and S3**: Synchronize connection and application settings through widely available storage backends.
+- **Automatic WebDAV reconciliation**: Pull, merge, and push when needed after startup, saves, window activation, wake, and configurable minute-based checks.
 - **Preflight validation**: Validate configuration and credentials before upload to reduce failures caused by incomplete settings.
 - **Privacy-password verification**: Check the privacy password before synchronizing sensitive fields and detect missing or inconsistent passwords early.
 - **Conflict-aware merging**: Synchronization metadata includes timestamps and deletion state for cross-device catalog merging.
@@ -145,7 +148,7 @@ The current release workflow publishes the following artifacts:
 | --- | --- | --- |
 | Windows | x86_64 | `.exe` installer and portable `.zip` |
 | macOS | Apple Silicon / Intel | `.pkg` installer and portable `.zip` |
-| Linux | x86_64 | Generic `.tar.gz` |
+| Linux | x86_64 | Single-file `.AppImage` and generic `.tar.gz` |
 
 ### macOS
 
@@ -169,7 +172,14 @@ Choose one of the following packages from the [Releases page](https://github.com
 
 ### Linux
 
-Download `tiny-shell-*-linux-x86_64.tar.gz`, then run:
+Download `tiny-shell-*-linux-x86_64.AppImage`, make it executable, and launch it directly:
+
+```bash
+chmod +x tiny-shell-*-linux-x86_64.AppImage
+./tiny-shell-*-linux-x86_64.AppImage
+```
+
+The built-in updater recognizes AppImage installations, verifies the SHA-256 digest, atomically replaces the outer AppImage file, and restarts from that file. If your distribution does not provide a FUSE 2 compatibility layer (`libfuse2t64` on Ubuntu 24.04), install the matching package or use the `.tar.gz` archive instead:
 
 ```bash
 tar -xzf tiny-shell-*-linux-x86_64.tar.gz
@@ -177,9 +187,9 @@ cd tiny-shell-*-linux-x86_64
 ./tiny-shell
 ```
 
-If your system is missing GPUI runtime dependencies, install the corresponding X11, Wayland, Fontconfig, FreeType, OpenGL, and GTK runtime libraries through your distribution's package manager.
+The AppImage bundles TinyShell, FreeRDP/WinPR, and their non-system dynamic dependencies, but it does not bundle glibc, graphics drivers, or host graphics stacks such as Mesa and Vulkan. Linux releases retain an Ubuntu 24.04 glibc baseline. Install any missing X11, Wayland, Fontconfig, FreeType, and OpenGL runtime libraries through your distribution's package manager.
 
-> Debian package metadata is available in the repository, so developers can build a `.deb` with `cargo-deb`. The current GitHub Release workflow publishes a generic `.tar.gz` for Linux by default.
+> Debian package metadata remains available for developers who want to build a `.deb` with `cargo-deb`. GitHub Releases continue to include the `.tar.gz` archive for systems that cannot run the AppImage.
 
 ---
 
@@ -203,9 +213,9 @@ TinyShell handles sensitive values such as SSH passwords, private keys, and prox
 - [Rust](https://www.rust-lang.org/tools/install) `1.85.0` or later.
 - Cargo with Rust 2024 Edition support.
 - Git for cloning the repository and fetching Git dependencies.
-- Windows: MSVC Build Tools.
-- macOS: Xcode Command Line Tools.
-- Linux: C/C++ build tools plus the X11, Wayland, font, and graphics development libraries required by GPUI.
+- Windows: MSVC Build Tools; Windows Remote Desktop uses the system `mstsc.exe` client, so FreeRDP is not required.
+- macOS: Xcode Command Line Tools; to use Windows Remote Desktop from a source build, also install the FreeRDP 3 development libraries so that `pkg-config` can find them.
+- Linux: C/C++ build tools plus the X11, Wayland, font, and graphics development libraries required by GPUI; to use Windows Remote Desktop from a source build, also install the FreeRDP 3 development libraries.
 
 ### Linux Build Dependencies
 
@@ -222,6 +232,14 @@ sudo apt-get install -y --no-install-recommends \
   libudev-dev
 ```
 
+On Debian or Ubuntu releases that provide it, install the FreeRDP 3 development package as well:
+
+```bash
+sudo apt-get install -y freerdp3-dev
+```
+
+On Windows, TinyShell writes a temporary `.rdp` profile and launches the system `mstsc.exe` client. Make sure the Windows Remote Desktop Connection component is available.
+
 ### Clone and Run
 
 ```bash
@@ -229,6 +247,19 @@ git clone https://github.com/ynx-official/tiny-shell.git
 cd tiny-shell
 cargo run
 ```
+
+The default `freerdp-auto` feature is used only on macOS and Linux, where it discovers FreeRDP 3 through `pkg-config`. Windows does not compile FreeRDP; double-clicking an RDP connection launches the system `mstsc.exe` client. If FreeRDP is not found on macOS or Linux, the project still builds and runs with the no-backend fallback.
+
+Use force mode when the native backend is required; the build fails immediately if its dependencies are missing. To explicitly build without the RDP backend, disable the default features:
+
+```bash
+cargo run --features freerdp # macOS/Linux
+cargo run --no-default-features
+```
+
+For non-standard macOS/Linux FreeRDP installations, set `TINY_SHELL_FREERDP_INCLUDE_DIRS` and `TINY_SHELL_FREERDP_LIB_DIR`. See the [FreeRDP integration notes](docs/02-design/remote-desktop-freerdp.md) for details.
+
+Embedded RDP on macOS/Linux supports Cmd/Ctrl modifiers, number keys, and text clipboard. Files copied to the local Mac system clipboard can also be pasted into the remote Windows session. Clean RDP mode hides the sidebar and tabs and reveals its toolbar from the top edge. Windows continues to use the native `mstsc.exe` path and does not use this FreeRDP input or clipboard implementation.
 
 Build an optimized binary:
 
@@ -238,7 +269,7 @@ cargo build --locked --release
 
 ### Quality Checks
 
-CI runs formatting, Clippy, tests, and release builds on Windows, macOS, and Linux. Before submitting changes, run at least:
+CI runs formatting, Clippy, tests, and release builds on Windows, macOS, and Linux. The Ubuntu 24.04 gate also builds, extracts, and smoke-starts the AppImage under Xvfb. Before submitting changes, run at least:
 
 ```bash
 cargo fmt --all -- --check
@@ -254,11 +285,23 @@ macOS App Bundle:
 ./scripts/package-macos-app.sh
 ```
 
+When the default build discovers and links FreeRDP, the script uses `dylibbundler` to include its dynamic libraries in the app bundle; install it first with `brew install dylibbundler`.
+
 Windows installer and portable archive (requires Inno Setup 6):
 
 ```powershell
 ./scripts/package-windows.ps1
 ```
+
+Windows packages use the system `mstsc.exe` client and do not bundle FreeRDP DLLs.
+
+Linux AppImage (requires the FreeRDP 3 development package, `curl`, `desktop-file-utils`, `file`, and `patchelf`):
+
+```bash
+bash scripts/package-linux-appimage.sh
+```
+
+The script pins `linuxdeploy 1-alpha-20251107-1` and verifies its SHA-256 digest. Pass `--linuxdeploy <path>` to use a pre-fetched tool. The output is `dist/tiny-shell-vX.Y.Z-linux-x86_64.AppImage`.
 
 Optional Debian package:
 
@@ -281,7 +324,7 @@ src/
 ├── terminal/  Terminal rendering, input, selection, and terminal semantics
 └── main.rs    Application entry point
 
-assets/        Icons, fonts, themes, and platform resources
+assets/        Icons, themes, and platform resources
 locales/       English and Simplified Chinese localization resources
 scripts/       macOS and Windows packaging scripts
 docs/          Release history and focused technical documents

@@ -282,6 +282,8 @@ pub(crate) struct AuxiliaryWindowsState {
 pub(crate) struct ConfigPersistenceState {
     generation: u64,
     persisted_generation: u64,
+    workspace_layout_generation: u64,
+    persisted_workspace_layout_generation: u64,
     last_dirty_at: Option<Instant>,
     retry_after: Option<Instant>,
     save_immediately: bool,
@@ -291,6 +293,7 @@ pub(crate) struct ConfigPersistenceState {
 
 struct PendingPreferenceSave {
     generation: u64,
+    includes_workspace_layout: bool,
     receipt: SaveReceipt,
 }
 
@@ -305,6 +308,12 @@ impl ConfigPersistenceState {
         }
         self.last_dirty_at = Some(now);
         self.generation
+    }
+
+    pub(crate) fn mark_workspace_layout_dirty(&mut self, now: Instant) -> u64 {
+        let generation = self.mark_dirty(now);
+        self.workspace_layout_generation = generation;
+        generation
     }
 
     pub(crate) fn request_immediate_save(&mut self) {
@@ -327,23 +336,37 @@ impl ConfigPersistenceState {
         (self.save_immediately || quiet_long_enough).then_some(self.generation)
     }
 
-    pub(crate) fn set_in_flight(&mut self, generation: u64, receipt: SaveReceipt) {
+    pub(crate) fn set_in_flight(
+        &mut self,
+        generation: u64,
+        includes_workspace_layout: bool,
+        receipt: SaveReceipt,
+    ) {
         self.save_immediately = false;
         self.retry_after = None;
         self.in_flight = Some(PendingPreferenceSave {
             generation,
+            includes_workspace_layout,
             receipt,
         });
     }
 
-    pub(crate) fn poll_result(&mut self) -> Option<(u64, anyhow::Result<()>)> {
+    pub(crate) fn poll_result(&mut self) -> Option<(u64, bool, anyhow::Result<()>)> {
         let result = self.in_flight.as_ref()?.receipt.try_result()?;
-        let generation = self.in_flight.take()?.generation;
-        Some((generation, result))
+        let pending = self.in_flight.take()?;
+        Some((
+            pending.generation,
+            pending.includes_workspace_layout,
+            result,
+        ))
     }
 
-    pub(crate) fn mark_saved(&mut self, generation: u64) {
+    pub(crate) fn mark_saved(&mut self, generation: u64, includes_workspace_layout: bool) {
         self.persisted_generation = self.persisted_generation.max(generation);
+        if includes_workspace_layout {
+            self.persisted_workspace_layout_generation =
+                self.persisted_workspace_layout_generation.max(generation);
+        }
         self.retry_after = None;
     }
 
@@ -352,7 +375,15 @@ impl ConfigPersistenceState {
     }
 
     pub(crate) fn is_dirty(&self) -> bool {
-        self.persisted_generation < self.generation
+        self.persisted_generation < self.generation || self.workspace_layout_save_required()
+    }
+
+    pub(crate) fn workspace_layout_save_required(&self) -> bool {
+        self.persisted_workspace_layout_generation < self.workspace_layout_generation
+    }
+
+    pub(crate) fn workspace_layout_changed_after(&self, generation: u64) -> bool {
+        self.workspace_layout_generation > generation
     }
 
     pub(crate) fn generation(&self) -> u64 {
@@ -702,8 +733,23 @@ mod tests {
         state.mark_dirty(Instant::now());
         assert!(state.is_dirty());
 
-        state.mark_saved(state.generation());
+        state.mark_saved(state.generation(), false);
         assert!(!state.is_dirty());
+    }
+
+    #[test]
+    fn workspace_layout_stays_dirty_until_a_scoped_save_succeeds() {
+        let mut state = ConfigPersistenceState::default();
+        let generation = state.mark_workspace_layout_dirty(Instant::now());
+        assert!(state.workspace_layout_save_required());
+
+        state.mark_saved(generation, false);
+        assert!(state.is_dirty());
+        assert!(state.workspace_layout_save_required());
+
+        state.mark_saved(generation, true);
+        assert!(!state.is_dirty());
+        assert!(!state.workspace_layout_save_required());
     }
 
     #[test]

@@ -25,25 +25,103 @@ use alacritty_terminal::{
 };
 use gpui::Keystroke;
 
-use crate::session::config::Session;
+use crate::backend::remote_desktop::{CertificateRequest, FrameMailbox};
+use crate::session::{config::Session, highlight_rules::HighlightRule};
 use crate::sftp::{
     RemoteEntry,
     text_file::{RemoteFileRevision, RemoteTextFile},
 };
 use crate::system::SystemSnapshot;
 
-type HighlightCache = Option<(u64, Arc<HashMap<(i32, i32), gpui::Hsla>>)>;
+#[derive(Debug)]
+struct HighlightCache {
+    compiled: Option<Arc<highlight::CompiledRuleSet>>,
+    highlights: Arc<highlight::HighlightMap>,
+    pending_damage: RenderDamage,
+}
+
+impl Default for HighlightCache {
+    fn default() -> Self {
+        Self {
+            compiled: None,
+            highlights: Arc::new(HashMap::new()),
+            pending_damage: RenderDamage::Full,
+        }
+    }
+}
+
+impl HighlightCache {
+    fn note_render_damage(&mut self, damage: &RenderDamage) {
+        self.pending_damage.merge_render(damage);
+    }
+
+    fn resolve(
+        &mut self,
+        cells: &[RenderCell],
+        rows: usize,
+        fingerprint: u64,
+        rules: &[HighlightRule],
+    ) -> Arc<highlight::HighlightMap> {
+        let rules_changed = self
+            .compiled
+            .as_ref()
+            .is_none_or(|compiled| compiled.fingerprint() != fingerprint);
+        if rules_changed {
+            self.compiled = Some(Arc::new(highlight::CompiledRuleSet::compile(
+                fingerprint,
+                rules,
+            )));
+            self.pending_damage = RenderDamage::Full;
+        }
+
+        let Some(compiled) = self.compiled.as_ref() else {
+            return Arc::new(HashMap::new());
+        };
+        let damage = std::mem::take(&mut self.pending_damage);
+        let computed = match damage {
+            RenderDamage::Full => highlight::highlight_cells(cells, rows, compiled),
+            RenderDamage::Partial(lines) if lines.is_empty() => return self.highlights.clone(),
+            RenderDamage::Partial(lines) => {
+                let damaged_rows = lines.into_iter().map(|line| line.line).collect::<Vec<_>>();
+                highlight::update_highlights_for_rows(
+                    cells,
+                    rows,
+                    compiled,
+                    self.highlights.as_ref(),
+                    &damaged_rows,
+                )
+            }
+        };
+        self.highlights = Arc::new(computed);
+        self.highlights.clone()
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TabKind {
     Local,
     Ssh,
+    Rdp,
 }
 
 #[derive(Debug)]
 pub(crate) enum BackendCommand {
     Input(Vec<u8>),
-    Resize { cols: u16, rows: u16 },
+    Resize {
+        cols: u16,
+        rows: u16,
+    },
+    #[cfg_attr(not(tiny_shell_freerdp_backend), allow(dead_code))]
+    RemoteDesktopResize {
+        width: u32,
+        height: u32,
+    },
+    #[cfg_attr(not(tiny_shell_freerdp_backend), allow(dead_code))]
+    RemoteDesktopInput(RemoteDesktopInput),
+    #[cfg_attr(not(tiny_shell_freerdp_backend), allow(dead_code))]
+    RemoteDesktopClipboard(String),
+    #[cfg_attr(not(tiny_shell_freerdp_backend), allow(dead_code))]
+    RemoteDesktopClipboardFiles(Vec<std::path::PathBuf>),
     SampleMetrics,
     Docker(crate::docker::DockerRequest),
     Close,
@@ -54,11 +132,39 @@ impl BackendCommand {
         match self {
             Self::Input(_) => "input",
             Self::Resize { .. } => "resize",
+            Self::RemoteDesktopResize { .. } => "remote-desktop-resize",
+            Self::RemoteDesktopInput(_) => "remote-desktop-input",
+            Self::RemoteDesktopClipboard(_) => "remote-desktop-clipboard",
+            Self::RemoteDesktopClipboardFiles(_) => "remote-desktop-clipboard-files",
             Self::SampleMetrics => "sample-metrics",
             Self::Docker(_) => "docker",
             Self::Close => "close",
         }
     }
+}
+
+#[derive(Debug, Clone, Copy)]
+#[cfg_attr(not(tiny_shell_freerdp_backend), allow(dead_code))]
+pub(crate) enum RemoteDesktopInput {
+    Key {
+        scancode: u32,
+        down: bool,
+        extended: bool,
+    },
+    MouseMove {
+        x: u16,
+        y: u16,
+    },
+    MouseButton {
+        flags: u16,
+        x: u16,
+        y: u16,
+    },
+    MouseWheel {
+        flags: u16,
+        x: u16,
+        y: u16,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -74,9 +180,27 @@ pub(crate) enum BackendEvent {
         tab_id: String,
         bytes: Vec<u8>,
     },
+    #[cfg_attr(not(tiny_shell_freerdp_backend), allow(dead_code))]
+    RemoteDesktopFrameReady {
+        tab_id: String,
+        sequence: u64,
+    },
     Status {
         tab_id: String,
         text: String,
+    },
+    #[cfg_attr(not(tiny_shell_freerdp_backend), allow(dead_code))]
+    RemoteDesktopCertificateRequest(Box<CertificateRequest>),
+    #[cfg_attr(not(tiny_shell_freerdp_backend), allow(dead_code))]
+    RemoteDesktopClipboard {
+        tab_id: String,
+        text: String,
+    },
+    #[cfg_attr(not(tiny_shell_freerdp_backend), allow(dead_code))]
+    RemoteDesktopClosed {
+        tab_id: String,
+        reason: String,
+        retryable: bool,
     },
     Connected {
         tab_id: String,
@@ -168,8 +292,12 @@ impl BackendEvent {
     pub(crate) fn tab_id(&self) -> Option<&str> {
         match self {
             Self::Output { tab_id, .. }
-            | Self::Status { tab_id, .. }
-            | Self::Connected { tab_id }
+            | Self::RemoteDesktopFrameReady { tab_id, .. }
+            | Self::Status { tab_id, .. } => Some(tab_id),
+            Self::RemoteDesktopCertificateRequest(request) => Some(&request.tab_id),
+            Self::RemoteDesktopClipboard { tab_id, .. }
+            | Self::RemoteDesktopClosed { tab_id, .. } => Some(tab_id),
+            Self::Connected { tab_id }
             | Self::SftpEntries { tab_id, .. }
             | Self::SftpDirectoryEntries { tab_id, .. }
             | Self::SftpStatus { tab_id, .. }
@@ -191,9 +319,16 @@ impl BackendEvent {
     }
 
     pub(crate) fn is_reliable_lifecycle(&self) -> bool {
+        // Frame-ready is a coalesced mailbox wake-up, not a frame payload. At
+        // most one is outstanding per RDP tab, and the downstream router must
+        // preserve it when evicting ordinary events from a full owner queue.
         matches!(
             self,
             Self::Connected { .. }
+                | Self::RemoteDesktopFrameReady { .. }
+                | Self::RemoteDesktopCertificateRequest(_)
+                | Self::RemoteDesktopClipboard { .. }
+                | Self::RemoteDesktopClosed { .. }
                 | Self::Closed { .. }
                 | Self::SftpFileContent { .. }
                 | Self::SftpContentUploaded { .. }
@@ -221,6 +356,8 @@ impl BackendEvent {
 const OUTPUT_QUEUE_BYTE_CAPACITY: usize = 8 * 1024 * 1024;
 const OUTPUT_QUEUE_EVENT_CAPACITY: usize = 1_024;
 const MAX_COALESCED_OUTPUT_BYTES: usize = 64 * 1024;
+const LIFECYCLE_QUEUE_CAPACITY: usize = 4_096;
+const CONTROL_QUEUE_CAPACITY: usize = 4_096;
 
 #[derive(Default)]
 struct OutputEventQueue {
@@ -445,6 +582,22 @@ impl BackendEventSender {
         event: BackendEvent,
         generation: u64,
     ) -> Result<(), BackendEventSendError> {
+        if matches!(&event, BackendEvent::RemoteDesktopFrameReady { .. }) {
+            // EndPaint runs on FreeRDP's event thread. Bypass send_order
+            // because another reliable event may hold that lock while waiting
+            // for lifecycle capacity. A failed try_send re-arms the mailbox.
+            let envelope = BackendEventEnvelope {
+                event,
+                generation,
+                sequence: self.sequence.fetch_add(1, Ordering::Relaxed),
+            };
+            let result = self
+                .lifecycle_events
+                .try_send(envelope)
+                .map_err(|_| BackendEventSendError);
+            return self.record_send_result(result);
+        }
+
         let _send_guard = self
             .send_order
             .lock()
@@ -469,6 +622,13 @@ impl BackendEventSender {
                 .try_send(envelope)
                 .map_err(|_| BackendEventSendError)
         };
+        self.record_send_result(result)
+    }
+
+    fn record_send_result(
+        &self,
+        result: Result<(), BackendEventSendError>,
+    ) -> Result<(), BackendEventSendError> {
         match result {
             Ok(()) => {
                 self.sent_events.fetch_add(1, Ordering::Relaxed);
@@ -496,8 +656,6 @@ impl BackendEventSender {
 }
 
 pub(crate) fn backend_event_channel() -> (BackendEventSender, BackendEventReceiver) {
-    const LIFECYCLE_QUEUE_CAPACITY: usize = 4_096;
-    const CONTROL_QUEUE_CAPACITY: usize = 4_096;
     // Lifecycle events are bounded separately from ordinary controls. Sending
     // them may briefly apply backpressure, but it cannot grow memory without
     // limit while the UI is stalled.
@@ -531,7 +689,7 @@ pub(crate) fn backend_event_channel() -> (BackendEventSender, BackendEventReceiv
 
 #[cfg(test)]
 mod backend_event_tests {
-    use super::{BackendEvent, backend_event_channel};
+    use super::{BackendEvent, LIFECYCLE_QUEUE_CAPACITY, backend_event_channel};
 
     #[test]
     fn control_event_is_received_before_queued_output() {
@@ -557,6 +715,87 @@ mod backend_event_tests {
             receiver.try_recv().unwrap().event,
             BackendEvent::Closed { .. }
         ));
+    }
+
+    #[test]
+    fn remote_desktop_frame_wakeup_is_reliable() {
+        assert!(
+            BackendEvent::RemoteDesktopFrameReady {
+                tab_id: "rdp-a".to_string(),
+                sequence: 1,
+            }
+            .is_reliable_lifecycle()
+        );
+    }
+
+    #[test]
+    fn remote_desktop_frame_wakeup_does_not_block_when_lifecycle_queue_is_full() {
+        let (sender, receiver) = backend_event_channel();
+        for sequence in 0..LIFECYCLE_QUEUE_CAPACITY {
+            sender
+                .send(BackendEvent::RemoteDesktopFrameReady {
+                    tab_id: format!("rdp-{sequence}"),
+                    sequence: sequence as u64,
+                })
+                .unwrap();
+        }
+
+        let (result_tx, result_rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let result = sender.send(BackendEvent::RemoteDesktopFrameReady {
+                tab_id: "rdp-overflow".to_string(),
+                sequence: LIFECYCLE_QUEUE_CAPACITY as u64,
+            });
+            let _ = result_tx.send(result);
+        });
+
+        let result = result_rx
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("frame wake-up send must not block on a full lifecycle queue");
+        assert!(result.is_err());
+        drop(receiver);
+    }
+
+    #[test]
+    fn remote_desktop_frame_wakeup_bypasses_blocked_reliable_sender() {
+        let (sender, receiver) = backend_event_channel();
+        for sequence in 0..LIFECYCLE_QUEUE_CAPACITY {
+            sender
+                .send(BackendEvent::RemoteDesktopFrameReady {
+                    tab_id: format!("rdp-{sequence}"),
+                    sequence: sequence as u64,
+                })
+                .unwrap();
+        }
+
+        let blocking_sender = sender.clone();
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let blocked = std::thread::spawn(move || {
+            let _ = started_tx.send(());
+            blocking_sender.send(BackendEvent::Connected {
+                tab_id: "ssh-blocked".to_string(),
+            })
+        });
+        started_rx.recv().unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(25));
+        assert!(!blocked.is_finished());
+
+        let (result_tx, result_rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let result = sender.send(BackendEvent::RemoteDesktopFrameReady {
+                tab_id: "rdp-overflow".to_string(),
+                sequence: LIFECYCLE_QUEUE_CAPACITY as u64,
+            });
+            let _ = result_tx.send(result);
+        });
+
+        let result = result_rx
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("frame wake-up must bypass a blocked reliable sender");
+        assert!(result.is_err());
+
+        drop(receiver);
+        assert!(blocked.join().unwrap().is_err());
     }
 
     #[test]
@@ -626,6 +865,13 @@ pub(crate) enum BackendTx {
         close: tokio::sync::watch::Sender<bool>,
         resize: tokio::sync::watch::Sender<Option<(u16, u16)>>,
     },
+    Rdp {
+        commands: tokio::sync::mpsc::Sender<BackendCommand>,
+        close: tokio::sync::watch::Sender<bool>,
+        resize: tokio::sync::watch::Sender<Option<(u16, u16)>>,
+        mouse_move: Arc<Mutex<Option<(u16, u16)>>>,
+        stop_requested: Arc<AtomicBool>,
+    },
 }
 
 pub(crate) const BACKEND_COMMAND_QUEUE_CAPACITY: usize = 1_024;
@@ -651,6 +897,31 @@ impl BackendTx {
                 resize.send(Some((cols, rows))).is_ok()
             }
             (Self::Ssh { commands, .. }, command) => commands.try_send(command).is_ok(),
+            (
+                Self::Rdp {
+                    close,
+                    stop_requested,
+                    ..
+                },
+                BackendCommand::Close,
+            ) => {
+                stop_requested.store(true, Ordering::Release);
+                let _ = close.send(true);
+                true
+            }
+            (Self::Rdp { resize, .. }, BackendCommand::Resize { cols, rows }) => {
+                resize.send(Some((cols, rows))).is_ok()
+            }
+            (
+                Self::Rdp { mouse_move, .. },
+                BackendCommand::RemoteDesktopInput(RemoteDesktopInput::MouseMove { x, y }),
+            ) => {
+                *mouse_move
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some((x, y));
+                true
+            }
+            (Self::Rdp { commands, .. }, command) => commands.try_send(command).is_ok(),
         };
         if !sent {
             let rejected = REJECTED_BACKEND_COMMANDS.fetch_add(1, Ordering::Relaxed) + 1;
@@ -684,14 +955,18 @@ pub(crate) struct TerminalTab {
     pub cols: u16,
     pub rows: u16,
     pub backend: std::sync::Arc<std::sync::Mutex<BackendTx>>,
+    /// Latest decoded RDP frame. The renderer consumes this mailbox without
+    /// placing frame-sized buffers on the generic backend event queue.
+    pub(crate) remote_desktop_mailbox: Option<Arc<FrameMailbox>>,
+    remote_desktop_size: Option<(u32, u32)>,
     pub scroll_pixel_y: f32,
-    pub(crate) highlight_cache: std::cell::RefCell<HighlightCache>,
+    highlight_cache: std::cell::RefCell<HighlightCache>,
     render_revision: u64,
-    render_cache: std::cell::RefCell<Option<(u64, bool, RenderSnapshot)>>,
+    render_cache: std::cell::RefCell<Option<(u64, bool, u64, RenderSnapshot)>>,
     pending_render_damage: std::cell::RefCell<RenderDamage>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 enum RenderDamage {
     Full,
     Partial(Vec<LineDamageBounds>),
@@ -717,6 +992,25 @@ impl RenderDamage {
                         existing.right = existing.right.max(line.right);
                     } else {
                         pending.push(line);
+                    }
+                }
+            }
+        }
+    }
+
+    fn merge_render(&mut self, damage: &Self) {
+        match damage {
+            Self::Full => *self = Self::Full,
+            Self::Partial(lines) => {
+                let Self::Partial(pending) = self else {
+                    return;
+                };
+                for line in lines {
+                    if let Some(existing) = pending.iter_mut().find(|item| item.line == line.line) {
+                        existing.left = existing.left.min(line.left);
+                        existing.right = existing.right.max(line.right);
+                    } else {
+                        pending.push(*line);
                     }
                 }
             }
@@ -749,7 +1043,7 @@ pub(crate) struct RenderSnapshot {
     pub history_size: usize,
     pub rows: usize,
     pub cols: usize,
-    pub highlights: Arc<HashMap<(i32, i32), gpui::Hsla>>,
+    pub highlights: Arc<highlight::HighlightMap>,
 }
 
 #[derive(Clone, Copy)]
@@ -815,6 +1109,31 @@ impl TerminalTab {
         tab
     }
 
+    #[cfg(not(target_os = "windows"))]
+    pub fn new_rdp(
+        id: String,
+        session: &Session,
+        backend: BackendTx,
+        events: BackendEventSender,
+        mailbox: Arc<FrameMailbox>,
+    ) -> Self {
+        let mut tab = Self::new(
+            id,
+            session.name.clone(),
+            TabKind::Rdp,
+            format!(
+                "connecting RDP {}@{}:{}",
+                session.user, session.host, session.port
+            ),
+            backend,
+            events,
+        );
+        tab.session = Some(session.clone());
+        tab.connected = false;
+        tab.remote_desktop_mailbox = Some(mailbox);
+        tab
+    }
+
     fn new(
         id: String,
         title: String,
@@ -850,8 +1169,10 @@ impl TerminalTab {
             cols: 100,
             rows: 30,
             backend: shared_backend,
+            remote_desktop_mailbox: None,
+            remote_desktop_size: None,
             scroll_pixel_y: 0.0,
-            highlight_cache: std::cell::RefCell::new(None),
+            highlight_cache: std::cell::RefCell::new(HighlightCache::default()),
             render_revision: 0,
             render_cache: std::cell::RefCell::new(None),
             pending_render_damage: std::cell::RefCell::new(RenderDamage::Full),
@@ -942,6 +1263,16 @@ impl TerminalTab {
         }
     }
 
+    pub(crate) fn resize_remote_desktop(&mut self, width: u32, height: u32) {
+        let width = width.max(1);
+        let height = height.max(1);
+        if self.remote_desktop_size == Some((width, height)) {
+            return;
+        }
+        self.remote_desktop_size = Some((width, height));
+        self.send_backend(BackendCommand::RemoteDesktopResize { width, height });
+    }
+
     pub fn cursor_state(&self) -> Option<CursorState> {
         let content = self.term.renderable_content();
         if matches!(content.cursor.shape, CursorShape::Hidden) || content.display_offset > 0 {
@@ -975,11 +1306,26 @@ impl TerminalTab {
         self.term.mode().contains(TermMode::ALT_SCREEN)
     }
 
-    pub fn render_snapshot(&self, keyword_highlight: bool) -> RenderSnapshot {
-        if let Some((revision, cached_keyword_highlight, snapshot)) =
+    pub fn render_snapshot(
+        &self,
+        keyword_highlight: bool,
+        highlight_rules: &[HighlightRule],
+        highlight_rules_fingerprint: u64,
+    ) -> RenderSnapshot {
+        // Full-screen TUIs such as vim/htop own their color semantics. Keeping
+        // persistent keyword rules out of the alternate screen avoids
+        // repainting application UI labels while URL hit-testing still works.
+        let keyword_highlight = keyword_highlight && !self.is_alternate_screen();
+        let effective_fingerprint = if keyword_highlight {
+            highlight_rules_fingerprint
+        } else {
+            0
+        };
+        if let Some((revision, cached_keyword_highlight, cached_fingerprint, snapshot)) =
             self.render_cache.borrow().as_ref()
             && *revision == self.render_revision
             && *cached_keyword_highlight == keyword_highlight
+            && *cached_fingerprint == effective_fingerprint
         {
             return snapshot.clone();
         }
@@ -990,15 +1336,23 @@ impl TerminalTab {
         let display_offset = content.display_offset as i32;
         let previous = self.render_cache.borrow_mut().take();
         let damage = std::mem::take(&mut *self.pending_render_damage.borrow_mut());
-        let can_reuse = previous.as_ref().is_some_and(|(_, _, snapshot)| {
+        let can_reuse = previous.as_ref().is_some_and(|(_, _, _, snapshot)| {
             snapshot.rows == rows as usize
                 && snapshot.cols == cols as usize
                 && snapshot.display_offset == content.display_offset
                 && snapshot.cells.len() == rows as usize * cols as usize
         });
+        let render_damage = if can_reuse {
+            damage
+        } else {
+            RenderDamage::Full
+        };
+        self.highlight_cache
+            .borrow_mut()
+            .note_render_damage(&render_damage);
         let mut cells = if can_reuse {
             match previous {
-                Some((_, _, snapshot)) => {
+                Some((_, _, _, snapshot)) => {
                     Arc::try_unwrap(snapshot.cells).unwrap_or_else(|cells| cells.as_ref().clone())
                 }
                 None => Vec::new(),
@@ -1007,7 +1361,7 @@ impl TerminalTab {
             Vec::with_capacity((rows as usize) * (cols as usize))
         };
 
-        let damaged_lines = match damage {
+        let damaged_lines = match render_damage {
             RenderDamage::Full => {
                 cells.clear();
                 Some((0..rows as usize).collect::<Vec<_>>())
@@ -1046,20 +1400,13 @@ impl TerminalTab {
             }
         }
 
-        // Get highlights from cache or recompute, only if keyword_highlight is enabled.
-        let is_enabled = keyword_highlight;
-
-        let highlights = if is_enabled {
-            let mut cache = self.highlight_cache.borrow_mut();
-            if let Some((cached_revision, highlights)) = cache.as_ref()
-                && *cached_revision == self.render_revision
-            {
-                highlights.clone()
-            } else {
-                let computed = Arc::new(self::highlight::highlight_cells(&cells, rows as usize));
-                *cache = Some((self.render_revision, computed.clone()));
-                computed
-            }
+        let highlights = if keyword_highlight {
+            self.highlight_cache.borrow_mut().resolve(
+                &cells,
+                rows as usize,
+                highlight_rules_fingerprint,
+                highlight_rules,
+            )
         } else {
             Arc::new(HashMap::new())
         };
@@ -1079,8 +1426,12 @@ impl TerminalTab {
             cols: self.cols as usize,
             highlights,
         };
-        *self.render_cache.borrow_mut() =
-            Some((self.render_revision, keyword_highlight, snapshot.clone()));
+        *self.render_cache.borrow_mut() = Some((
+            self.render_revision,
+            keyword_highlight,
+            effective_fingerprint,
+            snapshot.clone(),
+        ));
         snapshot
     }
 
@@ -1162,7 +1513,7 @@ impl TerminalTab {
         self.term.reset_damage();
         self.scroll_pixel_y = 0.0;
         self.clear_selection();
-        *self.highlight_cache.borrow_mut() = None;
+        *self.highlight_cache.borrow_mut() = HighlightCache::default();
         self.send_backend(BackendCommand::Input(vec![b'\x0c']));
     }
 
@@ -1221,6 +1572,7 @@ impl TerminalTab {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::session::highlight_rules::default_highlight_rules;
 
     #[test]
     fn terminal_title_is_available_in_the_same_output_cycle() {
@@ -1262,11 +1614,11 @@ mod tests {
             tab.feed(format!("line {line}\r\n").as_bytes());
         }
         tab.scroll_pixel_y = 7.0;
-        assert!(tab.render_snapshot(false).history_size > 0);
+        assert!(tab.render_snapshot(false, &[], 0).history_size > 0);
 
         tab.clear_contents();
 
-        let snapshot = tab.render_snapshot(false);
+        let snapshot = tab.render_snapshot(false, &[], 0);
         assert_eq!(snapshot.history_size, 0);
         assert_eq!(snapshot.display_offset, 0);
         assert_eq!(
@@ -1303,13 +1655,113 @@ mod tests {
         );
 
         tab.feed(b"hello");
-        let first = tab.render_snapshot(false);
-        let second = tab.render_snapshot(false);
+        let first = tab.render_snapshot(false, &[], 0);
+        let second = tab.render_snapshot(false, &[], 0);
         assert!(Arc::ptr_eq(&first.cells, &second.cells));
 
         tab.feed(b" world");
-        let changed = tab.render_snapshot(false);
+        let changed = tab.render_snapshot(false, &[], 0);
         assert!(!Arc::ptr_eq(&first.cells, &changed.cells));
+    }
+
+    #[test]
+    fn keyword_highlight_can_be_enabled_after_a_plain_snapshot() {
+        let (backend_tx, _backend_rx) =
+            std::sync::mpsc::sync_channel(BACKEND_COMMAND_QUEUE_CAPACITY);
+        let (event_tx, _event_rx) = backend_event_channel();
+        let mut tab = TerminalTab::new_local(
+            "test".to_string(),
+            "Test".to_string(),
+            BackendTx::Local {
+                commands: backend_tx,
+                close: Arc::new(AtomicBool::new(false)),
+                resize: Arc::new(Mutex::new(None)),
+            },
+            event_tx,
+        );
+        let rules = default_highlight_rules();
+        tab.feed(b"ERROR");
+
+        let plain = tab.render_snapshot(false, &rules, 11);
+        let highlighted = tab.render_snapshot(true, &rules, 11);
+
+        assert!(plain.highlights.is_empty());
+        assert!((0..5).all(|col| highlighted.highlights.contains_key(&(0, col))));
+    }
+
+    #[test]
+    fn alternate_screen_preserves_tui_color_semantics() {
+        let (backend_tx, _backend_rx) =
+            std::sync::mpsc::sync_channel(BACKEND_COMMAND_QUEUE_CAPACITY);
+        let (event_tx, _event_rx) = backend_event_channel();
+        let mut tab = TerminalTab::new_local(
+            "test".to_string(),
+            "Test".to_string(),
+            BackendTx::Local {
+                commands: backend_tx,
+                close: Arc::new(AtomicBool::new(false)),
+                resize: Arc::new(Mutex::new(None)),
+            },
+            event_tx,
+        );
+        let rules = default_highlight_rules();
+
+        tab.feed(b"\x1b[?1049hERROR");
+        let snapshot = tab.render_snapshot(true, &rules, 12);
+
+        assert!(tab.is_alternate_screen());
+        assert!(snapshot.highlights.is_empty());
+    }
+
+    #[test]
+    fn rule_fingerprint_invalidates_styles_without_recompiling_on_terminal_damage() {
+        let (backend_tx, _backend_rx) =
+            std::sync::mpsc::sync_channel(BACKEND_COMMAND_QUEUE_CAPACITY);
+        let (event_tx, _event_rx) = backend_event_channel();
+        let mut tab = TerminalTab::new_local(
+            "test".to_string(),
+            "Test".to_string(),
+            BackendTx::Local {
+                commands: backend_tx,
+                close: Arc::new(AtomicBool::new(false)),
+                resize: Arc::new(Mutex::new(None)),
+            },
+            event_tx,
+        );
+        let rules = default_highlight_rules();
+        tab.feed(b"ERROR");
+        let first = tab.render_snapshot(true, &rules, 21);
+        let first_compiled = tab
+            .highlight_cache
+            .borrow()
+            .compiled
+            .as_ref()
+            .cloned()
+            .unwrap();
+
+        tab.feed(b"!");
+        let second = tab.render_snapshot(true, &rules, 21);
+        let second_compiled = tab
+            .highlight_cache
+            .borrow()
+            .compiled
+            .as_ref()
+            .cloned()
+            .unwrap();
+        let after_rule_change = tab.render_snapshot(true, &[], 22);
+
+        assert!(!first.highlights.is_empty());
+        assert!(!second.highlights.is_empty());
+        assert!(Arc::ptr_eq(&first_compiled, &second_compiled));
+        assert!(after_rule_change.highlights.is_empty());
+        assert_eq!(
+            tab.highlight_cache
+                .borrow()
+                .compiled
+                .as_ref()
+                .map(|compiled| compiled.fingerprint()),
+            Some(22)
+        );
     }
 
     #[test]
@@ -1327,7 +1779,7 @@ mod tests {
             },
             event_tx,
         );
-        let _ = tab.render_snapshot(false);
+        let _ = tab.render_snapshot(false, &[], 0);
 
         tab.feed(b"hello");
 
@@ -1355,11 +1807,11 @@ mod tests {
             },
             event_tx,
         );
-        let _ = tab.render_snapshot(false);
+        let _ = tab.render_snapshot(false, &[], 0);
         let started = std::time::Instant::now();
         for _ in 0..10_000 {
             tab.feed(b"x");
-            std::hint::black_box(tab.render_snapshot(false));
+            std::hint::black_box(tab.render_snapshot(false, &[], 0));
         }
         eprintln!("10k incremental terminal renders: {:?}", started.elapsed());
     }

@@ -663,6 +663,7 @@ mod tests {
             sessions: vec![crate::session::config::Session {
                 id: "session-1".into(),
                 name: "restored".into(),
+                connection_type: crate::session::config::ConnectionType::Ssh,
                 host: "example.test".into(),
                 port: 22,
                 user: "alice".into(),
@@ -768,6 +769,7 @@ mod tests {
             value: SyncSession {
                 id: "session-1".into(),
                 name: "test".into(),
+                connection_type: crate::session::config::ConnectionType::Ssh,
                 host: "example.test".into(),
                 port: 22,
                 user: "alice".into(),

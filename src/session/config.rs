@@ -1,5 +1,7 @@
 use std::{
+    collections::hash_map::DefaultHasher,
     fs::{self, OpenOptions},
+    hash::{Hash, Hasher},
     io::Write,
     path::{Path, PathBuf},
     sync::{Arc, OnceLock},
@@ -10,7 +12,9 @@ use directories::BaseDirs;
 use uuid::Uuid;
 
 use crate::session::{
-    config_file::{default_terminal_font_size, default_ui_font_size},
+    config_file::{
+        default_sync_interval_minutes, default_terminal_font_size, default_ui_font_size,
+    },
     crypto::{decrypt_config, encrypt_config},
 };
 
@@ -19,9 +23,10 @@ pub use crate::session::config_file::{
     UpdateCheckMode,
 };
 pub(crate) use crate::session::crypto::hardware_uuid;
+pub use crate::session::highlight_rules::{HighlightRule, default_highlight_rules};
 pub use crate::session::proxy::{ENV_PROXY, EnvProxy, active_proxy, connect_proxy};
 pub use crate::session::session_types::{
-    AuthMethod, DeletedConnectionGroup, DeletedSession, ManagedKey, QuickCommand,
+    AuthMethod, ConnectionType, DeletedConnectionGroup, DeletedSession, ManagedKey, QuickCommand,
     QuickCommandCategory, Session, SftpFooterVisibility, SftpToolbarVisibility,
 };
 
@@ -210,6 +215,7 @@ impl ConfigStore {
             ConfigFile::default()
         };
 
+        cache.migrate_sync_interval();
         if cache.sync_device_id.is_empty() {
             cache.sync_device_id = Uuid::new_v4().to_string();
         }
@@ -612,12 +618,22 @@ impl ConfigStore {
         self.cache.sync_enabled = enabled;
     }
 
-    pub fn sync_interval_hours(&self) -> u32 {
-        self.cache.sync_interval_hours.clamp(1, 8_760)
+    pub fn sync_interval_minutes(&self) -> u32 {
+        self.cache
+            .sync_interval_minutes
+            .or_else(|| {
+                self.cache
+                    .sync_interval_hours
+                    .map(|hours| hours.saturating_mul(60))
+            })
+            .unwrap_or_else(default_sync_interval_minutes)
+            .clamp(1, 525_600)
     }
 
-    pub fn set_sync_interval_hours(&mut self, hours: u32) {
-        self.cache.sync_interval_hours = hours.clamp(1, 8_760);
+    pub fn set_sync_interval_minutes(&mut self, minutes: u32) {
+        let minutes = minutes.clamp(1, 525_600);
+        self.cache.sync_interval_minutes = Some(minutes);
+        self.cache.sync_interval_hours = Some(minutes.div_ceil(60));
     }
 
     pub fn sync_last_synced_at(&self) -> i64 {
@@ -633,7 +649,7 @@ impl ConfigStore {
             0
         } else {
             self.sync_last_synced_at()
-                .saturating_add(i64::from(self.sync_interval_hours()).saturating_mul(3_600))
+                .saturating_add(i64::from(self.sync_interval_minutes()).saturating_mul(60))
         }
     }
 
@@ -812,6 +828,10 @@ impl ConfigStore {
         self.cache.body_panels.as_ref()
     }
 
+    pub fn set_body_panels(&mut self, body_panels: Option<Vec<f32>>) {
+        self.cache.body_panels = body_panels;
+    }
+
     pub fn transfers(&self) -> Vec<crate::terminal::Transfer> {
         self.cache.transfers.clone()
     }
@@ -870,9 +890,68 @@ impl ConfigStore {
         self.cache.keyword_highlight = val;
     }
 
+    pub fn highlight_rules(&self) -> &[HighlightRule] {
+        &self.cache.highlight_rules
+    }
+
+    /// Fingerprint used to invalidate compiled matcher and render caches.
+    ///
+    /// The value is process-local cache metadata, not a persisted identifier.
+    pub fn highlight_rules_fingerprint(&self) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        self.cache.highlight_rules.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    pub fn replace_highlight_rules(&mut self, rules: Vec<HighlightRule>) {
+        self.cache.highlight_rules = rules;
+    }
+
+    pub fn upsert_highlight_rule(&mut self, rule: HighlightRule) {
+        if let Some(existing) = self
+            .cache
+            .highlight_rules
+            .iter_mut()
+            .find(|existing| existing.id == rule.id)
+        {
+            *existing = rule;
+        } else {
+            self.cache.highlight_rules.push(rule);
+        }
+    }
+
+    pub fn remove_highlight_rule(&mut self, rule_id: &str) -> bool {
+        let previous_len = self.cache.highlight_rules.len();
+        self.cache.highlight_rules.retain(|rule| rule.id != rule_id);
+        self.cache.highlight_rules.len() != previous_len
+    }
+
+    pub fn move_highlight_rule(&mut self, rule_id: &str, target_index: usize) -> bool {
+        let Some(source_index) = self
+            .cache
+            .highlight_rules
+            .iter()
+            .position(|rule| rule.id == rule_id)
+        else {
+            return false;
+        };
+        let target_index = target_index.min(self.cache.highlight_rules.len().saturating_sub(1));
+        if source_index == target_index {
+            return false;
+        }
+
+        let rule = self.cache.highlight_rules.remove(source_index);
+        self.cache.highlight_rules.insert(target_index, rule);
+        true
+    }
+
+    pub fn reset_highlight_rules(&mut self) {
+        self.cache.highlight_rules = default_highlight_rules();
+    }
+
     pub fn terminal_font_family(&self) -> &str {
         if self.cache.terminal_font_family.is_empty() {
-            "Maple Mono NF CN"
+            crate::session::config_file::SYSTEM_MONO_FONT
         } else {
             &self.cache.terminal_font_family
         }
@@ -1159,13 +1238,13 @@ impl ConfigStore {
         self.cache.terminal_display_style = source.cache.terminal_display_style;
         self.cache.ui_font_size = source.cache.ui_font_size;
         self.cache.keyword_highlight = source.cache.keyword_highlight;
+        self.cache.highlight_rules = source.cache.highlight_rules.clone();
         self.cache.ui_font_family = source.cache.ui_font_family.clone();
         self.cache.terminal_font_family = source.cache.terminal_font_family.clone();
         self.cache.title_bar_style = source.cache.title_bar_style;
         self.cache.cursor_style = source.cache.cursor_style;
         self.cache.show_hidden_files = source.cache.show_hidden_files;
         self.cache.lock_layout = source.cache.lock_layout;
-        self.cache.monitoring_position = source.cache.monitoring_position.clone();
         self.cache.sidebar_collapsed = source.cache.sidebar_collapsed;
         self.cache.sftp_panel_minimized = source.cache.sftp_panel_minimized;
         self.cache.sftp_panel_view = source.cache.sftp_panel_view.clone();
@@ -1183,6 +1262,7 @@ impl ConfigStore {
         self.cache.global_proxy_user = source.cache.global_proxy_user.clone();
         self.cache.global_proxy_password = source.cache.global_proxy_password.clone();
         self.cache.sync_enabled = source.cache.sync_enabled;
+        self.cache.sync_interval_minutes = source.cache.sync_interval_minutes;
         self.cache.sync_interval_hours = source.cache.sync_interval_hours;
         self.cache.sync_last_synced_at = source.cache.sync_last_synced_at;
         self.cache.sync_webdav_password_sealed = source.cache.sync_webdav_password_sealed.clone();
@@ -1338,6 +1418,9 @@ mod tests {
     use super::*;
 
     use crate::session::crypto::decrypt_config;
+    use crate::session::highlight_rules::{
+        HighlightMatchKind, HighlightRuleStyle, HighlightTarget,
+    };
 
     #[test]
     fn merging_preferences_preserves_connection_data() {
@@ -1351,6 +1434,17 @@ mod tests {
         source.set_update_interval_hours(12);
         source.set_update_notify(false);
         source.set_download_directory(Some(Path::new("downloads")));
+        source.replace_highlight_rules(vec![HighlightRule {
+            id: "custom".to_string(),
+            name: "Custom".to_string(),
+            enabled: true,
+            pattern: "custom".to_string(),
+            match_kind: HighlightMatchKind::Literal,
+            case_sensitive: false,
+            whole_word: true,
+            target: HighlightTarget::Match,
+            style: HighlightRuleStyle::default(),
+        }]);
         latest.merge_interactive_preferences_from(&source);
 
         assert_eq!(latest.cache.connection_groups, ["production"]);
@@ -1366,6 +1460,56 @@ mod tests {
             latest.download_directory(),
             Some(PathBuf::from("downloads"))
         );
+        assert_eq!(latest.highlight_rules(), source.highlight_rules());
+    }
+
+    #[test]
+    fn highlight_rules_support_ordered_crud_reset_and_fingerprinting() {
+        let mut store = ConfigStore::in_memory();
+        let defaults = store.highlight_rules().to_vec();
+        let default_fingerprint = store.highlight_rules_fingerprint();
+        let custom = HighlightRule {
+            id: "custom".to_string(),
+            name: "Custom".to_string(),
+            enabled: true,
+            pattern: "custom".to_string(),
+            match_kind: HighlightMatchKind::Literal,
+            case_sensitive: false,
+            whole_word: true,
+            target: HighlightTarget::Match,
+            style: HighlightRuleStyle::default(),
+        };
+
+        store.upsert_highlight_rule(custom.clone());
+        assert_eq!(store.highlight_rules().last(), Some(&custom));
+        assert_ne!(store.highlight_rules_fingerprint(), default_fingerprint);
+
+        let mut updated = custom.clone();
+        updated.name = "Updated".to_string();
+        store.upsert_highlight_rule(updated.clone());
+        assert_eq!(
+            store
+                .highlight_rules()
+                .iter()
+                .filter(|rule| rule.id == custom.id)
+                .count(),
+            1
+        );
+        assert_eq!(store.highlight_rules().last(), Some(&updated));
+
+        assert!(store.move_highlight_rule("custom", 0));
+        assert_eq!(store.highlight_rules()[0], updated);
+        assert!(!store.move_highlight_rule("missing", 0));
+
+        assert!(store.remove_highlight_rule("custom"));
+        assert!(!store.remove_highlight_rule("custom"));
+        assert_eq!(store.highlight_rules(), defaults);
+
+        store.replace_highlight_rules(Vec::new());
+        assert!(store.highlight_rules().is_empty());
+        store.reset_highlight_rules();
+        assert_eq!(store.highlight_rules(), defaults);
+        assert_eq!(store.highlight_rules_fingerprint(), default_fingerprint);
     }
 
     #[test]
@@ -1406,10 +1550,10 @@ mod tests {
         let mut store = ConfigStore::in_memory();
         assert_eq!(store.sync_next_at(), 0);
 
-        store.set_sync_interval_hours(6);
+        store.set_sync_interval_minutes(6);
         store.set_sync_last_synced_at(1_700_000_000);
 
-        assert_eq!(store.sync_next_at(), 1_700_021_600);
+        assert_eq!(store.sync_next_at(), 1_700_000_360);
     }
 
     #[test]

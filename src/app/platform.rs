@@ -5,6 +5,8 @@ use gpui::{
     AnyWindowHandle, App, Bounds, Pixels, Point, Size, WindowBounds, WindowOptions, point, px, size,
 };
 
+pub(crate) const APP_ID: &str = "tiny-shell";
+
 /// Opens a URL in the user's default browser.
 pub(crate) fn open_url(url: &str) -> Result<()> {
     open::that(url).with_context(|| format!("failed to open url: {url}"))
@@ -249,6 +251,7 @@ pub(crate) fn auxiliary_window_options(cx: &mut App, spec: AuxiliaryWindowSpec) 
     });
 
     let options = WindowOptions {
+        app_id: Some(APP_ID.to_string()),
         is_movable: true,
         is_resizable: spec.resizable,
         is_minimizable: true,

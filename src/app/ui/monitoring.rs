@@ -1,4 +1,5 @@
 use super::*;
+use crate::app::constants::BOTTOM_MONITORING_HEIGHT;
 use crate::app::monitoring::{format_network_axis, nice_network_scale, smooth_monitoring_series};
 
 impl TinyShell {
@@ -420,7 +421,7 @@ impl TinyShell {
         };
 
         let mut panel = h_flex()
-            .h(px(80.))
+            .h(px(BOTTOM_MONITORING_HEIGHT))
             .w_full()
             .flex_none()
             .px_3()
@@ -587,7 +588,7 @@ impl TinyShell {
         let no_processes = displayed_processes.is_empty();
 
         v_flex()
-            .gap(px(6.))
+            .gap_2()
             .w_full()
             .h_full()
             .min_h(px(0.))
@@ -710,7 +711,7 @@ impl TinyShell {
                     .overflow_hidden()
                     .child(
                         h_flex()
-                            .h(px(26.))
+                            .h(px(28.))
                             .items_center()
                             .p(px(2.))
                             .gap_1()
@@ -845,7 +846,7 @@ impl TinyShell {
                     .children(displayed_processes.into_iter().enumerate().map(
                         |(index, process)| {
                             h_flex()
-                                .h(px(23.))
+                                .h(px(24.))
                                 .items_center()
                                 .when(index % 2 == 1, |this| {
                                     this.bg(cx.theme().muted.opacity(0.22))
@@ -883,7 +884,7 @@ impl TinyShell {
                     .when(no_processes, |this| {
                         this.child(
                             div()
-                                .h(px(26.))
+                                .h(px(28.))
                                 .flex()
                                 .items_center()
                                 .justify_center()
@@ -902,8 +903,8 @@ impl TinyShell {
                     .overflow_hidden()
                     .child(
                         h_flex()
-                            .h(px(36.))
-                            .px_3()
+                            .h(px(28.))
+                            .px_2()
                             .items_center()
                             .justify_between()
                             .bg(cx.theme().muted)
@@ -958,8 +959,8 @@ impl TinyShell {
                     .child(
                         h_flex()
                             .items_center()
-                            .gap_4()
-                            .px_3()
+                            .gap_2()
+                            .px_2()
                             .pt_2()
                             .text_size(rems(0.74))
                             .child(
@@ -999,10 +1000,10 @@ impl TinyShell {
                     )
                     .child(
                         div()
-                            .h(px(68.))
+                            .h(px(64.))
                             .p_1()
                             .mx_2()
-                            .mb_3()
+                            .mb_2()
                             .rounded_md()
                             .bg(cx.theme().muted.opacity(0.18))
                             .child(
@@ -1164,7 +1165,7 @@ impl TinyShell {
                     .overflow_hidden()
                     .child(
                         h_flex()
-                            .h(px(30.))
+                            .h(px(28.))
                             .flex_none()
                             .px_2()
                             .justify_between()

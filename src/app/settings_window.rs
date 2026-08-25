@@ -2,7 +2,7 @@ use gpui::{
     AnyWindowHandle, App, AppContext as _, Context, Entity, FocusHandle, ParentElement as _,
     Render, Styled as _, Window, WindowOptions, px, size,
 };
-use gpui_component::{Root, input::InputEvent};
+use gpui_component::{Root, WindowExt as _, input::InputEvent};
 use rust_i18n::t;
 
 use crate::{TinyShell, app::settings::form::SettingsInputs, session::config::ConfigStore};
@@ -25,18 +25,18 @@ impl SettingsWindow {
     ) -> Self {
         let inputs = SettingsInputs::new(&config, window, cx);
         let owner_subscription = cx.observe(&owner, |_, _, cx| cx.notify());
-        let sync_interval_hours = inputs.sync.interval_hours.clone();
+        let sync_interval_minutes = inputs.sync.interval_minutes.clone();
         let owner_for_sync_interval = owner.clone();
         let sync_interval_subscription = cx.subscribe_in(
-            &sync_interval_hours,
+            &sync_interval_minutes,
             window,
             move |_, input, event, window, cx| match event {
                 InputEvent::Change => {
-                    if let Some(hours) = crate::app::settings::actions::parse_hour_interval(
+                    if let Some(minutes) = crate::app::settings::actions::parse_minute_interval(
                         input.read(cx).value().as_ref(),
                     ) {
                         owner_for_sync_interval.update(cx, |this, cx| {
-                            this.config.set_sync_interval_hours(hours);
+                            this.config.set_sync_interval_minutes(minutes);
                             this.mark_config_preferences_dirty();
                             this.schedule_automatic_sync(false, cx);
                             cx.notify();
@@ -44,12 +44,12 @@ impl SettingsWindow {
                     }
                 }
                 InputEvent::Blur | InputEvent::PressEnter { .. } => {
-                    let hours = owner_for_sync_interval
+                    let minutes = owner_for_sync_interval
                         .read(cx)
                         .config
-                        .sync_interval_hours()
+                        .sync_interval_minutes()
                         .to_string();
-                    input.update(cx, |input, cx| input.set_value(hours, window, cx));
+                    input.update(cx, |input, cx| input.set_value(minutes, window, cx));
                     if matches!(event, InputEvent::PressEnter { .. }) {
                         window.prevent_default();
                         cx.stop_propagation();
@@ -164,7 +164,10 @@ pub(crate) fn open(
         let settings_window = cx.new(|cx| {
             SettingsWindow::new(owner_for_window.clone(), config, main_window, window, cx)
         });
-        window.on_window_should_close(cx, move |_window, cx| {
+        window.on_window_should_close(cx, move |window, cx| {
+            if window.has_active_dialog(cx) {
+                return false;
+            }
             owner_for_close.update(cx, |this, cx| {
                 crate::app::keybinding_recorder::unbind_workspace_keys_from_config(
                     cx,

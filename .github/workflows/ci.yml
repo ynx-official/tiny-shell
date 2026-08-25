@@ -27,7 +27,7 @@ jobs:
           python-version: "3.13"
 
       - name: Test release notes generator
-        run: python -m unittest scripts/test_release_notes.py
+        run: python -m unittest scripts/test_release_notes.py scripts/test_update_manifest.py
 
       - name: Validate current release documents
         run: python scripts/release_notes.py --check-current
@@ -79,6 +79,109 @@ jobs:
       - name: Run release tests (Linux regression gate)
         if: runner.os == 'Linux'
         run: cargo test --locked --release --all-targets
+
+  freerdp:
+    name: FreeRDP backend (Linux)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install FreeRDP and GUI dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config cmake curl desktop-file-utils file patchelf \
+            freerdp3-dev xvfb xauth dbus-x11 libgl1-mesa-dri \
+            libfontconfig1-dev libfreetype6-dev \
+            libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev \
+            libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev \
+            libgl1-mesa-dev libegl1-mesa-dev libgtk-3-dev \
+            libudev-dev
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: freerdp-linux
+
+      - name: Test auto-detected FreeRDP backend
+        run: cargo test --locked --all-targets
+
+      - name: Check forced and disabled backend modes
+        run: |
+          cargo check --locked --all-targets --no-default-features --features freerdp
+          cargo check --locked --all-targets --no-default-features
+
+      - name: Build and smoke-test AppImage
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/package-linux-appimage.sh --output-dir dist
+          APPIMAGE="$(find dist -maxdepth 1 -type f -name '*.AppImage' -print -quit)"
+          test -n "$APPIMAGE"
+
+          set +e
+          dbus-run-session -- \
+            timeout --signal=TERM --kill-after=5s 15s \
+            xvfb-run -a env APPIMAGE_EXTRACT_AND_RUN=1 "$APPIMAGE" \
+            >appimage-smoke.log 2>&1
+          STATUS=$?
+          set -e
+          if [[ "$STATUS" -ne 124 ]]; then
+            cat appimage-smoke.log >&2
+            echo "AppImage exited before the 15-second smoke-test window (status: $STATUS)" >&2
+            exit 1
+          fi
+
+      - name: Upload AppImage smoke-test artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: linux-appimage-${{ github.sha }}
+          path: dist/*.AppImage
+          if-no-files-found: error
+          retention-days: 7
+
+  freerdp-macos:
+    name: FreeRDP backend (macOS)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install FreeRDP
+        shell: bash
+        run: |
+          set -euo pipefail
+          brew install freerdp
+          FREERDP_PREFIX="$(brew --prefix freerdp)"
+          echo "TINY_SHELL_FREERDP_INCLUDE_DIRS=${FREERDP_PREFIX}/include/freerdp3:${FREERDP_PREFIX}/include/winpr3" >> "$GITHUB_ENV"
+          echo "TINY_SHELL_FREERDP_LIB_DIR=${FREERDP_PREFIX}/lib" >> "$GITHUB_ENV"
+          echo "DYLD_LIBRARY_PATH=${FREERDP_PREFIX}/lib${DYLD_LIBRARY_PATH:+:${DYLD_LIBRARY_PATH}}" >> "$GITHUB_ENV"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: freerdp-macos
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Check embedded FreeRDP backend
+        run: cargo check --locked --all-targets
+
+      - name: Test embedded FreeRDP backend
+        run: cargo test --locked --all-targets
+
+      - name: Check forced and disabled backend modes
+        run: |
+          cargo check --locked --all-targets --no-default-features --features freerdp
+          cargo check --locked --all-targets --no-default-features
 
   build:
     name: ${{ matrix.name }}

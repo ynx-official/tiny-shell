@@ -436,6 +436,7 @@ mod tests {
             value: SyncSession {
                 id: "session-1".into(),
                 name: "Sensitive session".into(),
+                connection_type: crate::session::config::ConnectionType::Ssh,
                 host: "example.test".into(),
                 port: 22,
                 user: "alice".into(),

@@ -13,6 +13,7 @@ pub(super) fn coalesce_backend_events(
             BackendEvent::TransferProgress { id, .. } => Some((0, id.clone())),
             BackendEvent::SftpLatency { tab_id, .. } => Some((1, tab_id.clone())),
             BackendEvent::RemoteSystem { tab_id, .. } => Some((2, tab_id.clone())),
+            BackendEvent::RemoteDesktopFrameReady { tab_id, .. } => Some((3, tab_id.clone())),
             _ => None,
         };
         if let Some(key) = latest_key {

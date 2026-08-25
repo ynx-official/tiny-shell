@@ -532,15 +532,66 @@ fn event_route_id(event: &BackendEventEnvelope) -> Option<&str> {
         | BackendEvent::TransferProgress { tab_id, .. }
         | BackendEvent::TransferStarted { tab_id, .. }
         | BackendEvent::Closed { tab_id, .. }
-        | BackendEvent::TerminalTitleChanged { tab_id, .. } => Some(tab_id),
+        | BackendEvent::RemoteDesktopClipboard { tab_id, .. }
+        | BackendEvent::RemoteDesktopClosed { tab_id, .. }
+        | BackendEvent::TerminalTitleChanged { tab_id, .. }
+        | BackendEvent::RemoteDesktopFrameReady { tab_id, .. } => Some(tab_id),
+        BackendEvent::RemoteDesktopCertificateRequest(request) => Some(&request.tab_id),
         BackendEvent::SyncFinished { .. } => None,
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::SessionStore;
-    use crate::terminal::BackendEvent;
+    use super::{EventQueue, SessionStore};
+    use crate::terminal::{BackendEvent, BackendEventEnvelope};
+
+    fn envelope(event: BackendEvent, sequence: u64) -> BackendEventEnvelope {
+        BackendEventEnvelope {
+            event,
+            generation: 1,
+            sequence,
+        }
+    }
+
+    #[test]
+    fn frame_wakeup_evicts_ordinary_event_from_full_owner_queue() {
+        let mut queue = EventQueue::default();
+        queue
+            .push_bounded(
+                envelope(
+                    BackendEvent::Status {
+                        tab_id: "rdp-a".to_string(),
+                        text: "waiting".to_string(),
+                    },
+                    1,
+                ),
+                1,
+                usize::MAX,
+            )
+            .unwrap();
+
+        queue
+            .push_bounded(
+                envelope(
+                    BackendEvent::RemoteDesktopFrameReady {
+                        tab_id: "rdp-a".to_string(),
+                        sequence: 1,
+                    },
+                    2,
+                ),
+                1,
+                usize::MAX,
+            )
+            .unwrap();
+
+        let queued = queue.pop_front().unwrap();
+        assert!(matches!(
+            queued.event,
+            BackendEvent::RemoteDesktopFrameReady { .. }
+        ));
+        assert!(queue.is_empty());
+    }
 
     #[test]
     fn queued_event_follows_moved_route() {
@@ -628,6 +679,34 @@ mod tests {
 
         assert!(!store.move_event_routes(&["session-a".to_string()], 3, 2));
         assert_eq!(store.drain_events_for(2, usize::MAX).len(), 0);
+    }
+
+    #[test]
+    fn batch_move_is_atomic_when_one_route_changed_owner() {
+        let mut store = SessionStore::new();
+        store.register_event_route("session-a".to_string(), 1);
+        store.register_event_route("session-b".to_string(), 2);
+
+        assert!(!store.move_event_routes(
+            &["session-a".to_string(), "session-b".to_string()],
+            1,
+            3,
+        ));
+        for tab_id in ["session-a", "session-b"] {
+            assert!(
+                store
+                    .events_sender()
+                    .send(BackendEvent::Status {
+                        tab_id: tab_id.to_string(),
+                        text: "still routed".to_string(),
+                    })
+                    .is_ok()
+            );
+        }
+
+        assert_eq!(store.drain_events_for(1, usize::MAX).len(), 1);
+        assert_eq!(store.drain_events_for(2, usize::MAX).len(), 1);
+        assert!(store.drain_events_for(3, usize::MAX).is_empty());
     }
 
     #[test]

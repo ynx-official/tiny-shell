@@ -8,6 +8,30 @@ pub fn format_mtime(ts: u32) -> String {
     dt.format("%Y-%m-%d %H:%M").to_string()
 }
 
+pub fn format_permissions(mode: u32) -> String {
+    let mut result = String::with_capacity(9);
+    for (read, write, execute, special, special_exec, special_no_exec) in [
+        (0o400, 0o200, 0o100, 0o4000, 's', 'S'),
+        (0o040, 0o020, 0o010, 0o2000, 's', 'S'),
+        (0o004, 0o002, 0o001, 0o1000, 't', 'T'),
+    ] {
+        result.push(if mode & read != 0 { 'r' } else { '-' });
+        result.push(if mode & write != 0 { 'w' } else { '-' });
+        result.push(if mode & special != 0 {
+            if mode & execute != 0 {
+                special_exec
+            } else {
+                special_no_exec
+            }
+        } else if mode & execute != 0 {
+            'x'
+        } else {
+            '-'
+        });
+    }
+    result
+}
+
 pub(crate) fn parent_dir(path: &str) -> Option<String> {
     if path == "/" || path.is_empty() {
         return None;
@@ -84,7 +108,16 @@ pub(crate) fn shell_quote(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::normalize_remote_directory_path;
+    use super::{format_permissions, normalize_remote_directory_path};
+
+    #[test]
+    fn formats_posix_permissions_with_special_bits() {
+        assert_eq!(format_permissions(0o100644), "rw-r--r--");
+        assert_eq!(format_permissions(0o040755), "rwxr-xr-x");
+        assert_eq!(format_permissions(0o104755), "rwsr-xr-x");
+        assert_eq!(format_permissions(0o041777), "rwxrwxrwt");
+        assert_eq!(format_permissions(0), "---------");
+    }
 
     #[test]
     fn normalizes_remote_directory_trailing_slashes() {
