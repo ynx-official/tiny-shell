@@ -340,12 +340,10 @@ fn select_release_asset<'a>(
         // the running binary, then mirror Windows: a .pkg-installed app
         // updates via the .pkg, every other .app via the portable .zip.
         match installation_kind {
-            InstallationKind::MacInstaller => assets
-                .iter()
-                .find(|asset| {
-                    macos_asset_matches_current_edition(&asset.name, platform)
-                        && asset.name.ends_with("-setup.pkg")
-                }),
+            InstallationKind::MacInstaller => assets.iter().find(|asset| {
+                macos_asset_matches_current_edition(&asset.name, platform)
+                    && asset.name.ends_with("-setup.pkg")
+            }),
             _ => assets.iter().find(|asset| {
                 macos_asset_matches_current_edition(&asset.name, platform)
                     && asset.name.contains("-portable.")
