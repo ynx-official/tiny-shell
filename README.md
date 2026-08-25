@@ -147,15 +147,17 @@ TinyShell 可以从 GitHub Releases 检查并安装新版本，且会校验下�
 | 平台 | 架构 | 发布产物 |
 | --- | --- | --- |
 | Windows | x86_64 | 安装版 `.exe`、便携版 `.zip` |
-| macOS | Apple Silicon / Intel | 安装版 `.pkg`、便携版 `.zip` |
+| macOS | Apple Silicon / Intel | 基础版与 RDP 版各提供安装版 `.pkg`、便携版 `.zip` |
 | Linux | x86_64 | 单文件 `.AppImage`、通用 `.tar.gz` |
 
 ### macOS
 
-从 [Releases 页面](https://github.com/ynx-official/tiny-shell/releases/latest) 下载与处理器对应的 `macos-aarch64` 或 `macos-x86_64` 产物：
+从 [Releases 页面](https://github.com/ynx-official/tiny-shell/releases/latest) 下载与处理器对应的 `macos-aarch64` 或 `macos-x86_64` 产物。macOS 提供两个独立版本：
 
-- **安装版**：下载 `tiny-shell-*-macos-*-setup.pkg`，按照安装器提示完成安装。
-- **便携版**：下载 `tiny-shell-*-macos-*-portable.zip`，解压后将 `TinyShell.app` 移动到“应用程序”目录。
+- **基础版（推荐）**：下载不带 `-rdp-` 的 `tiny-shell-*-macos-*-setup.pkg` 或 `tiny-shell-*-macos-*-portable.zip`，不携带 FreeRDP，体积更小。
+- **RDP 版**：下载带 `-rdp-` 的 `tiny-shell-*-macos-*-rdp-setup.pkg` 或 `tiny-shell-*-macos-*-rdp-portable.zip`，内置 FreeRDP 运行库，可直接连接 Windows 远程桌面。
+
+两种版本都安装为 `TinyShell.app`，同一台 Mac 上建议只保留正在使用的一个版本；RDP 版会覆盖基础版，反之亦然。
 
 CI 产物使用临时签名。如果 macOS 阻止首次启动，可在“系统设置 → 隐私与安全性”中允许应用运行。若系统提示应用“已损坏”，可以执行：
 
@@ -250,7 +252,7 @@ cargo run
 
 默认特性 `freerdp-auto` 仅用于 macOS/Linux，通过 `pkg-config` 查找 `freerdp-client3`、`freerdp3` 和 `winpr3`。Windows 不编译 FreeRDP，而是在双击 RDP 连接时调用系统 `mstsc.exe`。未发现 macOS/Linux FreeRDP 时仍可构建和运行，但会使用不包含 RDP 后端的回退版本。
 
-需要保证原生后端存在时使用强制模式；依赖缺失会立即构建失败。若明确只需无 RDP 后端的版本，则关闭默认特性：
+需要保证原生后端存在时使用强制模式；依赖缺失会立即构建失败。若明确只需无 RDP 后端的版本，则关闭默认特性；发布版 macOS 基础包就是按此方式构建的：
 
 ```bash
 cargo run --features freerdp # macOS/Linux
@@ -282,10 +284,11 @@ cargo test --locked --all-targets
 macOS App Bundle：
 
 ```bash
-./scripts/package-macos-app.sh
+./scripts/package-macos-app.sh                  # 基础版，体积更小
+./scripts/package-macos-app.sh --edition rdp    # RDP 版，需要 FreeRDP 3
 ```
 
-若默认构建发现并链接了 FreeRDP，脚本会使用 `dylibbundler` 将其动态库收入 App Bundle；请先运行 `brew install dylibbundler`。
+RDP 版脚本会使用 `dylibbundler` 将 FreeRDP 动态库收入 App Bundle；请先运行 `brew install freerdp dylibbundler`。发布流程会分别生成基础版和 RDP 版的 `.pkg` 与 `.zip`。
 
 Windows 安装版与便携版（需要 Inno Setup 6）：
 
