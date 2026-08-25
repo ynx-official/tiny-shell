@@ -331,9 +331,7 @@ impl Render for FinalShellImportWindow {
                                 .checked(all_selected)
                                 .label(t!("finalshell_import_select_all").to_string())
                                 .on_click(cx.listener(|this, value: &bool, _, cx| {
-                                    for item in &mut this.selected {
-                                        *item = *value;
-                                    }
+                                    this.selected.fill(*value);
                                     cx.notify();
                                 })),
                         ),

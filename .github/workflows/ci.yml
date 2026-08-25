@@ -230,5 +230,13 @@ jobs:
           # Reuse target-specific release artifacts across CI and tag builds.
           shared-key: ${{ matrix.name }}
 
+      # Match the release workflow on Windows. Enabling the auto-detected
+      # FreeRDP feature is unnecessary there because Windows uses mstsc.exe,
+      # and Rust 1.98 can crash while linking this large binary in that mode.
+      - name: Build (release, Windows native RDP)
+        if: runner.os == 'Windows'
+        run: cargo build --locked --release --target ${{ matrix.target }} --no-default-features
+
       - name: Build (release)
+        if: runner.os != 'Windows'
         run: cargo build --locked --release --target ${{ matrix.target }}
