@@ -2,3 +2,7 @@
 /dist/
 .DS_Store
 /scripts/__pycache__/
+
+# Local Superpowers rules and working files
+/.superpowers/
+/.cursor/rules/superpowers/
