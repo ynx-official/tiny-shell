@@ -8,8 +8,15 @@ use std::{
     time::Instant,
 };
 
-use gpui::{App, AppContext as _, Bounds, Entity, WindowOptions, point, px, size};
-use gpui_component::{Root, WindowExt as _, button::ButtonVariant, dialog::DialogButtonProps};
+use gpui::{
+    App, AppContext as _, Bounds, Entity, ParentElement as _, Styled as _, WindowOptions, point,
+    px, size,
+};
+use gpui_component::{
+    Root, WindowExt as _,
+    button::{Button, ButtonVariants as _},
+    dialog::{DialogAction, DialogClose, DialogDescription, DialogFooter},
+};
 use rust_i18n::t;
 
 use crate::TinyShell;
@@ -41,16 +48,40 @@ impl TinyShell {
         self.close_prompt_open = true;
         self.begin_close_sync(cx);
         let owner = cx.entity();
-        window.open_alert_dialog(cx, move |dialog, _dialog_window, _| {
+        let dialog_layer_ix = usize::from(window.has_active_dialog(cx));
+        window.open_dialog(cx, move |dialog, dialog_window, _| {
+            let preferred_height = crate::app::dialog_layout::confirmation_dialog_height(
+                dialog_window,
+                crate::app::dialog_layout::MAIN_WINDOW_CLOSE_DIALOG_BASE_HEIGHT,
+            );
+            let layout = crate::app::dialog_layout::centered_dialog_layout(
+                dialog_window,
+                preferred_height,
+                dialog_layer_ix,
+            );
             dialog
                 .title(t!("close_window_confirm_title").to_string())
-                .description(t!("close_window_confirm_desc").to_string())
-                .button_props(
-                    DialogButtonProps::default()
-                        .cancel_text(t!("cancel").to_string())
-                        .show_cancel(true)
-                        .ok_text(t!("close_window_confirm").to_string())
-                        .ok_variant(ButtonVariant::Danger),
+                .h(layout.height)
+                .margin_top(layout.margin_top)
+                .close_button(false)
+                .overlay_closable(false)
+                .content(|content, _, _| {
+                    content.child(
+                        DialogDescription::new().child(t!("close_window_confirm_desc").to_string()),
+                    )
+                })
+                .footer(
+                    DialogFooter::new()
+                        .child(DialogClose::new().child(
+                            Button::new("cancel-main-window-close").label(t!("cancel").to_string()),
+                        ))
+                        .child(
+                            DialogAction::new().child(
+                                Button::new("confirm-main-window-close")
+                                    .danger()
+                                    .label(t!("close_window_confirm").to_string()),
+                            ),
+                        ),
                 )
                 .on_close({
                     let owner = owner.clone();

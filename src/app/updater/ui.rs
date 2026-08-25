@@ -16,7 +16,14 @@ use gpui_component::{
 };
 use rust_i18n::t;
 
-use crate::{TinyShell, system::format_bytes};
+use crate::{
+    TinyShell,
+    app::dialog_layout::{
+        UPDATE_DIALOG_HEIGHT, UPDATE_RESTART_DIALOG_BASE_HEIGHT, centered_dialog_layout,
+        confirmation_dialog_height,
+    },
+    system::format_bytes,
+};
 
 fn update_progress_percent(done: u64, total: u64) -> u64 {
     if total == 0 {
@@ -331,7 +338,10 @@ impl TinyShell {
             crate::app::DialogKind::Updater,
             window,
             cx,
-            move |dialog: Dialog, token, _window, _| {
+            move |dialog: Dialog, token, dialog_window, _| {
+                let preferred_height =
+                    confirmation_dialog_height(dialog_window, UPDATE_RESTART_DIALOG_BASE_HEIGHT);
+                let layout = centered_dialog_layout(dialog_window, preferred_height, 0);
                 let display_version = info.version.clone();
                 let expected_version = info.version.clone();
                 let installation_kind = info.installation_kind;
@@ -340,6 +350,8 @@ impl TinyShell {
                 dialog
                     .title(t!("update_restart_confirm_title").to_string())
                     .w(px(440.))
+                    .h(layout.height)
+                    .margin_top(layout.margin_top)
                     .on_close({
                         let view = view.clone();
                         move |_, window, cx| {
@@ -421,11 +433,13 @@ impl TinyShell {
 
         let view = cx.entity();
         let notes_scroll_handle = gpui::ScrollHandle::new();
-        self.open_modal_dialog(crate::app::DialogKind::Updater, window, cx, move |dialog: Dialog, token, _window, _| {
+        self.open_modal_dialog(crate::app::DialogKind::Updater, window, cx, move |dialog: Dialog, token, dialog_window, _| {
+            let layout = centered_dialog_layout(dialog_window, UPDATE_DIALOG_HEIGHT, 0);
             dialog
                 .title(t!("update_dialog_title").to_string())
                 .w(px(600.))
-                .h(px(520.))
+                .h(layout.height)
+                .margin_top(layout.margin_top)
                 .overlay_closable(true)
                 .on_close({
                     let view = view.clone();

@@ -6,6 +6,7 @@ pub(crate) mod connection_archive_dialogs;
 pub(crate) mod connection_import_window;
 pub(crate) mod connection_manager;
 pub(crate) mod constants;
+pub(crate) mod dialog_layout;
 pub(crate) mod dialogs;
 pub(crate) mod font_preferences;
 pub(crate) mod group_tree_picker;
