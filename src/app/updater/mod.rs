@@ -1600,7 +1600,12 @@ mod tests {
             InstallationKind::MacInstaller,
         )
         .unwrap();
-        assert_eq!(selected.name, "tiny-shell-v1.1.0-macos-aarch64-setup.pkg");
+        let expected = if cfg!(tiny_shell_freerdp_backend) {
+            "tiny-shell-v1.1.0-macos-aarch64-rdp-setup.pkg"
+        } else {
+            "tiny-shell-v1.1.0-macos-aarch64-setup.pkg"
+        };
+        assert_eq!(selected.name, expected);
     }
 
     #[test]
@@ -1614,10 +1619,12 @@ mod tests {
         let selected =
             select_release_asset(&assets, "macos-aarch64", "zip", InstallationKind::MacApp)
                 .unwrap();
-        assert_eq!(
-            selected.name,
+        let expected = if cfg!(tiny_shell_freerdp_backend) {
+            "tiny-shell-v1.1.0-macos-aarch64-rdp-portable.zip"
+        } else {
             "tiny-shell-v1.1.0-macos-aarch64-portable.zip"
-        );
+        };
+        assert_eq!(selected.name, expected);
     }
 
     #[test]
