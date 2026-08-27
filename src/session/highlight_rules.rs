@@ -94,42 +94,42 @@ pub fn default_highlight_rules() -> Vec<HighlightRule> {
         recommended_rule(
             "builtin-critical",
             "Critical",
-            "PANIC|FATAL|CRITICAL|EMERGENCY|OOM|SEGFAULT|ASSERTION FAILED",
+            "PANIC|FATAL|CRITICAL|EMERGENCY|OOM|SEGFAULT|ASSERTION FAILED|ABORTED|DEADLOCK|CORRUPTION",
             true,
             recommended_style("#FF5F56", Some("#FF323233"), true, false),
         ),
         recommended_rule(
             "builtin-error",
             "Error",
-            "ERROR|ERR|FAILED|FAILURE|EXCEPTION|TRACEBACK|DENIED|REFUSED|TIMEOUT|TIMED OUT|UNREACHABLE|DOWN|STOPPED|INACTIVE",
+            "ERROR|ERR|FAILED|FAILURE|EXCEPTION|TRACEBACK|DENIED|REFUSED|TIMEOUT|TIMED OUT|UNREACHABLE|DOWN|STOPPED|INACTIVE|INVALID|UNAUTHORIZED|FORBIDDEN|NOT FOUND|NOT_FOUND|PERMISSION DENIED|CONNECTION RESET|BROKEN PIPE|NO SUCH FILE|KILLED|TERMINATED|ROLLBACK|ROLLED BACK|CANCELLED|CANCELED",
             true,
             recommended_style("#E85D68", Some("#E0606026"), true, false),
         ),
         recommended_rule(
             "builtin-warning",
             "Warning",
-            "WARNING|WARN|DEPRECATED|RETRY|RETRYING|THROTTLED|DEGRADED",
+            "WARNING|WARN|DEPRECATED|RETRY|RETRYING|THROTTLED|DEGRADED|CAUTION|SKIPPED|UNSUPPORTED|OBSOLETE|UNAVAILABLE|PENDING|BACKOFF",
             true,
             recommended_style("#DFAF45", Some("#E8C97A1F"), true, false),
         ),
         recommended_rule(
             "builtin-success",
             "Success",
-            "SUCCESS|SUCCEEDED|PASSED|COMPLETED|READY|HEALTHY|RUNNING|ACTIVE",
+            "SUCCESS|SUCCEEDED|PASSED|COMPLETED|READY|HEALTHY|RUNNING|ACTIVE|DONE|ONLINE|CONNECTED|ENABLED|INSTALLED|DEPLOYED",
             true,
             recommended_style("#52B788", None, true, false),
         ),
         recommended_rule(
             "builtin-info",
             "Info",
-            "INFO|NOTICE",
+            "INFO|NOTICE|STARTING|STARTED|RESTARTING|STOPPING|SHUTTING DOWN|EXITED",
             true,
             recommended_style("#4EA1F3", None, false, false),
         ),
         recommended_rule(
             "builtin-debug",
             "Debug",
-            "DEBUG|TRACE",
+            "DEBUG|TRACE|VERBOSE",
             true,
             recommended_style("#7C8494", None, false, false),
         ),
@@ -141,6 +141,13 @@ pub fn default_highlight_rules() -> Vec<HighlightRule> {
             recommended_style("#E8874A", Some("#E8A87C1F"), true, false),
         ),
         recommended_rule(
+            "builtin-http-method",
+            "HTTP method",
+            "GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS|CONNECT",
+            true,
+            recommended_style("#4EA1F3", None, false, false),
+        ),
+        recommended_rule(
             "builtin-url",
             "Web URL",
             r#"https?://[^\s<>"']*[^\s<>"'.,;:!?)}\]]"#,
@@ -148,11 +155,65 @@ pub fn default_highlight_rules() -> Vec<HighlightRule> {
             recommended_style("#4EA1F3", None, false, true),
         ),
         recommended_rule(
+            "builtin-email",
+            "Email address",
+            r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,63}",
+            true,
+            recommended_style("#4EA1F3", None, false, false),
+        ),
+        recommended_rule(
             "builtin-ipv4",
             "IPv4 address",
             "(?:(?:25[0-5]|2[0-4][0-9]|1?[0-9]{1,2})\\.){3}(?:25[0-5]|2[0-4][0-9]|1?[0-9]{1,2})",
             true,
             recommended_style("#5BC0EB", None, false, false),
+        ),
+        recommended_rule(
+            "builtin-mac",
+            "MAC address",
+            "(?:[0-9A-F]{2}[:-]){5}[0-9A-F]{2}",
+            true,
+            recommended_style("#5BC0EB", None, false, false),
+        ),
+        recommended_rule(
+            "builtin-ipv6",
+            "IPv6 address",
+            concat!(
+                "(?:",
+                "(?:[0-9A-F]{1,4}:){7}[0-9A-F]{1,4}|",
+                "(?:[0-9A-F]{1,4}:){1,6}:[0-9A-F]{1,4}|",
+                "(?:[0-9A-F]{1,4}:){1,5}(?::[0-9A-F]{1,4}){1,2}|",
+                "(?:[0-9A-F]{1,4}:){1,4}(?::[0-9A-F]{1,4}){1,3}|",
+                "(?:[0-9A-F]{1,4}:){1,3}(?::[0-9A-F]{1,4}){1,4}|",
+                "(?:[0-9A-F]{1,4}:){1,2}(?::[0-9A-F]{1,4}){1,5}|",
+                "[0-9A-F]{1,4}:(?:(?::[0-9A-F]{1,4}){1,6})|",
+                "(?:[0-9A-F]{1,4}:){1,7}:|",
+                ":(?:(?::[0-9A-F]{1,4}){1,7}|:)",
+                ")"
+            ),
+            true,
+            recommended_style("#5BC0EB", None, false, false),
+        ),
+        recommended_rule(
+            "builtin-uuid",
+            "UUID",
+            "[0-9A-F]{8}-[0-9A-F]{4}-[1-8][0-9A-F]{3}-[89AB][0-9A-F]{3}-[0-9A-F]{12}",
+            true,
+            recommended_style("#7C8494", None, false, false),
+        ),
+        recommended_rule(
+            "builtin-timestamp",
+            "ISO timestamp",
+            "[0-9]{4}-[0-9]{2}-[0-9]{2}[T ][0-2][0-9]:[0-5][0-9]:[0-5][0-9](?:\\.[0-9]+)?(?:Z|[+-][0-9]{2}:?[0-9]{2})?",
+            true,
+            recommended_style("#7C8494", None, false, false),
+        ),
+        recommended_rule(
+            "builtin-file-path",
+            "File path",
+            r#"[A-Z]:\\(?:[^\s\\/:*?"<>|]+\\)*[^\s\\/:*?"<>|]+|(?:~|\.\.?)?/(?:[A-Z0-9._~-]+/)*[A-Z0-9._~-]+"#,
+            true,
+            recommended_style("#4EA1F3", None, false, false),
         ),
     ]
 }
@@ -180,10 +241,45 @@ fn legacy_default_highlight_rules_v1() -> Vec<HighlightRule> {
     rules
 }
 
+fn legacy_default_highlight_rules_v2() -> Vec<HighlightRule> {
+    let legacy_ids = [
+        "builtin-critical",
+        "builtin-error",
+        "builtin-warning",
+        "builtin-success",
+        "builtin-info",
+        "builtin-debug",
+        "builtin-http-errors",
+        "builtin-url",
+        "builtin-ipv4",
+    ];
+    let mut rules = default_highlight_rules()
+        .into_iter()
+        .filter(|rule| legacy_ids.contains(&rule.id.as_str()))
+        .collect::<Vec<_>>();
+    let legacy_patterns = [
+        "PANIC|FATAL|CRITICAL|EMERGENCY|OOM|SEGFAULT|ASSERTION FAILED",
+        "ERROR|ERR|FAILED|FAILURE|EXCEPTION|TRACEBACK|DENIED|REFUSED|TIMEOUT|TIMED OUT|UNREACHABLE|DOWN|STOPPED|INACTIVE",
+        "WARNING|WARN|DEPRECATED|RETRY|RETRYING|THROTTLED|DEGRADED",
+        "SUCCESS|SUCCEEDED|PASSED|COMPLETED|READY|HEALTHY|RUNNING|ACTIVE",
+        "INFO|NOTICE",
+        "DEBUG|TRACE",
+        "HTTP(?:/[0-9.]+)?[ \\t]+[45][0-9]{2}|STATUS(?:=|:)[ \\t]*[45][0-9]{2}",
+        r#"https?://[^\s<>"']*[^\s<>"'.,;:!?)}\]]"#,
+        "(?:(?:25[0-5]|2[0-4][0-9]|1?[0-9]{1,2})\\.){3}(?:25[0-5]|2[0-4][0-9]|1?[0-9]{1,2})",
+    ];
+    for (rule, pattern) in rules.iter_mut().zip(legacy_patterns) {
+        rule.pattern = pattern.to_string();
+    }
+    rules
+}
+
 /// Upgrade only the untouched original built-in set. Any user edit, deletion,
 /// reordering, or custom rule keeps the saved list byte-for-byte intact.
 pub fn upgrade_builtin_highlight_rules(rules: &mut Vec<HighlightRule>) {
-    if *rules == legacy_default_highlight_rules_v1() {
+    if *rules == legacy_default_highlight_rules_v1()
+        || *rules == legacy_default_highlight_rules_v2()
+    {
         *rules = default_highlight_rules();
     }
 }
@@ -198,7 +294,7 @@ mod tests {
     fn recommended_rules_are_high_signal_and_have_stable_unique_ids() {
         let rules = default_highlight_rules();
 
-        assert_eq!(rules.len(), 9);
+        assert_eq!(rules.len(), 16);
         assert!(rules.iter().all(|rule| rule.enabled));
         assert!(
             rules
@@ -232,8 +328,15 @@ mod tests {
                 "builtin-info",
                 "builtin-debug",
                 "builtin-http-errors",
+                "builtin-http-method",
                 "builtin-url",
+                "builtin-email",
                 "builtin-ipv4",
+                "builtin-mac",
+                "builtin-ipv6",
+                "builtin-uuid",
+                "builtin-timestamp",
+                "builtin-file-path",
             ]
         );
         assert!(
@@ -287,6 +390,16 @@ mod tests {
         let mut untouched = legacy_default_highlight_rules_v1();
         upgrade_builtin_highlight_rules(&mut untouched);
         assert_eq!(untouched, default_highlight_rules());
+
+        let mut previous_defaults = legacy_default_highlight_rules_v2();
+        upgrade_builtin_highlight_rules(&mut previous_defaults);
+        assert_eq!(previous_defaults, default_highlight_rules());
+
+        let mut customized_previous_defaults = legacy_default_highlight_rules_v2();
+        customized_previous_defaults[1].pattern.push_str("|CUSTOM");
+        let expected = customized_previous_defaults.clone();
+        upgrade_builtin_highlight_rules(&mut customized_previous_defaults);
+        assert_eq!(customized_previous_defaults, expected);
 
         let mut customized = legacy_default_highlight_rules_v1();
         customized[1].style.foreground = Some("#123456".to_string());

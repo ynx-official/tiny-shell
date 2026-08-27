@@ -50,11 +50,13 @@ fn highlight_dialog_uses_stacked_layout(viewport_width: Pixels) -> bool {
     viewport_width < px(680.)
 }
 
-const DEFAULT_HIGHLIGHT_PREVIEW: &str = "INFO Connected to 10.0.0.8:22\n\
+const DEFAULT_HIGHLIGHT_PREVIEW: &str = "2026-08-27T14:05:09+08:00 INFO Connected to 10.0.0.8:22\n\
 WARN latency above threshold\n\
 ERROR authentication failed (HTTP 401)\n\
 SUCCESS deploy completed; service HEALTHY\n\
-Docs: https://example.com/runbook\n\
+GET https://example.com/runbook owner=ops@example.com\n\
+peer [2001:db8::42] adapter 00:1A:2B:3C:4D:5E\n\
+request=550e8400-e29b-41d4-a716-446655440000 path=/var/log/app.log\n\
 backup completed\n\
 token refreshed\n\
 thread payload ready";
@@ -94,8 +96,15 @@ fn built_in_name_key(rule: &HighlightRule) -> Option<&'static str> {
         ("builtin-info", "Info") => Some("highlight_builtin_info"),
         ("builtin-debug", "Debug") => Some("highlight_builtin_debug"),
         ("builtin-http-errors", "HTTP errors") => Some("highlight_builtin_http_errors"),
+        ("builtin-http-method", "HTTP method") => Some("highlight_builtin_http_method"),
         ("builtin-url", "Web URL") => Some("highlight_builtin_url"),
+        ("builtin-email", "Email address") => Some("highlight_builtin_email"),
         ("builtin-ipv4", "IPv4 address") => Some("highlight_builtin_ipv4"),
+        ("builtin-mac", "MAC address") => Some("highlight_builtin_mac"),
+        ("builtin-ipv6", "IPv6 address") => Some("highlight_builtin_ipv6"),
+        ("builtin-uuid", "UUID") => Some("highlight_builtin_uuid"),
+        ("builtin-timestamp", "ISO timestamp") => Some("highlight_builtin_timestamp"),
+        ("builtin-file-path", "File path") => Some("highlight_builtin_file_path"),
         _ => None,
     }
 }
@@ -1693,7 +1702,10 @@ mod tests {
 
     #[test]
     fn localized_builtin_name_only_applies_until_the_user_renames_it() {
-        let mut rule = default_highlight_rules().remove(0);
+        let rules = default_highlight_rules();
+        assert!(rules.iter().all(|rule| built_in_name_key(rule).is_some()));
+
+        let mut rule = rules[0].clone();
         assert_eq!(built_in_name_key(&rule), Some("highlight_builtin_critical"));
 
         rule.name = "Production crash".to_string();
@@ -1730,7 +1742,14 @@ mod tests {
 
         assert_eq!(
             matches,
-            ["SUCCESS", "completed", "HEALTHY", "completed", "ready"]
+            [
+                "Connected",
+                "SUCCESS",
+                "completed",
+                "HEALTHY",
+                "completed",
+                "ready"
+            ]
         );
         assert!(!matches.iter().any(|matched| matches!(
             matched.to_ascii_lowercase().as_str(),

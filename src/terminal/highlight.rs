@@ -932,6 +932,57 @@ mod tests {
     }
 
     #[test]
+    fn recommended_rules_cover_common_protocols_addresses_ids_times_and_paths() {
+        let rules = default_highlight_rules();
+        let find = |id: &str| rules.iter().find(|rule| rule.id == id).unwrap();
+        let matched_text = |id: &str, text: &str| {
+            preview_match_ranges(text, find(id))
+                .unwrap()
+                .into_iter()
+                .map(|range| text[range].to_string())
+                .collect::<Vec<_>>()
+        };
+
+        assert_eq!(
+            matched_text("builtin-http-method", "GET /health then PATCH /api/v1"),
+            ["GET", "PATCH"]
+        );
+        assert_eq!(
+            matched_text("builtin-email", "owner ops@example.com notified"),
+            ["ops@example.com"]
+        );
+        assert_eq!(
+            matched_text("builtin-mac", "adapter 00:1A:2B:3C:4D:5E ready"),
+            ["00:1A:2B:3C:4D:5E"]
+        );
+        assert_eq!(
+            matched_text("builtin-ipv6", "peer [2001:db8::42]:443 connected"),
+            ["2001:db8::42"]
+        );
+        assert_eq!(
+            matched_text(
+                "builtin-uuid",
+                "request 550e8400-e29b-41d4-a716-446655440000 failed"
+            ),
+            ["550e8400-e29b-41d4-a716-446655440000"]
+        );
+        assert_eq!(
+            matched_text(
+                "builtin-timestamp",
+                "2026-08-27T14:05:09.123+08:00 service started"
+            ),
+            ["2026-08-27T14:05:09.123+08:00"]
+        );
+        assert_eq!(
+            matched_text(
+                "builtin-file-path",
+                r#"read /var/log/app.log and C:\work\tiny-shell\Cargo.toml"#
+            ),
+            ["/var/log/app.log", r#"C:\work\tiny-shell\Cargo.toml"#]
+        );
+    }
+
+    #[test]
     fn lower_priority_overlap_is_dropped_as_a_span_not_split_by_cell() {
         let rules = [
             rule(
