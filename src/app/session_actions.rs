@@ -864,13 +864,37 @@ impl TinyShell {
             if event.modifiers.platform {
                 if let Some((row, col, _side)) = self.terminal_grid_point_and_side(event.position) {
                     if let Some(snapshot) = self.active_snapshot() {
-                        if let Some((url, _)) = crate::terminal::highlight::find_url_at_cell(
+                        if let Some(entity) = crate::terminal::highlight::find_entity_at_cell(
                             &snapshot.cells,
                             snapshot.rows,
                             row,
                             col,
                         ) {
-                            let _ = crate::app::platform::open_url(&url);
+                            use crate::session::highlight_rules::HighlightEntityKind;
+                            match entity.kind {
+                                HighlightEntityKind::Url => {
+                                    let _ = crate::app::platform::open_url(&entity.value);
+                                }
+                                HighlightEntityKind::Email => {
+                                    let _ = crate::app::platform::open_url(&format!(
+                                        "mailto:{}",
+                                        entity.value
+                                    ));
+                                }
+                                HighlightEntityKind::FilePath
+                                    if self.active_kind() == Some(TabKind::Local) =>
+                                {
+                                    let _ = crate::app::platform::open_path(&entity.value);
+                                }
+                                HighlightEntityKind::FilePath
+                                | HighlightEntityKind::IpAddress
+                                | HighlightEntityKind::MacAddress
+                                | HighlightEntityKind::Uuid => {
+                                    cx.write_to_clipboard(gpui::ClipboardItem::new_string(
+                                        entity.value,
+                                    ));
+                                }
+                            }
                             return;
                         }
                     }
@@ -883,18 +907,18 @@ impl TinyShell {
 
     pub(crate) fn active_snapshot(&self) -> Option<RenderSnapshot> {
         let keyword_highlight = self.config.keyword_highlight();
-        let highlight_rules = self.config.highlight_rules();
-        let highlight_rules_fingerprint = self.config.highlight_rules_fingerprint();
-        self.workspace()
+        let tab = self
+            .workspace()
             .active_tab_id()
-            .and_then(|id| self.workspace().terminal_tab(id))
-            .map(|tab| {
-                tab.render_snapshot(
-                    keyword_highlight,
-                    highlight_rules,
-                    highlight_rules_fingerprint,
-                )
-            })
+            .and_then(|id| self.workspace().terminal_tab(id))?;
+        let highlight_rules = self.config.effective_highlight_rules(tab.session.as_ref());
+        let highlight_rules_fingerprint =
+            crate::session::config::ConfigStore::rules_fingerprint(&highlight_rules);
+        Some(tab.render_snapshot(
+            keyword_highlight,
+            &highlight_rules,
+            highlight_rules_fingerprint,
+        ))
     }
 
     pub(crate) fn active_kind(&self) -> Option<TabKind> {

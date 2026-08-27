@@ -432,7 +432,7 @@ impl TerminalElement {
         Vec<LayoutUnderline>,
     ) {
         let view_read = self.view.read(cx);
-        let hovered_url = view_read.hovered_url.clone();
+        let hovered_entity = view_read.hovered_entity.clone();
 
         let mut rects = Vec::new();
         let mut runs = Vec::new();
@@ -498,7 +498,7 @@ impl TerminalElement {
             }
 
             // Apply hover underline if mouse is hovering over this URL
-            if let Some(hu) = &hovered_url {
+            if let Some(hu) = &hovered_entity {
                 if hu.tab_id == self.tab_id
                     && hu
                         .cells

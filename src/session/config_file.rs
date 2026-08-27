@@ -2,7 +2,10 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::session::highlight_rules::{HighlightRule, default_highlight_rules};
+use crate::session::highlight_rules::{
+    BUILTIN_HIGHLIGHT_PACK_VERSION, HighlightRule, HighlightRulePack,
+    default_enabled_highlight_packs, default_highlight_rules,
+};
 use crate::session::session_types::{
     DeletedConnectionGroup, DeletedSession, ManagedKey, QuickCommandCategory, Session,
     SftpFooterVisibility, SftpToolbarVisibility,
@@ -89,6 +92,10 @@ pub struct ConfigFile {
     pub keyword_highlight: bool,
     #[serde(default = "default_highlight_rules")]
     pub highlight_rules: Vec<HighlightRule>,
+    #[serde(default)]
+    pub highlight_pack_version: u32,
+    #[serde(default = "default_enabled_highlight_packs")]
+    pub enabled_highlight_packs: Vec<HighlightRulePack>,
     #[serde(default = "default_ui_font_family")]
     pub ui_font_family: String,
     #[serde(default = "default_terminal_font_family")]
@@ -290,6 +297,8 @@ impl Default for ConfigFile {
             ui_font_size: default_ui_font_size(),
             keyword_highlight: false,
             highlight_rules: default_highlight_rules(),
+            highlight_pack_version: BUILTIN_HIGHLIGHT_PACK_VERSION,
+            enabled_highlight_packs: default_enabled_highlight_packs(),
             ui_font_family: default_ui_font_family(),
             terminal_font_family: default_terminal_font_family(),
             title_bar_style: TitleBarStyle::default(),
@@ -408,6 +417,11 @@ mod tests {
         let config: ConfigFile = serde_json::from_str("{}").unwrap();
 
         assert_eq!(config.highlight_rules, default_highlight_rules());
+        assert_eq!(
+            config.enabled_highlight_packs,
+            default_enabled_highlight_packs()
+        );
+        assert_eq!(config.highlight_pack_version, 0);
     }
 
     #[test]

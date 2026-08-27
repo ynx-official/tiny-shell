@@ -534,7 +534,7 @@ pub(crate) struct TinyShell {
     pub(crate) last_prepaint_at: Option<Instant>,
     pub(crate) last_sidebar_width: Option<Pixels>,
     pub(crate) should_move_window: bool,
-    pub(crate) hovered_url: Option<HoveredUrl>,
+    pub(crate) hovered_entity: Option<HoveredTerminalEntity>,
     pub(crate) cmd_ctrl_pressed: bool,
     pub(crate) _subscriptions: Vec<gpui::Subscription>,
 }
@@ -709,8 +709,9 @@ mod layout_persistence_tests {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct HoveredUrl {
-    pub(crate) url: String,
+pub(crate) struct HoveredTerminalEntity {
+    pub(crate) kind: crate::session::highlight_rules::HighlightEntityKind,
+    pub(crate) value: String,
     pub(crate) tab_id: String,
     pub(crate) cells: Vec<(usize, usize)>,
 }
@@ -1146,7 +1147,7 @@ impl TinyShell {
             last_prepaint_at: None,
             last_sidebar_width,
             should_move_window: false,
-            hovered_url: None,
+            hovered_entity: None,
             cmd_ctrl_pressed: false,
             _subscriptions,
         };

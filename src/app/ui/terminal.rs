@@ -1266,12 +1266,14 @@ impl TinyShell {
             PaneLayout::Single(tab_id) => {
                 let is_focused = path == this.workspace().focused_pane_path();
                 let keyword_highlight = this.config.keyword_highlight();
-                let highlight_rules = this.config.highlight_rules();
-                let highlight_rules_fingerprint = this.config.highlight_rules_fingerprint();
                 let snapshot = this.workspace().terminal_tab(tab_id).map(|tab| {
+                    let highlight_rules =
+                        this.config.effective_highlight_rules(tab.session.as_ref());
+                    let highlight_rules_fingerprint =
+                        crate::session::config::ConfigStore::rules_fingerprint(&highlight_rules);
                     tab.render_snapshot(
                         keyword_highlight,
-                        highlight_rules,
+                        &highlight_rules,
                         highlight_rules_fingerprint,
                     )
                 });
@@ -1518,14 +1520,14 @@ impl TinyShell {
                 let line_height = px(this.terminal_line_height());
                 let cell_width = px(this.terminal_cell_width());
                 let context_menu_view = cx.entity();
-                let is_url_hovered = this
-                    .hovered_url
+                let is_entity_hovered = this
+                    .hovered_entity
                     .as_ref()
                     .is_some_and(|hu| hu.tab_id == *tab_id);
                 let mut el = div()
                     .size_full()
                     .overflow_hidden()
-                    .when(is_url_hovered, |d| d.cursor_pointer())
+                    .when(is_entity_hovered, |d| d.cursor_pointer())
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(move |this, _, _, cx| {

@@ -1074,30 +1074,31 @@ impl TinyShell {
             return;
         }
 
-        // Track URL hover
-        let mut hovered_url = None;
+        // Track semantic entities; modifier-click exposes their primary action.
+        let mut hovered_entity = None;
         let cmd_ctrl_pressed = event.modifiers.platform;
         if let Some((row, col, _side)) = self.terminal_grid_point_and_side(event.position) {
             if let Some(snapshot) = self.active_snapshot() {
                 if let Some(active_id) = self.preferred_terminal_tab_id() {
-                    if let Some((url, url_cells)) = crate::terminal::highlight::find_url_at_cell(
+                    if let Some(entity) = crate::terminal::highlight::find_entity_at_cell(
                         &snapshot.cells,
                         snapshot.rows,
                         row,
                         col,
                     ) {
-                        hovered_url = Some(crate::app::HoveredUrl {
-                            url,
+                        hovered_entity = Some(crate::app::HoveredTerminalEntity {
+                            kind: entity.kind,
+                            value: entity.value,
                             tab_id: active_id.clone(),
-                            cells: url_cells,
+                            cells: entity.cells,
                         });
                     }
                 }
             }
         }
 
-        if self.hovered_url != hovered_url || self.cmd_ctrl_pressed != cmd_ctrl_pressed {
-            self.hovered_url = hovered_url;
+        if self.hovered_entity != hovered_entity || self.cmd_ctrl_pressed != cmd_ctrl_pressed {
+            self.hovered_entity = hovered_entity;
             self.cmd_ctrl_pressed = cmd_ctrl_pressed;
             cx.notify();
         }

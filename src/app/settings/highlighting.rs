@@ -24,10 +24,14 @@ use crate::{
     app::{DialogKind, runtime_state::DialogToken},
     session::{
         config::HighlightRule,
-        highlight_rules::{HighlightMatchKind, HighlightRuleStyle, HighlightTarget},
+        highlight_rules::{
+            HighlightMatchKind, HighlightRuleBundle, HighlightRuleCategory, HighlightRulePack,
+            HighlightRuleScope, HighlightRuleStyle, HighlightTarget,
+        },
     },
     terminal::highlight::{
-        HighlightCellStyle, HighlightRuleError, preview_match_ranges, runtime_style,
+        HighlightCellStyle, HighlightRuleError, analyze_terminal_line, explain_matches,
+        preview_match_ranges, runtime_style,
     },
 };
 
@@ -35,6 +39,7 @@ const MAX_HIGHLIGHT_RULES: usize = 128;
 const MAX_RULE_NAME_CHARS: usize = 64;
 const MAX_RULE_PATTERN_CHARS: usize = 512;
 const MAX_PREVIEW_CHARS: usize = 8_192;
+const MAX_RULE_BUNDLE_BYTES: u64 = 2 * 1024 * 1024;
 
 fn highlight_dialog_dimensions(
     viewport_width: Pixels,
@@ -70,25 +75,24 @@ fn preview_contains_boundary_regressions(preview: &str) -> bool {
 
 fn new_rule() -> HighlightRule {
     HighlightRule {
-        id: format!("custom-{}", Uuid::new_v4()),
-        name: String::new(),
-        enabled: true,
-        pattern: String::new(),
-        match_kind: HighlightMatchKind::Literal,
-        case_sensitive: false,
-        whole_word: true,
-        target: HighlightTarget::Match,
         style: HighlightRuleStyle {
             foreground: Some("#6CB4EE".to_string()),
             background: None,
             bold: false,
             underline: false,
         },
+        ..HighlightRule::custom(format!("custom-{}", Uuid::new_v4()), "", "")
     }
 }
 
 fn built_in_name_key(rule: &HighlightRule) -> Option<&'static str> {
     match (rule.id.as_str(), rule.name.as_str()) {
+        ("builtin-structured-error", "Structured error level") => {
+            Some("highlight_builtin_structured_error")
+        }
+        ("builtin-structured-warning", "Structured warning level") => {
+            Some("highlight_builtin_structured_warning")
+        }
         ("builtin-critical", "Critical") => Some("highlight_builtin_critical"),
         ("builtin-error", "Error") => Some("highlight_builtin_error"),
         ("builtin-warning", "Warning") => Some("highlight_builtin_warning"),
@@ -105,7 +109,79 @@ fn built_in_name_key(rule: &HighlightRule) -> Option<&'static str> {
         ("builtin-uuid", "UUID") => Some("highlight_builtin_uuid"),
         ("builtin-timestamp", "ISO timestamp") => Some("highlight_builtin_timestamp"),
         ("builtin-file-path", "File path") => Some("highlight_builtin_file_path"),
+        ("builtin-source-location", "Source location") => Some("highlight_builtin_source_location"),
+        ("builtin-stack-frame", "Stack frame") => Some("highlight_builtin_stack_frame"),
+        ("builtin-git-conflict", "Git conflict marker") => Some("highlight_builtin_git_conflict"),
+        ("builtin-git-ref", "Git reference") => Some("highlight_builtin_git_ref"),
+        ("builtin-container-failure", "Container failure") => {
+            Some("highlight_builtin_container_failure")
+        }
+        ("builtin-container-lifecycle", "Container lifecycle") => {
+            Some("highlight_builtin_container_lifecycle")
+        }
+        ("builtin-database-error", "Database error") => Some("highlight_builtin_database_error"),
+        ("builtin-database-transaction", "Database transaction") => {
+            Some("highlight_builtin_database_transaction")
+        }
+        ("builtin-security-alert", "Security alert") => Some("highlight_builtin_security_alert"),
+        ("builtin-security-advisory", "Security advisory") => {
+            Some("highlight_builtin_security_advisory")
+        }
         _ => None,
+    }
+}
+
+fn pack_label(pack: HighlightRulePack) -> String {
+    t!(match pack {
+        HighlightRulePack::Core => "highlight_pack_core",
+        HighlightRulePack::Network => "highlight_pack_network",
+        HighlightRulePack::Web => "highlight_pack_web",
+        HighlightRulePack::Development => "highlight_pack_development",
+        HighlightRulePack::Git => "highlight_pack_git",
+        HighlightRulePack::Containers => "highlight_pack_containers",
+        HighlightRulePack::Database => "highlight_pack_database",
+        HighlightRulePack::Security => "highlight_pack_security",
+        HighlightRulePack::Custom => "highlight_pack_custom",
+    })
+    .to_string()
+}
+
+fn scope_label(scope: &HighlightRuleScope) -> String {
+    match scope {
+        HighlightRuleScope::Global => t!("highlight_scope_global").to_string(),
+        HighlightRuleScope::Group(group) => {
+            t!("highlight_scope_group_value", value = group).to_string()
+        }
+        HighlightRuleScope::Session(session) => {
+            t!("highlight_scope_session_value", value = session).to_string()
+        }
+    }
+}
+
+fn category_label(category: HighlightRuleCategory) -> String {
+    match category {
+        HighlightRuleCategory::General => t!("highlight_category_general").to_string(),
+        HighlightRuleCategory::LogLevel => t!("highlight_category_log_level").to_string(),
+        HighlightRuleCategory::Protocol => t!("highlight_category_protocol").to_string(),
+        HighlightRuleCategory::Address => t!("highlight_category_address").to_string(),
+        HighlightRuleCategory::Identifier => t!("highlight_category_identifier").to_string(),
+        HighlightRuleCategory::Timestamp => t!("highlight_category_timestamp").to_string(),
+        HighlightRuleCategory::Path => t!("highlight_category_path").to_string(),
+        HighlightRuleCategory::StructuredLog => t!("highlight_category_structured_log").to_string(),
+        HighlightRuleCategory::StackTrace => t!("highlight_category_stack_trace").to_string(),
+    }
+}
+
+fn entity_label(entity: Option<crate::session::highlight_rules::HighlightEntityKind>) -> String {
+    use crate::session::highlight_rules::HighlightEntityKind;
+    match entity {
+        Some(HighlightEntityKind::Url) => t!("highlight_entity_url").to_string(),
+        Some(HighlightEntityKind::Email) => t!("highlight_entity_email").to_string(),
+        Some(HighlightEntityKind::FilePath) => t!("highlight_entity_file").to_string(),
+        Some(HighlightEntityKind::IpAddress) => t!("highlight_entity_ip").to_string(),
+        Some(HighlightEntityKind::MacAddress) => t!("highlight_entity_mac").to_string(),
+        Some(HighlightEntityKind::Uuid) => t!("highlight_entity_uuid").to_string(),
+        None => t!("highlight_entity_none").to_string(),
     }
 }
 
@@ -140,6 +216,12 @@ fn localized_rule_error(error: HighlightRuleError) -> String {
             t!("highlight_rule_error_invalid_regex", error = detail).to_string()
         }
         HighlightRuleError::EmptyMatch => t!("highlight_rule_error_empty_match").to_string(),
+        HighlightRuleError::InvalidCaptureGroup { group, available } => t!(
+            "highlight_rule_error_invalid_capture_group",
+            group = group,
+            available = available
+        )
+        .to_string(),
         HighlightRuleError::InvalidColor { value } => {
             t!("highlight_rule_error_invalid_color", value = value).to_string()
         }
@@ -150,6 +232,8 @@ fn localized_rule_error(error: HighlightRuleError) -> String {
 struct DraftEvaluation {
     style: HighlightCellStyle,
     ranges: Vec<Range<usize>>,
+    explanation: Option<String>,
+    analysis_summary: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -217,16 +301,20 @@ pub(crate) struct HighlightRulesManager {
     case_sensitive: bool,
     whole_word: bool,
     target: HighlightTarget,
+    pack: HighlightRulePack,
+    scope: HighlightRuleScope,
     bold: bool,
     underline: bool,
     reset_armed: bool,
     delete_armed: bool,
     saved: bool,
     unsaved_warning: bool,
+    io_status: Option<(bool, String)>,
     name_input: Entity<InputState>,
     pattern_input: Entity<InputState>,
     foreground_input: Entity<InputState>,
     background_input: Entity<InputState>,
+    capture_group_input: Entity<InputState>,
     preview_input: Entity<InputState>,
     _owner_subscription: gpui::Subscription,
     _input_subscriptions: Vec<gpui::Subscription>,
@@ -259,6 +347,14 @@ impl HighlightRulesManager {
             InputState::new(window, cx)
                 .default_value(initial_rule.style.background.as_deref().unwrap_or_default())
         });
+        let capture_group_input = cx.new(|cx| {
+            InputState::new(window, cx).default_value(
+                initial_rule
+                    .capture_group
+                    .map(|group| group.to_string())
+                    .unwrap_or_default(),
+            )
+        });
         let preview_input = cx.new(|cx| {
             InputState::new(window, cx)
                 .multi_line(true)
@@ -271,6 +367,7 @@ impl HighlightRulesManager {
             pattern_input.clone(),
             foreground_input.clone(),
             background_input.clone(),
+            capture_group_input.clone(),
         ]
         .into_iter()
         .map(|input| {
@@ -309,16 +406,20 @@ impl HighlightRulesManager {
             case_sensitive: initial_rule.case_sensitive,
             whole_word: initial_rule.whole_word,
             target: initial_rule.target,
+            pack: initial_rule.pack,
+            scope: initial_rule.scope.clone(),
             bold: initial_rule.style.bold,
             underline: initial_rule.style.underline,
             reset_armed: false,
             delete_armed: false,
             saved: false,
             unsaved_warning: false,
+            io_status: None,
             name_input,
             pattern_input,
             foreground_input,
             background_input,
+            capture_group_input,
             preview_input,
             _owner_subscription: owner_subscription,
             _input_subscriptions: input_subscriptions,
@@ -356,6 +457,14 @@ impl HighlightRulesManager {
             window,
             cx,
         );
+        Self::set_input(
+            &self.capture_group_input,
+            rule.capture_group
+                .map(|group| group.to_string())
+                .unwrap_or_default(),
+            window,
+            cx,
+        );
         self.selected_id = selected.then(|| rule.id.clone());
         self.draft_id = rule.id.clone();
         self.enabled = rule.enabled;
@@ -363,6 +472,8 @@ impl HighlightRulesManager {
         self.case_sensitive = rule.case_sensitive;
         self.whole_word = rule.whole_word;
         self.target = rule.target;
+        self.pack = rule.pack;
+        self.scope = rule.scope.clone();
         self.bold = rule.style.bold;
         self.underline = rule.style.underline;
         self.baseline_rule = rule;
@@ -423,6 +534,21 @@ impl HighlightRulesManager {
             case_sensitive: self.case_sensitive,
             whole_word: self.whole_word,
             target: self.target,
+            capture_group: self
+                .capture_group_input
+                .read(cx)
+                .value()
+                .trim()
+                .parse()
+                .ok(),
+            pack: self.pack,
+            category: if self.draft_id.starts_with("builtin-") {
+                self.baseline_rule.category
+            } else {
+                HighlightRuleCategory::General
+            },
+            scope: self.scope.clone(),
+            entity: self.baseline_rule.entity,
             style: HighlightRuleStyle {
                 foreground: (!foreground.is_empty()).then_some(foreground),
                 background: (!background.is_empty()).then_some(background),
@@ -485,6 +611,10 @@ impl HighlightRulesManager {
             )
             .to_string());
         }
+        let capture_group = self.capture_group_input.read(cx).value();
+        if !capture_group.trim().is_empty() && capture_group.trim().parse::<usize>().is_err() {
+            return Err(t!("highlight_rule_validation_capture_group").to_string());
+        }
 
         if rule.style.foreground.is_none()
             && rule.style.background.is_none()
@@ -511,7 +641,49 @@ impl HighlightRulesManager {
         let mut preview_rule = rule;
         preview_rule.enabled = true;
         let ranges = preview_match_ranges(&preview, &preview_rule).map_err(localized_rule_error)?;
-        Ok(DraftEvaluation { style, ranges })
+        let explanation = explain_matches(&preview, &[preview_rule])
+            .first()
+            .map(|match_| {
+                t!(
+                    "highlight_rule_explanation",
+                    rule = match_.rule_name.clone(),
+                    value = match_.matched_text.clone(),
+                    category = category_label(match_.category),
+                    entity = entity_label(match_.entity)
+                )
+                .to_string()
+            });
+        let analyses = preview
+            .lines()
+            .map(analyze_terminal_line)
+            .collect::<Vec<_>>();
+        let structured = analyses
+            .iter()
+            .map(|analysis| analysis.structured_fields.len())
+            .sum::<usize>();
+        let locations = analyses
+            .iter()
+            .map(|analysis| analysis.file_locations.len())
+            .sum::<usize>();
+        let frames = analyses
+            .iter()
+            .filter(|analysis| analysis.is_stack_frame)
+            .count();
+        let analysis_summary = (structured + locations + frames > 0).then(|| {
+            t!(
+                "highlight_rule_analysis_summary",
+                fields = structured,
+                locations = locations,
+                frames = frames
+            )
+            .to_string()
+        });
+        Ok(DraftEvaluation {
+            style,
+            ranges,
+            explanation,
+            analysis_summary,
+        })
     }
 
     fn save_rule(&mut self, cx: &mut Context<Self>) {
@@ -689,6 +861,128 @@ impl HighlightRulesManager {
         cx.notify();
     }
 
+    fn set_pack(&mut self, pack: HighlightRulePack, cx: &mut Context<Self>) {
+        self.pack = pack;
+        self.saved = false;
+        self.reset_armed = false;
+        self.delete_armed = false;
+        cx.notify();
+    }
+
+    fn set_scope(&mut self, scope: HighlightRuleScope, cx: &mut Context<Self>) {
+        self.scope = scope;
+        self.saved = false;
+        self.reset_armed = false;
+        self.delete_armed = false;
+        cx.notify();
+    }
+
+    fn set_pack_enabled(&mut self, pack: HighlightRulePack, enabled: bool, cx: &mut Context<Self>) {
+        self.owner.update(cx, |this, cx| {
+            this.config.set_highlight_pack_enabled(pack, enabled);
+            this.mark_config_preferences_dirty();
+            cx.notify();
+        });
+        cx.notify();
+    }
+
+    fn export_rules(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let bundle = self.owner.read(cx).config.export_highlight_rules();
+        let Ok(json) = bundle.to_pretty_json() else {
+            self.io_status = Some((false, t!("highlight_export_failed").to_string()));
+            cx.notify();
+            return;
+        };
+        let dialog = rfd::AsyncFileDialog::new()
+            .add_filter("JSON", &["json"])
+            .set_file_name("tinyshell-highlight-rules.json")
+            .save_file();
+        cx.spawn_in(window, async move |this, cx| {
+            if let Some(file) = dialog.await {
+                let path = file.path().to_path_buf();
+                let result = cx
+                    .background_executor()
+                    .spawn(async move { std::fs::write(path, json) })
+                    .await;
+                this.update(cx, |this, cx| {
+                    this.io_status = Some((
+                        result.is_ok(),
+                        if result.is_ok() {
+                            t!("highlight_export_success").to_string()
+                        } else {
+                            t!("highlight_export_failed").to_string()
+                        },
+                    ));
+                    cx.notify();
+                })?;
+            }
+            Ok::<(), anyhow::Error>(())
+        })
+        .detach();
+    }
+
+    fn import_rules(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.allow_draft_replacement(cx) {
+            return;
+        }
+        let dialog = rfd::AsyncFileDialog::new()
+            .add_filter("JSON", &["json"])
+            .pick_file();
+        cx.spawn_in(window, async move |this, cx| {
+            if let Some(file) = dialog.await {
+                let path = file.path().to_path_buf();
+                let parsed = cx
+                    .background_executor()
+                    .spawn(async move {
+                        std::fs::metadata(&path)
+                            .map_err(|error| error.to_string())
+                            .and_then(|metadata| {
+                                if metadata.len() > MAX_RULE_BUNDLE_BYTES {
+                                    Err("highlight rule bundle is too large".to_string())
+                                } else {
+                                    Ok(())
+                                }
+                            })
+                            .and_then(|()| {
+                                std::fs::read_to_string(path).map_err(|error| error.to_string())
+                            })
+                            .and_then(|json| {
+                                HighlightRuleBundle::from_json(&json)
+                                    .map_err(|error| error.to_string())
+                            })
+                    })
+                    .await;
+                let _ = gpui::AsyncWindowContext::update(cx, |window, cx| {
+                    let _ = this.update(cx, |this, cx| {
+                        match parsed {
+                            Ok(bundle) => {
+                                let rules = this.owner.update(cx, |owner, cx| {
+                                    owner.config.import_highlight_rules(bundle);
+                                    owner.mark_config_preferences_dirty();
+                                    cx.notify();
+                                    owner.config.highlight_rules().to_vec()
+                                });
+                                if let Some(rule) = rules.first().cloned() {
+                                    this.load_rule(rule, true, window, cx);
+                                }
+                                this.io_status =
+                                    Some((true, t!("highlight_import_success").to_string()));
+                            }
+                            Err(error) => {
+                                tracing::warn!(%error, "failed to import highlight rules");
+                                this.io_status =
+                                    Some((false, t!("highlight_import_failed").to_string()));
+                            }
+                        }
+                        cx.notify();
+                    });
+                });
+            }
+            Ok::<(), anyhow::Error>(())
+        })
+        .detach();
+    }
+
     fn discard_draft(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.baseline_persisted {
             if let Some(current) = self.current_persisted_rule(cx) {
@@ -764,6 +1058,12 @@ impl Render for HighlightRulesManager {
         let stacked_layout = highlight_dialog_uses_stacked_layout(window.viewport_size().width);
         let rules = self.owner.read(cx).config.highlight_rules().to_vec();
         let master_enabled = self.owner.read(cx).config.keyword_highlight();
+        let enabled_packs = self
+            .owner
+            .read(cx)
+            .config
+            .enabled_highlight_packs()
+            .to_vec();
         let enabled_count = rules.iter().filter(|rule| rule.enabled).count();
         let selected_index = self
             .selected_id
@@ -779,10 +1079,23 @@ impl Render for HighlightRulesManager {
         let evaluation = self.evaluate_draft(cx);
         let can_apply =
             evaluation.is_ok() && !external_conflict && (selected_exists || !at_rule_limit);
-        let (preview_style, preview_ranges, validation_error) = match evaluation {
-            Ok(evaluation) => (evaluation.style, evaluation.ranges, None),
-            Err(error) => (HighlightCellStyle::default(), Vec::new(), Some(error)),
-        };
+        let (preview_style, preview_ranges, explanation, analysis_summary, validation_error) =
+            match evaluation {
+                Ok(evaluation) => (
+                    evaluation.style,
+                    evaluation.ranges,
+                    evaluation.explanation,
+                    evaluation.analysis_summary,
+                    None,
+                ),
+                Err(error) => (
+                    HighlightCellStyle::default(),
+                    Vec::new(),
+                    None,
+                    None,
+                    Some(error),
+                ),
+            };
         let preview_text = self.preview_input.read(cx).value().to_string();
 
         let restore_label = if self.reset_armed {
@@ -806,6 +1119,53 @@ impl Render for HighlightRulesManager {
                     this.confirm_restore_defaults(window, cx);
                 }))
         });
+        let pack_controls = h_flex()
+            .flex_none()
+            .items_center()
+            .flex_wrap()
+            .gap_3()
+            .px_3()
+            .py_2()
+            .border_b_1()
+            .border_color(cx.theme().border)
+            .child(
+                div()
+                    .text_xs()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child(t!("highlight_packs").to_string()),
+            )
+            .children(
+                [
+                    HighlightRulePack::Core,
+                    HighlightRulePack::Network,
+                    HighlightRulePack::Web,
+                    HighlightRulePack::Development,
+                    HighlightRulePack::Git,
+                    HighlightRulePack::Containers,
+                    HighlightRulePack::Database,
+                    HighlightRulePack::Security,
+                ]
+                .into_iter()
+                .map(|pack| {
+                    h_flex()
+                        .items_center()
+                        .gap_1()
+                        .child(
+                            Switch::new(SharedString::from(format!(
+                                "highlight-pack-{}",
+                                pack_label(pack).to_lowercase()
+                            )))
+                            .small()
+                            .checked(enabled_packs.contains(&pack))
+                            .on_click(cx.listener(
+                                move |this, checked, _, cx| {
+                                    this.set_pack_enabled(pack, *checked, cx);
+                                },
+                            )),
+                        )
+                        .child(div().text_xs().child(pack_label(pack)))
+                }),
+            );
 
         let list_hint = if at_rule_limit {
             t!("highlight_rules_limit", count = MAX_HIGHLIGHT_RULES).to_string()
@@ -841,6 +1201,40 @@ impl Render for HighlightRulesManager {
                         )
                         .child(restore_button)
                         .children(restore_confirm_button)
+                        .child(
+                            h_flex()
+                                .gap_2()
+                                .child(
+                                    Button::new("import-highlight-rules")
+                                        .small()
+                                        .secondary()
+                                        .label(t!("highlight_import").to_string())
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.import_rules(window, cx);
+                                        })),
+                                )
+                                .child(
+                                    Button::new("export-highlight-rules")
+                                        .small()
+                                        .secondary()
+                                        .label(t!("highlight_export").to_string())
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.export_rules(window, cx);
+                                        })),
+                                ),
+                        )
+                        .when_some(self.io_status.clone(), |this, (success, status)| {
+                            this.child(
+                                div()
+                                    .text_xs()
+                                    .text_color(if success {
+                                        cx.theme().success
+                                    } else {
+                                        cx.theme().danger
+                                    })
+                                    .child(status),
+                            )
+                        })
                         .child(
                             div()
                                 .text_xs()
@@ -1001,6 +1395,102 @@ impl Render for HighlightRulesManager {
                     )
             });
 
+        let current_pack = self.pack;
+        let pack_manager = manager.clone();
+        let pack_button = Button::new("highlight-pack")
+            .small()
+            .secondary()
+            .w_full()
+            .icon(IconName::ChevronsUpDown)
+            .label(pack_label(current_pack))
+            .dropdown_menu_with_anchor(Anchor::BottomLeft, move |menu, window, _| {
+                let mut menu = menu.min_w(190.);
+                for pack in [
+                    HighlightRulePack::Core,
+                    HighlightRulePack::Network,
+                    HighlightRulePack::Web,
+                    HighlightRulePack::Development,
+                    HighlightRulePack::Git,
+                    HighlightRulePack::Containers,
+                    HighlightRulePack::Database,
+                    HighlightRulePack::Security,
+                    HighlightRulePack::Custom,
+                ] {
+                    let item_manager = pack_manager.clone();
+                    menu = menu.item(
+                        PopupMenuItem::new(pack_label(pack))
+                            .checked(current_pack == pack)
+                            .on_click(window.listener_for(&item_manager, move |this, _, _, cx| {
+                                this.set_pack(pack, cx);
+                            })),
+                    );
+                }
+                menu
+            });
+
+        let groups = self.owner.read(cx).config.connection_groups().to_vec();
+        let sessions = self.owner.read(cx).config.sessions().to_vec();
+        let current_scope = self.scope.clone();
+        let scope_button_label = match &current_scope {
+            HighlightRuleScope::Session(id) => sessions
+                .iter()
+                .find(|session| session.id == *id)
+                .map(|session| {
+                    t!(
+                        "highlight_scope_session_value",
+                        value = session.name.clone()
+                    )
+                    .to_string()
+                })
+                .unwrap_or_else(|| scope_label(&current_scope)),
+            _ => scope_label(&current_scope),
+        };
+        let scope_manager = manager.clone();
+        let scope_button = Button::new("highlight-scope")
+            .small()
+            .secondary()
+            .w_full()
+            .icon(IconName::ChevronsUpDown)
+            .label(scope_button_label)
+            .dropdown_menu_with_anchor(Anchor::BottomLeft, move |menu, window, _| {
+                let global_manager = scope_manager.clone();
+                let mut menu = menu.min_w(240.).item(
+                    PopupMenuItem::new(t!("highlight_scope_global").to_string())
+                        .checked(current_scope == HighlightRuleScope::Global)
+                        .on_click(window.listener_for(&global_manager, |this, _, _, cx| {
+                            this.set_scope(HighlightRuleScope::Global, cx);
+                        })),
+                );
+                for group in &groups {
+                    let item_manager = scope_manager.clone();
+                    let scope = HighlightRuleScope::Group(group.clone());
+                    menu = menu.item(
+                        PopupMenuItem::new(scope_label(&scope))
+                            .checked(current_scope == scope)
+                            .on_click(window.listener_for(&item_manager, move |this, _, _, cx| {
+                                this.set_scope(scope.clone(), cx);
+                            })),
+                    );
+                }
+                for session in &sessions {
+                    let item_manager = scope_manager.clone();
+                    let scope = HighlightRuleScope::Session(session.id.clone());
+                    let label = t!(
+                        "highlight_scope_session_value",
+                        value = session.name.clone()
+                    )
+                    .to_string();
+                    menu = menu.item(
+                        PopupMenuItem::new(label)
+                            .checked(current_scope == scope)
+                            .on_click(window.listener_for(&item_manager, move |this, _, _, cx| {
+                                this.set_scope(scope.clone(), cx);
+                            })),
+                    );
+                }
+                menu
+            });
+
         let identity_fields = v_flex()
             .gap_3()
             .child(
@@ -1053,6 +1543,44 @@ impl Render for HighlightRulesManager {
                                     .child(t!("highlight_rule_target").to_string()),
                             )
                             .child(target_button),
+                    ),
+            )
+            .child(pack_controls)
+            .child(
+                h_flex()
+                    .gap_2()
+                    .flex_wrap()
+                    .items_end()
+                    .child(
+                        v_flex()
+                            .flex_1()
+                            .min_w(px(160.))
+                            .gap_1()
+                            .child(div().text_sm().child(t!("highlight_rule_pack").to_string()))
+                            .child(pack_button),
+                    )
+                    .child(
+                        v_flex()
+                            .flex_1()
+                            .min_w(px(160.))
+                            .gap_1()
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .child(t!("highlight_rule_scope").to_string()),
+                            )
+                            .child(scope_button),
+                    )
+                    .child(
+                        v_flex()
+                            .w(px(120.))
+                            .gap_1()
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .child(t!("highlight_rule_capture_group").to_string()),
+                            )
+                            .child(Input::new(&self.capture_group_input).small().w_full()),
                     ),
             );
 
@@ -1295,6 +1823,22 @@ impl Render for HighlightRulesManager {
             )
             .when_some(validation_error.clone(), |this, error| {
                 this.child(div().text_xs().text_color(cx.theme().danger).child(error))
+            })
+            .when_some(explanation, |this, explanation| {
+                this.child(
+                    div()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(explanation),
+                )
+            })
+            .when_some(analysis_summary, |this, summary| {
+                this.child(
+                    div()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(summary),
+                )
             });
 
         let delete_label = if self.delete_armed {
@@ -1705,7 +2249,10 @@ mod tests {
         let rules = default_highlight_rules();
         assert!(rules.iter().all(|rule| built_in_name_key(rule).is_some()));
 
-        let mut rule = rules[0].clone();
+        let mut rule = rules
+            .into_iter()
+            .find(|rule| rule.id == "builtin-critical")
+            .unwrap();
         assert_eq!(built_in_name_key(&rule), Some("highlight_builtin_critical"));
 
         rule.name = "Production crash".to_string();

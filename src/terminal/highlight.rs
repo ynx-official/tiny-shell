@@ -10,7 +10,8 @@ use gpui::{Hsla, Rgba};
 use regex::{Regex, RegexBuilder};
 
 use crate::session::highlight_rules::{
-    HighlightMatchKind, HighlightRule, HighlightRuleStyle, HighlightTarget,
+    HighlightEntityKind, HighlightMatchKind, HighlightRule, HighlightRuleCategory,
+    HighlightRuleStyle, HighlightTarget,
 };
 use crate::terminal::RenderCell;
 
@@ -25,6 +26,7 @@ pub(crate) enum HighlightRuleError {
     PatternTooLong { max: usize },
     InvalidRegex { detail: String },
     EmptyMatch,
+    InvalidCaptureGroup { group: usize, available: usize },
     InvalidColor { value: String },
 }
 
@@ -39,6 +41,10 @@ impl fmt::Display for HighlightRuleError {
                 write!(formatter, "invalid regular expression: {detail}")
             }
             Self::EmptyMatch => formatter.write_str("pattern must not match an empty string"),
+            Self::InvalidCaptureGroup { group, available } => write!(
+                formatter,
+                "capture group {group} does not exist; pattern defines {available} groups"
+            ),
             Self::InvalidColor { value } => write!(
                 formatter,
                 "invalid color `{value}`; expected #RRGGBB or #RRGGBBAA"
@@ -66,7 +72,17 @@ struct CompiledRule {
     matcher: Regex,
     whole_word: bool,
     target: HighlightTarget,
+    capture_group: Option<usize>,
     style: HighlightCellStyle,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct HighlightMatchExplanation {
+    pub(crate) rule_name: String,
+    pub(crate) category: HighlightRuleCategory,
+    pub(crate) entity: Option<HighlightEntityKind>,
+    pub(crate) range: Range<usize>,
+    pub(crate) matched_text: String,
 }
 
 /// Regexes compiled for one exact rule fingerprint.
@@ -124,6 +140,14 @@ fn compile_rule(rule: &HighlightRule) -> Result<CompiledRule, HighlightRuleError
         .map_err(|error| HighlightRuleError::InvalidRegex {
             detail: error.to_string(),
         })?;
+    if let Some(group) = rule.capture_group
+        && group >= matcher.captures_len()
+    {
+        return Err(HighlightRuleError::InvalidCaptureGroup {
+            group,
+            available: matcher.captures_len().saturating_sub(1),
+        });
+    }
     if ["", "a", " ", "\n", "错"].into_iter().any(|sample| {
         matcher
             .find(sample)
@@ -137,6 +161,7 @@ fn compile_rule(rule: &HighlightRule) -> Result<CompiledRule, HighlightRuleError
         matcher,
         whole_word: rule.whole_word,
         target: rule.target,
+        capture_group: rule.capture_group,
         style,
     })
 }
@@ -226,11 +251,192 @@ pub(crate) fn preview_match_ranges(
     Ok(result)
 }
 
+pub(crate) fn explain_matches(
+    text: &str,
+    rules: &[HighlightRule],
+) -> Vec<HighlightMatchExplanation> {
+    let mut explanations = Vec::new();
+    for rule in rules.iter().filter(|rule| rule.enabled) {
+        let Ok(compiled) = compile_rule(rule) else {
+            continue;
+        };
+        for range in matching_ranges(text, &compiled) {
+            explanations.push(HighlightMatchExplanation {
+                rule_name: rule.name.clone(),
+                category: rule.category,
+                entity: rule.entity,
+                matched_text: text[range.clone()].to_string(),
+                range,
+            });
+        }
+    }
+    explanations.sort_by_key(|explanation| explanation.range.start);
+    explanations
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum StructuredLogFormat {
+    Json,
+    Logfmt,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct StructuredLogField {
+    pub(crate) format: StructuredLogFormat,
+    pub(crate) key: String,
+    pub(crate) value: String,
+    pub(crate) value_range: Range<usize>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct FileLocation {
+    pub(crate) path: String,
+    pub(crate) line: usize,
+    pub(crate) column: Option<usize>,
+    pub(crate) range: Range<usize>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct TerminalLineAnalysis {
+    pub(crate) structured_fields: Vec<StructuredLogField>,
+    pub(crate) file_locations: Vec<FileLocation>,
+    pub(crate) is_stack_frame: bool,
+}
+
+pub(crate) fn analyze_terminal_line(text: &str) -> TerminalLineAnalysis {
+    TerminalLineAnalysis {
+        structured_fields: parse_structured_log_fields(text),
+        file_locations: extract_file_locations(text),
+        is_stack_frame: is_stack_frame(text),
+    }
+}
+
+fn parse_structured_log_fields(text: &str) -> Vec<StructuredLogField> {
+    static JSON_FIELD: OnceLock<Regex> = OnceLock::new();
+    static LOGFMT_FIELD: OnceLock<Regex> = OnceLock::new();
+    let trimmed = text.trim();
+    if trimmed.starts_with('{')
+        && trimmed.ends_with('}')
+        && serde_json::from_str::<serde_json::Value>(trimmed).is_ok()
+    {
+        return JSON_FIELD
+            .get_or_init(|| {
+                Regex::new(
+                    r#""([^"\\]+)"\s*:\s*("(?:\\.|[^"\\])*"|-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?|true|false|null)"#,
+                )
+                .expect("static JSON field regex must compile")
+            })
+            .captures_iter(text)
+            .filter_map(|captures| {
+                let key = captures.get(1)?.as_str().to_string();
+                let raw_value = captures.get(2)?;
+                let value = if raw_value.as_str().starts_with('"') {
+                    serde_json::from_str::<String>(raw_value.as_str()).ok()?
+                } else {
+                    raw_value.as_str().to_string()
+                };
+                let range = if raw_value.as_str().starts_with('"') {
+                    raw_value.start() + 1..raw_value.end() - 1
+                } else {
+                    raw_value.range()
+                };
+                Some(StructuredLogField {
+                    format: StructuredLogFormat::Json,
+                    key,
+                    value,
+                    value_range: range,
+                })
+            })
+            .collect();
+    }
+
+    LOGFMT_FIELD
+        .get_or_init(|| {
+            Regex::new(r#"(?:^|\s)([A-Za-z_][A-Za-z0-9_.-]*)=("(?:\\.|[^"\\])*"|[^\s]+)"#)
+                .expect("static logfmt field regex must compile")
+        })
+        .captures_iter(text)
+        .filter_map(|captures| {
+            let key = captures.get(1)?.as_str().to_string();
+            let raw_value = captures.get(2)?;
+            let (value, range) = if raw_value.as_str().starts_with('"') {
+                (
+                    raw_value.as_str()[1..raw_value.as_str().len() - 1].to_string(),
+                    raw_value.start() + 1..raw_value.end() - 1,
+                )
+            } else {
+                (raw_value.as_str().to_string(), raw_value.range())
+            };
+            Some(StructuredLogField {
+                format: StructuredLogFormat::Logfmt,
+                key,
+                value,
+                value_range: range,
+            })
+        })
+        .collect()
+}
+
+fn extract_file_locations(text: &str) -> Vec<FileLocation> {
+    static LOCATION: OnceLock<Regex> = OnceLock::new();
+    static PYTHON_LOCATION: OnceLock<Regex> = OnceLock::new();
+    let mut locations = LOCATION
+        .get_or_init(|| {
+            Regex::new(r#"((?:[A-Za-z]:\\|/|\./|\.\./|~/)[^\s:()]+):(\d+)(?::(\d+))?"#)
+                .expect("static file location regex must compile")
+        })
+        .captures_iter(text)
+        .filter_map(|captures| {
+            let matched = captures.get(0)?;
+            Some(FileLocation {
+                path: captures.get(1)?.as_str().to_string(),
+                line: captures.get(2)?.as_str().parse().ok()?,
+                column: captures
+                    .get(3)
+                    .and_then(|value| value.as_str().parse().ok()),
+                range: matched.range(),
+            })
+        })
+        .collect::<Vec<_>>();
+    locations.extend(
+        PYTHON_LOCATION
+            .get_or_init(|| {
+                Regex::new(r#"File\s+"([^"]+)",\s+line\s+(\d+)"#)
+                    .expect("static Python location regex must compile")
+            })
+            .captures_iter(text)
+            .filter_map(|captures| {
+                let matched = captures.get(0)?;
+                Some(FileLocation {
+                    path: captures.get(1)?.as_str().to_string(),
+                    line: captures.get(2)?.as_str().parse().ok()?,
+                    column: None,
+                    range: matched.range(),
+                })
+            }),
+    );
+    locations.sort_by_key(|location| location.range.start);
+    locations
+}
+
+fn is_stack_frame(text: &str) -> bool {
+    let trimmed = text.trim_start();
+    trimmed.starts_with("at ")
+        || trimmed.starts_with("File \"")
+        || trimmed.starts_with("Caused by:")
+        || trimmed.starts_with("Traceback (")
+        || trimmed.starts_with("goroutine ")
+}
+
 fn matching_ranges(text: &str, rule: &CompiledRule) -> Vec<Range<usize>> {
     rule.matcher
-        .find_iter(text)
+        .captures_iter(text)
         .take(MAX_MATCHES_PER_RULE_PER_LINE)
-        .map(|matched| matched.range())
+        .filter_map(|captures| {
+            captures
+                .get(rule.capture_group.unwrap_or(0))
+                .map(|matched| matched.range())
+        })
         .filter(|range| !range.is_empty())
         .filter(|range| !rule.whole_word || has_word_boundaries(text, range))
         .collect()
@@ -517,72 +723,68 @@ fn push_mapped_character(
     byte_to_cell.resize(text.len(), (row, col));
 }
 
-pub(crate) fn find_url_at_cell(
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct TerminalEntity {
+    pub(crate) kind: HighlightEntityKind,
+    pub(crate) value: String,
+    pub(crate) cells: Vec<(usize, usize)>,
+}
+
+#[derive(Debug)]
+struct SemanticMatcher {
+    kind: HighlightEntityKind,
+    matcher: Regex,
+    whole_word: bool,
+}
+
+pub(crate) fn find_entity_at_cell(
     cells: &[RenderCell],
     rows: usize,
     row: usize,
     col: usize,
-) -> Option<(String, Vec<(usize, usize)>)> {
+) -> Option<TerminalEntity> {
+    static MATCHERS: OnceLock<Vec<SemanticMatcher>> = OnceLock::new();
+    let matchers = MATCHERS.get_or_init(|| {
+        crate::session::highlight_rules::default_highlight_rules()
+            .into_iter()
+            .filter_map(|rule| {
+                let kind = rule.entity?;
+                let compiled = compile_rule(&rule).ok()?;
+                Some(SemanticMatcher {
+                    kind,
+                    matcher: compiled.matcher,
+                    whole_word: compiled.whole_word,
+                })
+            })
+            .collect()
+    });
     let line = logical_line_at_row(cells, rows, row)?;
-    for start in find_urls(&line.text) {
-        let length = find_url_len(&line.text[start..]);
-        let end = start + length;
-        let mut url_cells = Vec::with_capacity(length);
-        for &coordinate in line.byte_to_cell.get(start..end)? {
-            if url_cells.last() != Some(&coordinate) {
-                url_cells.push(coordinate);
+    for semantic in matchers {
+        for matched in semantic.matcher.find_iter(&line.text) {
+            let range = matched.range();
+            if range.is_empty() || (semantic.whole_word && !has_word_boundaries(&line.text, &range))
+            {
+                continue;
             }
-        }
-        if url_cells.binary_search(&(row, col)).is_ok() {
-            return Some((line.text[start..end].to_string(), url_cells));
+            let mut entity_cells = Vec::with_capacity(range.len());
+            for &coordinate in line.byte_to_cell.get(range.clone())? {
+                if entity_cells.last() != Some(&coordinate) {
+                    entity_cells.push(coordinate);
+                }
+            }
+            if entity_cells.binary_search(&(row, col)).is_ok() {
+                return Some(TerminalEntity {
+                    kind: semantic.kind,
+                    value: line.text[range].to_string(),
+                    cells: entity_cells,
+                });
+            }
         }
     }
     None
 }
 
-fn find_urls(text: &str) -> Vec<usize> {
-    let bytes = text.as_bytes();
-    let mut positions = Vec::new();
-    for index in 0..bytes.len() {
-        if !text.is_char_boundary(index) {
-            continue;
-        }
-        let remaining = &text[index..];
-        if !(remaining
-            .get(..7)
-            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("http://"))
-            || remaining
-                .get(..8)
-                .is_some_and(|prefix| prefix.eq_ignore_ascii_case("https://")))
-        {
-            continue;
-        }
-        let boundary = text[..index]
-            .chars()
-            .next_back()
-            .is_none_or(|character| !is_word_character(character));
-        if boundary {
-            positions.push(index);
-        }
-    }
-    positions
-}
-
-fn find_url_len(text: &str) -> usize {
-    let raw_end = text
-        .find(|character: char| character.is_whitespace() || character == '\0')
-        .unwrap_or(text.len());
-    text[..raw_end]
-        .trim_end_matches(|character| {
-            matches!(
-                character,
-                ',' | '.' | ';' | '!' | '?' | ')' | ']' | '}' | '"' | '\''
-            )
-        })
-        .len()
-}
-
-/// Build only the wrapped logical line containing `target_row`. URL hover runs
+/// Build only the wrapped logical line containing `target_row`. Entity hover runs
 /// for mouse movement and must not rebuild/sort the entire viewport.
 fn logical_line_at_row<'a>(
     cells: &'a [RenderCell],
@@ -651,6 +853,11 @@ mod tests {
             case_sensitive,
             whole_word,
             target,
+            capture_group: None,
+            pack: crate::session::highlight_rules::HighlightRulePack::Custom,
+            category: crate::session::highlight_rules::HighlightRuleCategory::General,
+            scope: crate::session::highlight_rules::HighlightRuleScope::Global,
+            entity: None,
             style: HighlightRuleStyle {
                 foreground: Some(foreground.to_string()),
                 background: None,
@@ -672,6 +879,93 @@ mod tests {
                 },
             })
             .collect()
+    }
+
+    #[test]
+    fn capture_group_limits_highlight_and_explanation_to_semantic_value() {
+        let mut json_level = rule(
+            r#""level"\s*:\s*"(error)""#,
+            HighlightMatchKind::Regex,
+            false,
+            false,
+            HighlightTarget::Match,
+            "#E85D68",
+        );
+        json_level.id = "json-level-error".to_string();
+        json_level.name = "JSON error level".to_string();
+        json_level.capture_group = Some(1);
+        json_level.category = HighlightRuleCategory::StructuredLog;
+
+        assert_eq!(
+            preview_match_ranges(r#"{"level":"error","message":"ok"}"#, &json_level).unwrap(),
+            vec![10..15]
+        );
+        let explanation = explain_matches(r#"{"level":"error","message":"ok"}"#, &[json_level]);
+        assert_eq!(explanation[0].matched_text, "error");
+        assert_eq!(
+            explanation[0].category,
+            HighlightRuleCategory::StructuredLog
+        );
+    }
+
+    #[test]
+    fn invalid_capture_group_is_reported() {
+        let mut invalid = rule(
+            "(error)",
+            HighlightMatchKind::Regex,
+            false,
+            false,
+            HighlightTarget::Match,
+            "#E85D68",
+        );
+        invalid.capture_group = Some(2);
+        assert!(matches!(
+            preview_match_ranges("error", &invalid),
+            Err(HighlightRuleError::InvalidCaptureGroup {
+                group: 2,
+                available: 1
+            })
+        ));
+    }
+
+    #[test]
+    fn semantic_entity_hit_testing_covers_url_email_ip_and_file_path() {
+        let samples = [
+            ("https://example.com/runbook", HighlightEntityKind::Url, 10),
+            ("ops@example.com", HighlightEntityKind::Email, 4),
+            ("10.20.30.40", HighlightEntityKind::IpAddress, 5),
+            ("/var/log/app.log", HighlightEntityKind::FilePath, 7),
+        ];
+        for (text, expected_kind, col) in samples {
+            let cells = row_cells(0, text);
+            let entity = find_entity_at_cell(&cells, 1, 0, col).unwrap();
+            assert_eq!(entity.kind, expected_kind);
+            assert_eq!(entity.value, text);
+        }
+    }
+
+    #[test]
+    fn line_analysis_parses_json_logfmt_and_cross_platform_stack_locations() {
+        let json = analyze_terminal_line(r#"{"level":"error","code":503,"retry":true}"#);
+        assert_eq!(json.structured_fields.len(), 3);
+        assert_eq!(json.structured_fields[0].key, "level");
+        assert_eq!(json.structured_fields[0].value, "error");
+        assert_eq!(json.structured_fields[1].value, "503");
+
+        let logfmt = analyze_terminal_line(r#"level=warn message="slow request" latency_ms=420"#);
+        assert_eq!(logfmt.structured_fields.len(), 3);
+        assert_eq!(logfmt.structured_fields[1].value, "slow request");
+
+        let rust = analyze_terminal_line("  at C:\\src\\main.rs:42:7");
+        assert!(rust.is_stack_frame);
+        assert_eq!(rust.file_locations[0].path, "C:\\src\\main.rs");
+        assert_eq!(rust.file_locations[0].line, 42);
+        assert_eq!(rust.file_locations[0].column, Some(7));
+
+        let python = analyze_terminal_line(r#"  File "/srv/app.py", line 19, in run"#);
+        assert!(python.is_stack_frame);
+        assert_eq!(python.file_locations[0].path, "/srv/app.py");
+        assert_eq!(python.file_locations[0].line, 19);
     }
 
     #[test]
@@ -932,6 +1226,62 @@ mod tests {
     }
 
     #[test]
+    fn specialized_rule_corpus_covers_tools_without_matching_near_misses() {
+        let rules = default_highlight_rules();
+        let get = |id: &str| rules.iter().find(|rule| rule.id == id).unwrap();
+
+        assert_eq!(
+            preview_match_ranges(
+                r#"{"severity":"error","message":"safe"}"#,
+                get("builtin-structured-error")
+            )
+            .unwrap(),
+            vec![13..18]
+        );
+        assert!(
+            preview_match_ranges("severity_reason=error", get("builtin-structured-error"))
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            !preview_match_ranges("<<<<<<< HEAD", get("builtin-git-conflict"))
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            preview_match_ranges("======", get("builtin-git-conflict"))
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            !preview_match_ranges(
+                "pod status=CrashLoopBackOff",
+                get("builtin-container-failure")
+            )
+            .unwrap()
+            .is_empty()
+        );
+        assert!(
+            !preview_match_ranges(
+                "scanner found CVE-2026-12345",
+                get("builtin-security-advisory")
+            )
+            .unwrap()
+            .is_empty()
+        );
+        assert!(
+            preview_match_ranges("CVE-26-123", get("builtin-security-advisory"))
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            preview_match_ranges("at /srv/src/main.rs:42:7", get("builtin-source-location"))
+                .unwrap(),
+            vec![3..19]
+        );
+    }
+
+    #[test]
     fn recommended_rules_cover_common_protocols_addresses_ids_times_and_paths() {
         let rules = default_highlight_rules();
         let find = |id: &str| rules.iter().find(|rule| rule.id == id).unwrap();
@@ -1132,14 +1482,14 @@ mod tests {
     }
 
     #[test]
-    fn url_hover_detection_is_independent_from_keyword_rules() {
+    fn entity_hover_detection_is_independent_from_keyword_rules() {
         let cells = row_cells(0, "https://example.test/path");
 
-        let (url, url_cells) = find_url_at_cell(&cells, 1, 0, 10).unwrap();
+        let entity = find_entity_at_cell(&cells, 1, 0, 10).unwrap();
 
-        assert_eq!(url, "https://example.test/path");
-        assert_eq!(url_cells.first(), Some(&(0, 0)));
-        assert_eq!(url_cells.last(), Some(&(0, 24)));
+        assert_eq!(entity.value, "https://example.test/path");
+        assert_eq!(entity.cells.first(), Some(&(0, 0)));
+        assert_eq!(entity.cells.last(), Some(&(0, 24)));
     }
 
     #[test]
