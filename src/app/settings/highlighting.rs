@@ -53,7 +53,8 @@ fn highlight_dialog_uses_stacked_layout(viewport_width: Pixels) -> bool {
 const DEFAULT_HIGHLIGHT_PREVIEW: &str = "INFO Connected to 10.0.0.8:22\n\
 WARN latency above threshold\n\
 ERROR authentication failed (HTTP 401)\n\
-SUCCESS deploy completed\n\
+SUCCESS deploy completed; service HEALTHY\n\
+Docs: https://example.com/runbook\n\
 backup completed\n\
 token refreshed\n\
 thread payload ready";
@@ -93,6 +94,8 @@ fn built_in_name_key(rule: &HighlightRule) -> Option<&'static str> {
         ("builtin-info", "Info") => Some("highlight_builtin_info"),
         ("builtin-debug", "Debug") => Some("highlight_builtin_debug"),
         ("builtin-http-errors", "HTTP errors") => Some("highlight_builtin_http_errors"),
+        ("builtin-url", "Web URL") => Some("highlight_builtin_url"),
+        ("builtin-ipv4", "IPv4 address") => Some("highlight_builtin_ipv4"),
         _ => None,
     }
 }
@@ -1725,7 +1728,10 @@ mod tests {
             .map(|range| &DEFAULT_HIGHLIGHT_PREVIEW[range])
             .collect::<Vec<_>>();
 
-        assert_eq!(matches, ["SUCCESS", "completed", "completed"]);
+        assert_eq!(
+            matches,
+            ["SUCCESS", "completed", "HEALTHY", "completed", "ready"]
+        );
         assert!(!matches.iter().any(|matched| matches!(
             matched.to_ascii_lowercase().as_str(),
             "up" | "ok" | "read" | "load"

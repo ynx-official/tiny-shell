@@ -55,8 +55,8 @@ fn recommended_rule(
     id: &str,
     name: &str,
     pattern: &str,
-    foreground: &str,
-    bold: bool,
+    whole_word: bool,
+    style: HighlightRuleStyle,
 ) -> HighlightRule {
     HighlightRule {
         id: id.to_string(),
@@ -65,14 +65,23 @@ fn recommended_rule(
         pattern: pattern.to_string(),
         match_kind: HighlightMatchKind::Regex,
         case_sensitive: false,
-        whole_word: true,
+        whole_word,
         target: HighlightTarget::Match,
-        style: HighlightRuleStyle {
-            foreground: Some(foreground.to_string()),
-            background: None,
-            bold,
-            underline: false,
-        },
+        style,
+    }
+}
+
+fn recommended_style(
+    foreground: &str,
+    background: Option<&str>,
+    bold: bool,
+    underline: bool,
+) -> HighlightRuleStyle {
+    HighlightRuleStyle {
+        foreground: Some(foreground.to_string()),
+        background: background.map(str::to_string),
+        bold,
+        underline,
     }
 }
 
@@ -85,41 +94,98 @@ pub fn default_highlight_rules() -> Vec<HighlightRule> {
         recommended_rule(
             "builtin-critical",
             "Critical",
-            "PANIC|FATAL|CRITICAL|EMERGENCY|OOM",
-            "#FF3232",
+            "PANIC|FATAL|CRITICAL|EMERGENCY|OOM|SEGFAULT|ASSERTION FAILED",
             true,
+            recommended_style("#FF5F56", Some("#FF323233"), true, false),
         ),
         recommended_rule(
             "builtin-error",
             "Error",
-            "ERROR|ERR|FAILED|FAILURE|EXCEPTION|TRACEBACK",
-            "#E06060",
-            false,
+            "ERROR|ERR|FAILED|FAILURE|EXCEPTION|TRACEBACK|DENIED|REFUSED|TIMEOUT|TIMED OUT|UNREACHABLE|DOWN|STOPPED|INACTIVE",
+            true,
+            recommended_style("#E85D68", Some("#E0606026"), true, false),
         ),
         recommended_rule(
             "builtin-warning",
             "Warning",
-            "WARNING|WARN|DEPRECATED",
-            "#E8C97A",
-            false,
+            "WARNING|WARN|DEPRECATED|RETRY|RETRYING|THROTTLED|DEGRADED",
+            true,
+            recommended_style("#DFAF45", Some("#E8C97A1F"), true, false),
         ),
         recommended_rule(
             "builtin-success",
             "Success",
-            "SUCCESS|SUCCEEDED|PASSED|COMPLETED",
-            "#7EC699",
-            false,
+            "SUCCESS|SUCCEEDED|PASSED|COMPLETED|READY|HEALTHY|RUNNING|ACTIVE",
+            true,
+            recommended_style("#52B788", None, true, false),
         ),
-        recommended_rule("builtin-info", "Info", "INFO|NOTICE", "#6CB4EE", false),
-        recommended_rule("builtin-debug", "Debug", "DEBUG|TRACE", "#828C9B", false),
+        recommended_rule(
+            "builtin-info",
+            "Info",
+            "INFO|NOTICE",
+            true,
+            recommended_style("#4EA1F3", None, false, false),
+        ),
+        recommended_rule(
+            "builtin-debug",
+            "Debug",
+            "DEBUG|TRACE",
+            true,
+            recommended_style("#7C8494", None, false, false),
+        ),
         recommended_rule(
             "builtin-http-errors",
             "HTTP errors",
-            "[45][0-9]{2}",
-            "#E8A87C",
+            "HTTP(?:/[0-9.]+)?[ \\t]+[45][0-9]{2}|STATUS(?:=|:)[ \\t]*[45][0-9]{2}",
+            true,
+            recommended_style("#E8874A", Some("#E8A87C1F"), true, false),
+        ),
+        recommended_rule(
+            "builtin-url",
+            "Web URL",
+            r#"https?://[^\s<>"']*[^\s<>"'.,;:!?)}\]]"#,
             false,
+            recommended_style("#4EA1F3", None, false, true),
+        ),
+        recommended_rule(
+            "builtin-ipv4",
+            "IPv4 address",
+            "(?:(?:25[0-5]|2[0-4][0-9]|1?[0-9]{1,2})\\.){3}(?:25[0-5]|2[0-4][0-9]|1?[0-9]{1,2})",
+            true,
+            recommended_style("#5BC0EB", None, false, false),
         ),
     ]
+}
+
+fn legacy_default_highlight_rules_v1() -> Vec<HighlightRule> {
+    let mut rules = default_highlight_rules();
+    rules.truncate(7);
+    let legacy = [
+        ("PANIC|FATAL|CRITICAL|EMERGENCY|OOM", "#FF3232", true),
+        (
+            "ERROR|ERR|FAILED|FAILURE|EXCEPTION|TRACEBACK",
+            "#E06060",
+            false,
+        ),
+        ("WARNING|WARN|DEPRECATED", "#E8C97A", false),
+        ("SUCCESS|SUCCEEDED|PASSED|COMPLETED", "#7EC699", false),
+        ("INFO|NOTICE", "#6CB4EE", false),
+        ("DEBUG|TRACE", "#828C9B", false),
+        ("[45][0-9]{2}", "#E8A87C", false),
+    ];
+    for (rule, (pattern, foreground, bold)) in rules.iter_mut().zip(legacy) {
+        rule.pattern = pattern.to_string();
+        rule.style = recommended_style(foreground, None, bold, false);
+    }
+    rules
+}
+
+/// Upgrade only the untouched original built-in set. Any user edit, deletion,
+/// reordering, or custom rule keeps the saved list byte-for-byte intact.
+pub fn upgrade_builtin_highlight_rules(rules: &mut Vec<HighlightRule>) {
+    if *rules == legacy_default_highlight_rules_v1() {
+        *rules = default_highlight_rules();
+    }
 }
 
 #[cfg(test)]
@@ -132,9 +198,14 @@ mod tests {
     fn recommended_rules_are_high_signal_and_have_stable_unique_ids() {
         let rules = default_highlight_rules();
 
-        assert_eq!(rules.len(), 7);
+        assert_eq!(rules.len(), 9);
         assert!(rules.iter().all(|rule| rule.enabled));
-        assert!(rules.iter().all(|rule| rule.whole_word));
+        assert!(
+            rules
+                .iter()
+                .filter(|rule| rule.id != "builtin-url")
+                .all(|rule| rule.whole_word)
+        );
         assert!(
             rules
                 .iter()
@@ -161,12 +232,27 @@ mod tests {
                 "builtin-info",
                 "builtin-debug",
                 "builtin-http-errors",
+                "builtin-url",
+                "builtin-ipv4",
             ]
         );
         assert!(
             rules
                 .iter()
                 .all(|rule| rule.match_kind == HighlightMatchKind::Regex)
+        );
+        assert!(rules.iter().take(4).all(|rule| rule.style.bold));
+        assert!(
+            rules
+                .iter()
+                .take(3)
+                .all(|rule| rule.style.background.is_some())
+        );
+        assert!(
+            rules
+                .iter()
+                .find(|rule| rule.id == "builtin-url")
+                .is_some_and(|rule| rule.style.underline && !rule.whole_word)
         );
     }
 
@@ -194,5 +280,22 @@ mod tests {
         assert_eq!(json["target"], "line");
         assert_eq!(json["style"]["background"], "#445566");
         assert_eq!(serde_json::from_value::<HighlightRule>(json).unwrap(), rule);
+    }
+
+    #[test]
+    fn untouched_original_defaults_upgrade_but_user_changes_are_preserved() {
+        let mut untouched = legacy_default_highlight_rules_v1();
+        upgrade_builtin_highlight_rules(&mut untouched);
+        assert_eq!(untouched, default_highlight_rules());
+
+        let mut customized = legacy_default_highlight_rules_v1();
+        customized[1].style.foreground = Some("#123456".to_string());
+        let expected = customized.clone();
+        upgrade_builtin_highlight_rules(&mut customized);
+        assert_eq!(customized, expected);
+
+        let mut empty = Vec::new();
+        upgrade_builtin_highlight_rules(&mut empty);
+        assert!(empty.is_empty());
     }
 }

@@ -216,6 +216,9 @@ impl ConfigStore {
         };
 
         cache.migrate_sync_interval();
+        crate::session::highlight_rules::upgrade_builtin_highlight_rules(
+            &mut cache.highlight_rules,
+        );
         if cache.sync_device_id.is_empty() {
             cache.sync_device_id = Uuid::new_v4().to_string();
         }

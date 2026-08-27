@@ -883,12 +883,52 @@ mod tests {
     }
 
     #[test]
-    fn recommended_rules_do_not_fragment_ambiguous_tokens_or_urls() {
+    fn recommended_rules_ignore_ambiguous_tokens_and_highlight_the_complete_url() {
         let rules = default_highlight_rules();
         let compiled = CompiledRuleSet::compile(2, &rules);
-        let cells = row_cells(0, "PASSWORD TOKEN RESTART https://example.test");
+        let text = "PASSWORD TOKEN RESTART https://example.test/path).";
+        let url_start = text.find("https://").unwrap();
+        let url_end = text.find(")").unwrap();
+        let cells = row_cells(0, text);
+        let highlights = highlight_cells(&cells, 1, &compiled);
 
-        assert!(highlight_cells(&cells, 1, &compiled).is_empty());
+        assert!((0..url_start).all(|col| !highlights.contains_key(&(0, col as i32))));
+        assert!((url_start..url_end).all(|col| highlights.contains_key(&(0, col as i32))));
+        assert!((url_end..text.len()).all(|col| !highlights.contains_key(&(0, col as i32))));
+    }
+
+    #[test]
+    fn recommended_rules_cover_operational_states_and_validate_common_identifiers() {
+        let rules = default_highlight_rules();
+        let find = |id: &str| rules.iter().find(|rule| rule.id == id).unwrap();
+
+        let error = find("builtin-error");
+        assert_eq!(
+            preview_match_ranges("connection refused; service inactive", error).unwrap(),
+            vec![11..18, 28..36]
+        );
+
+        let ipv4 = find("builtin-ipv4");
+        assert_eq!(
+            preview_match_ranges("peer 192.168.10.42:22", ipv4).unwrap(),
+            vec![5..18]
+        );
+        assert!(
+            preview_match_ranges("invalid 999.168.10.42", ipv4)
+                .unwrap()
+                .is_empty()
+        );
+
+        let http = find("builtin-http-errors");
+        assert_eq!(
+            preview_match_ranges("HTTP/1.1 503 unavailable", http).unwrap(),
+            vec![0..12]
+        );
+        assert!(
+            preview_match_ranges("process 503 exited", http)
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]
