@@ -1,6 +1,6 @@
 use gpui::{
-    App, AppContext as _, Context, Entity, EntityInputHandler as _, Focusable as _,
-    InteractiveElement as _, IntoElement, ParentElement as _, Render, ScrollHandle,
+    AnyElement, App, AppContext as _, Context, Entity, EntityInputHandler as _, Focusable as _,
+    FontWeight, InteractiveElement as _, IntoElement, ParentElement as _, Render, ScrollHandle,
     StatefulInteractiveElement as _, Styled as _, Subscription, WeakEntity, Window, div,
     prelude::FluentBuilder as _, px,
 };
@@ -10,12 +10,48 @@ use gpui_component::{
     h_flex,
     input::{Input, InputEvent, InputState},
     popover::{Popover, PopoverState},
+    scroll::{Scrollbar, ScrollbarAxis, ScrollbarShow},
     v_flex,
 };
 use rust_i18n::t;
 
 use super::state::{ConnectionManagerState, ConnectionNodeId, ConnectionTreeNode};
 use crate::TinyShell;
+
+fn row_height(node: &ConnectionTreeNode) -> f32 {
+    if matches!(node, ConnectionTreeNode::Group { .. }) {
+        32.
+    } else {
+        48.
+    }
+}
+
+fn list_height(nodes: &[ConnectionTreeNode], viewport_height: f32) -> f32 {
+    let content = nodes.iter().map(row_height).sum::<f32>() + 8.;
+    // Reserve header/search/footer and room below the tab bar, including on small windows.
+    content
+        .max(96.)
+        .min((viewport_height - 204.).clamp(96., 320.))
+}
+
+fn key_hint(key: &'static str, cx: &App) -> AnyElement {
+    div()
+        .flex_none()
+        .px_1()
+        .h(px(20.))
+        .min_w(px(22.))
+        .flex()
+        .items_center()
+        .justify_center()
+        .text_size(px(11.))
+        .line_height(px(16.))
+        .rounded(px(4.))
+        .border_1()
+        .border_color(cx.theme().border)
+        .text_color(cx.theme().muted_foreground)
+        .child(key)
+        .into_any_element()
+}
 
 /// This picker owns only transient UI state. Connection data and opening stay with its owner.
 struct QuickConnect {
@@ -80,24 +116,23 @@ impl QuickConnect {
 impl Render for QuickConnect {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let nodes = self.tree.visible_nodes(&self.owner.read(cx).config);
-        let count = nodes
-            .iter()
-            .filter(|node| matches!(node, ConnectionTreeNode::Session { .. }))
-            .count();
-        let width = (f32::from(window.viewport_size().width) - 40.).clamp(240., 440.);
-        let height = (f32::from(window.viewport_size().height) - 120.).clamp(160., 400.);
+        let count = self.owner.read(cx).config.sessions().len();
+        let width = (f32::from(window.viewport_size().width) - 40.).clamp(240., 400.);
+        let height = list_height(&nodes, f32::from(window.viewport_size().height));
+        let search_focused = self.input.read(cx).focus_handle(cx).is_focused(window);
         let rows = nodes
             .iter()
             .enumerate()
             .filter_map(|(index, node)| {
                 let id = node.id().clone();
                 let selected = self.tree.selected.as_ref() == Some(&id);
+                let is_group = matches!(node, ConnectionTreeNode::Group { .. });
                 let (icon, title, detail) = match node {
                     ConnectionTreeNode::Group { name, expanded, .. } => (
                         if *expanded {
-                            IconName::ChevronDown
+                            IconName::FolderOpen
                         } else {
-                            IconName::ChevronRight
+                            IconName::Folder
                         },
                         name.clone(),
                         None,
@@ -119,21 +154,34 @@ impl Render for QuickConnect {
                     h_flex()
                         .id(("quick-connect-row", index))
                         .w_full()
-                        .h(px(40.))
+                        .h(px(row_height(node)))
                         .flex_none()
                         .gap_2()
-                        .pl(px(8. + node.depth().min(8) as f32 * 16.))
+                        .pl(px(4. + node.depth().min(8) as f32 * 16.))
                         .pr_2()
-                        .rounded_md()
+                        .rounded(px(6.))
                         .cursor_pointer()
                         .when(selected, |row| row.bg(cx.theme().selection))
                         .hover(|row| row.bg(cx.theme().secondary))
                         .on_click(cx.listener(move |this, _, window, cx| {
                             this.activate(id.clone(), window, cx)
                         }))
+                        .child(div().w(px(12.)).flex_none().when(is_group, |slot| {
+                            let expanded =
+                                matches!(node, ConnectionTreeNode::Group { expanded: true, .. });
+                            slot.child(
+                                Icon::new(if expanded {
+                                    IconName::ChevronDown
+                                } else {
+                                    IconName::ChevronRight
+                                })
+                                .size(px(12.))
+                                .text_color(cx.theme().muted_foreground),
+                            )
+                        }))
                         .child(
                             Icon::new(icon)
-                                .small()
+                                .size(px(16.))
                                 .text_color(cx.theme().muted_foreground),
                         )
                         .child(
@@ -141,11 +189,19 @@ impl Render for QuickConnect {
                                 .flex_1()
                                 .min_w(px(0.))
                                 .overflow_hidden()
-                                .child(div().text_sm().text_ellipsis().child(title))
+                                .child(
+                                    div()
+                                        .text_size(px(13.))
+                                        .line_height(px(20.))
+                                        .font_weight(FontWeight::MEDIUM)
+                                        .text_ellipsis()
+                                        .child(title),
+                                )
                                 .when_some(detail, |row, detail| {
                                     row.child(
                                         div()
-                                            .text_xs()
+                                            .text_size(px(11.))
+                                            .line_height(px(16.))
                                             .text_color(cx.theme().muted_foreground)
                                             .text_ellipsis()
                                             .child(detail),
@@ -158,14 +214,13 @@ impl Render for QuickConnect {
 
         v_flex()
             .w(px(width))
-            .h(px(height))
-            .gap_2()
-            .p_3()
+            .overflow_hidden()
+            .text_size(px(13.))
             .bg(cx.theme().popover)
             .text_color(cx.theme().popover_foreground)
             .border_1()
             .border_color(cx.theme().border)
-            .rounded_lg()
+            .rounded(px(8.))
             .shadow_md()
             .capture_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
                 let key = event.keystroke.key.as_str();
@@ -208,57 +263,114 @@ impl Render for QuickConnect {
             }))
             .child(
                 h_flex()
+                    .h(px(44.))
+                    .px_3()
+                    .gap_2()
                     .justify_between()
                     .flex_none()
                     .child(
-                        div()
-                            .text_sm()
-                            .child(t!("quick_connection_title").to_string()),
+                        h_flex()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .text_size(px(14.))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child(t!("quick_connection_title").to_string()),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(11.))
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(t!("quick_connection_total", count = count).to_string()),
+                            ),
+                    )
+                    .child(key_hint("Esc", cx)),
+            )
+            .child(
+                div().px_3().pb_2().flex_none().child(
+                    Input::new(&self.input)
+                        // Input::h only affects multiline inputs; constrain the single-line box.
+                        .min_h(px(36.))
+                        .max_h(px(36.))
+                        .focus_bordered(false)
+                        .border_color(if search_focused {
+                            cx.theme().primary.opacity(0.5)
+                        } else {
+                            cx.theme().border
+                        })
+                        .bg(cx.theme().muted.opacity(0.25))
+                        .text_size(px(13.))
+                        .rounded(px(6.))
+                        .prefix(
+                            Icon::new(IconName::Search)
+                                .size(px(16.))
+                                .text_color(cx.theme().muted_foreground),
+                        )
+                        .cleanable(true),
+                ),
+            )
+            .child(
+                div()
+                    .relative()
+                    .h(px(height))
+                    .flex_none()
+                    .child(
+                        v_flex()
+                            .id("quick-connect-list")
+                            .size_full()
+                            .px_2()
+                            .py_1()
+                            .track_scroll(&self.scroll)
+                            .overflow_y_scroll()
+                            .children(rows)
+                            .when(nodes.is_empty(), |list| {
+                                list.child(
+                                    v_flex()
+                                        .size_full()
+                                        .items_center()
+                                        .justify_center()
+                                        .gap_2()
+                                        .text_size(px(12.))
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child(Icon::new(IconName::Search).size(px(20.)))
+                                        .child(t!("quick_connection_empty").to_string()),
+                                )
+                            }),
                     )
                     .child(
-                        div()
-                            .text_xs()
-                            .text_color(cx.theme().muted_foreground)
-                            .child("Esc"),
+                        div().absolute().top_0().right_0().bottom_0().child(
+                            Scrollbar::new(&self.scroll)
+                                .axis(ScrollbarAxis::Vertical)
+                                .scrollbar_show(ScrollbarShow::Scrolling),
+                        ),
                     ),
-            )
-            .child(Input::new(&self.input).small())
-            .child(
-                v_flex()
-                    .id("quick-connect-list")
-                    .flex_1()
-                    .min_h(px(0.))
-                    .track_scroll(&self.scroll)
-                    .overflow_y_scroll()
-                    .children(rows)
-                    .when(nodes.is_empty(), |list| {
-                        list.child(
-                            div()
-                                .p_4()
-                                .text_sm()
-                                .text_color(cx.theme().muted_foreground)
-                                .child(t!("quick_connection_empty").to_string()),
-                        )
-                    }),
             )
             .child(
                 h_flex()
                     .flex_none()
+                    .h(px(40.))
+                    .px_3()
                     .justify_between()
                     .gap_2()
-                    .pt_2()
+                    .bg(cx.theme().muted.opacity(0.35))
                     .border_t_1()
                     .border_color(cx.theme().border)
                     .child(
-                        div()
-                            .text_xs()
+                        h_flex()
+                            .gap_1()
+                            .text_size(px(11.))
                             .text_color(cx.theme().muted_foreground)
-                            .child(t!("quick_connection_status", count = count).to_string()),
+                            .child(key_hint("↑↓", cx))
+                            .child(t!("quick_connection_navigate").to_string())
+                            .child(div().w(px(4.)))
+                            .child(key_hint("↵", cx))
+                            .child(t!("connect").to_string()),
                     )
                     .child(
                         Button::new("quick-connect-manage")
                             .ghost()
                             .small()
+                            .text_size(px(12.))
                             .label(t!("quick_connection_manage").to_string())
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.dismiss(window, cx);
@@ -279,7 +391,7 @@ pub(crate) fn trigger(owner: Entity<TinyShell>, window: &mut Window, cx: &mut Ap
     Popover::new("tab-quick-connect-popover")
         .appearance(false)
         .anchor(gpui::Anchor::TopLeft)
-        .mt(px(28.))
+        .mt(px(8.))
         .track_focus(&focus)
         .trigger(
             Button::new("tab-quick-connections")
@@ -309,4 +421,36 @@ pub(crate) fn trigger(owner: Entity<TinyShell>, window: &mut Window, cx: &mut Ap
             picker.update(cx, |this, _| this.popover = Some(popover));
             picker.clone()
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn connection() -> ConnectionTreeNode {
+        ConnectionTreeNode::Session {
+            id: ConnectionNodeId::Session("example".into()),
+            session_id: "example".into(),
+            depth: 0,
+        }
+    }
+
+    #[test]
+    fn short_results_shrink_but_long_results_scroll() {
+        assert_eq!(list_height(&[], 700.), 96.);
+        assert_eq!(list_height(&[connection(), connection()], 700.), 104.);
+        assert_eq!(list_height(&vec![connection(); 30], 700.), 320.);
+        assert!(list_height(&vec![connection(); 30], 360.) < 200.);
+    }
+
+    #[test]
+    fn groups_are_more_compact_than_connection_details() {
+        let group = ConnectionTreeNode::Group {
+            id: ConnectionNodeId::Group("example".into()),
+            name: "example".into(),
+            depth: 0,
+            expanded: false,
+        };
+        assert!(row_height(&group) < row_height(&connection()));
+    }
 }

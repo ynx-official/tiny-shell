@@ -5,6 +5,8 @@
 
 ## 设计
 
+- [快速连接浮层](02-design/quick-connect-popover.md)
+
 - [统一确认弹窗与接入方式](02-design/confirmation-dialogs.md)
 
 - [标签栏连接编辑](02-design/tab-connection-edit.md)
