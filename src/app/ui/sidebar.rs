@@ -58,6 +58,7 @@ impl TinyShell {
             .overflow_hidden()
             .child(
                 h_flex()
+                    .relative()
                     .h(px(32.))
                     .items_center()
                     .gap_2()
@@ -68,6 +69,8 @@ impl TinyShell {
                             .flex_1()
                             .min_w(px(0.))
                             .items_center()
+                            .justify_center()
+                            .px(px(24.))
                             .gap_1()
                             .cursor_pointer()
                             .on_click(cx.listener(|this, _, window, cx| {
@@ -104,17 +107,24 @@ impl TinyShell {
                             ),
                     )
                     .child(
-                        Button::new("sidebar-collapse-toggle")
-                            .ghost()
-                            .small()
-                            .icon(IconName::PanelLeftClose)
-                            .tooltip(t!("settings_toggle_sidebar").to_string())
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.sidebar_collapsed = true;
-                                this.config.set_sidebar_collapsed(true);
-                                this.mark_config_preferences_dirty();
-                                cx.notify();
-                            })),
+                        h_flex()
+                            .absolute()
+                            .right_1()
+                            .h_full()
+                            .items_center()
+                            .child(
+                                Button::new("sidebar-collapse-toggle")
+                                    .ghost()
+                                    .small()
+                                    .icon(IconName::PanelLeftClose)
+                                    .tooltip(t!("settings_toggle_sidebar").to_string())
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.sidebar_collapsed = true;
+                                        this.config.set_sidebar_collapsed(true);
+                                        this.mark_config_preferences_dirty();
+                                        cx.notify();
+                                    })),
+                            ),
                     ),
             )
             .child(
