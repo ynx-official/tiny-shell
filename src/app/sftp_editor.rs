@@ -13,9 +13,8 @@ use gpui::{
     Styled, Window, px, relative,
 };
 use gpui_component::{
-    ActiveTheme, Disableable as _, IconName, Root, Sizable, WindowExt as _,
-    button::{Button, ButtonVariant, ButtonVariants as _},
-    dialog::DialogButtonProps,
+    ActiveTheme, Disableable as _, IconName, Root, Sizable,
+    button::{Button, ButtonVariants as _},
     h_flex,
     input::{Input, InputEvent, InputState, Search},
     menu::{DropdownMenu as _, PopupMenuItem},
@@ -438,29 +437,25 @@ impl SftpEditor {
         }
 
         let editor = cx.entity();
-        window.open_alert_dialog(cx, move |dialog, _window, _| {
-            dialog
-                .title(t!("editor_encoding_reload_title").to_string())
-                .description(t!("editor_encoding_reload_desc").to_string())
-                .width(px(460.))
-                .keyboard(false)
-                .button_props(
-                    DialogButtonProps::default()
-                        .cancel_text(t!("editor_close_cancel").to_string())
-                        .show_cancel(true)
-                        .ok_text(t!("editor_encoding_reload").to_string())
-                        .ok_variant(ButtonVariant::Danger),
-                )
-                .on_ok({
-                    let editor = editor.clone();
-                    move |_, window, cx| {
-                        editor.update(cx, |editor, cx| {
-                            editor.apply_encoding(encoding, window, cx);
-                        });
-                        true
-                    }
-                })
-        });
+
+        crate::app::confirmation_dialog::ConfirmationDialog::new(
+            t!("editor_encoding_reload_title").to_string(),
+            t!("editor_encoding_reload_desc").to_string(),
+        )
+        .danger(true)
+        .keyboard(false)
+        .cancel_label(t!("editor_close_cancel").to_string())
+        .confirm_label(t!("editor_encoding_reload").to_string())
+        .on_ok({
+            let editor = editor.clone();
+            move |_, window, cx| {
+                editor.update(cx, |editor, cx| {
+                    editor.apply_encoding(encoding, window, cx);
+                });
+                true
+            }
+        })
+        .open(window, cx);
     }
 
     /// Ctrl+S: 保存当前激活 tab。保存成功事件返回前不清除 dirty。
@@ -566,29 +561,25 @@ impl SftpEditor {
 
     fn confirm_force_save_active(&mut self, window: &mut Window, cx: &mut gpui::Context<Self>) {
         let editor = cx.entity();
-        window.open_alert_dialog(cx, move |dialog, _window, _| {
-            dialog
-                .title(t!("editor_conflict_overwrite_title").to_string())
-                .description(t!("editor_conflict_overwrite_desc").to_string())
-                .width(px(460.))
-                .keyboard(false)
-                .button_props(
-                    DialogButtonProps::default()
-                        .cancel_text(t!("editor_close_cancel").to_string())
-                        .show_cancel(true)
-                        .ok_text(t!("editor_conflict_overwrite").to_string())
-                        .ok_variant(ButtonVariant::Danger),
-                )
-                .on_ok({
-                    let editor = editor.clone();
-                    move |_, window, cx| {
-                        editor.update(cx, |editor, cx| {
-                            editor.force_save_active(window, cx);
-                        });
-                        true
-                    }
-                })
-        });
+
+        crate::app::confirmation_dialog::ConfirmationDialog::new(
+            t!("editor_conflict_overwrite_title").to_string(),
+            t!("editor_conflict_overwrite_desc").to_string(),
+        )
+        .danger(true)
+        .keyboard(false)
+        .cancel_label(t!("editor_close_cancel").to_string())
+        .confirm_label(t!("editor_conflict_overwrite").to_string())
+        .on_ok({
+            let editor = editor.clone();
+            move |_, window, cx| {
+                editor.update(cx, |editor, cx| {
+                    editor.force_save_active(window, cx);
+                });
+                true
+            }
+        })
+        .open(window, cx);
     }
 
     fn confirm_reload_active_conflict(
@@ -597,29 +588,25 @@ impl SftpEditor {
         cx: &mut gpui::Context<Self>,
     ) {
         let editor = cx.entity();
-        window.open_alert_dialog(cx, move |dialog, _window, _| {
-            dialog
-                .title(t!("editor_conflict_reload_title").to_string())
-                .description(t!("editor_conflict_reload_desc").to_string())
-                .width(px(460.))
-                .keyboard(false)
-                .button_props(
-                    DialogButtonProps::default()
-                        .cancel_text(t!("editor_close_cancel").to_string())
-                        .show_cancel(true)
-                        .ok_text(t!("editor_conflict_reload").to_string())
-                        .ok_variant(ButtonVariant::Danger),
-                )
-                .on_ok({
-                    let editor = editor.clone();
-                    move |_, window, cx| {
-                        editor.update(cx, |editor, cx| {
-                            editor.reload_active_conflict(window, cx);
-                        });
-                        true
-                    }
-                })
-        });
+
+        crate::app::confirmation_dialog::ConfirmationDialog::new(
+            t!("editor_conflict_reload_title").to_string(),
+            t!("editor_conflict_reload_desc").to_string(),
+        )
+        .danger(true)
+        .keyboard(false)
+        .cancel_label(t!("editor_close_cancel").to_string())
+        .confirm_label(t!("editor_conflict_reload").to_string())
+        .on_ok({
+            let editor = editor.clone();
+            move |_, window, cx| {
+                editor.update(cx, |editor, cx| {
+                    editor.reload_active_conflict(window, cx);
+                });
+                true
+            }
+        })
+        .open(window, cx);
     }
 
     /// 收到上传失败事件后恢复 dirty，并保留可见错误信息。
@@ -665,30 +652,26 @@ impl SftpEditor {
 
         let filename = base_name(&tab.remote_path).to_string();
         let editor = cx.entity();
-        window.open_alert_dialog(cx, move |dialog, _window, _| {
-            let filename = filename.clone();
-            dialog
-                .title(t!("editor_close_confirm_title").to_string())
-                .description(t!("editor_close_confirm_desc", name = filename.as_str()).to_string())
-                .width(px(440.))
-                .keyboard(false)
-                .button_props(
-                    DialogButtonProps::default()
-                        .cancel_text(t!("editor_close_cancel").to_string())
-                        .show_cancel(true)
-                        .ok_text(t!("editor_close_discard").to_string())
-                        .ok_variant(ButtonVariant::Danger),
-                )
-                .on_ok({
-                    let editor = editor.clone();
-                    move |_, window, cx| {
-                        editor.update(cx, |editor, cx| {
-                            editor.do_close_tab(idx, window, cx);
-                        });
-                        true
-                    }
-                })
-        });
+
+        let filename = filename.clone();
+        crate::app::confirmation_dialog::ConfirmationDialog::new(
+            t!("editor_close_confirm_title").to_string(),
+            t!("editor_close_confirm_desc", name = filename.as_str()).to_string(),
+        )
+        .danger(true)
+        .keyboard(false)
+        .cancel_label(t!("editor_close_cancel").to_string())
+        .confirm_label(t!("editor_close_discard").to_string())
+        .on_ok({
+            let editor = editor.clone();
+            move |_, window, cx| {
+                editor.update(cx, |editor, cx| {
+                    editor.do_close_tab(idx, window, cx);
+                });
+                true
+            }
+        })
+        .open(window, cx);
     }
 
     fn do_close_tab(&mut self, idx: usize, window: &mut Window, cx: &mut gpui::Context<Self>) {
@@ -718,29 +701,25 @@ impl SftpEditor {
 
     fn open_close_all_dialog(&mut self, window: &mut Window, cx: &mut gpui::Context<Self>) {
         let editor = cx.entity();
-        window.open_alert_dialog(cx, move |dialog, _window, _| {
-            dialog
-                .title(t!("editor_close_all_confirm_title").to_string())
-                .description(t!("editor_close_all_confirm_desc").to_string())
-                .width(px(440.))
-                .keyboard(false)
-                .button_props(
-                    DialogButtonProps::default()
-                        .cancel_text(t!("editor_close_cancel").to_string())
-                        .show_cancel(true)
-                        .ok_text(t!("editor_close_discard").to_string())
-                        .ok_variant(ButtonVariant::Danger),
-                )
-                .on_ok({
-                    let editor = editor.clone();
-                    move |_, window, cx| {
-                        editor.update(cx, |editor, cx| {
-                            editor.close_window(window, cx);
-                        });
-                        true
-                    }
-                })
-        });
+
+        crate::app::confirmation_dialog::ConfirmationDialog::new(
+            t!("editor_close_all_confirm_title").to_string(),
+            t!("editor_close_all_confirm_desc").to_string(),
+        )
+        .danger(true)
+        .keyboard(false)
+        .cancel_label(t!("editor_close_cancel").to_string())
+        .confirm_label(t!("editor_close_discard").to_string())
+        .on_ok({
+            let editor = editor.clone();
+            move |_, window, cx| {
+                editor.update(cx, |editor, cx| {
+                    editor.close_window(window, cx);
+                });
+                true
+            }
+        })
+        .open(window, cx);
     }
 
     fn close_all(&mut self, window: &mut Window, cx: &mut gpui::Context<Self>) {
@@ -781,40 +760,36 @@ impl SftpEditor {
         }
 
         let session_id = self.session_id.clone();
-        window.open_alert_dialog(cx, move |dialog, _window, _| {
+
+        let owner = owner.clone();
+        let tab_id = tab_id.clone();
+        let session_id = session_id.clone();
+        crate::app::confirmation_dialog::ConfirmationDialog::new(
+            t!("editor_close_all_confirm_title").to_string(),
+            t!("editor_close_all_confirm_desc").to_string(),
+        )
+        .danger(true)
+        .keyboard(false)
+        .cancel_label(t!("editor_close_cancel").to_string())
+        .confirm_label(t!("editor_close_discard").to_string())
+        .on_ok(move |_, window, cx| {
+            let session_id = session_id.clone();
             let owner = owner.clone();
             let tab_id = tab_id.clone();
-            let session_id = session_id.clone();
-            dialog
-                .title(t!("editor_close_all_confirm_title").to_string())
-                .description(t!("editor_close_all_confirm_desc").to_string())
-                .width(px(440.))
-                .keyboard(false)
-                .button_props(
-                    DialogButtonProps::default()
-                        .cancel_text(t!("editor_close_cancel").to_string())
-                        .show_cancel(true)
-                        .ok_text(t!("editor_close_discard").to_string())
-                        .ok_variant(ButtonVariant::Danger),
-                )
-                .on_ok(move |_, window, cx| {
-                    let session_id = session_id.clone();
-                    let owner = owner.clone();
-                    let tab_id = tab_id.clone();
-                    window.defer(cx, move |_window, cx| {
-                        crate::app::sftp_editor_window::force_close_session_windows(
-                            &session_id,
-                            owner.read(cx).session_owner_id,
-                            cx,
-                        );
-                        owner.update(cx, |owner, cx| {
-                            owner.handle_tab_close(tab_id, cx);
-                            cx.notify();
-                        });
-                    });
-                    false
-                })
-        });
+            window.defer(cx, move |_window, cx| {
+                crate::app::sftp_editor_window::force_close_session_windows(
+                    &session_id,
+                    owner.read(cx).session_owner_id,
+                    cx,
+                );
+                owner.update(cx, |owner, cx| {
+                    owner.handle_tab_close(tab_id, cx);
+                    cx.notify();
+                });
+            });
+            false
+        })
+        .open(window, cx);
         false
     }
 

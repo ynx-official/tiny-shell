@@ -6,8 +6,6 @@ const DIALOG_LAYER_OFFSET: Pixels = px(16.);
 // Keep layout calculations aligned with Dialog's internal `.min_h_24()` constraint.
 const DIALOG_MINIMUM_HEIGHT: Pixels = px(96.);
 
-pub(crate) const MAIN_WINDOW_CLOSE_DIALOG_BASE_HEIGHT: Pixels = px(160.);
-pub(crate) const UPDATE_RESTART_DIALOG_BASE_HEIGHT: Pixels = px(160.);
 pub(crate) const UPDATE_DIALOG_HEIGHT: Pixels = px(520.);
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -29,15 +27,6 @@ pub(crate) fn centered_dialog_layout(
         preferred_height,
         layer_ix,
     )
-}
-
-pub(crate) fn confirmation_dialog_height(window: &Window, base_height: Pixels) -> Pixels {
-    confirmation_dialog_height_for_rem(base_height, window.rem_size())
-}
-
-fn confirmation_dialog_height_for_rem(base_height: Pixels, rem_size: Pixels) -> Pixels {
-    let default_ui_font_size = px(crate::session::config_file::default_ui_font_size());
-    base_height * (rem_size / default_ui_font_size).max(1.)
 }
 
 fn centered_dialog_layout_for_viewport(
@@ -66,31 +55,17 @@ fn centered_dialog_layout_for_viewport(
 mod tests {
     use gpui::px;
 
-    use super::{
-        MAIN_WINDOW_CLOSE_DIALOG_BASE_HEIGHT, UPDATE_DIALOG_HEIGHT,
-        UPDATE_RESTART_DIALOG_BASE_HEIGHT, centered_dialog_layout_for_viewport,
-        confirmation_dialog_height_for_rem,
-    };
+    use super::{UPDATE_DIALOG_HEIGHT, centered_dialog_layout_for_viewport};
 
     #[test]
     fn centered_dialog_layout_centers_the_three_supported_dialogs() {
-        let main_window_close = centered_dialog_layout_for_viewport(
-            px(800.),
-            px(0.),
-            px(0.),
-            MAIN_WINDOW_CLOSE_DIALOG_BASE_HEIGHT,
-            0,
-        );
+        let main_window_close =
+            centered_dialog_layout_for_viewport(px(800.), px(0.), px(0.), px(160.), 0);
         assert_eq!(main_window_close.height, px(160.));
         assert_eq!(main_window_close.margin_top, px(320.));
 
-        let update_restart = centered_dialog_layout_for_viewport(
-            px(800.),
-            px(0.),
-            px(0.),
-            UPDATE_RESTART_DIALOG_BASE_HEIGHT,
-            0,
-        );
+        let update_restart =
+            centered_dialog_layout_for_viewport(px(800.), px(0.), px(0.), px(160.), 0);
         assert_eq!(update_restart.height, px(160.));
         assert_eq!(update_restart.margin_top, px(320.));
 
@@ -102,13 +77,7 @@ mod tests {
 
     #[test]
     fn centered_dialog_layout_accounts_for_window_paddings() {
-        let layout = centered_dialog_layout_for_viewport(
-            px(800.),
-            px(8.),
-            px(24.),
-            MAIN_WINDOW_CLOSE_DIALOG_BASE_HEIGHT,
-            0,
-        );
+        let layout = centered_dialog_layout_for_viewport(px(800.), px(8.), px(24.), px(160.), 0);
 
         assert_eq!(layout.height, px(160.));
         assert_eq!(layout.margin_top, px(304.));
@@ -124,30 +93,8 @@ mod tests {
     }
 
     #[test]
-    fn confirmation_dialog_height_scales_with_larger_ui_font() {
-        assert_eq!(
-            confirmation_dialog_height_for_rem(MAIN_WINDOW_CLOSE_DIALOG_BASE_HEIGHT, px(8.)),
-            px(160.)
-        );
-        assert_eq!(
-            confirmation_dialog_height_for_rem(MAIN_WINDOW_CLOSE_DIALOG_BASE_HEIGHT, px(14.)),
-            px(160.)
-        );
-        assert_eq!(
-            confirmation_dialog_height_for_rem(MAIN_WINDOW_CLOSE_DIALOG_BASE_HEIGHT, px(21.)),
-            px(240.)
-        );
-    }
-
-    #[test]
     fn centered_dialog_layout_compensates_for_component_layer_offset() {
-        let layout = centered_dialog_layout_for_viewport(
-            px(800.),
-            px(0.),
-            px(0.),
-            MAIN_WINDOW_CLOSE_DIALOG_BASE_HEIGHT,
-            1,
-        );
+        let layout = centered_dialog_layout_for_viewport(px(800.), px(0.), px(0.), px(160.), 1);
 
         assert_eq!(layout.height, px(160.));
         assert_eq!(layout.margin_top, px(304.));

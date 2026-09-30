@@ -1,9 +1,11 @@
 # TinyShell 文档索引
 
 > 状态：Approved  
-> 最后更新：2026-09-07
+> 最后更新：2026-09-30
 
 ## 设计
+
+- [统一确认弹窗与接入方式](02-design/confirmation-dialogs.md)
 
 - [标签栏连接编辑](02-design/tab-connection-edit.md)
 

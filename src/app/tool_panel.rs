@@ -1,5 +1,4 @@
 use gpui::{Bounds, Context, Pixels, Size, Window, px, size};
-use gpui_component::{WindowExt as _, button::ButtonVariant, dialog::DialogButtonProps};
 use rust_i18n::t;
 
 use crate::{
@@ -423,44 +422,31 @@ impl TinyShell {
             )
             .to_string()
         };
-        window.open_alert_dialog(cx, move |dialog, _, _| {
-            dialog
-                .title(title.clone())
-                .description(description.clone())
-                .button_props(
-                    DialogButtonProps::default()
-                        .show_cancel(true)
-                        .cancel_text(t!("cancel").to_string())
-                        .ok_text(t!("confirm").to_string())
-                        .ok_variant(
-                            if matches!(
-                                action,
-                                DockerAction::Stop
-                                    | DockerAction::Remove
-                                    | DockerAction::ForceRemove
-                            ) {
-                                ButtonVariant::Danger
-                            } else {
-                                ButtonVariant::Primary
-                            },
-                        ),
-                )
-                .on_ok({
-                    let owner = owner.clone();
-                    let container_id = container.id.clone();
-                    let target_tab_id = target_tab_id.clone();
-                    move |_, _, cx| {
-                        owner.update(cx, |this, cx| {
-                            if this.tool_panel.target_tab_id == target_tab_id
-                                && this.tool_panel.target_generation == target_generation
-                            {
-                                this.request_docker_action(container_id.clone(), action, cx);
-                            }
-                        });
-                        true
+
+        crate::app::confirmation_dialog::ConfirmationDialog::new(
+            title.clone(),
+            description.clone(),
+        )
+        .danger(matches!(
+            action,
+            DockerAction::Stop | DockerAction::Remove | DockerAction::ForceRemove
+        ))
+        .on_ok({
+            let owner = owner.clone();
+            let container_id = container.id.clone();
+            let target_tab_id = target_tab_id.clone();
+            move |_, _, cx| {
+                owner.update(cx, |this, cx| {
+                    if this.tool_panel.target_tab_id == target_tab_id
+                        && this.tool_panel.target_generation == target_generation
+                    {
+                        this.request_docker_action(container_id.clone(), action, cx);
                     }
-                })
-        });
+                });
+                true
+            }
+        })
+        .open(window, cx);
     }
 
     pub(crate) fn handle_docker_response(

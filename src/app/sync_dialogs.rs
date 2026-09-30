@@ -170,93 +170,42 @@ impl TinyShell {
             .to_string(),
         };
         let view = cx.entity();
-        let danger_color = cx.theme().danger;
+        let description = format!("{}\n\n{}", message, t!("sync_upload_blocked_dialog_hint"));
         self.open_modal_dialog(
             crate::app::DialogKind::SyncUploadSecretsBlocked,
             window,
             cx,
-            move |dialog: Dialog, token, _window, _cx| {
-                dialog
-                    .title(t!("sync_upload_blocked_dialog_title").to_string())
-                    .w(px(460.))
-                    .close_button(false)
-                    .overlay_closable(false)
-                    .on_close({
+            move |dialog: Dialog, token, window, cx| {
+                crate::app::confirmation_dialog::ConfirmationDialog::new(
+                    t!("sync_upload_blocked_dialog_title").to_string(),
+                    description.clone(),
+                )
+                .danger(true)
+                .confirm_label(t!("sync_reset_privacy_password").to_string())
+                .on_close({
+                    let view = view.clone();
+                    move |_, window, cx| {
+                        view.update(cx, |this, cx| {
+                            this.modal_dialog_closed(token, window, cx);
+                            cx.notify();
+                        });
+                    }
+                })
+                .on_ok({
+                    let view = view.clone();
+                    let form = form.clone();
+                    move |_, window, cx| {
                         let view = view.clone();
-                        move |_, window, cx| {
+                        let form = form.clone();
+                        window.defer(cx, move |window, cx| {
                             view.update(cx, |this, cx| {
-                                this.modal_dialog_closed(token, window, cx);
-                                cx.notify();
+                                this.show_reset_privacy_password_dialog(form.clone(), window, cx)
                             });
-                        }
-                    })
-                    .content({
-                        let message = message.clone();
-                        move |content, _window, _cx| {
-                            content.child(
-                                v_flex()
-                                    .w_full()
-                                    .gap_3()
-                                    .child(
-                                        div()
-                                            .text_sm()
-                                            .text_color(danger_color)
-                                            .child(message.clone()),
-                                    )
-                                    .child(
-                                        div().text_sm().child(
-                                            t!("sync_upload_blocked_dialog_hint").to_string(),
-                                        ),
-                                    ),
-                            )
-                        }
-                    })
-                    .footer(
-                        h_flex()
-                            .w_full()
-                            .justify_end()
-                            .gap_2()
-                            .child(
-                                Button::new("cancel-sync-upload-reset")
-                                    .secondary()
-                                    .label(t!("cancel").to_string())
-                                    .on_click({
-                                        let view = view.clone();
-                                        move |_, window, cx| {
-                                            view.update(cx, |this, cx| {
-                                                this.dismiss_modal_dialog(token, window, cx);
-                                                cx.notify();
-                                            });
-                                        }
-                                    }),
-                            )
-                            .child(
-                                Button::new("continue-sync-upload-reset")
-                                    .danger()
-                                    .label(t!("sync_reset_privacy_password").to_string())
-                                    .on_click({
-                                        let view = view.clone();
-                                        let form = form.clone();
-                                        move |_, window, cx| {
-                                            view.update(cx, |this, cx| {
-                                                this.dismiss_modal_dialog(token, window, cx);
-                                                cx.notify();
-                                            });
-                                            let view = view.clone();
-                                            let form = form.clone();
-                                            window.defer(cx, move |window, cx| {
-                                                view.update(cx, |this, cx| {
-                                                    this.show_reset_privacy_password_dialog(
-                                                        form.clone(),
-                                                        window,
-                                                        cx,
-                                                    );
-                                                });
-                                            });
-                                        }
-                                    }),
-                            ),
-                    )
+                        });
+                        true
+                    }
+                })
+                .build(dialog, window, cx)
             },
         );
     }

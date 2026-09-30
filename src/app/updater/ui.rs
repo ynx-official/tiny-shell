@@ -18,10 +18,7 @@ use rust_i18n::t;
 
 use crate::{
     TinyShell,
-    app::dialog_layout::{
-        UPDATE_DIALOG_HEIGHT, UPDATE_RESTART_DIALOG_BASE_HEIGHT, centered_dialog_layout,
-        confirmation_dialog_height,
-    },
+    app::dialog_layout::{UPDATE_DIALOG_HEIGHT, centered_dialog_layout},
     system::format_bytes,
 };
 
@@ -338,90 +335,49 @@ impl TinyShell {
             crate::app::DialogKind::Updater,
             window,
             cx,
-            move |dialog: Dialog, token, dialog_window, _| {
-                let preferred_height =
-                    confirmation_dialog_height(dialog_window, UPDATE_RESTART_DIALOG_BASE_HEIGHT);
-                let layout = centered_dialog_layout(dialog_window, preferred_height, 0);
-                let display_version = info.version.clone();
-                let expected_version = info.version.clone();
-                let installation_kind = info.installation_kind;
-                let path = path.clone();
-                let view = view.clone();
-                dialog
-                    .title(t!("update_restart_confirm_title").to_string())
-                    .w(px(440.))
-                    .h(layout.height)
-                    .margin_top(layout.margin_top)
-                    .on_close({
-                        let view = view.clone();
-                        move |_, window, cx| {
+            move |dialog: Dialog, token, window, cx| {
+                crate::app::confirmation_dialog::ConfirmationDialog::new(
+                    t!("update_restart_confirm_title").to_string(),
+                    t!(
+                        "update_restart_confirm_desc",
+                        version = info.version.clone()
+                    )
+                    .to_string(),
+                )
+                .confirm_label(t!("update_restart_now").to_string())
+                .on_close({
+                    let view = view.clone();
+                    move |_, window, cx| {
+                        view.update(cx, |this, cx| {
+                            this.modal_dialog_closed(token, window, cx);
+                            cx.notify();
+                        });
+                    }
+                })
+                .on_ok({
+                    let view = view.clone();
+                    let path = path.clone();
+                    let expected_version = info.version.clone();
+                    let installation_kind = info.installation_kind;
+                    move |_, _, cx| {
+                        if let Err(error) = crate::app::updater::install_and_restart(
+                            &path,
+                            &expected_version,
+                            installation_kind,
+                        ) {
+                            tracing::error!("failed to install update: {error:#}");
                             view.update(cx, |this, cx| {
-                                this.modal_dialog_closed(token, window, cx);
+                                this.update_runtime.status = Some(
+                                    crate::app::updater::UpdateStatus::Error(format!("{error:#}")),
+                                );
                                 cx.notify();
                             });
+                            return false;
                         }
-                    })
-                    .content(move |content, _window, _cx| {
-                        content.child(
-                            div().text_sm().child(
-                                t!(
-                                    "update_restart_confirm_desc",
-                                    version = display_version.clone()
-                                )
-                                .to_string(),
-                            ),
-                        )
-                    })
-                    .footer(
-                        h_flex()
-                            .w_full()
-                            .justify_end()
-                            .gap_2()
-                            .child(
-                                Button::new("cancel-update-restart")
-                                    .ghost()
-                                    .label(t!("cancel").to_string())
-                                    .on_click({
-                                        let view = view.clone();
-                                        move |_, window, cx| {
-                                            view.update(cx, |this, cx| {
-                                                this.dismiss_modal_dialog(token, window, cx);
-                                            });
-                                        }
-                                    }),
-                            )
-                            .child(
-                                Button::new("confirm-update-restart")
-                                    .primary()
-                                    .label(t!("update_restart_now").to_string())
-                                    .on_click({
-                                        let path = path.clone();
-                                        let view = view.clone();
-                                        let expected_version = expected_version.clone();
-                                        move |_, _window, _cx| {
-                                            if let Err(error) =
-                                                crate::app::updater::install_and_restart(
-                                                    &path,
-                                                    &expected_version,
-                                                    installation_kind,
-                                                )
-                                            {
-                                                tracing::error!(
-                                                    "failed to install update: {error:#}"
-                                                );
-                                                view.update(_cx, |this, cx| {
-                                                    this.update_runtime.status = Some(
-                                                        crate::app::updater::UpdateStatus::Error(
-                                                            format!("{error:#}"),
-                                                        ),
-                                                    );
-                                                    cx.notify();
-                                                });
-                                            }
-                                        }
-                                    }),
-                            ),
-                    )
+                        true
+                    }
+                })
+                .build(dialog, window, cx)
             },
         );
     }

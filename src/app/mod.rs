@@ -1,6 +1,7 @@
 mod backend_events;
 pub(crate) mod config_persistence;
 pub(crate) mod config_sync;
+pub(crate) mod confirmation_dialog;
 pub(crate) mod connection_actions;
 pub(crate) mod connection_archive_dialogs;
 pub(crate) mod connection_import_window;
@@ -229,7 +230,6 @@ pub(crate) struct SftpWorkspaceState {
     pub(crate) quick_command_cards_scroll_handle: gpui::ScrollHandle,
     pub(crate) tree_scroll_target_bounds: Option<(String, Bounds<Pixels>)>,
     pub(crate) file_panels: Entity<ResizableState>,
-    pub(crate) delete_scroll_handle: gpui::ScrollHandle,
     pub(crate) pending_path_sync: Option<String>,
     pub(crate) pending_tree_scroll_path: Option<String>,
     pub(crate) center_pending_tree_scroll: bool,
@@ -1055,7 +1055,6 @@ impl TinyShell {
                 quick_command_cards_scroll_handle: gpui::ScrollHandle::new(),
                 tree_scroll_target_bounds: None,
                 file_panels: cx.new(|_| ResizableState::default()),
-                delete_scroll_handle: gpui::ScrollHandle::new(),
                 pending_path_sync: Some("/".into()),
                 pending_tree_scroll_path: None,
                 center_pending_tree_scroll: false,
