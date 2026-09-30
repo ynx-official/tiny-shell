@@ -22,7 +22,9 @@ pub(crate) struct ConnectionManagerWindow {
 impl ConnectionManagerWindow {
     fn new(owner: Entity<TinyShell>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let search_input = cx.new(|cx| {
-            InputState::new(window, cx).placeholder(t!("quick_connection_search").to_string())
+            crate::app::localization::localized_input(window, cx, || {
+                t!("quick_connection_search").to_string()
+            })
         });
         let owner_subscription = cx.observe(&owner, |_, _, cx| cx.notify());
         let search_subscription =

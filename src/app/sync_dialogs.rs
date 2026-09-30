@@ -23,9 +23,10 @@ impl TinyShell {
         cx: &mut Context<Self>,
     ) {
         let password_input = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder(t!("sync_privacy_password").to_string())
-                .masked(true)
+            crate::app::localization::localized_input(window, cx, || {
+                t!("sync_privacy_password").to_string()
+            })
+            .masked(true)
         });
         self.sync_runtime.secrets_password_dialog =
             Some(crate::app::SyncSecretsPasswordDialogState {
@@ -221,14 +222,16 @@ impl TinyShell {
         cx: &mut Context<Self>,
     ) {
         let new_pw_input = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder(t!("sync_reset_new_password").to_string())
-                .masked(true)
+            crate::app::localization::localized_input(window, cx, || {
+                t!("sync_reset_new_password").to_string()
+            })
+            .masked(true)
         });
         let confirm_pw_input = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder(t!("sync_reset_confirm_password").to_string())
-                .masked(true)
+            crate::app::localization::localized_input(window, cx, || {
+                t!("sync_reset_confirm_password").to_string()
+            })
+            .masked(true)
         });
         let view = cx.entity();
         let focus_input = new_pw_input.clone();

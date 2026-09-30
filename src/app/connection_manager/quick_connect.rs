@@ -66,7 +66,9 @@ struct QuickConnect {
 impl QuickConnect {
     fn new(owner: Entity<TinyShell>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let input = cx.new(|cx| {
-            InputState::new(window, cx).placeholder(t!("quick_connection_search").to_string())
+            crate::app::localization::localized_input(window, cx, || {
+                t!("quick_connection_search").to_string()
+            })
         });
         let search = cx.subscribe(&input, |this, input, event, cx| {
             if matches!(event, InputEvent::Change) {

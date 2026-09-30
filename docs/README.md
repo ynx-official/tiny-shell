@@ -5,6 +5,8 @@
 
 ## 设计
 
+- [主工作区与常用命令布局](02-design/workspace-ui/design.md)
+
 - [快速连接浮层](02-design/quick-connect-popover.md)
 
 - [统一确认弹窗与接入方式](02-design/confirmation-dialogs.md)
@@ -14,6 +16,8 @@
 - [SSH 私钥导入交互](02-design/ssh-key-import.md)
 
 - [终端内容高亮方案](02-design/terminal-content-highlighting.md)
+
+- [SSH 常用命令补全与使用频次](02-design/terminal-command-completion.md)
 
 ## 其他现有文档
 

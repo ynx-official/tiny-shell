@@ -58,6 +58,8 @@ pub struct QuickCommand {
     #[serde(default)]
     pub remark: String,
     pub command: String,
+    #[serde(default)]
+    pub usage: super::command_usage::CommandUsage,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -37,9 +37,10 @@ impl SftpPermissionsForm {
         cx: &mut Context<Self>,
     ) -> Self {
         let input = cx.new(|cx| {
-            InputState::new(window, cx)
-                .default_value(format!("{:03o}", mode & 0o7777))
-                .placeholder(t!("sftp_permissions_placeholder").to_string())
+            crate::app::localization::localized_input(window, cx, || {
+                t!("sftp_permissions_placeholder").to_string()
+            })
+            .default_value(format!("{:03o}", mode & 0o7777))
         });
         let subscriptions = vec![cx.subscribe_in(&input, window, Self::on_input_event)];
         Self {
@@ -326,10 +327,12 @@ impl TinyShell {
             .map(|sftp| sftp.current_path.clone())
             .unwrap_or_else(|| "/".to_string());
         let input = cx.new(|cx| {
-            gpui_component::input::InputState::new(window, cx).placeholder(if is_dir {
-                t!("sftp_new_folder_name").to_string()
-            } else {
-                t!("sftp_new_file_name").to_string()
+            crate::app::localization::localized_input(window, cx, move || {
+                if is_dir {
+                    t!("sftp_new_folder_name").to_string()
+                } else {
+                    t!("sftp_new_file_name").to_string()
+                }
             })
         });
         let submit_input = input.clone();

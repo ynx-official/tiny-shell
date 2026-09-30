@@ -48,91 +48,107 @@ impl SettingsInputs {
     pub(crate) fn new(config: &ConfigStore, window: &mut Window, cx: &mut App) -> Self {
         let proxy = ProxySettingsInputs {
             host: cx.new(|cx| {
-                InputState::new(window, cx)
-                    .placeholder(t!("proxy_host").to_string())
-                    .default_value(config.global_proxy_host())
+                crate::app::localization::localized_input(window, cx, || {
+                    t!("proxy_host").to_string()
+                })
+                .default_value(config.global_proxy_host())
             }),
             port: cx.new(|cx| {
-                InputState::new(window, cx)
-                    .placeholder(t!("proxy_port").to_string())
-                    .default_value(
-                        config
-                            .global_proxy_port()
-                            .map(|port| port.to_string())
-                            .unwrap_or_default(),
-                    )
+                crate::app::localization::localized_input(window, cx, || {
+                    t!("proxy_port").to_string()
+                })
+                .default_value(
+                    config
+                        .global_proxy_port()
+                        .map(|port| port.to_string())
+                        .unwrap_or_default(),
+                )
             }),
             user: cx.new(|cx| {
-                InputState::new(window, cx)
-                    .placeholder(t!("proxy_user").to_string())
-                    .default_value(config.global_proxy_user())
+                crate::app::localization::localized_input(window, cx, || {
+                    t!("proxy_user").to_string()
+                })
+                .default_value(config.global_proxy_user())
             }),
             password: cx.new(|cx| {
-                InputState::new(window, cx)
-                    .placeholder(t!("proxy_password").to_string())
-                    .masked(true)
-                    .default_value(config.global_proxy_password())
+                crate::app::localization::localized_input(window, cx, || {
+                    t!("proxy_password").to_string()
+                })
+                .masked(true)
+                .default_value(config.global_proxy_password())
             }),
         };
         let sync = SyncSettingsInputs {
             endpoint: cx.new(|cx| {
-                InputState::new(window, cx)
-                    .placeholder(t!("sync_endpoint_placeholder").to_string())
-                    .default_value(config.sync_endpoint())
+                crate::app::localization::localized_input(window, cx, || {
+                    t!("sync_endpoint_placeholder").to_string()
+                })
+                .default_value(config.sync_endpoint())
             }),
             username: cx.new(|cx| {
-                InputState::new(window, cx)
-                    .placeholder(t!("sync_username").to_string())
-                    .default_value(config.sync_username())
+                crate::app::localization::localized_input(window, cx, || {
+                    t!("sync_username").to_string()
+                })
+                .default_value(config.sync_username())
             }),
             webdav_password: cx.new(|cx| {
-                InputState::new(window, cx)
-                    .placeholder(t!("sync_webdav_password").to_string())
-                    .masked(true)
-                    .default_value(
-                        crate::app::config_sync::open_webdav_password(
-                            config.sync_webdav_password_sealed(),
-                        )
-                        .unwrap_or_default(),
+                crate::app::localization::localized_input(window, cx, || {
+                    t!("sync_webdav_password").to_string()
+                })
+                .masked(true)
+                .default_value(
+                    crate::app::config_sync::open_webdav_password(
+                        config.sync_webdav_password_sealed(),
                     )
+                    .unwrap_or_default(),
+                )
             }),
             s3_endpoint: cx.new(|cx| {
-                InputState::new(window, cx)
-                    .placeholder(t!("sync_s3_endpoint_placeholder").to_string())
-                    .default_value(config.sync_s3_endpoint())
+                crate::app::localization::localized_input(window, cx, || {
+                    t!("sync_s3_endpoint_placeholder").to_string()
+                })
+                .default_value(config.sync_s3_endpoint())
             }),
             s3_region: cx.new(|cx| {
-                InputState::new(window, cx)
-                    .placeholder(t!("sync_s3_region_placeholder").to_string())
-                    .default_value(config.sync_s3_region())
+                crate::app::localization::localized_input(window, cx, || {
+                    t!("sync_s3_region_placeholder").to_string()
+                })
+                .default_value(config.sync_s3_region())
             }),
             s3_bucket: cx.new(|cx| {
-                InputState::new(window, cx)
-                    .placeholder(t!("sync_s3_bucket").to_string())
-                    .default_value(config.sync_s3_bucket())
+                crate::app::localization::localized_input(window, cx, || {
+                    t!("sync_s3_bucket").to_string()
+                })
+                .default_value(config.sync_s3_bucket())
             }),
             s3_object_key: cx.new(|cx| {
-                InputState::new(window, cx)
-                    .placeholder(t!("sync_s3_object_key_placeholder").to_string())
-                    .default_value(config.sync_s3_object_key())
+                crate::app::localization::localized_input(window, cx, || {
+                    t!("sync_s3_object_key_placeholder").to_string()
+                })
+                .default_value(config.sync_s3_object_key())
             }),
             s3_access_key: cx.new(|cx| {
-                InputState::new(window, cx).placeholder(t!("sync_s3_access_key").to_string())
+                crate::app::localization::localized_input(window, cx, || {
+                    t!("sync_s3_access_key").to_string()
+                })
             }),
             s3_secret_key: cx.new(|cx| {
-                InputState::new(window, cx)
-                    .placeholder(t!("sync_s3_secret_key").to_string())
-                    .masked(true)
+                crate::app::localization::localized_input(window, cx, || {
+                    t!("sync_s3_secret_key").to_string()
+                })
+                .masked(true)
             }),
             s3_session_token: cx.new(|cx| {
-                InputState::new(window, cx)
-                    .placeholder(t!("sync_s3_session_token").to_string())
-                    .masked(true)
+                crate::app::localization::localized_input(window, cx, || {
+                    t!("sync_s3_session_token").to_string()
+                })
+                .masked(true)
             }),
             privacy_password: cx.new(|cx| {
-                let mut state = InputState::new(window, cx)
-                    .placeholder(t!("sync_privacy_password").to_string())
-                    .masked(true);
+                let mut state = crate::app::localization::localized_input(window, cx, || {
+                    t!("sync_privacy_password").to_string()
+                })
+                .masked(true);
                 if !config.sync_secrets_password_sealed().is_empty() {
                     let hardware_uuid = crate::session::config::hardware_uuid();
                     if let Ok(plaintext) = crate::crypto::open_with_hardware_key(
@@ -145,16 +161,18 @@ impl SettingsInputs {
                 state
             }),
             interval_minutes: cx.new(|cx| {
-                InputState::new(window, cx)
-                    .placeholder(t!("sync_interval_placeholder").to_string())
-                    .default_value(config.sync_interval_minutes().to_string())
+                crate::app::localization::localized_input(window, cx, || {
+                    t!("sync_interval_placeholder").to_string()
+                })
+                .default_value(config.sync_interval_minutes().to_string())
             }),
         };
         let update = UpdateSettingsInputs {
             interval_hours: cx.new(|cx| {
-                InputState::new(window, cx)
-                    .placeholder(t!("sync_interval_placeholder").to_string())
-                    .default_value(config.update_interval_hours().to_string())
+                crate::app::localization::localized_input(window, cx, || {
+                    t!("sync_interval_placeholder").to_string()
+                })
+                .default_value(config.update_interval_hours().to_string())
             }),
         };
         Self {

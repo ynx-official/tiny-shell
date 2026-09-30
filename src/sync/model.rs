@@ -553,6 +553,7 @@ mod tests {
                 name: "Inspect logs".into(),
                 remark: "Read only".into(),
                 command: "journalctl -n 100".into(),
+                usage: Default::default(),
             }],
         }]
     }

@@ -747,6 +747,7 @@ impl Render for TinyShell {
 }
 mod home;
 mod monitoring;
+mod quick_command_header;
 mod sftp;
 mod sidebar;
 #[path = "ui/terminal.rs"]

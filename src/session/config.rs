@@ -1177,8 +1177,37 @@ impl ConfigStore {
         self.cache.quick_command_categories.as_deref()
     }
 
-    pub fn set_quick_command_categories(&mut self, categories: Vec<QuickCommandCategory>) {
+    pub fn set_quick_command_categories(&mut self, mut categories: Vec<QuickCommandCategory>) {
+        super::command_usage::merge_category_usage(
+            &mut categories,
+            self.quick_command_categories().unwrap_or_default(),
+        );
         self.cache.quick_command_categories = Some(categories);
+    }
+
+    pub(crate) fn merge_quick_command_usage_from(&mut self, source: &Self) {
+        if let Some(categories) = &mut self.cache.quick_command_categories {
+            super::command_usage::merge_category_usage(
+                categories,
+                source.quick_command_categories().unwrap_or_default(),
+            );
+        }
+    }
+
+    pub(crate) fn record_quick_command_usage(&mut self, ids: &[String], writer: &str) -> bool {
+        let mut changed = false;
+        if let Some(categories) = &mut self.cache.quick_command_categories {
+            for command in categories
+                .iter_mut()
+                .flat_map(|category| &mut category.commands)
+            {
+                if ids.contains(&command.id) {
+                    command.usage.record(writer);
+                    changed = true;
+                }
+            }
+        }
+        changed
     }
 
     pub fn quick_commands_builtin_version(&self) -> u32 {
@@ -1314,7 +1343,11 @@ impl ConfigStore {
         self.cache.sftp_panel_view = source.cache.sftp_panel_view.clone();
         self.cache.sftp_toolbar_visibility = source.cache.sftp_toolbar_visibility;
         self.cache.sftp_footer_visibility = source.cache.sftp_footer_visibility;
-        self.cache.quick_command_categories = source.cache.quick_command_categories.clone();
+        if let Some(categories) = &source.cache.quick_command_categories {
+            self.set_quick_command_categories(categories.clone());
+        } else {
+            self.cache.quick_command_categories = None;
+        }
         self.cache.quick_commands_builtin_version = source.cache.quick_commands_builtin_version;
         self.cache.sftp_external_editor = source.cache.sftp_external_editor.clone();
         self.cache.key_bindings = source.cache.key_bindings.clone();
@@ -1643,6 +1676,7 @@ mod tests {
                 name: "Uptime".to_string(),
                 remark: String::new(),
                 command: "uptime".to_string(),
+                usage: Default::default(),
             },
         );
 
@@ -1692,6 +1726,41 @@ mod tests {
         );
         assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
 
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn command_usage_survives_restart_and_merges_stale_window_preferences() {
+        let dir = std::env::temp_dir().join(format!("tiny-shell-usage-test-{}", Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("sessions.json");
+        let mut first = ConfigStore::load_from_path(path.clone()).unwrap();
+        first.set_quick_command_categories(vec![QuickCommandCategory {
+            id: "tools".into(),
+            name: "Tools".into(),
+            commands: vec![QuickCommand {
+                id: "docker".into(),
+                name: "Docker".into(),
+                remark: String::new(),
+                command: "docker ps".into(),
+                usage: Default::default(),
+            }],
+        }]);
+        let mut second = first.clone();
+        let ids = vec!["docker".to_string()];
+        assert!(first.record_quick_command_usage(&ids, "window-a"));
+        assert!(second.record_quick_command_usage(&ids, "window-b"));
+        first.merge_interactive_preferences_from(&second);
+        first.merge_interactive_preferences_from(&second);
+        first.save().unwrap();
+        let restored = ConfigStore::load_from_path(path).unwrap();
+        assert_eq!(
+            restored.quick_command_categories().unwrap()[0].commands[0]
+                .usage
+                .total(),
+            2
+        );
+        assert!(!second.record_quick_command_usage(&["unknown".into()], "window-b"));
         fs::remove_dir_all(dir).unwrap();
     }
 

@@ -330,14 +330,16 @@ impl HighlightRulesManager {
         cx: &mut Context<Self>,
     ) -> Self {
         let name_input = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder(t!("highlight_rule_name_placeholder").to_string())
-                .default_value(initial_rule.name.clone())
+            crate::app::localization::localized_input(window, cx, || {
+                t!("highlight_rule_name_placeholder").to_string()
+            })
+            .default_value(initial_rule.name.clone())
         });
         let pattern_input = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder(t!("highlight_rule_pattern_placeholder").to_string())
-                .default_value(initial_rule.pattern.clone())
+            crate::app::localization::localized_input(window, cx, || {
+                t!("highlight_rule_pattern_placeholder").to_string()
+            })
+            .default_value(initial_rule.pattern.clone())
         });
         let foreground_input = cx.new(|cx| {
             InputState::new(window, cx)

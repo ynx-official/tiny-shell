@@ -198,7 +198,8 @@ fn printable_terminal_input(bytes: &[u8]) -> Option<&str> {
         .filter(|text| !text.is_empty() && text.chars().all(|character| !character.is_control()))
 }
 
-fn trackable_terminal_paste(text: &str) -> Option<&str> {
+fn trackable_terminal_paste(text: &str) -> Option<String> {
+    let text = super::normalize_terminal_paste(text);
     (!text.is_empty() && text.chars().all(|character| !character.is_control())).then_some(text)
 }
 
@@ -634,7 +635,7 @@ impl TinyShell {
                         self.track_terminal_completion_text(text);
                         cx.notify();
                     } else {
-                        self.clear_active_terminal_completion();
+                        self.invalidate_active_terminal_completion();
                     }
                 }
             }
@@ -655,8 +656,13 @@ impl TinyShell {
 
         if let Some(bytes) = encode_key(&event.keystroke, tab.app_cursor_mode(), false) {
             let completion_text = printable_terminal_input(&bytes).map(str::to_owned);
-            tab.send_backend(BackendCommand::Input(bytes));
-            if let Some(text) = completion_text {
+            let submits_command = bytes == b"\r" || bytes == b"\n";
+            let sent = tab.send_backend(BackendCommand::Input(bytes));
+            if !sent {
+                self.clear_active_terminal_completion();
+            } else if submits_command {
+                self.submit_terminal_completion();
+            } else if let Some(text) = completion_text {
                 self.track_terminal_completion_text(&text);
             } else {
                 self.update_terminal_completion_for_key(event);
@@ -701,7 +707,7 @@ impl TinyShell {
         let categories = self.quick_command_categories_for_completion();
         let state = self.terminal_completions.entry(tab_id).or_default();
         if text.chars().any(char::is_control) {
-            state.clear();
+            state.invalidate();
         } else {
             state.push_text(text, &categories);
         }
@@ -713,6 +719,33 @@ impl TinyShell {
         };
         if let Some(state) = self.terminal_completions.get_mut(&tab_id) {
             state.clear();
+        }
+    }
+
+    fn invalidate_active_terminal_completion(&mut self) {
+        if let Some(tab_id) = self.active_ssh_completion_tab_id() {
+            self.terminal_completions
+                .entry(tab_id)
+                .or_default()
+                .invalidate();
+        }
+    }
+
+    fn submit_terminal_completion(&mut self) {
+        let Some(tab_id) = self.active_ssh_completion_tab_id() else {
+            return;
+        };
+        let categories = self.quick_command_categories_for_completion();
+        let Some(state) = self.terminal_completions.get_mut(&tab_id) else {
+            return;
+        };
+        let ids = state.submit(&categories);
+        if self
+            .config
+            .record_quick_command_usage(&ids, &self.command_usage_writer)
+        {
+            self.mark_config_preferences_dirty();
+            self.sync_runtime.mark_local_change();
         }
     }
 
@@ -731,8 +764,21 @@ impl TinyShell {
 
         if !has_modifiers && event.keystroke.key == "backspace" {
             state.backspace(&categories);
+        } else if modifiers.control
+            && !modifiers.alt
+            && !modifiers.platform
+            && !modifiers.shift
+            && matches!(event.keystroke.key.as_str(), "c" | "u")
+        {
+            if event.keystroke.key == "u" {
+                state.clear_line_prefix();
+            } else {
+                state.clear();
+            }
         } else {
-            state.clear();
+            // History navigation and shell completion can change unseen text.
+            // Resume only after submission or an explicit line reset.
+            state.invalidate();
         }
     }
 
@@ -934,7 +980,10 @@ impl TinyShell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let completion_text = trackable_terminal_paste(text).map(str::to_owned);
+        if text.is_empty() {
+            return;
+        }
+        let completion_text = trackable_terminal_paste(text);
         let Some(active_id) = self.preferred_terminal_tab_id() else {
             return;
         };
@@ -950,7 +999,7 @@ impl TinyShell {
         if let Some(text) = completion_text {
             self.track_terminal_completion_text(&text);
         } else {
-            self.clear_active_terminal_completion();
+            self.invalidate_active_terminal_completion();
         }
         window.prevent_default();
         cx.stop_propagation();
@@ -1030,7 +1079,13 @@ impl TinyShell {
         event: &MouseDownEvent,
         cx: &mut Context<Self>,
     ) {
-        self.clear_active_terminal_completion();
+        // Selecting output does not edit the shell's line. Keep the prefix so
+        // typing after a click/paste can resume completion.
+        if let Some(tab_id) = self.active_ssh_completion_tab_id()
+            && let Some(state) = self.terminal_completions.get_mut(&tab_id)
+        {
+            state.dismiss();
+        }
         let click_count = event.click_count.max(1);
         let selection_type = match click_count {
             1 => SelectionType::Simple,
@@ -1349,11 +1404,22 @@ mod tests {
 
     #[test]
     fn single_line_paste_is_trackable_but_multiline_paste_is_not() {
-        assert_eq!(trackable_terminal_paste("do"), Some("do"));
-        assert_eq!(trackable_terminal_paste("docker ps"), Some("docker ps"));
-        assert_eq!(trackable_terminal_paste("docker\nps"), None);
-        assert_eq!(trackable_terminal_paste("docker\r"), None);
-        assert_eq!(trackable_terminal_paste(""), None);
+        assert_eq!(trackable_terminal_paste("do").as_deref(), Some("do"));
+        assert_eq!(
+            trackable_terminal_paste("docker ps").as_deref(),
+            Some("docker ps")
+        );
+        assert_eq!(trackable_terminal_paste("docker\nps").as_deref(), None);
+        assert_eq!(trackable_terminal_paste("docker\r").as_deref(), None);
+        assert_eq!(trackable_terminal_paste("").as_deref(), None);
+    }
+
+    #[test]
+    fn paste_tracking_matches_escape_sanitization_used_by_the_terminal() {
+        assert_eq!(
+            trackable_terminal_paste("do\x1bcker").as_deref(),
+            Some("docker")
+        );
     }
 
     #[test]

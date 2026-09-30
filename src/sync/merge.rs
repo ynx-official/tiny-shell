@@ -398,6 +398,7 @@ fn project_v3_payload(payload: V3SyncPayload) -> ProjectedPayload {
                 name: command.value.name,
                 remark: command.value.remark,
                 command: command.value.command,
+                usage: command.value.usage,
             });
         }
     }
@@ -1191,6 +1192,7 @@ fn merge_command_categories(
             .filter(|category| !remote_ids.contains(category.id.as_str()))
             .cloned(),
     );
+    crate::session::command_usage::merge_category_usage(&mut categories, local);
     categories
 }
 
@@ -1262,6 +1264,7 @@ mod tests {
                 name: "Status".into(),
                 remark: String::new(),
                 command: "systemctl status app".into(),
+                usage: Default::default(),
             }],
         }];
         let payload = SyncPayload::new(
@@ -1366,12 +1369,14 @@ mod tests {
                     name: "Local shared".into(),
                     remark: String::new(),
                     command: "local-shared".into(),
+                    usage: Default::default(),
                 },
                 QuickCommand {
                     id: "local-only".into(),
                     name: "Local only".into(),
                     remark: String::new(),
                     command: "local-only".into(),
+                    usage: Default::default(),
                 },
             ],
         }];
@@ -1383,6 +1388,7 @@ mod tests {
                 name: "Remote shared".into(),
                 remark: String::new(),
                 command: "remote-shared".into(),
+                usage: Default::default(),
             }],
         }];
 

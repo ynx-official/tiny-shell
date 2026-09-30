@@ -1551,10 +1551,7 @@ impl TerminalTab {
 
     pub fn paste_text(&mut self, text: &str) {
         let bracketed = self.term.mode().contains(TermMode::BRACKETED_PASTE);
-        let paste_text = text
-            .replace('\x1b', "")
-            .replace("\r\n", "\r")
-            .replace('\n', "\r");
+        let paste_text = normalize_terminal_paste(text);
 
         let mut bytes = Vec::new();
         if bracketed {
@@ -1567,6 +1564,12 @@ impl TerminalTab {
 
         self.send_backend(BackendCommand::Input(bytes));
     }
+}
+
+pub(crate) fn normalize_terminal_paste(text: &str) -> String {
+    text.replace('\x1b', "")
+        .replace("\r\n", "\r")
+        .replace('\n', "\r")
 }
 
 #[cfg(test)]

@@ -13,6 +13,7 @@ pub(crate) struct TerminalCompletionCandidate {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct TerminalCompletionState {
     input: String,
+    input_uncertain: bool,
     candidates: Vec<TerminalCompletionCandidate>,
     selected: Option<usize>,
 }
@@ -31,11 +32,17 @@ impl TerminalCompletionState {
     }
 
     pub(crate) fn push_text(&mut self, text: &str, categories: &[QuickCommandCategory]) {
+        if self.input_uncertain {
+            return;
+        }
         self.input.push_str(text);
         self.refresh(categories);
     }
 
     pub(crate) fn backspace(&mut self, categories: &[QuickCommandCategory]) {
+        if self.input_uncertain {
+            return;
+        }
         self.input.pop();
         self.refresh(categories);
     }
@@ -69,7 +76,7 @@ impl TerminalCompletionState {
     pub(crate) fn accept_selected(&mut self) -> Option<String> {
         let candidate = self.candidates.get(self.selected?)?;
         let suffix = candidate.command[candidate.matched_prefix_bytes..].to_string();
-        self.input = candidate.command.clone();
+        self.input.push_str(&suffix);
         self.candidates.clear();
         self.selected = None;
         Some(suffix)
@@ -82,7 +89,39 @@ impl TerminalCompletionState {
 
     pub(crate) fn clear(&mut self) {
         self.input.clear();
+        self.input_uncertain = false;
         self.dismiss();
+    }
+
+    pub(crate) fn invalidate(&mut self) {
+        self.clear();
+        self.input_uncertain = true;
+    }
+
+    pub(crate) fn clear_line_prefix(&mut self) {
+        // Ctrl+U only clears before the cursor. After an unknown cursor move,
+        // an unseen suffix may remain, so it cannot establish an empty line.
+        if !self.input_uncertain {
+            self.clear();
+        }
+    }
+
+    /// Only complete saved commands count; arbitrary input is never persisted.
+    pub(crate) fn submit(&mut self, categories: &[QuickCommandCategory]) -> Vec<String> {
+        if self.input_uncertain {
+            self.clear();
+            return Vec::new();
+        }
+        let input = self.input.trim();
+        let ids = categories
+            .iter()
+            .flat_map(|category| &category.commands)
+            .filter(|command| !input.is_empty() && command.command.trim() == input)
+            .filter(|command| !contains_parameter_placeholder(&command.command))
+            .map(|command| command.id.clone())
+            .collect();
+        self.clear();
+        ids
     }
 
     fn refresh(&mut self, categories: &[QuickCommandCategory]) {
@@ -99,10 +138,17 @@ fn matching_candidates(
         return Vec::new();
     }
 
-    categories
+    let mut matches = categories
         .iter()
         .flat_map(|category| category.commands.iter())
         .filter(|command| !contains_parameter_placeholder(&command.command))
+        .filter(|command| matched_prefix_bytes(&command.command, query).is_some())
+        .collect::<Vec<_>>();
+    // Stable sorting preserves configured order when frequencies are equal.
+    matches.sort_by_key(|command| std::cmp::Reverse(command.usage.total()));
+    matches
+        .into_iter()
+        .take(MAX_CANDIDATES)
         .filter_map(|command| {
             let matched_prefix_bytes = matched_prefix_bytes(&command.command, query)?;
             Some(TerminalCompletionCandidate {
@@ -111,7 +157,6 @@ fn matching_candidates(
                 matched_prefix_bytes,
             })
         })
-        .take(MAX_CANDIDATES)
         .collect()
 }
 
@@ -151,6 +196,7 @@ mod tests {
                     name: (*name).into(),
                     remark: (*remark).into(),
                     command: (*command).into(),
+                    usage: Default::default(),
                 })
                 .collect(),
         }]
@@ -166,6 +212,34 @@ mod tests {
 
         state.push_text("s", &categories);
         assert_eq!(state.candidates()[0].command, "ls");
+    }
+
+    #[test]
+    fn frequency_ranks_all_matches_before_limiting_and_preserves_ties() {
+        let categories = categories(&[
+            ("0", "", "docker a"),
+            ("1", "", "docker b"),
+            ("2", "", "docker c"),
+            ("3", "", "docker d"),
+            ("4", "", "docker e"),
+            ("5", "", "docker f"),
+            ("6", "", "docker g"),
+            ("7", "", "docker h"),
+        ]);
+        let mut categories = categories;
+        for (index, count) in [(7, 20), (6, 10), (2, 10)] {
+            for _ in 0..count {
+                categories[0].commands[index].usage.record("test");
+            }
+        }
+        let candidates = matching_candidates("do", &categories);
+        assert_eq!(
+            candidates
+                .iter()
+                .map(|item| item.label.as_str())
+                .collect::<Vec<_>>(),
+            vec!["7", "2", "6", "0", "1", "3"]
+        );
     }
 
     #[test]
@@ -269,6 +343,56 @@ mod tests {
         assert_eq!(state.candidates()[0].command, "docker ps");
         assert_eq!(state.candidates()[0].matched_prefix_bytes, "docker".len());
         assert_eq!(state.selected_index(), None);
+    }
+
+    #[test]
+    fn paste_click_type_and_backspace_keep_the_full_prefix() {
+        let categories = categories(&[("Docker", "", "docker ps")]);
+        let mut state = TerminalCompletionState::default();
+        state.push_text("d", &categories);
+        state.push_text("ock", &categories);
+        state.dismiss(); // Clicking/selecting terminal output only hides the popup.
+        state.push_text("er", &categories);
+        assert_eq!(state.candidates()[0].matched_prefix_bytes, 6);
+        state.backspace(&categories);
+        assert_eq!(state.accept_selected_or_first().as_deref(), Some("r ps"));
+        assert_eq!(state.submit(&categories), vec!["command-0"]);
+        assert!(state.submit(&categories).is_empty());
+    }
+
+    #[test]
+    fn only_submitted_complete_commands_count_and_acceptance_preserves_actual_case() {
+        let categories = categories(&[("Docker", "", "docker ps")]);
+        let mut state = TerminalCompletionState::default();
+        state.push_text("docker", &categories);
+        assert!(state.submit(&categories).is_empty());
+        state.push_text("DOCKER", &categories);
+        assert_eq!(state.accept_selected_or_first().as_deref(), Some(" ps"));
+        assert!(state.submit(&categories).is_empty());
+        state.push_text("docker", &categories);
+        state.accept_selected_or_first();
+        state.clear(); // Ctrl+C cancels without counting.
+        assert!(state.submit(&categories).is_empty());
+        state.push_text("docker ps", &categories);
+        assert_eq!(state.submit(&categories), vec!["command-0"]);
+    }
+
+    #[test]
+    fn unknown_cursor_or_history_edits_cannot_count_a_later_fragment_as_a_command() {
+        let categories = categories(&[("Docker", "", "docker ps")]);
+        let mut state = TerminalCompletionState::default();
+        state.push_text("echo ", &categories);
+        state.invalidate(); // A shell-side edit makes the current line unknown.
+        state.clear_line_prefix();
+        state.push_text("docker ps", &categories);
+        assert!(!state.is_visible());
+        assert!(state.submit(&categories).is_empty());
+        state.push_text("docker ps", &categories);
+        assert_eq!(state.submit(&categories), vec!["command-0"]);
+        state.push_text("echo ", &categories);
+        state.clear_line_prefix();
+        state.push_text("docker ps", &categories);
+        assert_eq!(state.submit(&categories), vec!["command-0"]);
     }
 
     #[test]

@@ -115,6 +115,7 @@ impl TinyShell {
             name: String::new(),
             remark: String::new(),
             command: String::new(),
+            usage: Default::default(),
         });
         let command_id = command.id.clone();
         let edited_command_was_selected = self
