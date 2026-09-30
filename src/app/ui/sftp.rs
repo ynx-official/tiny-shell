@@ -184,6 +184,41 @@ fn sftp_tree_render_rows(
     rows
 }
 
+fn sftp_locate_icon(color: Hsla) -> impl IntoElement {
+    // A small target reads as "locate" at toolbar size; the Frame icon
+    // looks like a hash and suggests layout controls instead.
+    div()
+        .relative()
+        .size(px(14.))
+        .flex_none()
+        .child(
+            div()
+                .absolute()
+                .inset(px(3.))
+                .border_1()
+                .border_color(color)
+                .rounded_full(),
+        )
+        .child(div().absolute().inset(px(6.)).rounded_full().bg(color))
+        .children(
+            [
+                (6.5, 0., 1., 3.),
+                (6.5, 11., 1., 3.),
+                (0., 6.5, 3., 1.),
+                (11., 6.5, 3., 1.),
+            ]
+            .map(|(x, y, width, height)| {
+                div()
+                    .absolute()
+                    .left(px(x))
+                    .top(px(y))
+                    .w(px(width))
+                    .h(px(height))
+                    .bg(color)
+            }),
+        )
+}
+
 fn sftp_tree_branch_guides(
     row: SftpTreeRenderRow<'_>,
     ancestor_color: Hsla,
@@ -504,7 +539,8 @@ impl TinyShell {
                         Button::new("sftp-locate-current-directory")
                             .ghost()
                             .small()
-                            .icon(IconName::Frame)
+                            .w(px(24.))
+                            .child(sftp_locate_icon(cx.theme().muted_foreground))
                             .tooltip(t!("sftp_locate_current_directory").to_string())
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.locate_current_sftp_tree_directory(cx);
@@ -2618,90 +2654,110 @@ mod sftp_tree_tests {
     }
 
     #[test]
-    fn visible_tree_target_keeps_the_current_scroll_position() {
+    fn locating_current_directory_reopens_its_collapsed_ancestors() {
+        let mut sftp = tree_state();
+        sftp.current_path = "/data/docker/mysql".into();
+        sftp.expanded_directories.insert("/other".into());
+
+        TinyShell::expand_sftp_tree_to_path(&mut sftp, "/data/docker/mysql");
+
+        for path in ["/", "/data", "/data/docker", "/data/docker/mysql", "/other"] {
+            assert!(sftp.expanded_directories.contains(path));
+        }
+    }
+
+    #[test]
+    fn visible_tree_target_moves_to_the_viewport_center() {
         let viewport = vertical_bounds(100., 200.);
         let target = vertical_bounds(150., 30.);
 
         assert_eq!(
-            crate::sftp::ops::minimal_sftp_tree_scroll_offset_y(
+            crate::sftp::ops::centered_sftp_tree_scroll_offset_y(
                 px(-300.),
                 viewport,
                 target,
                 px(0.),
+                px(1000.),
             ),
-            px(-300.)
+            px(-265.)
         );
     }
 
     #[test]
-    fn offscreen_tree_target_moves_only_to_the_nearest_viewport_edge() {
+    fn offscreen_tree_target_moves_to_the_viewport_center() {
         let viewport = vertical_bounds(100., 200.);
 
         assert_eq!(
-            crate::sftp::ops::minimal_sftp_tree_scroll_offset_y(
+            crate::sftp::ops::centered_sftp_tree_scroll_offset_y(
                 px(-300.),
                 viewport,
                 vertical_bounds(70., 30.),
                 px(0.),
+                px(1000.),
             ),
-            px(-270.)
+            px(-185.)
         );
         assert_eq!(
-            crate::sftp::ops::minimal_sftp_tree_scroll_offset_y(
+            crate::sftp::ops::centered_sftp_tree_scroll_offset_y(
                 px(-300.),
                 viewport,
                 vertical_bounds(300., 30.),
                 px(0.),
+                px(1000.),
             ),
-            px(-330.)
+            px(-415.)
         );
     }
 
     #[test]
-    fn partially_visible_tree_target_does_not_jump() {
+    fn partially_visible_tree_target_moves_to_the_viewport_center() {
         let viewport = vertical_bounds(100., 200.);
 
         assert_eq!(
-            crate::sftp::ops::minimal_sftp_tree_scroll_offset_y(
+            crate::sftp::ops::centered_sftp_tree_scroll_offset_y(
                 px(-300.),
                 viewport,
                 vertical_bounds(90., 30.),
                 px(0.),
+                px(1000.),
             ),
-            px(-300.)
+            px(-205.)
         );
         assert_eq!(
-            crate::sftp::ops::minimal_sftp_tree_scroll_offset_y(
+            crate::sftp::ops::centered_sftp_tree_scroll_offset_y(
                 px(-300.),
                 viewport,
                 vertical_bounds(290., 30.),
                 px(0.),
+                px(1000.),
             ),
-            px(-300.)
+            px(-405.)
         );
     }
 
     #[test]
-    fn scrollbar_inset_only_affects_a_fully_offscreen_target() {
+    fn tree_target_centers_above_the_horizontal_scrollbar() {
         let viewport = vertical_bounds(100., 200.);
 
         assert_eq!(
-            crate::sftp::ops::minimal_sftp_tree_scroll_offset_y(
+            crate::sftp::ops::centered_sftp_tree_scroll_offset_y(
                 px(-300.),
                 viewport,
                 vertical_bounds(295., 30.),
                 px(16.),
+                px(1000.),
             ),
-            px(-300.)
+            px(-418.)
         );
         assert_eq!(
-            crate::sftp::ops::minimal_sftp_tree_scroll_offset_y(
+            crate::sftp::ops::centered_sftp_tree_scroll_offset_y(
                 px(-300.),
                 viewport,
                 vertical_bounds(300., 30.),
                 px(16.),
+                px(1000.),
             ),
-            px(-346.)
+            px(-423.)
         );
     }
 

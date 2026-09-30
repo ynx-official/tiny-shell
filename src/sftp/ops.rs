@@ -30,28 +30,16 @@ use crate::{
     terminal,
 };
 
-pub(crate) fn minimal_sftp_tree_scroll_offset_y(
-    current_offset_y: Pixels,
-    viewport: Bounds<Pixels>,
-    target: Bounds<Pixels>,
-    bottom_inset: Pixels,
-) -> Pixels {
-    if target.bottom() <= viewport.top() {
-        current_offset_y + viewport.top() - target.top()
-    } else if target.top() >= viewport.bottom() {
-        let visible_bottom = (viewport.bottom() - bottom_inset).max(viewport.top());
-        current_offset_y + visible_bottom - target.bottom()
-    } else {
-        current_offset_y
-    }
-}
-
 pub(crate) fn centered_sftp_tree_scroll_offset_y(
     current_offset_y: Pixels,
     viewport: Bounds<Pixels>,
     target: Bounds<Pixels>,
+    bottom_inset: Pixels,
+    max_offset_y: Pixels,
 ) -> Pixels {
-    current_offset_y + viewport.center().y - target.center().y
+    let visible_height = (viewport.size.height - bottom_inset).max(px(0.));
+    (current_offset_y + viewport.top() + visible_height / 2. - target.center().y)
+        .clamp(-max_offset_y.max(px(0.)), px(0.))
 }
 
 pub(crate) fn is_editable_text_file(filename: &str) -> bool {
@@ -148,7 +136,6 @@ impl TinyShell {
         });
         self.sftp_workspace.tree_scroll_target_bounds = None;
         self.sftp_workspace.pending_tree_scroll_path = current_path;
-        self.sftp_workspace.center_pending_tree_scroll = false;
     }
 
     /// 双击文本文件时调用:下载文件内容到内存,打开独立编辑器窗口。
@@ -218,7 +205,6 @@ impl TinyShell {
             self.sftp_workspace.tree_scroll_target_bounds = None;
             self.sftp_workspace.pending_path_sync = Some(path.clone());
             self.sftp_workspace.pending_tree_scroll_path = Some(path.clone());
-            self.sftp_workspace.center_pending_tree_scroll = false;
         }
 
         for directory in missing_ancestors {
@@ -263,32 +249,29 @@ impl TinyShell {
             px(0.)
         };
         let current_offset = scroll_handle.offset();
-        let next_offset_y = if self.sftp_workspace.center_pending_tree_scroll {
-            centered_sftp_tree_scroll_offset_y(current_offset.y, viewport, target_bounds)
-        } else {
-            minimal_sftp_tree_scroll_offset_y(
-                current_offset.y,
-                viewport,
-                target_bounds,
-                bottom_inset,
-            )
-        }
-        .clamp(-max_offset.y, px(0.));
+        let next_offset_y = centered_sftp_tree_scroll_offset_y(
+            current_offset.y,
+            viewport,
+            target_bounds,
+            bottom_inset,
+            max_offset.y,
+        );
 
         scroll_handle.set_offset(Point {
             x: px(0.),
             y: next_offset_y,
         });
         self.sftp_workspace.pending_tree_scroll_path = None;
-        self.sftp_workspace.center_pending_tree_scroll = false;
         self.sftp_workspace.tree_scroll_target_bounds = None;
         cx.notify();
     }
 
     pub(crate) fn locate_current_sftp_tree_directory(&mut self, cx: &mut Context<Self>) {
-        let Some(current_path) = self.active_sftp().map(|sftp| sftp.current_path.clone()) else {
+        let Some(sftp) = self.active_sftp_mut() else {
             return;
         };
+        let current_path = sftp.current_path.clone();
+        Self::expand_sftp_tree_to_path(sftp, &current_path);
         let current_offset = self.sftp_workspace.tree_scroll_handle.offset();
         self.sftp_workspace.tree_scroll_handle.set_offset(Point {
             x: px(0.),
@@ -296,7 +279,6 @@ impl TinyShell {
         });
         self.sftp_workspace.tree_scroll_target_bounds = None;
         self.sftp_workspace.pending_tree_scroll_path = Some(current_path);
-        self.sftp_workspace.center_pending_tree_scroll = true;
         cx.notify();
     }
 
@@ -1165,9 +1147,33 @@ mod tests {
                 px(-300.),
                 vertical_bounds(100., 200.),
                 vertical_bounds(250., 30.),
+                px(0.),
+                px(1000.),
             ),
             px(-365.)
         );
+    }
+
+    #[test]
+    fn tree_centering_respects_scroll_limits_and_is_stable() {
+        let viewport = vertical_bounds(100., 200.);
+        for (offset, top, max_offset, expected) in [
+            (0., 104., 500., 0.),
+            (-300., 280., 320., -320.),
+            (0., 104., 0., 0.),
+            (-300., 185., 500., -300.),
+        ] {
+            assert_eq!(
+                super::centered_sftp_tree_scroll_offset_y(
+                    px(offset),
+                    viewport,
+                    vertical_bounds(top, 30.),
+                    px(0.),
+                    px(max_offset),
+                ),
+                px(expected)
+            );
+        }
     }
 
     #[test]

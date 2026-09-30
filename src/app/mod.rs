@@ -234,7 +234,6 @@ pub(crate) struct SftpWorkspaceState {
     pub(crate) file_panels: Entity<ResizableState>,
     pub(crate) pending_path_sync: Option<String>,
     pub(crate) pending_tree_scroll_path: Option<String>,
-    pub(crate) center_pending_tree_scroll: bool,
     pub(crate) context_menu: Option<SftpContextMenuState>,
     pub(crate) creating_folder: bool,
 }
@@ -1077,7 +1076,6 @@ impl TinyShell {
                 file_panels: cx.new(|_| ResizableState::default()),
                 pending_path_sync: Some("/".into()),
                 pending_tree_scroll_path: None,
-                center_pending_tree_scroll: false,
                 context_menu: None,
                 creating_folder: false,
             },
@@ -1879,7 +1877,11 @@ impl TinyShell {
                 if sftp.current_path == path {
                     sftp.entries = entries;
                     if self.workspace().active_group_id() == Some(tab_id.as_str()) {
-                        self.sftp_workspace.pending_path_sync = Some(path);
+                        self.sftp_workspace.pending_path_sync = Some(path.clone());
+                        // Children may arrive after the first layout and change the
+                        // scroll limit; center again using the completed listing.
+                        self.sftp_workspace.tree_scroll_target_bounds = None;
+                        self.sftp_workspace.pending_tree_scroll_path = Some(path);
                     }
                 }
             }
@@ -1935,7 +1937,6 @@ impl TinyShell {
                     self.sftp_workspace.pending_path_sync = Some(home.clone());
                     self.sftp_workspace.tree_scroll_target_bounds = None;
                     self.sftp_workspace.pending_tree_scroll_path = Some(home);
-                    self.sftp_workspace.center_pending_tree_scroll = false;
                 }
             }
         }
