@@ -134,6 +134,8 @@ pub struct ConfigFile {
     pub sftp_panel_minimized: bool,
     #[serde(default = "default_sftp_panel_view")]
     pub sftp_panel_view: String,
+    #[serde(default = "default_sftp_follow_terminal_cwd")]
+    pub sftp_follow_terminal_cwd: bool,
     #[serde(default)]
     pub sftp_toolbar_visibility: SftpToolbarVisibility,
     #[serde(default)]
@@ -232,6 +234,10 @@ pub(crate) fn default_sftp_panel_view() -> String {
     "files".to_string()
 }
 
+fn default_sftp_follow_terminal_cwd() -> bool {
+    true
+}
+
 pub(crate) fn default_s3_region() -> String {
     "us-east-1".to_string()
 }
@@ -318,6 +324,7 @@ impl Default for ConfigFile {
             sidebar_collapsed: false,
             sftp_panel_minimized: false,
             sftp_panel_view: default_sftp_panel_view(),
+            sftp_follow_terminal_cwd: default_sftp_follow_terminal_cwd(),
             sftp_toolbar_visibility: SftpToolbarVisibility::default(),
             sftp_footer_visibility: SftpFooterVisibility::default(),
             quick_command_categories: None,
@@ -379,6 +386,23 @@ impl ConfigFile {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sftp_follow_terminal_cwd_defaults_to_enabled() -> anyhow::Result<()> {
+        let config = serde_json::to_value(ConfigFile::default())?;
+        assert_eq!(config["sftp_follow_terminal_cwd"], true);
+        Ok(())
+    }
+
+    #[test]
+    fn sftp_follow_terminal_cwd_defaults_to_enabled_in_legacy_config() -> anyhow::Result<()> {
+        let config: ConfigFile = serde_json::from_str("{}")?;
+        assert_eq!(
+            serde_json::to_value(config)?["sftp_follow_terminal_cwd"],
+            true
+        );
+        Ok(())
+    }
 
     #[test]
     fn default_font_sizes_are_14_px() {

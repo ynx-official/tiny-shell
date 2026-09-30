@@ -1157,6 +1157,14 @@ impl ConfigStore {
         self.cache.sftp_panel_view = view.to_string();
     }
 
+    pub fn sftp_follow_terminal_cwd(&self) -> bool {
+        self.cache.sftp_follow_terminal_cwd
+    }
+
+    pub fn set_sftp_follow_terminal_cwd(&mut self, enabled: bool) {
+        self.cache.sftp_follow_terminal_cwd = enabled;
+    }
+
     pub fn sftp_toolbar_visibility(&self) -> SftpToolbarVisibility {
         self.cache.sftp_toolbar_visibility
     }
@@ -1341,6 +1349,7 @@ impl ConfigStore {
         self.cache.sidebar_collapsed = source.cache.sidebar_collapsed;
         self.cache.sftp_panel_minimized = source.cache.sftp_panel_minimized;
         self.cache.sftp_panel_view = source.cache.sftp_panel_view.clone();
+        self.cache.sftp_follow_terminal_cwd = source.cache.sftp_follow_terminal_cwd;
         self.cache.sftp_toolbar_visibility = source.cache.sftp_toolbar_visibility;
         self.cache.sftp_footer_visibility = source.cache.sftp_footer_visibility;
         if let Some(categories) = &source.cache.quick_command_categories {
@@ -1518,6 +1527,26 @@ mod tests {
     use crate::session::highlight_rules::{
         HighlightMatchKind, HighlightRuleScope, HighlightRuleStyle, HighlightTarget,
     };
+
+    #[test]
+    fn sftp_follow_terminal_cwd_choice_survives_preference_save_and_reload() -> Result<()> {
+        let workspace = TempWorkspace::initialize_in(std::env::temp_dir())?;
+        let path = workspace.path().join("config.json");
+        for enabled in [false, true] {
+            let mut source = ConfigStore::in_memory();
+            source.set_sftp_follow_terminal_cwd(enabled);
+            let mut latest = ConfigStore::load_from_path(path.clone())?;
+            latest.merge_interactive_preferences_from(&source);
+            latest.save()?;
+            let reloaded = ConfigStore::load_from_path(path.clone())?;
+            assert_eq!(reloaded.sftp_follow_terminal_cwd(), enabled);
+            assert_eq!(
+                serde_json::to_value(reloaded.cache)?["sftp_follow_terminal_cwd"],
+                enabled
+            );
+        }
+        Ok(())
+    }
 
     #[test]
     fn merging_preferences_preserves_connection_data() {

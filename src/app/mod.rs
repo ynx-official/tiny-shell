@@ -2337,6 +2337,9 @@ impl TinyShell {
             return;
         }
 
+        self.config.set_sftp_follow_terminal_cwd(enabled);
+        self.mark_config_preferences_dirty();
+
         if enabled && let Some(active_tab) = self.workspace().active_tab_id().map(str::to_owned) {
             self.sync_sftp_to_terminal_tab(&active_tab, false);
         }
