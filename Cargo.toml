@@ -91,8 +91,10 @@ assets = [
 
 [profile.release]
 opt-level = 3
-lto = "thin"
-codegen-units = 4
+# Keep release builds resilient on hosted Windows runners. Thin-LTO/codegen
+# parallelism previously triggered a rustc STATUS_ACCESS_VIOLATION crash.
+lto = false
+codegen-units = 16
 strip = true
 panic = "abort"
 
