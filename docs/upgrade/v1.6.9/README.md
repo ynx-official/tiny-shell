@@ -1,8 +1,8 @@
 # TinyShell v1.6.9
 
 > 发布日期：2026-10-08
-> 状态：Approved（已批准正式发布，构建与发布结果待流水线确认）
-> 日期说明：以上为本次计划发布日期，正式交付后更新发布状态。
+> 状态：Approved（四个平台构建、打包与正式发布均成功）
+> 正式发布时间：2026-10-08 18:23（Asia/Shanghai）
 > 最后更新：2026-10-08
 > 发布测试策略：skip
 > 关联文档：[应用图标与平台导出](../../02-design/application-icons.md)、[v1.6.8](../v1.6.8/README.md)
@@ -50,12 +50,18 @@
 - 正式发布阶段按用户要求跳过本地测试、Clippy、格式检查与发布工具测试，不将上一阶段的运行结果冒充 v1.6.9 的测试结果。
 - `cargo check`、`cargo check --locked`：均通过，Cargo.lock 仅更新 TinyShell 包版本，没有更改依赖解析。
 - `python scripts/release_notes.py --check-current` 与 `python scripts/release_notes.py --tag v1.6.9`：发布资料校验通过；发布说明已生成。
-- `git diff --check`：通过。多平台构建、打包和正式 Release 结果，在执行后补记。
+- `git diff --check`：通过。
+- [v1.6.9 标签流水线](https://github.com/ynx-official/tiny-shell/actions/runs/37759971968)：发布资料校验通过，`Test release tooling` 按本版本策略跳过。
+- Windows x86_64：release 构建、安装包与便携包打包、产物上传全部成功。
+- Linux x86_64：FreeRDP release 构建、AppImage 与压缩包打包、产物上传全部成功。
+- macOS Apple Silicon 与 Intel：各自基础版和 RDP 版 release 构建、安装包与便携包打包、产物上传全部成功。
+- `Publish Release`：更新清单生成与非草稿、非预发布的正式 Release 创建成功；GitHub 最新正式版本为 `v1.6.9`。
+- 已核对更新清单的 `v1.6.9` 版本及 12 个平台产物，文件名、大小、下载地址与 SHA-256 均与 GitHub Release 资产记录一致；下载的清单本身 SHA-256 也一致。Release 共包含 14 个文件（12 个平台产物、更新清单、发布说明）。
 - 代理未在 macOS/Linux 实机运行应用；常规 macOS 原生图标 CI 检查尚未运行。
 
 ## 变更依据
 
-- 目标正式标签：[`v1.6.9`](https://github.com/ynx-official/tiny-shell/releases/tag/v1.6.9)，准备阶段尚未创建或推送，不复用已发布标签。
+- 正式标签：[`v1.6.9`](https://github.com/ynx-official/tiny-shell/releases/tag/v1.6.9)，应用源码提交为 `65054fa7cecd5c5521975e8f77e208438a10798e`；已创建并推送，不复用已发布标签。
 - 最近祖先发布标签与最近成功版本：[`v1.6.8`](https://github.com/ynx-official/tiny-shell/releases/tag/v1.6.8)。
 - 代码差异：[v1.6.8...v1.6.9](https://github.com/ynx-official/tiny-shell/compare/v1.6.8...v1.6.9)。
 - 图标优化提交：`8332e31`；相对 v1.6.8 的额外历史提交仅补记上次发布结果。
