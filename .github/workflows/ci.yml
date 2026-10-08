@@ -70,6 +70,14 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all -- --check
 
+      - name: Validate native macOS icon decoding
+        if: runner.os == 'macOS'
+        run: |
+          iconutil --convert iconset assets/icons/tiny-shell.icns --output "$RUNNER_TEMP/tiny-shell.iconset"
+          test -f "$RUNNER_TEMP/tiny-shell.iconset/icon_16x16.png"
+          test -f "$RUNNER_TEMP/tiny-shell.iconset/icon_32x32.png"
+          test -f "$RUNNER_TEMP/tiny-shell.iconset/icon_512x512@2x.png"
+
       - name: Run Clippy
         run: cargo clippy --locked --all-targets -- -D warnings
 

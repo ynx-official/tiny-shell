@@ -1,9 +1,11 @@
 # TinyShell 文档索引
 
 > 状态：Approved  
-> 最后更新：2026-09-30
+> 最后更新：2026-10-08
 
 ## 设计
+
+- [应用图标与平台导出](02-design/application-icons.md)
 
 - [主工作区与常用命令布局](02-design/workspace-ui/design.md)
 
