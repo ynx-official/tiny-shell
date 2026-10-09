@@ -21,6 +21,10 @@
 
 - [SSH 常用命令补全与使用频次](02-design/terminal-command-completion.md)
 
+## 开发与运维
+
+- [构建与打包](05-operations/build-and-package.md)：源码运行、平台依赖、FreeRDP 选项、质量检查与安装包生成。
+
 ## 其他现有文档
 
 - [优化路线图](optimization-roadmap.md)

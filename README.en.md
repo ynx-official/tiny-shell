@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <img src="assets/icons/tiny-shell.png" alt="TinyShell" width="120" />
+  <img src="assets/icons/tiny-shell.png" alt="TinyShell application icon" width="120" height="120" />
 </p>
 
 <h1 align="center">TinyShell</h1>
@@ -30,8 +30,22 @@
 </p>
 
 <p align="center">
-  <img src="preview.png" alt="TinyShell application preview" width="960" />
+  <img src="preview.png" alt="TinyShell dark overview with connection details redacted" width="960" />
 </p>
+
+<details>
+  <summary>Light theme preview</summary>
+  <p align="center">
+    <img src="assets/screenshots/overview-light.png" alt="TinyShell light overview with connection details redacted" width="960" />
+  </p>
+</details>
+
+<details>
+  <summary>Online update preview</summary>
+  <p align="center">
+    <img src="assets/screenshots/online-update.png" alt="TinyShell online update dialog with connection details redacted" width="960" />
+  </p>
+</details>
 
 ---
 
