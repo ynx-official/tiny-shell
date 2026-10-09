@@ -6,6 +6,33 @@ type TestResult = Result<(), Box<dyn std::error::Error>>;
 const WINDOW_ICON: &[u8] = include_bytes!("../assets/icons/tiny-shell.png");
 const WINDOWS_ICON: &[u8] = include_bytes!("../assets/icons/tiny-shell.ico");
 const MACOS_ICON: &[u8] = include_bytes!("../assets/icons/tiny-shell.icns");
+const LINUX_ICON: &[u8] = include_bytes!("../assets/icons/256x256/tiny-shell.png");
+
+fn assert_monochrome(image: &RgbaImage) {
+    let mut has_black = false;
+    let mut has_white = false;
+    for (x, y, pixel) in image.enumerate_pixels() {
+        if pixel[3] == 0 {
+            continue;
+        }
+        let minimum = pixel[0].min(pixel[1]).min(pixel[2]);
+        let maximum = pixel[0].max(pixel[1]).max(pixel[2]);
+        // Permit only negligible raster/antialiasing channel differences, not accents.
+        assert!(
+            maximum - minimum <= 4,
+            "{}px icon has a colored pixel at ({x}, {y}): {pixel:?}",
+            image.width()
+        );
+        if pixel[3] >= 128 {
+            has_black |= maximum <= 16;
+            has_white |= minimum >= 230;
+        }
+    }
+    assert!(
+        has_black && has_white,
+        "icon must retain black/white contrast"
+    );
+}
 
 fn read_u32_be(bytes: &[u8]) -> u32 {
     assert!(bytes.len() >= 4);
@@ -59,6 +86,36 @@ fn runtime_window_icon_uses_the_available_canvas() -> TestResult {
     let image = image::load_from_memory_with_format(WINDOW_ICON, ImageFormat::Png)?.into_rgba8();
     assert_eq!(image.dimensions(), (1024, 1024));
     assert_windows_occupancy(&image);
+    assert_monochrome(&image);
+    Ok(())
+}
+
+#[test]
+fn linux_icon_has_the_same_monochrome_style() -> TestResult {
+    let image = image::load_from_memory_with_format(LINUX_ICON, ImageFormat::Png)?.into_rgba8();
+    assert_eq!(image.dimensions(), (256, 256));
+    assert_windows_occupancy(&image);
+    assert_monochrome(&image);
+    Ok(())
+}
+
+#[test]
+fn symbol_only_icons_do_not_have_a_bottom_wordmark() -> TestResult {
+    let entries = icns_entries();
+    for bytes in [WINDOW_ICON, LINUX_ICON, entries[b"ic10"]] {
+        let image = image::load_from_memory_with_format(bytes, ImageFormat::Png)?.into_rgba8();
+        // The approved terminal-window mark is centered. Its bottom margin must
+        // stay empty instead of reintroducing the previous TinyShell wordmark.
+        for (x, y, pixel) in image.enumerate_pixels() {
+            if y * 100 >= image.height() * 82 && pixel[3] >= 128 {
+                assert!(
+                    pixel[0].max(pixel[1]).max(pixel[2]) <= 32,
+                    "{}px symbol-only icon has unexpected bottom content at ({x}, {y})",
+                    image.width()
+                );
+            }
+        }
+    }
     Ok(())
 }
 
@@ -83,6 +140,7 @@ fn every_windows_ico_size_uses_the_available_canvas() -> TestResult {
         .into_rgba8();
         assert_eq!(image.dimensions(), (size, size));
         assert_windows_occupancy(&image);
+        assert_monochrome(&image);
         sizes.push(size);
     }
     assert_eq!(sizes, [16, 20, 24, 32, 40, 48, 64, 128, 256]);
@@ -160,6 +218,7 @@ fn macos_small_sizes_use_native_argb_encoding() -> TestResult {
     for (tag, size) in [(b"ic04", 16), (b"ic05", 32)] {
         let image = decode_argb(entries[tag], size);
         assert!(image.pixels().all(|pixel| pixel[3] == 255));
+        assert_monochrome(&image);
         if size == 32 {
             let retina_png =
                 image::load_from_memory_with_format(entries[b"ic11"], ImageFormat::Png)?
@@ -189,6 +248,7 @@ fn macos_canvas_is_full_bleed_for_system_masking() -> TestResult {
         let image =
             image::load_from_memory_with_format(entries[tag], ImageFormat::Png)?.into_rgba8();
         assert_eq!(image.dimensions(), (size, size));
+        assert_monochrome(&image);
         assert!(
             image.pixels().all(|pixel| pixel[3] == 255),
             "macOS background must fill the canvas without a pre-masked inset tile"
@@ -196,8 +256,8 @@ fn macos_canvas_is_full_bleed_for_system_masking() -> TestResult {
         for (x, y) in [(0, 0), (size - 1, 0), (0, size - 1), (size - 1, size - 1)] {
             let pixel = image.get_pixel(x, y);
             assert!(
-                pixel[0] < 70 && pixel[1] < 70 && pixel[2] < 90,
-                "macOS corners must be navy, not a baked checkerboard"
+                pixel[0] <= 8 && pixel[1] <= 8 && pixel[2] <= 8,
+                "macOS corners must be black, not a baked frame or checkerboard"
             );
         }
     }

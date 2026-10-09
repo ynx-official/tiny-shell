@@ -30,18 +30,35 @@ function Get-ArtworkBounds([Drawing.Bitmap]$Bitmap) {
 }
 
 function Convert-IconPng {
-    param([Drawing.Bitmap]$Source, [Drawing.Rectangle]$Bounds, [int]$Size, [double]$Inset)
+    param(
+        [Drawing.Bitmap]$Source, [Drawing.Rectangle]$Bounds, [int]$Size, [double]$Inset,
+        [Drawing.Color]$Background = [Drawing.Color]::Transparent
+    )
     $bitmap = [Drawing.Bitmap]::new($Size, $Size, [Drawing.Imaging.PixelFormat]::Format32bppArgb)
     $graphics = [Drawing.Graphics]::FromImage($bitmap)
     $attributes = [Drawing.Imaging.ImageAttributes]::new()
     try {
-        $graphics.CompositingMode = [Drawing.Drawing2D.CompositingMode]::SourceCopy
+        $graphics.CompositingMode = if ($Background.A -eq 255) {
+            [Drawing.Drawing2D.CompositingMode]::SourceOver
+        } else {
+            [Drawing.Drawing2D.CompositingMode]::SourceCopy
+        }
         $graphics.CompositingQuality = [Drawing.Drawing2D.CompositingQuality]::HighQuality
         $graphics.InterpolationMode = [Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
         $graphics.PixelOffsetMode = [Drawing.Drawing2D.PixelOffsetMode]::HighQuality
         # Clamp sampling to the source edge: an opaque macOS canvas must stay opaque.
         $attributes.SetWrapMode([Drawing.Drawing2D.WrapMode]::TileFlipXY)
-        $graphics.Clear([Drawing.Color]::Transparent)
+        # Export in a neutral grayscale color mode; the approved AI master has
+        # negligible RGB noise in its white edges, not intentional colored accents.
+        $grayscale = [Drawing.Imaging.ColorMatrix]::new([single[][]]@(
+            @(0.299, 0.299, 0.299, 0, 0),
+            @(0.587, 0.587, 0.587, 0, 0),
+            @(0.114, 0.114, 0.114, 0, 0),
+            @(0, 0, 0, 1, 0),
+            @(0, 0, 0, 0, 1)
+        ))
+        $attributes.SetColorMatrix($grayscale)
+        $graphics.Clear($Background)
         $scale = $Size * (1 - 2 * $Inset) / [Math]::Max($Bounds.Width, $Bounds.Height)
         $width = [int][Math]::Round($Bounds.Width * $scale)
         $height = [int][Math]::Round($Bounds.Height * $scale)
@@ -51,6 +68,26 @@ function Convert-IconPng {
         )
         $graphics.DrawImage($Source, $destination, $Bounds.X, $Bounds.Y, $Bounds.Width,
             $Bounds.Height, [Drawing.GraphicsUnit]::Pixel, $attributes)
+        if ($Size -eq 16) {
+            # At 16px, the terminal outline is subpixel-width and bicubic sampling
+            # averages its brightest pixel down to gray. Restore optical contrast
+            # after sampling, keeping geometry and alpha untouched.
+            for ($y = 0; $y -lt $Size; $y++) {
+                for ($x = 0; $x -lt $Size; $x++) {
+                    $pixel = $bitmap.GetPixel($x, $y)
+                    $gray = [int][Math]::Min(255, [Math]::Round($pixel.R * 1.2))
+                    $bitmap.SetPixel($x, $y, [Drawing.Color]::FromArgb($pixel.A, $gray, $gray, $gray))
+                }
+            }
+        }
+        if ($Background.A -eq 0) {
+            # A fractional 2% inset at 16px can leave a faint sampling fringe in
+            # a corner. Keep the four outermost pixels fully transparent.
+            $bitmap.SetPixel(0, 0, [Drawing.Color]::Transparent)
+            $bitmap.SetPixel($Size - 1, 0, [Drawing.Color]::Transparent)
+            $bitmap.SetPixel(0, $Size - 1, [Drawing.Color]::Transparent)
+            $bitmap.SetPixel($Size - 1, $Size - 1, [Drawing.Color]::Transparent)
+        }
         $stream = [IO.MemoryStream]::new()
         try {
             $bitmap.Save($stream, [Drawing.Imaging.ImageFormat]::Png)
@@ -148,11 +185,13 @@ try {
 
     $macosBounds = [Drawing.Rectangle]::new(0, 0, $macosSource.Width, $macosSource.Height)
     if ($macosSource.Width -ne $macosSource.Height) {
-        throw 'macOS source must have a square full-bleed canvas.'
+        throw 'macOS source must have a square canvas.'
     }
     $macosFrames = @{}
     foreach ($size in @(16, 32, 64, 128, 256, 512, 1024)) {
-        $macosFrames[$size] = Convert-IconPng $macosSource $macosBounds $size 0
+        # The OS owns the outer mask/material: composite the approved transparent
+        # master onto full-bleed black rather than baking a second rounded tile.
+        $macosFrames[$size] = Convert-IconPng $macosSource $macosBounds $size 0 ([Drawing.Color]::Black)
     }
     $entries = [ordered]@{
         ic04 = (Convert-PngToArgb $macosFrames[16])
