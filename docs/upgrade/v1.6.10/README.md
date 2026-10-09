@@ -1,8 +1,8 @@
 # TinyShell v1.6.10
 
 > 发布日期：2026-10-09
-> 状态：Approved（已批准正式发布，构建与发布结果待流水线确认）
-> 日期说明：以上为本次计划发布日期，正式交付后更新发布状态。
+> 状态：Approved（四个平台构建、打包与正式发布均成功）
+> 正式发布时间：2026-10-09 11:08（Asia/Shanghai）
 > 最后更新：2026-10-09
 > 发布测试策略：skip
 > 关联文档：[应用图标与平台导出](../../02-design/application-icons.md)、[v1.6.9](../v1.6.9/README.md)
@@ -50,12 +50,18 @@
 - 正式发布阶段按用户要求不重跑本地测试、Clippy、格式检查或发布工具测试。以上升级前结果不作为 v1.6.10 的测试记录。
 - `cargo check`、`cargo check --locked`：均通过；Cargo.lock 仅更新 TinyShell 包版本，没有更改依赖解析。
 - `python scripts/release_notes.py --check-current` 与 `python scripts/release_notes.py --tag v1.6.10`：发布资料校验通过，发布说明已生成；`git diff --check` 通过。
-- 标签流水线、四个平台构建打包和正式 Release 产物核对结果将在实际执行后补记。
+- [v1.6.10 标签流水线](https://github.com/ynx-official/tiny-shell/actions/runs/37876125444)：发布资料校验通过，`Test release tooling` 按本版本策略跳过。
+- Windows x86_64：release 构建、安装包与便携包打包、产物上传全部成功。
+- Linux x86_64：FreeRDP release 构建、AppImage 与压缩包打包、产物上传全部成功。
+- macOS Apple Silicon 与 Intel：各自基础版及 RDP 版 release 构建、安装包与便携包打包、产物上传全部成功。
+- `Publish Release`：更新清单生成和非草稿、非预发布的正式 Release 创建成功；GitHub 最新正式版本为 `v1.6.10`。
+- 已核对更新清单的 `v1.6.10` 版本及 12 个平台产物；文件名、大小、下载地址和 SHA-256 均与 GitHub Release 资产记录一致，下载的清单本身 SHA-256 也一致。Release 共包含 14 个文件（12 个平台产物、更新清单、发布说明）。
+- 已下载并解包 Windows 工作流产物，包内 EXE 的 `ProductVersion` 为 `1.6.10`；16/32/48/64/256px 资源 ID 1 与新 ICO 的原生像素差异均为 0。核对后确认这两个 Windows 工作流文件的 SHA-256 与正式 Release 的对应文件完全一致，没有运行应用或测试套件。
 - 代理未在 macOS/Linux 实机运行应用；常规 macOS 原生图标解码 CI 尚未运行。
 
 ## 变更依据
 
-- 目标正式标签：[`v1.6.10`](https://github.com/ynx-official/tiny-shell/releases/tag/v1.6.10)，准备阶段尚未创建或推送，不复用已发布标签。
+- 正式标签：[`v1.6.10`](https://github.com/ynx-official/tiny-shell/releases/tag/v1.6.10)，应用源码提交为 `7dc5c0dd88e56251c1f427d4af467f2ffac496f2`；已创建并推送，没有复用已发布标签。
 - 最近祖先发布标签与最近成功版本：[`v1.6.9`](https://github.com/ynx-official/tiny-shell/releases/tag/v1.6.9)。
 - 代码差异：[v1.6.9...v1.6.10](https://github.com/ynx-official/tiny-shell/compare/v1.6.9...v1.6.10)。
 - 图标变更提交：`edb72a0`；相对 v1.6.9 的额外历史提交仅补记上次发布结果。
