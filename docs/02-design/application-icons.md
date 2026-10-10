@@ -1,14 +1,14 @@
 # 应用图标与平台导出
 
 > 状态：Approved
-> 最后更新：2026-10-09
-> 关联：[文档索引](../README.md)、[生成脚本](../../scripts/generate-icons.ps1)、[素材回归测试](../../tests/app_icon_contract.rs)
+> 最后更新：2026-10-10
+> 关联：[文档索引](../README.md)、[候选与选择记录](application-icon-candidates.md)、[生成脚本](../../scripts/generate-icons.ps1)、[素材回归测试](../../tests/app_icon_contract.rs)
 
 ## 品牌约束
 
-统一使用用户于 2026-10-09 最终确认的无文字黑白终端窗口图标：黑色底、居中的白色终端窗口轮廓与粗线条 `>_`。只保留这一个终端标识，不显示 `TinyShell` 名称、`SSH` 文字、徽章、代码行或其他内容。去掉彩色控制点、服务器、连接虚线、立体渐变与阴影，不修改软件内部的功能按钮图标或 Sentry UI 主题。
+统一使用用户于 2026-10-10 明确选择的 A「圆润终端」图标：黑色底、较横向的白色终端窗口轮廓、圆润的粗线条 `>_` 与宽下划线。只保留这一个终端标识，不显示 `TinyShell` 名称、`SSH` 文字、徽章、代码行或其他内容。不添加彩色控制点、服务器、连接虚线、立体渐变与阴影，不修改软件内部的功能按钮图标或 Sentry UI 主题。
 
-本次用户明确选择终端窗口方案，进一步取代当天已落地的带 `TinyShell`/`SSH` 文字的黑白稿；该稿不再是当前品牌约束。[v1.6.9 发布详情](../upgrade/v1.6.9/README.md) 保留已发布的深蓝/青绿方案和验证记录。工作区替换不等于重新发布 v1.6.9，既有公开产物与标签保持不变。
+本轮选择来自[三套软件图标候选](application-icon-candidates.md)，依据为用户明确回复「第一种」。A 替代 2026-10-09 的无文字黑白稿，保留原有黑白终端方向；此前带 `TinyShell`/`SSH` 文字的稿件也不再是当前品牌约束。[v1.6.9](../upgrade/v1.6.9/README.md) 与 [v1.6.10](../upgrade/v1.6.10/README.md) 保留已发布版本的图标与验证记录。此次为工作区图标替换，不重用既有发布标签。
 
 平台需要不同的画布规则，不能把带透明留白和外框的单一 PNG 直接缩放为所有平台图标。
 
@@ -18,12 +18,13 @@
 | --- | --- |
 | `assets/icons/source/tiny-shell-brand.png` | 用户确认的黑白透明母图，Windows/Linux 从这里等比例导出 |
 | `assets/icons/source/tiny-shell-macos.png` | 同一黑白母图的 macOS 输入副本；导出时合成至不透明黑底 |
-| `assets/icons/tiny-shell.png` | 1024px Windows/Linux 窗口图标及 README 标识 |
+| `assets/icons/tiny-shell.png` | 1024px Windows/Linux 窗口图标及英文 README 标识 |
 | `assets/icons/tiny-shell.ico` | Windows EXE 与安装器，包含 16/20/24/32/40/48/64/128/256px |
 | `assets/icons/tiny-shell.icns` | macOS App Bundle，包含标准与 Retina 尺寸 |
-| `assets/icons/256x256/tiny-shell.png` | Linux Debian/AppImage 使用的 256px 图标 |
+| `assets/icons/256x256/tiny-shell.png` | Linux Debian/AppImage 的 256px 图标，也是 README 头图的图标输入 |
+| `assets/readme/tiny-shell-header.svg` | 中文 README 品牌头图，内嵌的 PNG 必须与当前 256px 图标字节一致 |
 
-黑白母图由内置 `imagegen` 生成，直接采用用户最终确认的终端窗口方案，不再重新绘制。提示要点：简洁黑白扁平应用图标、居中的白色终端窗口轮廓与 `>_`、粗线条和清晰负空间；不带名称、文字、徽章、代码内容、控制点、装饰、渐变、阴影或额外外框，外部透明。
+黑白母图由内置 `imagegen` 生成，直接采用用户选定的 A 母图，不再重新绘制。提示要点：简洁黑白扁平应用图标、横向白色终端窗口轮廓与 `>_`、圆润粗线条和清晰负空间；不带名称、文字、徽章、代码内容、控制点、装饰、渐变、阴影或额外外框，外部透明。完整提示见[候选产物清单](../../assets/icons/candidates/2026-10-10/manifest.json)。
 
 导出时采用中性灰阶色彩模式，消除生成图白色边缘中极轻微的 RGB 色偏，保留图形比例与排版。Windows/Linux 保留透明轮廓，macOS 按下述规则合成不透明底。两个平台输入副本保持与用户最终确认的原始生成 PNG 字节一致。
 
@@ -69,9 +70,25 @@ cargo test --locked --test app_icon_contract
 
 包含窗口 PNG、Linux PNG 与 ICO 各尺寸的可见占比、透明四角、所有导出尺寸的黑白灰阶及对比度、ICNS RLE 解码边界、ARGB/PNG 色彩逐像素一致性、macOS 背景不透明性和纯黑四角。无文字版额外要求窗口图标、Linux PNG 与 macOS 1024px 图标的底部留白保持空白，防止旧版底部名称混入；这项检查不等于 OCR，徽章移除还需视觉复核。CI 的 macOS 门禁额外使用系统 `iconutil` 解码真实 ICNS。
 
-## 验证边界
+## 2026-10-10 选定 A 后的验证
 
-用户已确认无文字终端窗口设计并授权替换所有平台的应用素材。以下为版本升级前的图标落地验证结果，不沿用此前带文字黑白稿的构建或通过记录；正式发布结果以对应版本详情为准。
+正式母图与两个平台输入副本均采用 A，SHA-256：`bf0edf94d57c90e046120aea702d1417470918646408a735f8220676157995c4`。六个正式资源已逐一与 A 候选比较，字节一致；README 头图已同步内嵌新的 256px 图标。
+
+以下结果均为选定 A 后在当前工作区实际执行，不沿用下一节的旧记录：
+
+- `cargo fmt --all -- --check`、`cargo clippy --locked --all-targets -- -D warnings`：通过。
+- `cargo test --locked --all-targets`：532 项通过、0 项失败；保留项目已有的 1 项手动性能基准忽略项，其中六项正式图标检查全部通过。
+- Windows `cargo build --locked --release` 与 `cargo build --locked`：通过。
+- Windows debug/release EXE 均仅作为资源映射、不执行应用；资源 ID 1 的 16/32/48/64/256px 原生图标分别与当前 ICO 逐像素比较，两种构建的五个尺寸差异均为 0。
+- 使用原生成脚本重新导出到独立目录，四个消费素材的 SHA-256 均与正式资源一致，导出可重复。
+- README 头图内嵌的 PNG 与当前 256px 图标字节一致；桌面及 390px 窄屏渲染通过，四张本地图片均加载成功，无页面横向溢出；图片与文档引用检查通过。
+- `git diff --check`：通过。没有修改版本号或创建发布标签。
+
+本机为 Windows，本次没有执行 macOS `iconutil`、macOS/Linux 原生桌面外观验证或多平台构建；ICNS 与 PNG 的素材及编码检查已通过。
+
+## 2026-10-09 验证记录
+
+以下记录对应 2026-10-09 的无文字黑白稿，保留用于追溯。正式发布结果以对应版本详情为准，本次 A 方案的结果见上一节。
 
 - 新增的底部名称回归检查在替换前失败，成功识别旧黑白稿底部残留的 `TinyShell`。
 - 首次直接导出的现有检查另发现 16px 的两个问题：macOS 最亮像素仅为 217/255，Windows 一个角像素 Alpha 为 25/255。通过小尺寸对比补偿和透明角像素归零修正，未弱化原有对比度或透明性断言。
