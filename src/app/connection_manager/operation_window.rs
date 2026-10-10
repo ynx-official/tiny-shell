@@ -71,9 +71,10 @@ impl ConnectionOperationWindow {
         };
         let archive_password_input = match &operation {
             ConnectionOperation::Archive { .. } => Some(cx.new(|cx| {
-                InputState::new(window, cx)
-                    .placeholder(t!("connection_archive_password").to_string())
-                    .masked(true)
+                crate::app::localization::localized_input(window, cx, || {
+                    t!("connection_archive_password").to_string()
+                })
+                .masked(true)
             })),
             _ => None,
         };

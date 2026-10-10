@@ -302,9 +302,12 @@ pub fn reconcile_three_way(
     let mut conflicts = Vec::new();
 
     for key in &order {
-        let base = baseline.get(key);
-        let local_value = local.get(key);
-        let remote_value = remote_catalog.get(key);
+        let mut base = baseline.get(key);
+        let mut local_value = local.get(key);
+        let mut remote_value = remote_catalog.get(key);
+        if key.kind == SyncEntityKind::QuickCommand {
+            merge_command_usage_snapshots(&mut base, &mut local_value, &mut remote_value)?;
+        }
         let selected = if local_value.same_content(&base) {
             remote_value.clone()
         } else if remote_value.same_content(&base) || local_value.same_content(&remote_value) {
@@ -334,6 +337,31 @@ pub fn reconcile_three_way(
         unavailable_session_secret_count: stats.unavailable_session_secret_count,
         unavailable_managed_key_secret_count: stats.unavailable_managed_key_secret_count,
     })
+}
+
+/// Usage is monotonic metadata, not a command edit. Normalize all active
+/// snapshots before comparison so increments cannot cause edit conflicts or
+/// revive deleted commands. Genuine content conflicts retain the merged counts.
+fn merge_command_usage_snapshots(
+    base: &mut EntitySnapshot,
+    local: &mut EntitySnapshot,
+    remote: &mut EntitySnapshot,
+) -> Result<()> {
+    let mut usage = crate::session::command_usage::CommandUsage::default();
+    for snapshot in [&*base, &*local, &*remote] {
+        if let EntitySnapshot::Active(value) = snapshot {
+            let record: CommandRecord = serde_json::from_value(value.clone())?;
+            usage.merge(&record.command.usage);
+        }
+    }
+    for snapshot in [base, local, remote] {
+        if let EntitySnapshot::Active(value) = snapshot {
+            let mut record: CommandRecord = serde_json::from_value(value.clone())?;
+            record.command.usage = usage.clone();
+            *value = serde_json::to_value(record)?;
+        }
+    }
+    Ok(())
 }
 
 fn combined_order(
@@ -552,6 +580,94 @@ mod tests {
 
         assert!(result.conflicts.is_empty());
         assert_eq!(result.merged.sessions[0].name, "Local");
+    }
+
+    #[test]
+    fn command_usage_merges_without_conflict_and_repeated_sync_does_not_add_again() {
+        let mut base = config(vec![], vec![]);
+        base.quick_command_categories = vec![QuickCommandCategory {
+            id: "tools".into(),
+            name: "Tools".into(),
+            commands: vec![QuickCommand {
+                id: "docker".into(),
+                name: "Docker".into(),
+                remark: String::new(),
+                command: "docker ps".into(),
+                usage: Default::default(),
+            }],
+        }];
+        let baseline = payload("base", &base, None);
+        let mut left = base.clone();
+        left.quick_command_categories[0].commands[0]
+            .usage
+            .record("window-a");
+        let mut right = base.clone();
+        right.quick_command_categories[0].commands[0]
+            .usage
+            .record("window-b");
+        right.quick_command_categories[0].commands[0]
+            .usage
+            .record("window-b");
+        let remote = payload("right", &right, Some(&baseline));
+        // Both DAV and S3 use this serializer/parser at the transport boundary.
+        let remote =
+            crate::sync::parse_payload(&crate::sync::serialize_payload(&remote).unwrap()).unwrap();
+        let two_way = super::super::merge::merge_payload_with_deleted(
+            local(&left, &baseline),
+            remote.clone(),
+            "",
+        );
+        assert_eq!(
+            two_way.quick_command_categories[0].commands[0]
+                .usage
+                .total(),
+            3
+        );
+        let result =
+            reconcile_three_way(local(&left, &baseline), &baseline, remote.clone(), "").unwrap();
+        assert!(result.conflicts.is_empty());
+        assert_eq!(
+            result.merged.quick_command_categories[0].commands[0]
+                .usage
+                .total(),
+            3
+        );
+        let again =
+            reconcile_three_way(local(&result.merged, &baseline), &baseline, remote, "").unwrap();
+        assert!(again.conflicts.is_empty());
+        assert_eq!(
+            again.merged.quick_command_categories[0].commands[0]
+                .usage
+                .total(),
+            3
+        );
+
+        // A real remote edit wins over local usage-only changes without conflict.
+        right.quick_command_categories[0].commands[0].name = "Renamed Docker".into();
+        let renamed = payload("right", &right, Some(&baseline));
+        let result = reconcile_three_way(local(&left, &baseline), &baseline, renamed, "").unwrap();
+        assert!(result.conflicts.is_empty());
+        assert_eq!(
+            result.merged.quick_command_categories[0].commands[0].name,
+            "Renamed Docker"
+        );
+        assert_eq!(
+            result.merged.quick_command_categories[0].commands[0]
+                .usage
+                .total(),
+            3
+        );
+
+        // Deleting a command still wins over usage-only changes.
+        right.quick_command_categories[0].commands.clear();
+        let deleted = payload("right", &right, Some(&baseline));
+        let result = reconcile_three_way(local(&left, &baseline), &baseline, deleted, "").unwrap();
+        assert!(result.conflicts.is_empty());
+        assert!(
+            result.merged.quick_command_categories[0]
+                .commands
+                .is_empty()
+        );
     }
 
     #[test]

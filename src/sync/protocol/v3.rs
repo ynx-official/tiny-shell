@@ -67,6 +67,8 @@ pub struct V3QuickCommand {
     pub name: String,
     pub remark: String,
     pub command: String,
+    #[serde(default)]
+    pub usage: crate::session::command_usage::CommandUsage,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -180,6 +182,7 @@ impl V3SyncPayload {
                     name: command.name.clone(),
                     remark: command.remark.clone(),
                     command: command.command.clone(),
+                    usage: command.usage.clone(),
                 },
             }));
         }
@@ -404,6 +407,7 @@ impl V3SyncPayload {
                     name: command.name,
                     remark: command.remark,
                     command: command.command,
+                    usage: command.usage,
                 },
             }));
         }
@@ -724,6 +728,7 @@ mod tests {
                     name: "Status".into(),
                     remark: String::new(),
                     command: "uptime".into(),
+                    usage: Default::default(),
                 }],
             }],
             decrypted_count: 0,

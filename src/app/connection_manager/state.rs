@@ -58,6 +58,15 @@ pub(crate) enum ConnectionTreeNode {
 }
 
 impl ConnectionTreeNode {
+    pub(crate) fn id(&self) -> &ConnectionNodeId {
+        match self {
+            Self::Group { id, .. }
+            | Self::Session { id, .. }
+            | Self::DeletedGroup { id, .. }
+            | Self::DeletedSession { id, .. } => id,
+        }
+    }
+
     pub(crate) fn depth(&self) -> usize {
         match self {
             Self::Group { depth, .. }
@@ -94,6 +103,28 @@ impl Default for ConnectionManagerState {
 }
 
 impl ConnectionManagerState {
+    /// Navigate visible rows only; filtering or collapsing may invalidate the old selection.
+    pub(crate) fn select_relative(
+        &mut self,
+        nodes: &[ConnectionTreeNode],
+        backwards: bool,
+    ) -> Option<usize> {
+        if nodes.is_empty() {
+            self.selected = None;
+            return None;
+        }
+        let current = nodes
+            .iter()
+            .position(|node| Some(node.id()) == self.selected.as_ref());
+        let index = match current {
+            Some(index) if backwards => index.saturating_sub(1),
+            Some(index) => (index + 1).min(nodes.len() - 1),
+            None => 0,
+        };
+        self.selected = Some(nodes[index].id().clone());
+        Some(index)
+    }
+
     pub fn set_query(&mut self, query: String) {
         let was_empty = self.query.is_empty();
         let is_empty = query.is_empty();
@@ -253,6 +284,46 @@ fn group_name(group: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn quick_connect_navigation_handles_groups_boundaries_and_empty_results() {
+        let mut config = ConfigStore::in_memory();
+        config.add_connection_group("prod".to_string());
+        config.upsert(session("local", None));
+        let mut state = ConnectionManagerState::default();
+        let nodes = state.visible_nodes(&config);
+        assert_eq!(state.select_relative(&nodes, false), Some(0));
+        assert_eq!(state.selected, Some(ConnectionNodeId::Group("prod".into())));
+        assert_eq!(state.select_relative(&nodes, false), Some(1));
+        assert_eq!(
+            state.selected,
+            Some(ConnectionNodeId::Session("local".into()))
+        );
+        assert_eq!(state.select_relative(&nodes, false), Some(1));
+        assert_eq!(state.select_relative(&nodes, true), Some(0));
+        assert_eq!(state.select_relative(&[], false), None);
+        assert_eq!(state.selected, None);
+    }
+
+    #[test]
+    fn quick_connect_navigation_recovers_when_search_hides_selection() {
+        let mut config = ConfigStore::in_memory();
+        config.upsert(session("alpha", None));
+        config.upsert(session("beta", None));
+        let mut state = ConnectionManagerState {
+            selected: Some(ConnectionNodeId::Session("alpha".into())),
+            ..Default::default()
+        };
+        state.set_query("beta".into());
+        assert_eq!(
+            state.select_relative(&state.visible_nodes(&config), false),
+            Some(0)
+        );
+        assert_eq!(
+            state.selected,
+            Some(ConnectionNodeId::Session("beta".into()))
+        );
+    }
 
     fn session(name: &str, group: Option<&str>) -> Session {
         let mut value =

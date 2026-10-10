@@ -279,7 +279,7 @@ impl TinyShell {
                                 .h(px(TAB_BAR_HEIGHT))
                                 .w_full()
                                 .bg(cx.theme().tab_bar)
-                                .child(self.render_tab_bar(window.window_handle(), cx)),
+                                .child(self.render_tab_bar(window, cx)),
                         )
                     },
                 )
@@ -311,7 +311,7 @@ impl TinyShell {
                                             .h(px(TAB_BAR_HEIGHT))
                                             .w_full()
                                             .bg(cx.theme().tab_bar)
-                                            .child(self.render_tab_bar(window.window_handle(), cx)),
+                                            .child(self.render_tab_bar(window, cx)),
                                     )
                                 },
                             )
@@ -353,7 +353,7 @@ impl TinyShell {
                                         .h(px(TAB_BAR_HEIGHT))
                                         .w_full()
                                         .bg(cx.theme().tab_bar)
-                                        .child(self.render_tab_bar(window.window_handle(), cx)),
+                                        .child(self.render_tab_bar(window, cx)),
                                 )
                             },
                         )
@@ -630,7 +630,7 @@ impl TinyShell {
                                         )
                                     })
                                     .when(!hide_rdp_tab_bar, |this| {
-                                        this.child(self.render_tab_bar(window.window_handle(), cx))
+                                        this.child(self.render_tab_bar(window, cx))
                                     }),
                             ),
                     )
@@ -747,6 +747,7 @@ impl Render for TinyShell {
 }
 mod home;
 mod monitoring;
+mod quick_command_header;
 mod sftp;
 mod sidebar;
 #[path = "ui/terminal.rs"]

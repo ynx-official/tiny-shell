@@ -1,16 +1,19 @@
 mod backend_events;
 pub(crate) mod config_persistence;
 pub(crate) mod config_sync;
+pub(crate) mod confirmation_dialog;
 pub(crate) mod connection_actions;
 pub(crate) mod connection_archive_dialogs;
 pub(crate) mod connection_import_window;
 pub(crate) mod connection_manager;
 pub(crate) mod constants;
+pub(crate) mod dialog_layout;
 pub(crate) mod dialogs;
 pub(crate) mod font_preferences;
 pub(crate) mod group_tree_picker;
 pub(crate) mod input_focus;
 pub(crate) mod keybinding_recorder;
+pub(crate) mod localization;
 pub(crate) mod managed_keys;
 pub(crate) mod monitoring;
 pub(crate) mod platform;
@@ -226,12 +229,11 @@ pub(crate) struct SftpWorkspaceState {
     pub(crate) tree_scroll_handle: gpui::ScrollHandle,
     pub(crate) quick_command_category_scroll_handle: gpui::ScrollHandle,
     pub(crate) quick_command_cards_scroll_handle: gpui::ScrollHandle,
+    pub(crate) quick_command_grid_columns: u16,
     pub(crate) tree_scroll_target_bounds: Option<(String, Bounds<Pixels>)>,
     pub(crate) file_panels: Entity<ResizableState>,
-    pub(crate) delete_scroll_handle: gpui::ScrollHandle,
     pub(crate) pending_path_sync: Option<String>,
     pub(crate) pending_tree_scroll_path: Option<String>,
-    pub(crate) center_pending_tree_scroll: bool,
     pub(crate) context_menu: Option<SftpContextMenuState>,
     pub(crate) creating_folder: bool,
 }
@@ -305,6 +307,7 @@ pub(crate) struct ConnectionFormInputs {
     pub(crate) key_path_input: Entity<InputState>,
     pub(crate) key_inline_input: Entity<InputState>,
     pub(crate) passphrase_input: Entity<InputState>,
+    pub(crate) key_import_text_input: Entity<InputState>,
     pub(crate) key_import_remark_input: Entity<InputState>,
     pub(crate) key_import_passphrase_input: Entity<InputState>,
     pub(crate) proxy_host_input: Entity<InputState>,
@@ -316,58 +319,86 @@ pub(crate) struct ConnectionFormInputs {
 impl ConnectionFormInputs {
     pub(crate) fn new(window: &mut Window, cx: &mut Context<TinyShell>) -> Self {
         Self {
-            host_input: cx.new(|cx| InputState::new(window, cx).placeholder(t!("host"))),
-            session_name_input: cx.new(|cx| {
-                InputState::new(window, cx).placeholder(t!("session_name_placeholder").to_string())
+            host_input: cx.new(|cx| {
+                crate::app::localization::localized_input(window, cx, || t!("host").to_string())
             }),
-            connection_group_input: cx
-                .new(|cx| InputState::new(window, cx).placeholder(t!("connection_group_name"))),
+            session_name_input: cx.new(|cx| {
+                crate::app::localization::localized_input(window, cx, || {
+                    t!("session_name_placeholder").to_string()
+                })
+            }),
+            connection_group_input: cx.new(|cx| {
+                crate::app::localization::localized_input(window, cx, || {
+                    t!("connection_group_name").to_string()
+                })
+            }),
             port_input: cx.new(|cx| InputState::new(window, cx).default_value("22")),
             user_input: cx.new(|cx| InputState::new(window, cx).default_value("root")),
             password_input: cx.new(|cx| {
-                InputState::new(window, cx)
-                    .placeholder(t!("password"))
+                crate::app::localization::localized_input(window, cx, || t!("password").to_string())
                     .masked(true)
             }),
             key_path_input: cx.new(|cx| {
-                InputState::new(window, cx)
-                    .placeholder(t!("private_key_path_placeholder").to_string())
+                crate::app::localization::localized_input(window, cx, || {
+                    t!("private_key_path_placeholder").to_string()
+                })
             }),
             key_inline_input: cx.new(|cx| {
-                InputState::new(window, cx)
-                    .multi_line(true)
-                    .rows(5)
-                    .placeholder(t!("private_key_data_placeholder").to_string())
+                crate::app::localization::localized_input(window, cx, || {
+                    t!("private_key_data_placeholder").to_string()
+                })
+                .multi_line(true)
+                .rows(5)
             }),
             passphrase_input: cx.new(|cx| {
-                InputState::new(window, cx)
-                    .placeholder(t!("ssh_passphrase_placeholder").to_string())
-                    .masked(true)
+                crate::app::localization::localized_input(window, cx, || {
+                    t!("ssh_passphrase_placeholder").to_string()
+                })
+                .masked(true)
+            }),
+            key_import_text_input: cx.new(|cx| {
+                crate::app::localization::localized_input(window, cx, || {
+                    t!("key_import_text_placeholder").to_string()
+                })
+                .multi_line(true)
+                .rows(6)
             }),
             key_import_remark_input: cx.new(|cx| {
-                InputState::new(window, cx)
-                    .placeholder(t!("key_import_remark_placeholder").to_string())
+                crate::app::localization::localized_input(window, cx, || {
+                    t!("key_import_remark_placeholder").to_string()
+                })
             }),
             key_import_passphrase_input: cx.new(|cx| {
-                InputState::new(window, cx)
-                    .placeholder(t!("key_passphrase").to_string())
-                    .masked(true)
+                crate::app::localization::localized_input(window, cx, || {
+                    t!("key_passphrase").to_string()
+                })
+                .masked(true)
             }),
-            proxy_host_input: cx
-                .new(|cx| InputState::new(window, cx).placeholder(t!("proxy_host").to_string())),
-            proxy_port_input: cx
-                .new(|cx| InputState::new(window, cx).placeholder(t!("proxy_port").to_string())),
-            proxy_user_input: cx
-                .new(|cx| InputState::new(window, cx).placeholder(t!("proxy_user").to_string())),
+            proxy_host_input: cx.new(|cx| {
+                crate::app::localization::localized_input(window, cx, || {
+                    t!("proxy_host").to_string()
+                })
+            }),
+            proxy_port_input: cx.new(|cx| {
+                crate::app::localization::localized_input(window, cx, || {
+                    t!("proxy_port").to_string()
+                })
+            }),
+            proxy_user_input: cx.new(|cx| {
+                crate::app::localization::localized_input(window, cx, || {
+                    t!("proxy_user").to_string()
+                })
+            }),
             proxy_password_input: cx.new(|cx| {
-                InputState::new(window, cx)
-                    .placeholder(t!("proxy_password").to_string())
-                    .masked(true)
+                crate::app::localization::localized_input(window, cx, || {
+                    t!("proxy_password").to_string()
+                })
+                .masked(true)
             }),
         }
     }
 
-    pub(crate) fn all_inputs(&self) -> [&Entity<InputState>; 15] {
+    pub(crate) fn all_inputs(&self) -> [&Entity<InputState>; 16] {
         [
             &self.host_input,
             &self.session_name_input,
@@ -378,6 +409,7 @@ impl ConnectionFormInputs {
             &self.key_path_input,
             &self.key_inline_input,
             &self.passphrase_input,
+            &self.key_import_text_input,
             &self.key_import_remark_input,
             &self.key_import_passphrase_input,
             &self.proxy_host_input,
@@ -446,6 +478,7 @@ pub(crate) struct TinyShell {
     pub(crate) selected_quick_command: Option<(String, String)>,
     pub(crate) quick_command_parameter_inputs: Vec<Entity<InputState>>,
     pub(crate) terminal_completions: HashMap<String, terminal_completion::TerminalCompletionState>,
+    pub(crate) command_usage_writer: String,
     pub(crate) remote_desktop_surfaces: RemoteDesktopSurfaceCache,
     pub(crate) rdp_certificate_requests:
         HashMap<String, crate::backend::remote_desktop::CertificateRequest>,
@@ -533,7 +566,7 @@ pub(crate) struct TinyShell {
     pub(crate) last_prepaint_at: Option<Instant>,
     pub(crate) last_sidebar_width: Option<Pixels>,
     pub(crate) should_move_window: bool,
-    pub(crate) hovered_url: Option<HoveredUrl>,
+    pub(crate) hovered_entity: Option<HoveredTerminalEntity>,
     pub(crate) cmd_ctrl_pressed: bool,
     pub(crate) _subscriptions: Vec<gpui::Subscription>,
 }
@@ -708,8 +741,9 @@ mod layout_persistence_tests {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct HoveredUrl {
-    pub(crate) url: String,
+pub(crate) struct HoveredTerminalEntity {
+    pub(crate) kind: crate::session::highlight_rules::HighlightEntityKind,
+    pub(crate) value: String,
     pub(crate) tab_id: String,
     pub(crate) cells: Vec<(usize, usize)>,
 }
@@ -825,31 +859,39 @@ impl TinyShell {
         window_lease: config_persistence::WindowLeaseId,
         cx: &mut Context<Self>,
     ) -> Self {
+        let mut config = ConfigStore::load().unwrap_or_else(|err| {
+            tracing::warn!("failed to load config: {err:#}");
+            ConfigStore::in_memory()
+        });
+        let active_locale = localization::set_display_locale(config.locale(), cx);
         let connection_inputs = ConnectionFormInputs::new(window, cx);
         let sftp_path_input = cx.new(|cx| InputState::new(window, cx).default_value("/"));
-        let sftp_new_folder_input =
-            cx.new(|cx| InputState::new(window, cx).placeholder(t!("new_folder").to_string()));
-        let sftp_quick_command_search_input = cx.new(|cx| {
-            InputState::new(window, cx).placeholder(t!("quick_command_search").to_string())
+        let sftp_new_folder_input = cx.new(|cx| {
+            crate::app::localization::localized_input(window, cx, || t!("new_folder").to_string())
         });
-        let search_input =
-            cx.new(|cx| InputState::new(window, cx).placeholder(t!("search").to_string()));
+        let sftp_quick_command_search_input = cx.new(|cx| {
+            crate::app::localization::localized_input(window, cx, || {
+                t!("quick_command_search").to_string()
+            })
+        });
+        let search_input = cx.new(|cx| {
+            crate::app::localization::localized_input(window, cx, || t!("search").to_string())
+        });
         let docker_search_input = cx.new(|cx| {
-            InputState::new(window, cx).placeholder(t!("docker_search_placeholder").to_string())
+            crate::app::localization::localized_input(window, cx, || {
+                t!("docker_search_placeholder").to_string()
+            })
         });
         let connection_manager_state = cx.new(|_| ConnectionManagerState::default());
         let quick_command_parameter_inputs = (1..=5)
             .map(|index| {
                 cx.new(|cx| {
-                    InputState::new(window, cx)
-                        .placeholder(t!("quick_command_parameter", index = index).to_string())
+                    crate::app::localization::localized_input(window, cx, move || {
+                        t!("quick_command_parameter", index = index).to_string()
+                    })
                 })
             })
             .collect::<Vec<_>>();
-        let mut config = ConfigStore::load().unwrap_or_else(|err| {
-            tracing::warn!("failed to load config: {err:#}");
-            ConfigStore::in_memory()
-        });
         let settings_inputs = SettingsInputs::new(&config, window, cx);
         let mut _subscriptions = connection_inputs
             .all_inputs()
@@ -905,21 +947,6 @@ impl TinyShell {
             config.dark_theme_name().into()
         };
 
-        let configured_locale = config.locale();
-        let mut active_locale = configured_locale.to_string();
-        if active_locale == "system" {
-            active_locale = sys_locale::get_locale().unwrap_or_else(|| "en".to_string());
-            if active_locale.starts_with("zh") {
-                active_locale = "zh-CN".to_string();
-            } else {
-                active_locale = "en".to_string();
-            }
-        }
-        rust_i18n::set_locale(&active_locale);
-        gpui_component::set_locale(&active_locale);
-        docker_search_input.update(cx, |input, cx| {
-            input.set_placeholder(t!("docker_search_placeholder").to_string(), window, cx);
-        });
         if config.quick_commands_builtin_version() < BUILTIN_QUICK_COMMANDS_VERSION {
             let mut categories = config
                 .quick_command_categories()
@@ -1012,6 +1039,7 @@ impl TinyShell {
             selected_quick_command: None,
             quick_command_parameter_inputs,
             terminal_completions: HashMap::new(),
+            command_usage_writer: uuid::Uuid::new_v4().to_string(),
             remote_desktop_surfaces: RemoteDesktopSurfaceCache::default(),
             rdp_certificate_requests: HashMap::new(),
             rdp_reconnect_attempts: HashMap::new(),
@@ -1043,12 +1071,11 @@ impl TinyShell {
                 tree_scroll_handle: gpui::ScrollHandle::new(),
                 quick_command_category_scroll_handle: gpui::ScrollHandle::new(),
                 quick_command_cards_scroll_handle: gpui::ScrollHandle::new(),
+                quick_command_grid_columns: 1,
                 tree_scroll_target_bounds: None,
                 file_panels: cx.new(|_| ResizableState::default()),
-                delete_scroll_handle: gpui::ScrollHandle::new(),
                 pending_path_sync: Some("/".into()),
                 pending_tree_scroll_path: None,
-                center_pending_tree_scroll: false,
                 context_menu: None,
                 creating_folder: false,
             },
@@ -1145,7 +1172,7 @@ impl TinyShell {
             last_prepaint_at: None,
             last_sidebar_width,
             should_move_window: false,
-            hovered_url: None,
+            hovered_entity: None,
             cmd_ctrl_pressed: false,
             _subscriptions,
         };
@@ -1163,7 +1190,20 @@ impl TinyShell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if input == &self.connection_inputs.key_import_passphrase_input {
+        if input == &self.connection_inputs.key_import_text_input {
+            if matches!(event, InputEvent::Change) && self.key_import.open {
+                let content = input.read(cx).value().to_string();
+                let passphrase = self
+                    .connection_inputs
+                    .key_import_passphrase_input
+                    .read(cx)
+                    .value()
+                    .to_string();
+                self.key_import
+                    .set_text(content, &passphrase, &self.managed_keys);
+                cx.notify();
+            }
+        } else if input == &self.connection_inputs.key_import_passphrase_input {
             let passphrase = self
                 .connection_inputs
                 .key_import_passphrase_input
@@ -1837,7 +1877,11 @@ impl TinyShell {
                 if sftp.current_path == path {
                     sftp.entries = entries;
                     if self.workspace().active_group_id() == Some(tab_id.as_str()) {
-                        self.sftp_workspace.pending_path_sync = Some(path);
+                        self.sftp_workspace.pending_path_sync = Some(path.clone());
+                        // Children may arrive after the first layout and change the
+                        // scroll limit; center again using the completed listing.
+                        self.sftp_workspace.tree_scroll_target_bounds = None;
+                        self.sftp_workspace.pending_tree_scroll_path = Some(path);
                     }
                 }
             }
@@ -1893,7 +1937,6 @@ impl TinyShell {
                     self.sftp_workspace.pending_path_sync = Some(home.clone());
                     self.sftp_workspace.tree_scroll_target_bounds = None;
                     self.sftp_workspace.pending_tree_scroll_path = Some(home);
-                    self.sftp_workspace.center_pending_tree_scroll = false;
                 }
             }
         }
@@ -2294,6 +2337,9 @@ impl TinyShell {
         if !changed {
             return;
         }
+
+        self.config.set_sftp_follow_terminal_cwd(enabled);
+        self.mark_config_preferences_dirty();
 
         if enabled && let Some(active_tab) = self.workspace().active_tab_id().map(str::to_owned) {
             self.sync_sftp_to_terminal_tab(&active_tab, false);

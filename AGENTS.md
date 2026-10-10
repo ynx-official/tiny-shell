@@ -20,6 +20,12 @@
 - Style reference: `C:/Users/Administrator/.codex/skills/awesome-design-md/references/design-md/sentry/DESIGN.md`
 - Implementation note: 保持原生桌面应用的紧凑信息密度，使用 Sentry 规范的 8px 间距节奏、平面分栏和清晰技术层级；项目主题色与既有组件状态优先。
 
+### 确认弹窗复用
+
+- 标题、说明、取消、执行组成的确认提示统一使用 `src/app/confirmation_dialog.rs` 的 `ConfirmationDialog`，不要重新拼装宽度、按钮与危险色。
+- 独立确认使用 `.open(window, cx)`；业务模态队列使用 `.build(dialog, window, cx)`，保留窗口归属与 token 关闭回调。
+- 调用方式和场景边界见 [统一确认弹窗](docs/02-design/confirmation-dialogs.md)；原生预览命令为 `cargo run --locked --example confirmation-dialog`。
+
 ## 2. 基本开发规范
 
 ### 2.1 修改原则

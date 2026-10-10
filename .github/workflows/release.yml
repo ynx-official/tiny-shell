@@ -31,18 +31,28 @@ jobs:
         with:
           python-version: "3.13"
 
-      - name: Test release tooling
-        run: python -m unittest scripts/test_release_notes.py scripts/test_update_manifest.py
-
       - name: Validate release documents
+        id: metadata
         shell: bash
         run: |
           set -euo pipefail
           if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
             python scripts/release_notes.py --tag "${GITHUB_REF_NAME}"
+            VERSION_TAG="${GITHUB_REF_NAME}"
           else
             python scripts/release_notes.py --check-current
+            VERSION_TAG="v$(python -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["package"]["version"])')"
           fi
+          # A per-version opt-out keeps later releases tested by default.
+          SKIP_TESTS=false
+          if grep -Fxq '> 发布测试策略：skip' "docs/upgrade/${VERSION_TAG}/README.md"; then
+            SKIP_TESTS=true
+          fi
+          echo "skip_tests=${SKIP_TESTS}" >> "$GITHUB_OUTPUT"
+
+      - name: Test release tooling
+        if: steps.metadata.outputs.skip_tests != 'true'
+        run: python -m unittest scripts/test_release_notes.py scripts/test_update_manifest.py
 
   build:
     name: ${{ matrix.name }}

@@ -3,7 +3,7 @@ use gpui::{
     Styled as _, Window, div, prelude::FluentBuilder as _, px,
 };
 use gpui_component::{
-    ActiveTheme as _, Disableable as _,
+    ActiveTheme as _, Disableable as _, Selectable as _,
     button::{Button, ButtonVariants as _},
     dialog::Dialog,
     h_flex,
@@ -12,7 +12,10 @@ use gpui_component::{
 };
 use rust_i18n::t;
 
-use crate::{TinyShell, app::ssh_key_import::KeyImportValidation};
+use crate::{
+    TinyShell,
+    app::ssh_key_import::{KeyImportSource, KeyImportValidation},
+};
 
 /// Managed-key modal shown from either the main workspace or a standalone SSH editor.
 /// The modal manager binds it to the exact native `window` passed here.
@@ -297,6 +300,7 @@ pub(crate) fn show_managed_key_import_dialog(
     let view = cx.entity();
     let remark_input = shell.connection_inputs.key_import_remark_input.clone();
     let passphrase_input = shell.connection_inputs.key_import_passphrase_input.clone();
+    let text_input = shell.connection_inputs.key_import_text_input.clone();
     let focus_remark_input = remark_input.clone();
     shell.replace_modal_dialog(
         crate::app::DialogKind::ManagedKeyImport,
@@ -308,7 +312,7 @@ pub(crate) fn show_managed_key_import_dialog(
             });
             dialog
                 .title(t!("key_import_dialog_title").to_string())
-                .w(px(440.))
+                .w(px(540.))
                 .close_button(false)
                 .overlay_closable(false)
                 .on_close({
@@ -318,6 +322,13 @@ pub(crate) fn show_managed_key_import_dialog(
                             if this.modal_dialog_closed(token, window, cx) {
                                 this.managed_key_dialog_token = None;
                                 this.key_import.close();
+                                this.clear_key_import_text(window, cx);
+                                TinyShell::set_input_value(
+                                    &this.connection_inputs.key_import_passphrase_input,
+                                    "",
+                                    window,
+                                    cx,
+                                );
                                 this.managed_key_dialog_selection = None;
                             }
                             cx.notify();
@@ -337,13 +348,19 @@ pub(crate) fn show_managed_key_import_dialog(
                     let view = view.clone();
                     let remark_input = remark_input.clone();
                     let passphrase_input = passphrase_input.clone();
+                    let text_input = text_input.clone();
                     move |content, window, cx| {
+                        let source = view.read(cx).key_import.source;
                         let path = view.read(cx).key_import.path.clone();
                         let validation = view.read(cx).key_import.validation.clone();
                         let can_confirm = validation.can_confirm();
                         let (status, status_color) = match &validation {
                             KeyImportValidation::WaitingForFile => (
-                                t!("key_import_select_file_hint").to_string(),
+                                if source == KeyImportSource::File {
+                                    t!("key_import_select_file_hint").to_string()
+                                } else {
+                                    t!("key_import_text_hint").to_string()
+                                },
                                 cx.theme().muted_foreground,
                             ),
                             KeyImportValidation::Validating => (
@@ -388,49 +405,97 @@ pub(crate) fn show_managed_key_import_dialog(
                                 )
                                 .child(
                                     h_flex()
-                                        .items_center()
-                                        .gap_2()
+                                        .gap_1()
                                         .child(
-                                            div()
-                                                .w(px(80.))
-                                                .text_sm()
-                                                .child(t!("private_key").to_string()),
-                                        )
-                                        .child(
-                                            div()
-                                                .flex_1()
-                                                .min_w(px(0.))
-                                                .px_3()
-                                                .py_2()
-                                                .rounded_md()
-                                                .border_1()
-                                                .border_color(cx.theme().border)
-                                                .text_sm()
-                                                .overflow_hidden()
-                                                .text_color(if path.is_empty() {
-                                                    cx.theme().muted_foreground
-                                                } else {
-                                                    cx.theme().foreground
-                                                })
-                                                .child(if path.is_empty() {
-                                                    t!("key_import_choose_file").to_string()
-                                                } else {
-                                                    path
-                                                }),
-                                        )
-                                        .child(
-                                            Button::new("browse-key-import")
-                                                .label(t!("browse").to_string())
+                                            Button::new("key-source-file")
+                                                .label(t!("key_import_source_file").to_string())
+                                                .selected(source == KeyImportSource::File)
                                                 .on_click(window.listener_for(
                                                     &view,
                                                     |this, _, window, cx| {
-                                                        this.pick_managed_key_import_file(
-                                                            window, cx,
+                                                        this.switch_key_import_source(
+                                                            KeyImportSource::File,
+                                                            window,
+                                                            cx,
+                                                        );
+                                                    },
+                                                )),
+                                        )
+                                        .child(
+                                            Button::new("key-source-text")
+                                                .label(t!("key_import_source_text").to_string())
+                                                .selected(source == KeyImportSource::Text)
+                                                .on_click(window.listener_for(
+                                                    &view,
+                                                    |this, _, window, cx| {
+                                                        this.switch_key_import_source(
+                                                            KeyImportSource::Text,
+                                                            window,
+                                                            cx,
                                                         );
                                                     },
                                                 )),
                                         ),
                                 )
+                                .when(source == KeyImportSource::Text, |form| {
+                                    form.child(
+                                        v_flex()
+                                            .gap_2()
+                                            .child(
+                                                div()
+                                                    .text_sm()
+                                                    .child(t!("private_key").to_string()),
+                                            )
+                                            .child(Input::new(&text_input).w_full()),
+                                    )
+                                })
+                                .when(source == KeyImportSource::File, |form| {
+                                    form.child(
+                                        h_flex()
+                                            .items_center()
+                                            .gap_2()
+                                            .child(
+                                                div()
+                                                    .w(px(80.))
+                                                    .text_sm()
+                                                    .child(t!("private_key").to_string()),
+                                            )
+                                            .child(
+                                                div()
+                                                    .flex_1()
+                                                    .min_w(px(0.))
+                                                    .px_3()
+                                                    .py_2()
+                                                    .rounded_md()
+                                                    .border_1()
+                                                    .border_color(cx.theme().border)
+                                                    .text_sm()
+                                                    .overflow_hidden()
+                                                    .text_color(if path.is_empty() {
+                                                        cx.theme().muted_foreground
+                                                    } else {
+                                                        cx.theme().foreground
+                                                    })
+                                                    .child(if path.is_empty() {
+                                                        t!("key_import_choose_file").to_string()
+                                                    } else {
+                                                        path
+                                                    }),
+                                            )
+                                            .child(
+                                                Button::new("browse-key-import")
+                                                    .label(t!("browse").to_string())
+                                                    .on_click(window.listener_for(
+                                                        &view,
+                                                        |this, _, window, cx| {
+                                                            this.pick_managed_key_import_file(
+                                                                window, cx,
+                                                            );
+                                                        },
+                                                    )),
+                                            ),
+                                    )
+                                })
                                 .child(
                                     h_flex()
                                         .items_center()
@@ -453,13 +518,13 @@ pub(crate) fn show_managed_key_import_dialog(
                                 )
                                 .child(
                                     h_flex()
-                                        .justify_center()
+                                        .justify_end()
                                         .gap_2()
                                         .child(
                                             Button::new("confirm-key-import")
                                                 .primary()
                                                 .disabled(!can_confirm)
-                                                .label(t!("confirm").to_string())
+                                                .label(t!("save").to_string())
                                                 .on_click(window.listener_for(
                                                     &view,
                                                     |this, _, window, cx| {

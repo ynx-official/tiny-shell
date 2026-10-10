@@ -6,10 +6,19 @@ const SFTP_TREE_INDENT_PX: f32 = 15.;
 const SFTP_TREE_ROW_PADDING_LEFT_PX: f32 = 9.;
 const SFTP_TREE_GUIDE_CENTER_PX: f32 = 7.;
 const SFTP_TREE_SCROLLBAR_SIZE_PX: f32 = 16.;
-const QUICK_COMMAND_CATEGORY_WIDTH_PX: f32 = 220.;
-const QUICK_COMMAND_CATEGORY_ROW_HEIGHT_PX: f32 = 36.;
-const QUICK_COMMAND_CARD_WIDTH_PX: f32 = 280.;
-const QUICK_COMMAND_CARD_HEIGHT_PX: f32 = 76.;
+const QUICK_COMMAND_CATEGORY_WIDTH_PX: f32 = 192.;
+const QUICK_COMMAND_CATEGORY_ROW_HEIGHT_PX: f32 = 32.;
+const QUICK_COMMAND_HEADER_HEIGHT_PX: f32 = 40.;
+const QUICK_COMMAND_CARD_MIN_WIDTH_PX: f32 = 248.;
+const QUICK_COMMAND_CARD_HEIGHT_PX: f32 = 64.;
+const QUICK_COMMAND_GRID_GAP_PX: f32 = 8.;
+
+fn quick_command_grid_columns(content_width: f32) -> u16 {
+    ((content_width + QUICK_COMMAND_GRID_GAP_PX)
+        / (QUICK_COMMAND_CARD_MIN_WIDTH_PX + QUICK_COMMAND_GRID_GAP_PX))
+        .floor()
+        .max(1.) as u16
+}
 
 fn quick_command_matches_query(
     command: &crate::session::session_types::QuickCommand,
@@ -173,6 +182,41 @@ fn sftp_tree_render_rows(
         None,
     );
     rows
+}
+
+fn sftp_locate_icon(color: Hsla) -> impl IntoElement {
+    // A small target reads as "locate" at toolbar size; the Frame icon
+    // looks like a hash and suggests layout controls instead.
+    div()
+        .relative()
+        .size(px(14.))
+        .flex_none()
+        .child(
+            div()
+                .absolute()
+                .inset(px(3.))
+                .border_1()
+                .border_color(color)
+                .rounded_full(),
+        )
+        .child(div().absolute().inset(px(6.)).rounded_full().bg(color))
+        .children(
+            [
+                (6.5, 0., 1., 3.),
+                (6.5, 11., 1., 3.),
+                (0., 6.5, 3., 1.),
+                (11., 6.5, 3., 1.),
+            ]
+            .map(|(x, y, width, height)| {
+                div()
+                    .absolute()
+                    .left(px(x))
+                    .top(px(y))
+                    .w(px(width))
+                    .h(px(height))
+                    .bg(color)
+            }),
+        )
 }
 
 fn sftp_tree_branch_guides(
@@ -495,7 +539,8 @@ impl TinyShell {
                         Button::new("sftp-locate-current-directory")
                             .ghost()
                             .small()
-                            .icon(IconName::Frame)
+                            .w(px(24.))
+                            .child(sftp_locate_icon(cx.theme().muted_foreground))
                             .tooltip(t!("sftp_locate_current_directory").to_string())
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.locate_current_sftp_tree_directory(cx);
@@ -778,19 +823,19 @@ impl TinyShell {
             .child(
                 v_flex()
                     .w(px(QUICK_COMMAND_CATEGORY_WIDTH_PX))
-                    .min_w(px(188.))
                     .h_full()
                     .flex_none()
                     .border_r_1()
                     .border_color(border)
                     .child(
                         h_flex()
-                            .h(px(38.))
+                            .h(px(QUICK_COMMAND_HEADER_HEIGHT_PX))
                             .flex_none()
                             .items_center()
                             .px_3()
                             .border_b_1()
                             .border_color(border)
+                            .text_size(rems(0.875))
                             .font_weight(FontWeight::SEMIBOLD)
                             .child(t!("quick_command_categories"))
                             .child(div().flex_1())
@@ -835,6 +880,7 @@ impl TinyShell {
                                         .items_center()
                                         .gap_2()
                                         .px_2()
+                                        .text_size(rems(0.875))
                                         .rounded_sm()
                                         .cursor_pointer()
                                         .border_l_2()
@@ -1004,7 +1050,7 @@ impl TinyShell {
                                             .min_h(px(0.))
                                             .child(
                                                 h_flex()
-                                                    .h(px(46.))
+                                                    .h(px(QUICK_COMMAND_HEADER_HEIGHT_PX))
                                                     .flex_none()
                                                     .items_center()
                                                     .gap_2()
@@ -1012,13 +1058,7 @@ impl TinyShell {
                                                     .border_b_1()
                                                     .border_color(border)
                                                     .child(
-                                                        div()
-                                                            .flex_1()
-                                                            .min_w(px(0.))
-                                                            .truncate()
-                                                            .text_size(rems(1.05))
-                                                            .font_weight(FontWeight::SEMIBOLD)
-                                                            .child(selected_category_name),
+                                                        super::quick_command_header::title(selected_category_name),
                                                     )
                                                     .child(
                                                         div()
@@ -1052,7 +1092,7 @@ impl TinyShell {
                                                     )
                                                     .child(
                                                         Button::new("quick-command-manage")
-                                                            .secondary()
+                                                            .ghost()
                                                             .small()
                                                             .icon(IconName::Settings)
                                                             .tooltip(
@@ -1090,10 +1130,27 @@ impl TinyShell {
                                                                 .pr_5()
                                                                 .child(
                                                                     div()
-                                                                        .flex()
-                                                                        .flex_wrap()
+                                                                        .relative()
+                                                                        .w_full()
+                                                                        .flex_none()
+                                                                        .grid()
+                                                                        .grid_cols(self.sftp_workspace.quick_command_grid_columns)
                                                                         .items_start()
-                                                                        .gap_2()
+                                                                        .gap(px(QUICK_COMMAND_GRID_GAP_PX))
+                                                                        .on_prepaint({
+                                                                            let view = cx.entity();
+                                                                            move |bounds, _, cx| {
+                                                                                // Measure the content itself so sidebars and tool panels
+                                                                                // cannot leave stale window-based column counts.
+                                                                                let columns = quick_command_grid_columns(f32::from(bounds.size.width));
+                                                                                view.update(cx, |this, cx| {
+                                                                                    if this.sftp_workspace.quick_command_grid_columns != columns {
+                                                                                        this.sftp_workspace.quick_command_grid_columns = columns;
+                                                                                        cx.notify();
+                                                                                    }
+                                                                                });
+                                                                            }
+                                                                        })
                                                                         .children(filtered_commands.into_iter().enumerate().map(
                                                                 |(index, command)| {
                                                                     let category_id = selected_category_id
@@ -1110,11 +1167,12 @@ impl TinyShell {
                                                                     let summary = quick_command_card_summary(&command).to_string();
                                                                     div()
                                                                         .id(("quick-command", index))
-                                                                        .w(px(QUICK_COMMAND_CARD_WIDTH_PX))
+                                                                        .w_full()
+                                                                        .min_w(px(0.))
                                                                         .h(px(QUICK_COMMAND_CARD_HEIGHT_PX))
                                                                         .flex_none()
                                                                         .cursor_pointer()
-                                                                        .rounded_md()
+                                                                        .rounded_sm()
                                                                         .border_1()
                                                                         .border_color(if selected {
                                                                             primary
@@ -1207,23 +1265,13 @@ impl TinyShell {
                                                                             h_flex()
                                                                                 .size_full()
                                                                                 .items_center()
-                                                                                .gap_3()
+                                                                                .gap_2()
                                                                                 .px_3()
                                                                                 .child(
-                                                                                    div()
-                                                                                        .size(px(30.))
+                                                                                    Icon::new(IconName::SquareTerminal)
+                                                                                        .with_size(Size::Small)
                                                                                         .flex_none()
-                                                                                        .flex()
-                                                                                        .items_center()
-                                                                                        .justify_center()
-                                                                                        .rounded_sm()
-                                                                                        .border_1()
-                                                                                        .border_color(border)
-                                                                                        .bg(muted.opacity(0.45))
-                                                                                        .child(
-                                                                                            Icon::new(IconName::SquareTerminal)
-                                                                                                .with_size(Size::Small),
-                                                                                        ),
+                                                                                        .text_color(muted_foreground),
                                                                                 )
                                                                                 .child(
                                                                                     v_flex()
@@ -1233,6 +1281,7 @@ impl TinyShell {
                                                                                         .child(
                                                                                             div()
                                                                                                 .truncate()
+                                                                                                .text_size(rems(0.875))
                                                                                                 .font_weight(FontWeight::SEMIBOLD)
                                                                                                 .text_color(foreground)
                                                                                                 .child(command.name),
@@ -2537,6 +2586,7 @@ mod sftp_tree_tests {
             name: name.into(),
             remark: remark.into(),
             command: command.into(),
+            usage: Default::default(),
         }
     }
 
@@ -2559,10 +2609,25 @@ mod sftp_tree_tests {
     }
 
     #[test]
-    fn quick_command_layout_keeps_relaxed_rows_and_equal_card_dimensions() {
-        assert_eq!(QUICK_COMMAND_CATEGORY_ROW_HEIGHT_PX, 36.);
-        assert_eq!(QUICK_COMMAND_CARD_WIDTH_PX, 280.);
-        assert_eq!(QUICK_COMMAND_CARD_HEIGHT_PX, 76.);
+    fn quick_command_grid_keeps_readable_cards_without_wasting_a_column() {
+        for width in [248., 400., 504., 608., 760., 792., 1024., 1600.] {
+            let columns = f32::from(quick_command_grid_columns(width));
+            let card_width = (width - (columns - 1.) * QUICK_COMMAND_GRID_GAP_PX) / columns;
+            assert!(card_width >= QUICK_COMMAND_CARD_MIN_WIDTH_PX);
+            assert!(
+                (columns + 1.) * QUICK_COMMAND_CARD_MIN_WIDTH_PX
+                    + columns * QUICK_COMMAND_GRID_GAP_PX
+                    > width
+            );
+        }
+    }
+
+    #[test]
+    fn quick_command_grid_adapts_to_the_available_content_width() {
+        // Widths are measured inside the content padding and scrollbar gutter.
+        for (width, columns) in [(240., 1), (503., 1), (504., 2), (760., 3), (1016., 4)] {
+            assert_eq!(quick_command_grid_columns(width), columns, "width {width}");
+        }
     }
 
     #[test]
@@ -2589,90 +2654,110 @@ mod sftp_tree_tests {
     }
 
     #[test]
-    fn visible_tree_target_keeps_the_current_scroll_position() {
+    fn locating_current_directory_reopens_its_collapsed_ancestors() {
+        let mut sftp = tree_state();
+        sftp.current_path = "/data/docker/mysql".into();
+        sftp.expanded_directories.insert("/other".into());
+
+        TinyShell::expand_sftp_tree_to_path(&mut sftp, "/data/docker/mysql");
+
+        for path in ["/", "/data", "/data/docker", "/data/docker/mysql", "/other"] {
+            assert!(sftp.expanded_directories.contains(path));
+        }
+    }
+
+    #[test]
+    fn visible_tree_target_moves_to_the_viewport_center() {
         let viewport = vertical_bounds(100., 200.);
         let target = vertical_bounds(150., 30.);
 
         assert_eq!(
-            crate::sftp::ops::minimal_sftp_tree_scroll_offset_y(
+            crate::sftp::ops::centered_sftp_tree_scroll_offset_y(
                 px(-300.),
                 viewport,
                 target,
                 px(0.),
+                px(1000.),
             ),
-            px(-300.)
+            px(-265.)
         );
     }
 
     #[test]
-    fn offscreen_tree_target_moves_only_to_the_nearest_viewport_edge() {
+    fn offscreen_tree_target_moves_to_the_viewport_center() {
         let viewport = vertical_bounds(100., 200.);
 
         assert_eq!(
-            crate::sftp::ops::minimal_sftp_tree_scroll_offset_y(
+            crate::sftp::ops::centered_sftp_tree_scroll_offset_y(
                 px(-300.),
                 viewport,
                 vertical_bounds(70., 30.),
                 px(0.),
+                px(1000.),
             ),
-            px(-270.)
+            px(-185.)
         );
         assert_eq!(
-            crate::sftp::ops::minimal_sftp_tree_scroll_offset_y(
+            crate::sftp::ops::centered_sftp_tree_scroll_offset_y(
                 px(-300.),
                 viewport,
                 vertical_bounds(300., 30.),
                 px(0.),
+                px(1000.),
             ),
-            px(-330.)
+            px(-415.)
         );
     }
 
     #[test]
-    fn partially_visible_tree_target_does_not_jump() {
+    fn partially_visible_tree_target_moves_to_the_viewport_center() {
         let viewport = vertical_bounds(100., 200.);
 
         assert_eq!(
-            crate::sftp::ops::minimal_sftp_tree_scroll_offset_y(
+            crate::sftp::ops::centered_sftp_tree_scroll_offset_y(
                 px(-300.),
                 viewport,
                 vertical_bounds(90., 30.),
                 px(0.),
+                px(1000.),
             ),
-            px(-300.)
+            px(-205.)
         );
         assert_eq!(
-            crate::sftp::ops::minimal_sftp_tree_scroll_offset_y(
+            crate::sftp::ops::centered_sftp_tree_scroll_offset_y(
                 px(-300.),
                 viewport,
                 vertical_bounds(290., 30.),
                 px(0.),
+                px(1000.),
             ),
-            px(-300.)
+            px(-405.)
         );
     }
 
     #[test]
-    fn scrollbar_inset_only_affects_a_fully_offscreen_target() {
+    fn tree_target_centers_above_the_horizontal_scrollbar() {
         let viewport = vertical_bounds(100., 200.);
 
         assert_eq!(
-            crate::sftp::ops::minimal_sftp_tree_scroll_offset_y(
+            crate::sftp::ops::centered_sftp_tree_scroll_offset_y(
                 px(-300.),
                 viewport,
                 vertical_bounds(295., 30.),
                 px(16.),
+                px(1000.),
             ),
-            px(-300.)
+            px(-418.)
         );
         assert_eq!(
-            crate::sftp::ops::minimal_sftp_tree_scroll_offset_y(
+            crate::sftp::ops::centered_sftp_tree_scroll_offset_y(
                 px(-300.),
                 viewport,
                 vertical_bounds(300., 30.),
                 px(16.),
+                px(1000.),
             ),
-            px(-346.)
+            px(-423.)
         );
     }
 

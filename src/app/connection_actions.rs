@@ -280,7 +280,7 @@ impl TinyShell {
                 selected_path: None,
                 selected_entries: std::collections::HashSet::new(),
                 home_dir: String::new(),
-                follow_terminal_cwd: false,
+                follow_terminal_cwd: self.config.sftp_follow_terminal_cwd(),
                 initial_terminal_cwd_synced: false,
                 latency_ms: None,
             }),

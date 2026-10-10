@@ -1551,10 +1551,7 @@ impl TerminalTab {
 
     pub fn paste_text(&mut self, text: &str) {
         let bracketed = self.term.mode().contains(TermMode::BRACKETED_PASTE);
-        let paste_text = text
-            .replace('\x1b', "")
-            .replace("\r\n", "\r")
-            .replace('\n', "\r");
+        let paste_text = normalize_terminal_paste(text);
 
         let mut bytes = Vec::new();
         if bracketed {
@@ -1567,6 +1564,12 @@ impl TerminalTab {
 
         self.send_backend(BackendCommand::Input(bytes));
     }
+}
+
+pub(crate) fn normalize_terminal_paste(text: &str) -> String {
+    text.replace('\x1b', "")
+        .replace("\r\n", "\r")
+        .replace('\n', "\r")
 }
 
 #[cfg(test)]
@@ -1807,13 +1810,19 @@ mod tests {
             },
             event_tx,
         );
-        let _ = tab.render_snapshot(false, &[], 0);
+        let rules = crate::session::highlight_rules::default_highlight_rules();
+        let fingerprint = crate::session::config::ConfigStore::rules_fingerprint(&rules);
+        let _ = tab.render_snapshot(true, &rules, fingerprint);
         let started = std::time::Instant::now();
         for _ in 0..10_000 {
             tab.feed(b"x");
-            std::hint::black_box(tab.render_snapshot(false, &[], 0));
+            std::hint::black_box(tab.render_snapshot(true, &rules, fingerprint));
         }
-        eprintln!("10k incremental terminal renders: {:?}", started.elapsed());
+        eprintln!(
+            "10k incremental terminal renders with {} rules: {:?}",
+            rules.len(),
+            started.elapsed()
+        );
     }
 }
 

@@ -1,0 +1,72 @@
+{
+  "status": "Approved",
+  "updated": "2026-10-10",
+  "purpose": "Windows / macOS / Linux application icon candidates",
+  "generation_method": "built-in imagegen",
+  "reference": "../../source/tiny-shell-brand.png",
+  "candidates": [
+    {
+      "id": "rounded-terminal",
+      "label": "A 圆润终端",
+      "prompt": "Use case: logo-brand. Asset: one production-quality desktop application icon candidate for TinyShell. Input image is a BRAND REFERENCE for the existing black-and-white terminal-window >_ symbol, not a screenshot to reproduce. Keep this identity: a pure black rounded-square application tile, a white terminal-window outline centered inside it, and ONLY a large white chevron plus underscore >_ inside the window. No words, letters, numbers, SSH badge, titlebar dots, code lines, servers, connections, secondary icons, gradients, glow, shadows, bevels, texture, 3D, or watermark. Flat, crisp, clean raster with vector-like edges. One single icon, not a comparison grid or mockup. Output a square 1024x1024 PNG. The black tile should almost fill the canvas with about 2% transparent outside padding; pixels outside the tile must be genuinely transparent. The terminal window and prompt must remain entirely above 81% of canvas height, leaving the bottom part of the tile solid black without a wordmark. Make all strokes bold enough to read at 16/32/48px; balanced negative space; strictly neutral black/white/grayscale antialiasing only.\nVariant A, ROUNDED TERMINAL: soft squircle tile corners, a wide horizontal white terminal window with aspect ratio about 1.5:1, strongly rounded frame corners and rounded line caps. The white window spans roughly 76% canvas width and 50% canvas height, centered at 49% height. The prompt is chunky with smooth rounded ends and a generous horizontal underscore. Approachable and optically balanced; simplest classic terminal icon.",
+      "master": "rounded-terminal/source/tiny-shell-brand.png",
+      "windows": "rounded-terminal/tiny-shell.ico",
+      "macos": "rounded-terminal/tiny-shell.icns",
+      "linux": "rounded-terminal/256x256/tiny-shell.png",
+      "window_png": "rounded-terminal/tiny-shell.png",
+      "master_sha256": "bf0edf94d57c90e046120aea702d1417470918646408a735f8220676157995c4",
+      "icon_contract": {
+        "passed": 6,
+        "failed": 0
+      },
+      "export_adjustment": {
+        "windows_linux_inset": 0.02,
+        "contrast_16px": 1.2
+      }
+    },
+    {
+      "id": "compact-square",
+      "label": "B 紧凑方形",
+      "prompt": "Use case: logo-brand. Asset: one production-quality desktop application icon candidate for TinyShell. Input image is a BRAND REFERENCE for the existing black-and-white terminal-window >_ symbol, not a screenshot to reproduce. Keep this identity: a pure black rounded-square application tile, a white terminal-window outline centered inside it, and ONLY a large white chevron plus underscore >_ inside the window. No words, letters, numbers, SSH badge, titlebar dots, code lines, servers, connections, secondary icons, gradients, glow, shadows, bevels, texture, 3D, or watermark. Flat, crisp, clean raster with vector-like edges. One single icon, not a comparison grid or mockup. Output a square 1024x1024 PNG. The black tile should almost fill the canvas with about 2% transparent outside padding; pixels outside the tile must be genuinely transparent. The terminal window and prompt must remain entirely above 81% of canvas height, leaving the bottom part of the tile solid black without a wordmark. Make all strokes bold enough to read at 16/32/48px; balanced negative space; strictly neutral black/white/grayscale antialiasing only.\nVariant B, COMPACT SQUARE: black tile with moderately rounded corners, a compact almost-square white terminal-window frame roughly 66% canvas width and 60% canvas height centered at 47% height. Frame corners have restrained small rounding. Use a strong geometric chevron and a short, thick underscore, optically centered inside the near-square window. This variant MUST look clearly different from the wide-window reference, with a taller compact window and larger prompt relative to the frame, prioritizing small-size recognition.",
+      "master": "compact-square/source/tiny-shell-brand.png",
+      "windows": "compact-square/tiny-shell.ico",
+      "macos": "compact-square/tiny-shell.icns",
+      "linux": "compact-square/256x256/tiny-shell.png",
+      "window_png": "compact-square/tiny-shell.png",
+      "master_sha256": "ed5b650e7d8a15c632cd19c893eb2179e7aae4ff4fff689382c862781068b5e5",
+      "icon_contract": {
+        "passed": 6,
+        "failed": 0
+      },
+      "export_adjustment": {
+        "windows_linux_inset": 0.01,
+        "contrast_16px": 1.2
+      }
+    },
+    {
+      "id": "angular-terminal",
+      "label": "C 硬朗细节",
+      "prompt": "Use case: logo-brand. Asset: one production-quality desktop application icon candidate for TinyShell. Input image is a BRAND REFERENCE for the existing black-and-white terminal-window >_ symbol, not a screenshot to reproduce. Keep this identity: a pure black rounded-square application tile, a white terminal-window outline centered inside it, and ONLY a large white chevron plus underscore >_ inside the window. No words, letters, numbers, SSH badge, titlebar dots, code lines, servers, connections, secondary icons, gradients, glow, shadows, bevels, texture, 3D, or watermark. Flat, crisp, clean raster with vector-like edges. One single icon, not a comparison grid or mockup. Output a square 1024x1024 PNG. The black tile should almost fill the canvas with about 2% transparent outside padding; pixels outside the tile must be genuinely transparent. The terminal window and prompt must remain entirely above 81% of canvas height, leaving the bottom part of the tile solid black without a wordmark. Make all strokes bold enough to read at 16/32/48px; balanced negative space; strictly neutral black/white/grayscale antialiasing only.\nVariant C, ANGULAR TERMINAL: black tile with noticeably tighter corner radius, a wide white terminal-window frame roughly 78% canvas width and 49% canvas height centered at 49% height. The white window corners are nearly square with only a tiny radius. Frame strokes are moderately bold, not hairlines. Use a crisp angular chevron with flat cut ends and a straight rectangular underscore; disciplined engineering appearance. This variant MUST look distinctly sharper and more rectangular than the rounded reference, while retaining the unmistakable outlined terminal window and >_.",
+      "master": "angular-terminal/source/tiny-shell-brand.png",
+      "windows": "angular-terminal/tiny-shell.ico",
+      "macos": "angular-terminal/tiny-shell.icns",
+      "linux": "angular-terminal/256x256/tiny-shell.png",
+      "window_png": "angular-terminal/tiny-shell.png",
+      "master_sha256": "6cf85b94ea198a763636a34e1760f27fa7de0a0d917317b48679b63dc1ac5c7c",
+      "icon_contract": {
+        "passed": 6,
+        "failed": 0
+      },
+      "export_adjustment": {
+        "windows_linux_inset": 0.02,
+        "contrast_16px": 1.4
+      }
+    }
+  ],
+  "selected_candidate": "rounded-terminal",
+  "selected_on": "2026-10-10",
+  "selection_reason": "User explicitly selected the first variant (A rounded terminal).",
+  "reference_commit": "b27493370104443b88b1712681982acd0c16a986",
+  "reference_sha256": "37072005f3b84f26bc2573cfa72b1d63031f450498893fa2ecc04beac489177b",
+  "reference_note": "Generation used the previous master at the recorded commit; the current source path now contains selected candidate A."
+}

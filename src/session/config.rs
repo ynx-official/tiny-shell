@@ -24,6 +24,7 @@ pub use crate::session::config_file::{
 };
 pub(crate) use crate::session::crypto::hardware_uuid;
 pub use crate::session::highlight_rules::{HighlightRule, default_highlight_rules};
+use crate::session::highlight_rules::{HighlightRuleBundle, HighlightRulePack};
 pub use crate::session::proxy::{ENV_PROXY, EnvProxy, active_proxy, connect_proxy};
 pub use crate::session::session_types::{
     AuthMethod, ConnectionType, DeletedConnectionGroup, DeletedSession, ManagedKey, QuickCommand,
@@ -216,6 +217,10 @@ impl ConfigStore {
         };
 
         cache.migrate_sync_interval();
+        crate::session::highlight_rules::upgrade_builtin_highlight_rules(
+            &mut cache.highlight_rules,
+            &mut cache.highlight_pack_version,
+        );
         if cache.sync_device_id.is_empty() {
             cache.sync_device_id = Uuid::new_v4().to_string();
         }
@@ -894,13 +899,66 @@ impl ConfigStore {
         &self.cache.highlight_rules
     }
 
-    /// Fingerprint used to invalidate compiled matcher and render caches.
-    ///
-    /// The value is process-local cache metadata, not a persisted identifier.
-    pub fn highlight_rules_fingerprint(&self) -> u64 {
+    /// Process-local fingerprint used to invalidate matcher and render caches.
+    pub fn rules_fingerprint(rules: &[HighlightRule]) -> u64 {
         let mut hasher = DefaultHasher::new();
-        self.cache.highlight_rules.hash(&mut hasher);
+        rules.hash(&mut hasher);
         hasher.finish()
+    }
+
+    pub fn enabled_highlight_packs(&self) -> &[HighlightRulePack] {
+        &self.cache.enabled_highlight_packs
+    }
+
+    pub fn set_highlight_pack_enabled(&mut self, pack: HighlightRulePack, enabled: bool) {
+        if pack == HighlightRulePack::Custom {
+            return;
+        }
+        self.cache
+            .enabled_highlight_packs
+            .retain(|item| *item != pack);
+        if enabled {
+            self.cache.enabled_highlight_packs.push(pack);
+            self.cache.enabled_highlight_packs.sort_unstable();
+        }
+    }
+
+    pub fn effective_highlight_rules(&self, session: Option<&Session>) -> Vec<HighlightRule> {
+        let session_id = session.map(|session| session.id.as_str());
+        let group = session.and_then(|session| session.group.as_deref());
+        let mut rules = self
+            .cache
+            .highlight_rules
+            .iter()
+            .enumerate()
+            .filter(|(_, rule)| {
+                (rule.pack == HighlightRulePack::Custom
+                    || self.cache.enabled_highlight_packs.contains(&rule.pack))
+                    && rule.scope.applies_to(session_id, group)
+            })
+            .map(|(index, rule)| (rule.scope.specificity(), index, rule.clone()))
+            .collect::<Vec<_>>();
+        rules.sort_by_key(|(specificity, index, _)| (std::cmp::Reverse(*specificity), *index));
+        rules.into_iter().map(|(_, _, rule)| rule).collect()
+    }
+
+    pub fn export_highlight_rules(&self) -> HighlightRuleBundle {
+        HighlightRuleBundle::new(
+            self.cache.enabled_highlight_packs.clone(),
+            self.cache.highlight_rules.clone(),
+        )
+    }
+
+    pub fn import_highlight_rules(&mut self, bundle: HighlightRuleBundle) {
+        self.cache.highlight_rules = bundle.rules;
+        self.cache.enabled_highlight_packs = bundle.enabled_packs;
+        self.cache.highlight_pack_version = bundle
+            .builtin_pack_version
+            .min(crate::session::highlight_rules::BUILTIN_HIGHLIGHT_PACK_VERSION);
+        crate::session::highlight_rules::upgrade_builtin_highlight_rules(
+            &mut self.cache.highlight_rules,
+            &mut self.cache.highlight_pack_version,
+        );
     }
 
     pub fn replace_highlight_rules(&mut self, rules: Vec<HighlightRule>) {
@@ -947,6 +1005,10 @@ impl ConfigStore {
 
     pub fn reset_highlight_rules(&mut self) {
         self.cache.highlight_rules = default_highlight_rules();
+        self.cache.highlight_pack_version =
+            crate::session::highlight_rules::BUILTIN_HIGHLIGHT_PACK_VERSION;
+        self.cache.enabled_highlight_packs =
+            crate::session::highlight_rules::default_enabled_highlight_packs();
     }
 
     pub fn terminal_font_family(&self) -> &str {
@@ -1095,6 +1157,14 @@ impl ConfigStore {
         self.cache.sftp_panel_view = view.to_string();
     }
 
+    pub fn sftp_follow_terminal_cwd(&self) -> bool {
+        self.cache.sftp_follow_terminal_cwd
+    }
+
+    pub fn set_sftp_follow_terminal_cwd(&mut self, enabled: bool) {
+        self.cache.sftp_follow_terminal_cwd = enabled;
+    }
+
     pub fn sftp_toolbar_visibility(&self) -> SftpToolbarVisibility {
         self.cache.sftp_toolbar_visibility
     }
@@ -1115,8 +1185,37 @@ impl ConfigStore {
         self.cache.quick_command_categories.as_deref()
     }
 
-    pub fn set_quick_command_categories(&mut self, categories: Vec<QuickCommandCategory>) {
+    pub fn set_quick_command_categories(&mut self, mut categories: Vec<QuickCommandCategory>) {
+        super::command_usage::merge_category_usage(
+            &mut categories,
+            self.quick_command_categories().unwrap_or_default(),
+        );
         self.cache.quick_command_categories = Some(categories);
+    }
+
+    pub(crate) fn merge_quick_command_usage_from(&mut self, source: &Self) {
+        if let Some(categories) = &mut self.cache.quick_command_categories {
+            super::command_usage::merge_category_usage(
+                categories,
+                source.quick_command_categories().unwrap_or_default(),
+            );
+        }
+    }
+
+    pub(crate) fn record_quick_command_usage(&mut self, ids: &[String], writer: &str) -> bool {
+        let mut changed = false;
+        if let Some(categories) = &mut self.cache.quick_command_categories {
+            for command in categories
+                .iter_mut()
+                .flat_map(|category| &mut category.commands)
+            {
+                if ids.contains(&command.id) {
+                    command.usage.record(writer);
+                    changed = true;
+                }
+            }
+        }
+        changed
     }
 
     pub fn quick_commands_builtin_version(&self) -> u32 {
@@ -1239,6 +1338,8 @@ impl ConfigStore {
         self.cache.ui_font_size = source.cache.ui_font_size;
         self.cache.keyword_highlight = source.cache.keyword_highlight;
         self.cache.highlight_rules = source.cache.highlight_rules.clone();
+        self.cache.highlight_pack_version = source.cache.highlight_pack_version;
+        self.cache.enabled_highlight_packs = source.cache.enabled_highlight_packs.clone();
         self.cache.ui_font_family = source.cache.ui_font_family.clone();
         self.cache.terminal_font_family = source.cache.terminal_font_family.clone();
         self.cache.title_bar_style = source.cache.title_bar_style;
@@ -1248,9 +1349,14 @@ impl ConfigStore {
         self.cache.sidebar_collapsed = source.cache.sidebar_collapsed;
         self.cache.sftp_panel_minimized = source.cache.sftp_panel_minimized;
         self.cache.sftp_panel_view = source.cache.sftp_panel_view.clone();
+        self.cache.sftp_follow_terminal_cwd = source.cache.sftp_follow_terminal_cwd;
         self.cache.sftp_toolbar_visibility = source.cache.sftp_toolbar_visibility;
         self.cache.sftp_footer_visibility = source.cache.sftp_footer_visibility;
-        self.cache.quick_command_categories = source.cache.quick_command_categories.clone();
+        if let Some(categories) = &source.cache.quick_command_categories {
+            self.set_quick_command_categories(categories.clone());
+        } else {
+            self.cache.quick_command_categories = None;
+        }
         self.cache.quick_commands_builtin_version = source.cache.quick_commands_builtin_version;
         self.cache.sftp_external_editor = source.cache.sftp_external_editor.clone();
         self.cache.key_bindings = source.cache.key_bindings.clone();
@@ -1419,8 +1525,28 @@ mod tests {
 
     use crate::session::crypto::decrypt_config;
     use crate::session::highlight_rules::{
-        HighlightMatchKind, HighlightRuleStyle, HighlightTarget,
+        HighlightMatchKind, HighlightRuleScope, HighlightRuleStyle, HighlightTarget,
     };
+
+    #[test]
+    fn sftp_follow_terminal_cwd_choice_survives_preference_save_and_reload() -> Result<()> {
+        let workspace = TempWorkspace::initialize_in(std::env::temp_dir())?;
+        let path = workspace.path().join("config.json");
+        for enabled in [false, true] {
+            let mut source = ConfigStore::in_memory();
+            source.set_sftp_follow_terminal_cwd(enabled);
+            let mut latest = ConfigStore::load_from_path(path.clone())?;
+            latest.merge_interactive_preferences_from(&source);
+            latest.save()?;
+            let reloaded = ConfigStore::load_from_path(path.clone())?;
+            assert_eq!(reloaded.sftp_follow_terminal_cwd(), enabled);
+            assert_eq!(
+                serde_json::to_value(reloaded.cache)?["sftp_follow_terminal_cwd"],
+                enabled
+            );
+        }
+        Ok(())
+    }
 
     #[test]
     fn merging_preferences_preserves_connection_data() {
@@ -1443,6 +1569,11 @@ mod tests {
             case_sensitive: false,
             whole_word: true,
             target: HighlightTarget::Match,
+            capture_group: None,
+            pack: crate::session::highlight_rules::HighlightRulePack::Custom,
+            category: crate::session::highlight_rules::HighlightRuleCategory::General,
+            scope: crate::session::highlight_rules::HighlightRuleScope::Global,
+            entity: None,
             style: HighlightRuleStyle::default(),
         }]);
         latest.merge_interactive_preferences_from(&source);
@@ -1467,7 +1598,7 @@ mod tests {
     fn highlight_rules_support_ordered_crud_reset_and_fingerprinting() {
         let mut store = ConfigStore::in_memory();
         let defaults = store.highlight_rules().to_vec();
-        let default_fingerprint = store.highlight_rules_fingerprint();
+        let default_fingerprint = ConfigStore::rules_fingerprint(store.highlight_rules());
         let custom = HighlightRule {
             id: "custom".to_string(),
             name: "Custom".to_string(),
@@ -1477,12 +1608,20 @@ mod tests {
             case_sensitive: false,
             whole_word: true,
             target: HighlightTarget::Match,
+            capture_group: None,
+            pack: crate::session::highlight_rules::HighlightRulePack::Custom,
+            category: crate::session::highlight_rules::HighlightRuleCategory::General,
+            scope: crate::session::highlight_rules::HighlightRuleScope::Global,
+            entity: None,
             style: HighlightRuleStyle::default(),
         };
 
         store.upsert_highlight_rule(custom.clone());
         assert_eq!(store.highlight_rules().last(), Some(&custom));
-        assert_ne!(store.highlight_rules_fingerprint(), default_fingerprint);
+        assert_ne!(
+            ConfigStore::rules_fingerprint(store.highlight_rules()),
+            default_fingerprint
+        );
 
         let mut updated = custom.clone();
         updated.name = "Updated".to_string();
@@ -1509,7 +1648,45 @@ mod tests {
         assert!(store.highlight_rules().is_empty());
         store.reset_highlight_rules();
         assert_eq!(store.highlight_rules(), defaults);
-        assert_eq!(store.highlight_rules_fingerprint(), default_fingerprint);
+        assert_eq!(
+            ConfigStore::rules_fingerprint(store.highlight_rules()),
+            default_fingerprint
+        );
+    }
+
+    #[test]
+    fn effective_rules_filter_packs_and_prefer_session_then_group_then_global() {
+        let mut store = ConfigStore::in_memory();
+        store.replace_highlight_rules(Vec::new());
+        let mut global = HighlightRule::custom("global", "Global", "global");
+        global.pack = HighlightRulePack::Core;
+        let mut group = HighlightRule::custom("group", "Group", "group");
+        group.scope = HighlightRuleScope::Group("production".to_string());
+        let mut session_rule = HighlightRule::custom("session", "Session", "session");
+        session_rule.scope = HighlightRuleScope::Session("session-1".to_string());
+        let mut disabled_pack = HighlightRule::custom("git", "Git", "commit");
+        disabled_pack.pack = HighlightRulePack::Git;
+        store.replace_highlight_rules(vec![global, group, session_rule, disabled_pack]);
+
+        let mut session = Session::password("host".into(), 22, "user".into(), "secret".into());
+        session.id = "session-1".to_string();
+        session.group = Some("production/api".to_string());
+        let rules = store.effective_highlight_rules(Some(&session));
+        assert_eq!(
+            rules
+                .iter()
+                .map(|rule| rule.id.as_str())
+                .collect::<Vec<_>>(),
+            ["session", "group", "global"]
+        );
+
+        store.set_highlight_pack_enabled(HighlightRulePack::Git, true);
+        assert!(
+            store
+                .effective_highlight_rules(Some(&session))
+                .iter()
+                .any(|rule| rule.id == "git")
+        );
     }
 
     #[test]
@@ -1528,6 +1705,7 @@ mod tests {
                 name: "Uptime".to_string(),
                 remark: String::new(),
                 command: "uptime".to_string(),
+                usage: Default::default(),
             },
         );
 
@@ -1577,6 +1755,41 @@ mod tests {
         );
         assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
 
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn command_usage_survives_restart_and_merges_stale_window_preferences() {
+        let dir = std::env::temp_dir().join(format!("tiny-shell-usage-test-{}", Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("sessions.json");
+        let mut first = ConfigStore::load_from_path(path.clone()).unwrap();
+        first.set_quick_command_categories(vec![QuickCommandCategory {
+            id: "tools".into(),
+            name: "Tools".into(),
+            commands: vec![QuickCommand {
+                id: "docker".into(),
+                name: "Docker".into(),
+                remark: String::new(),
+                command: "docker ps".into(),
+                usage: Default::default(),
+            }],
+        }]);
+        let mut second = first.clone();
+        let ids = vec!["docker".to_string()];
+        assert!(first.record_quick_command_usage(&ids, "window-a"));
+        assert!(second.record_quick_command_usage(&ids, "window-b"));
+        first.merge_interactive_preferences_from(&second);
+        first.merge_interactive_preferences_from(&second);
+        first.save().unwrap();
+        let restored = ConfigStore::load_from_path(path).unwrap();
+        assert_eq!(
+            restored.quick_command_categories().unwrap()[0].commands[0]
+                .usage
+                .total(),
+            2
+        );
+        assert!(!second.record_quick_command_usage(&["unknown".into()], "window-b"));
         fs::remove_dir_all(dir).unwrap();
     }
 

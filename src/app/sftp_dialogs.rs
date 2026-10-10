@@ -37,9 +37,10 @@ impl SftpPermissionsForm {
         cx: &mut Context<Self>,
     ) -> Self {
         let input = cx.new(|cx| {
-            InputState::new(window, cx)
-                .default_value(format!("{:03o}", mode & 0o7777))
-                .placeholder(t!("sftp_permissions_placeholder").to_string())
+            crate::app::localization::localized_input(window, cx, || {
+                t!("sftp_permissions_placeholder").to_string()
+            })
+            .default_value(format!("{:03o}", mode & 0o7777))
         });
         let subscriptions = vec![cx.subscribe_in(&input, window, Self::on_input_event)];
         Self {
@@ -326,10 +327,12 @@ impl TinyShell {
             .map(|sftp| sftp.current_path.clone())
             .unwrap_or_else(|| "/".to_string());
         let input = cx.new(|cx| {
-            gpui_component::input::InputState::new(window, cx).placeholder(if is_dir {
-                t!("sftp_new_folder_name").to_string()
-            } else {
-                t!("sftp_new_file_name").to_string()
+            crate::app::localization::localized_input(window, cx, move || {
+                if is_dir {
+                    t!("sftp_new_folder_name").to_string()
+                } else {
+                    t!("sftp_new_file_name").to_string()
+                }
             })
         });
         let submit_input = input.clone();
@@ -679,112 +682,46 @@ impl TinyShell {
         cx: &mut Context<Self>,
     ) {
         let view = cx.entity();
-        let submit_paths = paths.clone();
+        let mut description = t!("confirm_delete_desc", count = paths.len()).to_string();
+        if quick {
+            description.push_str(&format!("\n\n{}", t!("sftp_quick_delete_warning")));
+        }
+        description.push_str(&format!("\n\n{}", paths.join("\n")));
         self.open_modal_dialog(
             crate::app::DialogKind::ManagedKeyImport,
             window,
             cx,
-            move |dialog: Dialog, token, window, _| {
-                let on_close_view = view.clone();
-                let confirm_paths = paths.clone();
-                let content_max_height = (window.viewport_size().height - px(220.))
-                    .max(px(160.))
-                    .min(px(420.));
-                dialog
-                    .title(if quick {
+            move |dialog: Dialog, token, window, cx| {
+                crate::app::confirmation_dialog::ConfirmationDialog::new(
+                    if quick {
                         t!("sftp_quick_delete_title").to_string()
                     } else {
                         t!("confirm_delete").to_string()
-                    })
-                    .w(px(520.))
-                    .on_close(move |_, window, cx| {
-                        on_close_view.update(cx, |this, cx| {
+                    },
+                    description.clone(),
+                )
+                .danger(true)
+                .confirm_label(t!("delete").to_string())
+                .on_close({
+                    let view = view.clone();
+                    move |_, window, cx| {
+                        view.update(cx, |this, cx| {
                             this.modal_dialog_closed(token, window, cx);
                             cx.notify();
                         });
-                    })
-                    .on_ok({
-                        let view = view.clone();
-                        let submit_paths = submit_paths.clone();
-                        move |_, _, cx| {
-                            view.update(cx, |this, cx| {
-                                this.apply_sftp_delete_paths(&submit_paths, quick, cx);
-                            });
-                            true
-                        }
-                    })
-                    .footer(
-                        h_flex()
-                            .w_full()
-                            .justify_end()
-                            .gap_2()
-                            .child(
-                                Button::new(if quick {
-                                    "cancel-sftp-quick-delete"
-                                } else {
-                                    "cancel-sftp-delete"
-                                })
-                                .label(t!("cancel").to_string())
-                                .on_click(window.listener_for(
-                                    &view,
-                                    move |this, _, window, cx| {
-                                        this.dismiss_modal_dialog(token, window, cx);
-                                    },
-                                )),
-                            )
-                            .child(
-                                Button::new(if quick {
-                                    "confirm-sftp-quick-delete"
-                                } else {
-                                    "confirm-sftp-delete"
-                                })
-                                .danger()
-                                .label(t!("confirm").to_string())
-                                .on_click(window.listener_for(
-                                    &view,
-                                    move |this, _, window, cx| {
-                                        this.apply_sftp_delete_paths(&confirm_paths, quick, cx);
-                                        this.dismiss_modal_dialog(token, window, cx);
-                                    },
-                                )),
-                            ),
-                    )
-                    .content({
-                        let paths = paths.clone();
-                        move |content, _, cx| {
-                            let mut body =
-                                v_flex().gap_3().child(div().child(
-                                    t!("confirm_delete_desc", count = paths.len()).to_string(),
-                                ));
-                            if quick {
-                                body = body.child(
-                                    div()
-                                        .w_full()
-                                        .p_3()
-                                        .rounded_md()
-                                        .border_1()
-                                        .border_color(cx.theme().danger)
-                                        .bg(cx.theme().danger.opacity(0.12))
-                                        .text_color(cx.theme().danger)
-                                        .child(t!("sftp_quick_delete_warning").to_string()),
-                                );
-                            }
-                            body =
-                                body.child(v_flex().gap_1().children(paths.iter().map(|path| {
-                                    div()
-                                        .text_size(rems(0.833))
-                                        .text_color(cx.theme().muted_foreground)
-                                        .child(path.clone())
-                                })));
-                            content.child(
-                                div()
-                                    .id("sftp-delete-confirm-scroll")
-                                    .max_h(content_max_height)
-                                    .overflow_y_scroll()
-                                    .child(body),
-                            )
-                        }
-                    })
+                    }
+                })
+                .on_ok({
+                    let view = view.clone();
+                    let paths = paths.clone();
+                    move |_, _, cx| {
+                        view.update(cx, |this, cx| {
+                            this.apply_sftp_delete_paths(&paths, quick, cx)
+                        });
+                        true
+                    }
+                })
+                .build(dialog, window, cx)
             },
         );
     }

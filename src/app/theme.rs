@@ -139,19 +139,10 @@ impl TinyShell {
         cx: &mut Context<Self>,
     ) {
         self.config.set_locale(locale);
-        let mut active_locale = locale.to_string();
-        if active_locale == "system" {
-            active_locale = sys_locale::get_locale().unwrap_or_else(|| "en".to_string());
-            if active_locale.starts_with("zh") {
-                active_locale = "zh-CN".to_string();
-            } else {
-                active_locale = "en".to_string();
-            }
-        }
-        rust_i18n::set_locale(&active_locale);
-        gpui_component::set_locale(&active_locale);
+        super::localization::set_display_locale(locale, cx);
         self.mark_config_preferences_dirty();
         window.refresh();
+        cx.refresh_windows();
         cx.notify();
     }
 

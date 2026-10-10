@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <img src="assets/icons/tiny-shell.png" alt="TinyShell" width="120" />
+  <img src="assets/icons/tiny-shell.png" alt="TinyShell application icon" width="120" height="120" />
 </p>
 
 <h1 align="center">TinyShell</h1>
@@ -30,8 +30,22 @@
 </p>
 
 <p align="center">
-  <img src="preview.png" alt="TinyShell application preview" width="960" />
+  <img src="preview.png" alt="TinyShell dark overview with connection details redacted" width="960" />
 </p>
+
+<details>
+  <summary>Light theme preview</summary>
+  <p align="center">
+    <img src="assets/screenshots/overview-light.png" alt="TinyShell light overview with connection details redacted" width="960" />
+  </p>
+</details>
+
+<details>
+  <summary>Online update preview</summary>
+  <p align="center">
+    <img src="assets/screenshots/online-update.png" alt="TinyShell online update dialog with connection details redacted" width="960" />
+  </p>
+</details>
 
 ---
 
@@ -58,7 +72,7 @@ TinyShell is designed for developers, system administrators, and advanced users 
 - **Tabs and split panes**: Organize sessions across multiple tabs and split a tab into multiple panes for a tmux-like workspace.
 - **Consistent local and remote experience**: Local shells and SSH sessions share the same terminal interaction and visual model.
 - **Terminal interaction**: Selection, copy and paste, context-menu actions, and terminal-aware mouse behavior.
-- **Content highlight rules**: Configure prioritized literal or regular-expression matches with whole-word and case controls, text/background/bold/underline styles, and live preview; full-screen TUIs keep their native colors.
+- **Content highlight rules**: 28 built-in rules cover log levels, JSON/logfmt, HTTP, network addresses, identifiers, source locations, stack frames, plus optional Git, container, database, and security packs. Rules support capture groups, match explanations, global/group/session scopes, and JSON import/export. Ctrl-click (Command-click on macOS) opens URLs, email, and local paths, or copies remote paths, IPs, MACs, and UUIDs; terminal colors and full-screen TUI styling remain unchanged.
 - **Cross-platform fonts**: The UI follows the system font; the terminal prefers Consolas on Windows and Menlo on macOS, with installed fonts used automatically for CJK and emoji glyphs.
 - **Nerd Font support**: Install and select a Nerd Font in terminal settings when Powerline or Nerd Font symbols are required.
 - **Live appearance controls**: Change the terminal font, size, line spacing, and theme without restarting the application.

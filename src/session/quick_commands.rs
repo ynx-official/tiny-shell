@@ -1124,6 +1124,7 @@ pub(crate) fn builtin_quick_command_categories(locale: &str) -> Vec<QuickCommand
                     remark: localized(use_chinese, command.zh_remark, command.en_remark)
                         .to_string(),
                     command: command.command.to_string(),
+                    usage: Default::default(),
                 })
                 .collect(),
         })
@@ -1218,6 +1219,7 @@ mod tests {
                 name: "我的列表".into(),
                 remark: "保留用户定义".into(),
                 command: "ls".into(),
+                usage: Default::default(),
             }],
         }];
 

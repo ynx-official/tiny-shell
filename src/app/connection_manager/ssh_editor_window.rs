@@ -84,15 +84,16 @@ pub(crate) struct SshEditorWindow {
 
 fn new_input(
     window: &mut Window,
-    placeholder: String,
+    placeholder_key: &'static str,
     value: String,
     masked: bool,
     cx: &mut Context<SshEditorWindow>,
 ) -> Entity<InputState> {
     cx.new(|cx| {
-        let state = InputState::new(window, cx)
-            .placeholder(placeholder)
-            .default_value(value);
+        let state = crate::app::localization::localized_input(window, cx, move || {
+            t!(placeholder_key).to_string()
+        })
+        .default_value(value);
         if masked { state.masked(true) } else { state }
     })
 }
@@ -174,7 +175,7 @@ impl SshEditorWindow {
         let inputs = SshEditorInputs {
             name: new_input(
                 window,
-                t!("name").to_string(),
+                "name",
                 session
                     .as_ref()
                     .map(|item| item.name.clone())
@@ -184,7 +185,7 @@ impl SshEditorWindow {
             ),
             host: new_input(
                 window,
-                t!("host").to_string(),
+                "host",
                 session
                     .as_ref()
                     .map(|item| item.host.clone())
@@ -194,7 +195,7 @@ impl SshEditorWindow {
             ),
             port: new_input(
                 window,
-                t!("port").to_string(),
+                "port",
                 session
                     .as_ref()
                     .map_or_else(|| "22".to_string(), |item| item.port.to_string()),
@@ -203,7 +204,7 @@ impl SshEditorWindow {
             ),
             user: new_input(
                 window,
-                t!("user").to_string(),
+                "user",
                 session
                     .as_ref()
                     .map_or_else(|| "root".to_string(), |item| item.user.clone()),
@@ -212,7 +213,7 @@ impl SshEditorWindow {
             ),
             password: new_input(
                 window,
-                t!("password").to_string(),
+                "password",
                 session
                     .as_ref()
                     .map(|item| item.password.clone())
@@ -222,7 +223,7 @@ impl SshEditorWindow {
             ),
             proxy_host: new_input(
                 window,
-                t!("proxy_host").to_string(),
+                "proxy_host",
                 session
                     .as_ref()
                     .map(|item| item.proxy_host.clone())
@@ -232,7 +233,7 @@ impl SshEditorWindow {
             ),
             proxy_port: new_input(
                 window,
-                t!("proxy_port").to_string(),
+                "proxy_port",
                 session
                     .as_ref()
                     .and_then(|item| item.proxy_port)
@@ -243,7 +244,7 @@ impl SshEditorWindow {
             ),
             proxy_user: new_input(
                 window,
-                t!("proxy_user").to_string(),
+                "proxy_user",
                 session
                     .as_ref()
                     .map(|item| item.proxy_user.clone())
@@ -253,7 +254,7 @@ impl SshEditorWindow {
             ),
             proxy_password: new_input(
                 window,
-                t!("proxy_password").to_string(),
+                "proxy_password",
                 session
                     .as_ref()
                     .map(|item| item.proxy_password.clone())

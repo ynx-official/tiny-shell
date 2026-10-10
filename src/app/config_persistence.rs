@@ -368,10 +368,13 @@ fn config_fingerprint(config: &ConfigStore) -> anyhow::Result<Vec<u8>> {
 fn save_full_with_revision(
     io: &Io,
     last_saved: &mut Option<ConfigStore>,
-    source: ConfigStore,
+    mut source: ConfigStore,
 ) -> anyhow::Result<()> {
+    let current = io.load()?;
+    // A full save staged before another window's usage increment must not
+    // erase that increment. Command deletion still removes the whole record.
+    source.merge_quick_command_usage_from(&current);
     if let Some(previous) = last_saved.as_ref() {
-        let current = io.load()?;
         let current_fingerprint = config_fingerprint(&current)?;
         let previous_fingerprint = config_fingerprint(previous)?;
         let source_fingerprint = config_fingerprint(&source)?;
@@ -587,6 +590,36 @@ mod tests {
             .clone();
         assert_eq!(restored.locale(), "zh-CN");
         recreated.shutdown().unwrap();
+    }
+
+    #[test]
+    fn full_save_preserves_usage_persisted_after_the_snapshot_was_taken() {
+        use crate::session::config::{QuickCommand, QuickCommandCategory};
+        let (repository, io) = repository();
+        let mut baseline = ConfigStore::in_memory();
+        baseline.set_quick_command_categories(vec![QuickCommandCategory {
+            id: "tools".into(),
+            name: "Tools".into(),
+            commands: vec![QuickCommand {
+                id: "docker".into(),
+                name: "Docker".into(),
+                remark: String::new(),
+                command: "docker ps".into(),
+                usage: Default::default(),
+            }],
+        }]);
+        repository.save_full(&baseline).unwrap();
+        let mut latest = baseline.clone();
+        latest.record_quick_command_usage(&["docker".into()], "writer");
+        repository.persist_sync(&latest).unwrap();
+        repository.save_full(&baseline).unwrap();
+        assert_eq!(
+            io.load().unwrap().quick_command_categories().unwrap()[0].commands[0]
+                .usage
+                .total(),
+            1
+        );
+        repository.shutdown().unwrap();
     }
 
     #[test]

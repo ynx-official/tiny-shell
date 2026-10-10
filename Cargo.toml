@@ -1,6 +1,6 @@
 [package]
 name = "tiny-shell"
-version = "1.6.2"
+version = "1.6.10"
 edition = "2024"
 authors = ["tiny-shell contributors"]
 description = "A modern, fast, GPUI Component-based desktop terminal client"
@@ -91,8 +91,10 @@ assets = [
 
 [profile.release]
 opt-level = 3
-lto = "thin"
-codegen-units = 4
+# Temporary workaround for the Windows rustc STATUS_ACCESS_VIOLATION during
+# v1.6.6 release compilation; the crash's underlying cause is not yet established.
+lto = false
+codegen-units = 16
 strip = true
 panic = "abort"
 

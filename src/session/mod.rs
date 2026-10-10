@@ -1,3 +1,4 @@
+pub(crate) mod command_usage;
 pub mod config;
 pub mod config_file;
 pub(crate) mod connection_archive;

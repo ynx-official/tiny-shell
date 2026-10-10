@@ -9,7 +9,7 @@ use std::{
 };
 
 use gpui::{App, AppContext as _, Bounds, Entity, WindowOptions, point, px, size};
-use gpui_component::{Root, WindowExt as _, button::ButtonVariant, dialog::DialogButtonProps};
+use gpui_component::Root;
 use rust_i18n::t;
 
 use crate::TinyShell;
@@ -41,53 +41,63 @@ impl TinyShell {
         self.close_prompt_open = true;
         self.begin_close_sync(cx);
         let owner = cx.entity();
-        window.open_alert_dialog(cx, move |dialog, _dialog_window, _| {
-            dialog
-                .title(t!("close_window_confirm_title").to_string())
-                .description(t!("close_window_confirm_desc").to_string())
-                .button_props(
-                    DialogButtonProps::default()
-                        .cancel_text(t!("cancel").to_string())
-                        .show_cancel(true)
-                        .ok_text(t!("close_window_confirm").to_string())
-                        .ok_variant(ButtonVariant::Danger),
-                )
-                .on_close({
-                    let owner = owner.clone();
-                    move |_, _, cx| {
-                        owner.update(cx, |this, _| {
-                            this.close_prompt_open = false;
-                        });
-                    }
-                })
-                .on_cancel({
-                    let owner = owner.clone();
-                    move |_, _, cx| {
-                        owner.update(cx, |this, _| {
-                            this.close_prompt_open = false;
-                            this.pending_close_window = None;
-                        });
-                        true
-                    }
-                })
-                .on_ok({
-                    let owner = owner.clone();
-                    move |_, window, cx| {
-                        // Do not call `AnyWindowHandle::update` while the
-                        // dialog button is still dispatching on this window.
-                        // GPUI rejects that re-entrant update, which used to
-                        // leave the confirmation dialog closed but the main
-                        // window still open when sync had already completed.
-                        let owner_for_deferred = owner.clone();
-                        window.defer(cx, move |window, cx| {
-                            owner_for_deferred.update(cx, |this, cx| {
-                                this.confirm_close_after_sync_in_window(window, cx);
-                            });
-                        });
-                        true
-                    }
-                })
-        });
+        let active_connections = self
+            .workspace()
+            .tabs()
+            .iter()
+            .filter(|tab| tab.connected)
+            .count();
+        let description = if active_connections > 0 {
+            t!(
+                "close_window_active_connections",
+                count = active_connections
+            )
+            .to_string()
+        } else {
+            t!("close_window_confirm_desc").to_string()
+        };
+        crate::app::confirmation_dialog::ConfirmationDialog::new(
+            t!("close_window_confirm_title").to_string(),
+            description,
+        )
+        .danger(true)
+        .confirm_label(t!("close_window_confirm").to_string())
+        .on_close({
+            let owner = owner.clone();
+            move |_, _, cx| {
+                owner.update(cx, |this, _| {
+                    this.close_prompt_open = false;
+                });
+            }
+        })
+        .on_cancel({
+            let owner = owner.clone();
+            move |_, _, cx| {
+                owner.update(cx, |this, _| {
+                    this.close_prompt_open = false;
+                    this.pending_close_window = None;
+                });
+                true
+            }
+        })
+        .on_ok({
+            let owner = owner.clone();
+            move |_, window, cx| {
+                // Do not call `AnyWindowHandle::update` while the
+                // dialog button is still dispatching on this window.
+                // GPUI rejects that re-entrant update, which used to
+                // leave the confirmation dialog closed but the main
+                // window still open when sync had already completed.
+                let owner_for_deferred = owner.clone();
+                window.defer(cx, move |window, cx| {
+                    owner_for_deferred.update(cx, |this, cx| {
+                        this.confirm_close_after_sync_in_window(window, cx);
+                    });
+                });
+                true
+            }
+        })
+        .open(window, cx);
     }
 
     pub(crate) fn approve_pending_close(&mut self, cx: &mut gpui::Context<Self>) {

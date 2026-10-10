@@ -5,7 +5,10 @@ use uuid::Uuid;
 
 use crate::{
     TinyShell,
-    app::{input_focus, ssh_key_import::KeyImportValidation},
+    app::{
+        input_focus,
+        ssh_key_import::{KeyImportSource, KeyImportValidation},
+    },
     session::config::ManagedKey,
 };
 
@@ -184,6 +187,7 @@ impl TinyShell {
 
     pub(crate) fn open_key_import(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.editing_managed_key_id = None;
+        self.clear_key_import_text(window, cx);
         self.key_import.open();
         Self::set_input_value(
             &self.connection_inputs.key_import_remark_input,
@@ -210,6 +214,7 @@ impl TinyShell {
 
     pub(crate) fn close_key_import(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.key_import.close();
+        self.clear_key_import_text(window, cx);
         Self::set_input_value(
             &self.connection_inputs.key_import_remark_input,
             "",
@@ -231,6 +236,39 @@ impl TinyShell {
                 crate::managed_key_dialogs::show_managed_key_selector_dialog(this, window, cx);
             });
         });
+    }
+
+    pub(crate) fn clear_key_import_text(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.async_runtime
+            .supervisor
+            .cancel("pick-managed-key-import-file");
+        Self::set_input_value(
+            &self.connection_inputs.key_import_text_input,
+            "",
+            window,
+            cx,
+        );
+    }
+
+    pub(crate) fn switch_key_import_source(
+        &mut self,
+        source: KeyImportSource,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.key_import.source == source {
+            return;
+        }
+        self.key_import.switch_source(source);
+        self.clear_key_import_text(window, cx);
+        if source == KeyImportSource::Text {
+            input_focus::defer_focus_input_at_end(
+                self.connection_inputs.key_import_text_input.clone(),
+                window,
+                cx,
+            );
+        }
+        cx.notify();
     }
 
     pub(crate) fn pick_managed_key_import_file(
