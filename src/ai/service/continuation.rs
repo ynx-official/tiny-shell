@@ -89,11 +89,12 @@ impl Service {
                 .is_some_and(|pause| pause.token == token),
             "AI_CONTINUATION_EXPIRED"
         );
-        state
+        let cancel = state
             .cancel
             .get(id)
-            .ok_or_else(|| anyhow!("AI_CONTINUATION_EXPIRED"))?
-            .send_replace(true);
+            .ok_or_else(|| anyhow!("AI_CONTINUATION_EXPIRED"))?;
+        ensure!(!*cancel.borrow(), "AI_CONTINUATION_EXPIRED");
+        cancel.send_replace(true);
         self.changed();
         Ok(())
     }

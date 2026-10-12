@@ -68,10 +68,12 @@ Provider 与历史保存在独立目录，不进入 ConfigStore 的同步/归档
 
 `Budget` 区分可扩展的调用 ceiling 与不可绕过的 safety_halted。继续不清空缓存、累计调用数、相同结果计数或 uncertain 指纹。runner 在下一次模型请求或批内下一次工具执行之前检查预算，保存带随机 token 的 Continuation，并通过独立 oneshot 等待；与取消 watch、内部能力撤销一起 select。Service 在锁内核对 token 与取消状态，只接受一次选择。未选择不发请求、不执行工具；恢复使用同一消息序列、待执行批次及已打开的独立 SSH 会话。批内暂停终止时为剩余调用保存 not_executed 配对结果，不向 Provider 请求总结。重启加载活动状态时清空 continuation 并标记中断，不恢复 runner。
 
-`src/app/ai/attention.rs` 负责所属窗口、去重、已有弹窗避让、过期弹窗移除和通知点击导航。只读取轻量 RunAttention，避免每次主窗口渲染复制全部历史。弹窗使用既有 modal token 及 ConfirmationDialog；窗口/实体更新由 defer 调度，避免 GPUI 重入。点击旧通知仅校验并导航，不能追加预算。
+`src/app/ai/attention.rs` 负责所属窗口、去重、已有弹窗避让、过期弹窗移除和通知正文点击导航。只读取轻量 RunAttention，避免每次主窗口渲染复制全部历史。弹窗使用既有 modal token 及 ConfirmationDialog；窗口/实体更新由 defer 调度，避免 GPUI 重入。2026-10-12 按用户要求增加原生通知允许/拒绝按钮，通知按钮由平台回调直接调用线程安全的 Service::resume/terminate_continuation，不进入正文导航队列；Service 锁内校验对话/token/取消状态，允许或拒绝只接受一次。旧通知及未知 action 不追加预算、不取消其他轮次，正文导航仍需 live 校验。
 
 `src/app/ai/notifications.rs` 隔离 Windows/macOS 平台适配与异步回调。Windows 通过 `tauri-winrt-notification 0.8.1` 使用 WinRT Toast，本用户注册 TinyShell.Desktop 身份，安装脚本同步快捷方式 AUMID 和卸载清理；不借用 PowerShell 等应用身份。macOS 通过 `mac-usernotifications 0.3.1` 使用 UNUserNotificationCenter，首次主动开启/测试请求授权，后台发送只查询授权状态；直接执行非 .app 二进制时反馈包要求。系统调用运行在后台，不阻塞 UI；macOS 通知响应最长观察一小时，超时或清除不会恢复轮次，应用内暂停无超时。Linux 不引入通知依赖，保留应用内选择。
 
 平台适配结果、未运行项目及重点手动验收见[预算与通知验证](../04-quality/ai-execution-budget.md)。
+
+Windows `add_button` 的 arguments 与 macOS Action::button 的 identifier 使用固定动作 ID；解析只接受两个已登记 ID，通知正文映射 Open，其他数据忽略。macOS 通过 response.is_default_action 区分正文与按钮，close_reason 非空时不执行动作；继续按钮设置 authenticationRequired。按钮处理成功后沿用 Service stamp 更新 UI，清除失效弹窗，不显式拉回窗口再做二次选择。测试通知没有对话身份，按钮无业务副作用。无需增加依赖或改变配置/历史格式。
 
 JSON 回退与 SSE 共用完整性检查：禁止截断完成原因、重复 tool_call_id、非对象参数及不完整 JSON。只有用户主动测试、刷新或发送才调用 Provider。正式协议依据为 [Chat Completions](https://platform.openai.com/docs/api-reference/chat/create)，凭据适配为 [keyring 4.2.0](https://docs.rs/keyring/4.2.0/keyring/)。

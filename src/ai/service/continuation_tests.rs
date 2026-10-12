@@ -91,6 +91,34 @@ fn old_settings_keep_finite_defaults_and_invalid_budgets_are_rejected() -> Resul
 }
 
 #[tokio::test]
+async fn rejection_is_single_use_and_prevents_a_later_allow() -> Result<()> {
+    let directory = std::env::temp_dir().join(format!("ai-pause-{}", uuid::Uuid::new_v4()));
+    let service = fixture(directory.clone(), provider("127.0.0.1:1".parse()?), None)?;
+    let id = service.create(None)?;
+    let (cancel, mut receiver) = watch::channel(false);
+    service
+        .state
+        .lock()
+        .map_err(|_| anyhow!("lock"))?
+        .cancel
+        .insert(id.clone(), cancel);
+    let worker = service.clone();
+    let target = id.clone();
+    let task = tokio::spawn(async move {
+        worker
+            .wait_for_continuation(&target, LimitKind::ToolCalls, 16, 16, None, &mut receiver)
+            .await
+    });
+    let pause = paused(&service).await?;
+    service.terminate_continuation(&id, &pause.token)?;
+    assert!(service.terminate_continuation(&id, &pause.token).is_err());
+    assert!(service.resume(&id, &pause.token).is_err());
+    assert_eq!(task.await?.unwrap_err().to_string(), "AI_CANCELLED");
+    std::fs::remove_dir_all(directory)?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn a_choice_is_bound_to_its_conversation() -> Result<()> {
     let directory = std::env::temp_dir().join(format!("ai-pause-{}", uuid::Uuid::new_v4()));
     let service = fixture(directory.clone(), provider("127.0.0.1:1".parse()?), None)?;
