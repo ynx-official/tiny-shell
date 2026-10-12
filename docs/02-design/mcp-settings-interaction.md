@@ -4,6 +4,9 @@
 > 最后更新：2026-10-12  
 > 关联：[MCP 功能设计](mcp-integration.md)、[统一确认弹窗](confirmation-dialogs.md)、[验证记录](../04-quality/mcp-settings-interaction.md)
 
+> 2026-10-12 内置 AI 扩展：权限入口新增“内置 AI / MCP·CLI”来源 Tab，AI 全局模式与 MCP 机器授权独立；客户端与任务页保留。原三页签描述保留为外部 MCP 基线，当前范围以[AI 交互](ai-conversations.md)及[需求修订](../01-requirements/ai-conversations.md)为准。
+
+
 ## 确认依据与范围
 
 用户在 2026-10-12 确认 MCP 设置改版效果图，并授权按该方向实施。目标是缩短原来的长页面，让授权、客户端接入和待处理任务容易查找。沿用 Rust / GPUI、awesome-design-md 的 sentry 风格，以及项目已有主题、系统字体和 8px 间距。

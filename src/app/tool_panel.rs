@@ -12,6 +12,10 @@ use crate::{
 
 pub(crate) const TOOL_PANEL_WIDTH: f32 = 360.0;
 
+pub(crate) fn ai_panel_overlay(window_width: f32, sidebar_width: f32, panel_width: f32) -> bool {
+    window_width - sidebar_width - panel_width < 480.0
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum ToolPanelPresentation {
     Extended,
@@ -99,6 +103,15 @@ impl Default for ToolPanelState {
 }
 
 impl ToolPanelState {
+    fn hide(&mut self) -> Option<Size<Pixels>> {
+        let restore = (self.presentation == ToolPanelPresentation::Extended)
+            .then_some(self.base_viewport_size)
+            .flatten();
+        self.open = false;
+        self.base_window_bounds = None;
+        self.base_viewport_size = None;
+        restore
+    }
     fn next_request_id(&mut self) -> u64 {
         let id = self.next_request_id;
         self.next_request_id = self.next_request_id.wrapping_add(1).max(1);
@@ -138,6 +151,7 @@ impl TinyShell {
     }
 
     pub(crate) fn open_tool_panel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.ai_open = false;
         if self.tool_panel.open {
             return;
         }
@@ -188,14 +202,7 @@ impl TinyShell {
         if !self.tool_panel.open {
             return;
         }
-        if self.tool_panel.presentation == ToolPanelPresentation::Extended
-            && let Some(viewport_size) = self.tool_panel.base_viewport_size
-        {
-            window.resize(viewport_size);
-        }
-        self.tool_panel.open = false;
-        self.tool_panel.base_window_bounds = None;
-        self.tool_panel.base_viewport_size = None;
+        self.hide_tool_panel(window, cx);
         self.tool_panel.pending = None;
         self.tool_panel.target_tab_id = None;
         self.tool_panel.target_generation = None;
@@ -205,6 +212,13 @@ impl TinyShell {
         self.tool_panel.containers.clear();
         self.tool_panel.images.clear();
         self.tool_panel.error = None;
+        cx.notify();
+    }
+
+    pub(crate) fn hide_tool_panel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(viewport_size) = self.tool_panel.hide() {
+            window.resize(viewport_size);
+        }
         cx.notify();
     }
 
@@ -551,6 +565,41 @@ fn docker_response_matches(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ai_dock_uses_overlay_when_the_sidebar_leaves_too_little_terminal_space() {
+        assert!(!ai_panel_overlay(1200., 280., 420.));
+        assert!(ai_panel_overlay(1100., 280., 420.));
+        assert!(!ai_panel_overlay(1100., 36., 420.));
+        assert!(ai_panel_overlay(899., 0., 420.));
+        assert!(!ai_panel_overlay(900., 0., 420.));
+    }
+
+    #[test]
+    fn switching_to_ai_hides_docker_without_discarding_its_page_or_pending_response() {
+        let mut state = ToolPanelState {
+            open: true,
+            presentation: ToolPanelPresentation::Extended,
+            base_viewport_size: Some(size(px(900.), px(700.))),
+            page: DockerPage::Images,
+            target_tab_id: Some("tab-a".into()),
+            pending: Some(PendingDockerRequest {
+                id: 7,
+                tab_id: "tab-a".into(),
+                operation: DockerOperation::ListImages,
+            }),
+            ..ToolPanelState::default()
+        };
+        assert_eq!(state.hide(), Some(size(px(900.), px(700.))));
+        assert!(!state.open);
+        assert_eq!(state.page, DockerPage::Images);
+        assert!(docker_response_matches(
+            state.pending.as_ref(),
+            state.target_tab_id.as_deref(),
+            "tab-a",
+            7
+        ));
+    }
 
     #[test]
     fn panel_only_extends_for_windowed_mode_with_enough_right_space() {

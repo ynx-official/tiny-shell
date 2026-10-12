@@ -1,3 +1,5 @@
+pub(crate) mod ai;
+pub(crate) mod assets;
 mod backend_events;
 pub(crate) mod config_persistence;
 pub(crate) mod config_sync;
@@ -554,6 +556,12 @@ pub(crate) struct TinyShell {
 
     pub(crate) runtime: Arc<Runtime>,
     pub(crate) mcp_stamp: u64,
+    pub(crate) ai_stamp: u64,
+    pub(crate) ai_open: bool,
+    pub(crate) ai_panel: Option<Entity<ai::AiPanel>>,
+    pub(crate) settings_entry: Option<usize>,
+    pub(crate) mcp_requested_task: Option<String>,
+    pub(crate) mcp_settings_navigation: u64,
     pub(crate) async_runtime: AsyncRuntimeState,
     pub(crate) pending_close_window: Option<AnyWindowHandle>,
     pub(crate) close_prompt_open: bool,
@@ -988,6 +996,7 @@ impl TinyShell {
             std::process::abort();
         });
         mcp::initialize(runtime.handle());
+        ai::initialize(runtime.handle());
         let mut this = Self {
             focus_handle: cx.focus_handle(),
             selector_focus_handle: cx.focus_handle(),
@@ -1162,6 +1171,12 @@ impl TinyShell {
 
             runtime,
             mcp_stamp: 0,
+            ai_stamp: 0,
+            ai_open: false,
+            ai_panel: None,
+            settings_entry: None,
+            mcp_requested_task: None,
+            mcp_settings_navigation: 0,
             async_runtime: AsyncRuntimeState::new(events_tx, events_rx),
             pending_close_window: None,
             close_prompt_open: false,
@@ -1391,7 +1406,8 @@ impl TinyShell {
                 }
                 let active = match this.update(cx, |this, cx| {
                     this.drive_config_preferences_save(cx);
-                    let changed = this.drain_backend_events(cx) | this.poll_mcp(cx);
+                    let changed =
+                        this.drain_backend_events(cx) | this.poll_mcp(cx) | this.poll_ai();
                     let system_sampled = this.sample_system_if_due();
                     this.sample_sftp_latency_if_due();
                     let metrics_animated = this.animate_resource_metrics();

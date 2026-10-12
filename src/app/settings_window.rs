@@ -122,17 +122,28 @@ impl SettingsWindow {
 impl Render for SettingsWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl gpui::IntoElement {
         let owner = self.owner.clone();
-        gpui::div()
-            .size_full()
-            .child(owner.read(cx).render_settings_content(
-                &owner,
-                "settings-window",
-                &self.focus_handle,
-                &self.inputs,
-                cx,
-            ))
-            .children(Root::render_notification_layer(window, cx))
+        let content = owner.read(cx).render_settings_content(
+            &owner,
+            "settings-window",
+            &self.focus_handle,
+            &self.inputs,
+            cx,
+        );
+        settings_surface(content, window, cx)
     }
+}
+
+fn settings_surface(
+    content: impl gpui::IntoElement,
+    window: &mut Window,
+    cx: &mut App,
+) -> gpui::Div {
+    gpui::div()
+        .relative()
+        .size_full()
+        .child(content)
+        .children(Root::render_dialog_layer(window, cx))
+        .children(Root::render_notification_layer(window, cx))
 }
 
 fn window_options(cx: &mut App) -> WindowOptions {
@@ -200,5 +211,64 @@ pub(crate) fn open(
             );
             None
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui::{IntoElement as _, TestAppContext, VisualTestContext};
+    use std::{cell::Cell, rc::Rc};
+
+    struct TestSettings;
+    impl Render for TestSettings {
+        fn render(
+            &mut self,
+            window: &mut Window,
+            cx: &mut Context<Self>,
+        ) -> impl gpui::IntoElement {
+            settings_surface(gpui::div(), window, cx)
+        }
+    }
+
+    #[gpui::test]
+    fn settings_confirmation_is_visible_and_accepts_the_action(cx: &mut TestAppContext) {
+        cx.update(gpui_component::init);
+        let handle = cx.open_window(gpui::size(px(980.), px(700.)), |window, cx| {
+            let view = cx.new(|_| TestSettings);
+            Root::new(view, window, cx)
+        });
+        let root = handle.root(cx).unwrap();
+        let mut visual = VisualTestContext::from_window(handle.into(), cx);
+        let accepted = Rc::new(Cell::new(false));
+        let action = accepted.clone();
+        visual.update(|window, cx| {
+            crate::app::confirmation_dialog::ConfirmationDialog::new(
+                "Enable AI SSH",
+                "Shared grants apply",
+            )
+            .on_ok(move |_, _, _| {
+                action.set(true);
+                true
+            })
+            .open(window, cx);
+        });
+        visual.run_until_parked();
+        visual.draw(
+            gpui::point(px(0.), px(0.)),
+            gpui::size(px(980.), px(700.)),
+            |_, _| root.into_any_element(),
+        );
+        let bounds = visual
+            .debug_bounds("confirmation-submit")
+            .expect("settings must paint its confirmation action");
+        assert!(bounds.size.width > px(0.) && bounds.size.height > px(0.));
+        assert!(!accepted.get());
+        visual.simulate_click(bounds.center(), gpui::Modifiers::none());
+        visual.run_until_parked();
+        assert!(
+            accepted.get(),
+            "visible confirmation must dispatch its action"
+        );
     }
 }

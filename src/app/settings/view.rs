@@ -5,7 +5,10 @@ use gpui::{
     Animation, AnimationExt as _, ElementId, InteractiveElement as _, IntoElement,
     ParentElement as _, Styled as _, div, px,
 };
-use gpui_component::{ActiveTheme as _, setting::Settings};
+use gpui_component::{
+    ActiveTheme as _,
+    setting::{SelectIndex, Settings},
+};
 
 impl TinyShell {
     pub(crate) fn render_settings_content(
@@ -49,21 +52,29 @@ impl TinyShell {
                         }
                     })
                     .child(
-                        Settings::new(settings_id)
-                            .sidebar_width(px(180.))
-                            .sidebar_style(div().bg(cx.theme().background).style())
-                            .page(super::appearance::page(&settings_view))
-                            .page(super::terminal::page(&settings_view))
-                            .page(super::workspace::page(&settings_view))
-                            .page(super::sync::page(&settings_view, inputs.sync.clone()))
-                            .page(super::mcp::page(&settings_view))
-                            .page(super::proxy::page(&settings_view, inputs.proxy.clone()))
-                            .page(super::keybindings::page(self, view, &focus_handle))
-                            .page(super::update::page(
-                                &settings_view,
-                                inputs.update.interval_hours.clone(),
-                            ))
-                            .page(super::about::page()),
+                        Settings::new(format!(
+                            "{settings_id}-{}",
+                            self.settings_entry.unwrap_or(0)
+                        ))
+                        .default_selected_index(SelectIndex {
+                            page_ix: self.settings_entry.unwrap_or(0),
+                            group_ix: None,
+                        })
+                        .sidebar_width(px(180.))
+                        .sidebar_style(div().bg(cx.theme().background).style())
+                        .page(super::appearance::page(&settings_view))
+                        .page(super::terminal::page(&settings_view))
+                        .page(super::workspace::page(&settings_view))
+                        .page(super::sync::page(&settings_view, inputs.sync.clone()))
+                        .page(super::ai::page(&settings_view))
+                        .page(super::mcp::page(&settings_view))
+                        .page(super::proxy::page(&settings_view, inputs.proxy.clone()))
+                        .page(super::keybindings::page(self, view, &focus_handle))
+                        .page(super::update::page(
+                            &settings_view,
+                            inputs.update.interval_hours.clone(),
+                        ))
+                        .page(super::about::page()),
                     ),
             )
             .with_animation(

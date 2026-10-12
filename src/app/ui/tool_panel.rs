@@ -118,6 +118,71 @@ impl TinyShell {
         workspace: AnyElement,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        if self.ai_open
+            && let Some(panel) = &self.ai_panel
+        {
+            let width = panel.read(cx).width;
+            let presentation = self.workspace_mode.presentation(self.sftp_panel.minimized);
+            let sidebar_width = if !presentation.show_sidebar {
+                0.
+            } else if self.sidebar_collapsed {
+                COLLAPSED_SIDEBAR_WIDTH
+            } else {
+                self.last_sidebar_width
+                    .map(|w| w.as_f32())
+                    .unwrap_or_else(|| {
+                        resolve_sidebar_width(
+                            self.config
+                                .workspace_panels()
+                                .and_then(|s| s.first().copied()),
+                        )
+                    })
+            };
+            let overlay = self.last_window_size.is_some_and(|s| {
+                crate::app::tool_panel::ai_panel_overlay(s.width.as_f32(), sidebar_width, width)
+            });
+            let content = if overlay {
+                div()
+                    .size_full()
+                    .relative()
+                    .overflow_hidden()
+                    .child(workspace)
+                    .child(
+                        div()
+                            .absolute()
+                            .right_0()
+                            .top_0()
+                            .bottom_0()
+                            .w(px(width))
+                            .max_w_full()
+                            .child(panel.clone()),
+                    )
+                    .into_any_element()
+            } else {
+                h_flex()
+                    .size_full()
+                    .min_w_0()
+                    .child(div().flex_1().min_w_0().h_full().child(workspace))
+                    .child(div().w(px(width)).h_full().child(panel.clone()))
+                    .into_any_element()
+            };
+            let move_panel = panel.clone();
+            let release_panel = panel.clone();
+            let outside_panel = panel.clone();
+            return div()
+                .size_full()
+                .child(content)
+                .on_mouse_move(move |event, _, cx| {
+                    move_panel.update(cx, |panel, cx| panel.drag_move(event, cx))
+                })
+                .on_mouse_up(MouseButton::Left, move |_, _, cx| {
+                    release_panel.update(cx, |panel, _| panel.end_drag())
+                })
+                .on_mouse_up_out(MouseButton::Left, move |_, _, cx| {
+                    outside_panel.update(cx, |panel, _| panel.end_drag())
+                })
+                .into_any_element();
+        }
         match crate::app::tool_panel::tool_panel_layout(
             self.tool_panel.open,
             self.tool_panel.presentation,

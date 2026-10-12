@@ -5,7 +5,9 @@ use gpui::{
     AppContext as _, Bounds, Context, IntoElement, ParentElement as _, Render, Styled as _, Window,
     WindowOptions, div, px, size,
 };
-use gpui_component::{ActiveTheme as _, Root, Theme, ThemeMode, button::Button, h_flex, v_flex};
+use gpui_component::{
+    ActiveTheme as _, Root, Theme, ThemeMode, WindowExt as _, button::Button, h_flex, v_flex,
+};
 use gpui_component_assets::Assets;
 use rust_i18n::t;
 
@@ -18,6 +20,14 @@ mod dialog_layout;
 
 rust_i18n::i18n!("locales", fallback = "en");
 
+#[derive(Clone, Copy)]
+enum PreviewKind {
+    Short,
+    Long,
+    Neutral,
+    Closing,
+}
+
 struct Preview {
     confirmations: usize,
     status: String,
@@ -27,7 +37,9 @@ struct Preview {
 }
 
 impl Preview {
-    fn show(&mut self, long: bool, danger: bool, window: &mut Window, cx: &mut Context<Self>) {
+    fn show(&mut self, kind: PreviewKind, window: &mut Window, cx: &mut Context<Self>) {
+        let long = matches!(kind, PreviewKind::Long);
+        let closing = matches!(kind, PreviewKind::Closing);
         let owner = cx.entity();
         let description = if long {
             format!(
@@ -41,7 +53,7 @@ impl Preview {
         } else {
             t!("close_window_active_connections", count = 2).to_string()
         };
-        confirmation_dialog::ConfirmationDialog::new(
+        let mut dialog = confirmation_dialog::ConfirmationDialog::new(
             if long {
                 t!("confirm_delete").to_string()
             } else {
@@ -49,38 +61,58 @@ impl Preview {
             },
             description,
         )
-        .danger(danger)
+        .danger(!matches!(kind, PreviewKind::Neutral))
         .keyboard(!long)
         .confirm_label(if long {
             t!("delete").to_string()
         } else {
             t!("close_window_confirm").to_string()
         })
-        .cancel_label(t!("cancel").to_string())
-        .on_ok({
-            let owner = owner.clone();
-            move |_, _, cx| {
-                owner.update(cx, |this, cx| {
-                    this.confirmations += 1;
-                    this.status = t!("confirmation_preview_confirmed", count = this.confirmations)
-                        .to_string();
-                    cx.notify();
-                });
-                true
-            }
-        })
-        .on_cancel({
-            let owner = owner.clone();
-            move |_, _, cx| {
-                owner.update(cx, |this, cx| {
-                    this.status = t!("confirmation_preview_cancelled").to_string();
-                    cx.notify();
-                });
-                true
-            }
-        })
-        .on_close(move |_, _, cx| owner.update(cx, |_, cx| cx.notify()))
-        .open(window, cx);
+        .cancel_label(t!("cancel").to_string());
+        if closing {
+            dialog = dialog.pending_on_confirm(
+                t!("close_window_closing_title").to_string(),
+                t!("close_window_closing_desc").to_string(),
+                t!("close_window_closing").to_string(),
+            );
+        }
+        dialog
+            .on_ok({
+                let owner = owner.clone();
+                move |_, window, cx| {
+                    owner.update(cx, |this, cx| {
+                        this.confirmations += 1;
+                        this.status =
+                            t!("confirmation_preview_confirmed", count = this.confirmations)
+                                .to_string();
+                        cx.notify();
+                    });
+                    if closing {
+                        let handle = window.window_handle();
+                        // Simulate asynchronous completion without closing a user's real workspace.
+                        cx.spawn(async move |cx| {
+                            cx.background_executor()
+                                .timer(std::time::Duration::from_secs(10))
+                                .await;
+                            let _ = handle.update(cx, |_, window, cx| window.close_dialog(cx));
+                        })
+                        .detach();
+                    }
+                    true
+                }
+            })
+            .on_cancel({
+                let owner = owner.clone();
+                move |_, _, cx| {
+                    owner.update(cx, |this, cx| {
+                        this.status = t!("confirmation_preview_cancelled").to_string();
+                        cx.notify();
+                    });
+                    true
+                }
+            })
+            .on_close(move |_, _, cx| owner.update(cx, |_, cx| cx.notify()))
+            .open(window, cx);
     }
 }
 
@@ -105,23 +137,28 @@ impl Render for Preview {
                         Button::new("short")
                             .label(t!("close_window_confirm").to_string())
                             .on_click(cx.listener(|this, _, window, cx| {
-                                this.show(false, true, window, cx)
+                                this.show(PreviewKind::Short, window, cx)
                             })),
                     )
                     .child(
                         Button::new("long")
                             .label(t!("confirmation_preview_long").to_string())
-                            .on_click(
-                                cx.listener(|this, _, window, cx| {
-                                    this.show(true, true, window, cx)
-                                }),
-                            ),
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.show(PreviewKind::Long, window, cx)
+                            })),
                     )
                     .child(
                         Button::new("neutral")
                             .label(t!("confirmation_preview_neutral").to_string())
                             .on_click(cx.listener(|this, _, window, cx| {
-                                this.show(false, false, window, cx)
+                                this.show(PreviewKind::Neutral, window, cx)
+                            })),
+                    )
+                    .child(
+                        Button::new("closing")
+                            .label(t!("confirmation_preview_closing").to_string())
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.show(PreviewKind::Closing, window, cx)
                             })),
                     )
                     .child(
@@ -196,7 +233,7 @@ fn main() {
                     });
                     let owner = view.clone();
                     window.defer(cx, move |window, cx| {
-                        owner.update(cx, |this, cx| this.show(false, true, window, cx))
+                        owner.update(cx, |this, cx| this.show(PreviewKind::Closing, window, cx))
                     });
                     cx.new(|cx| Root::new(view, window, cx))
                 },

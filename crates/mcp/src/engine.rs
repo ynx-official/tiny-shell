@@ -19,6 +19,8 @@ use std::{
 };
 use tokio::sync::watch;
 use uuid::Uuid;
+mod internal;
+pub use internal::{AiPolicy, InternalClient};
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Target {
@@ -64,6 +66,7 @@ struct Task {
     session: String,
     request_id: String,
     revision: u64,
+    mode: crate::policy::Mode,
     created: Instant,
     awaiting_since: Option<Instant>,
     finished: Option<Instant>,
@@ -93,10 +96,12 @@ pub struct Engine {
     inner: Mutex<Inner>,
     pub generation: String,
     stamp: AtomicU64,
+    ai: Mutex<internal::Access>,
 }
 impl Engine {
     pub fn new(store: Store, remote: Arc<dyn Remote>) -> anyhow::Result<Arc<Self>> {
         let policy = store.load_policy()?;
+        let ai = internal::Access::load(&store, &policy)?;
         Ok(Arc::new(Self {
             store,
             remote,
@@ -107,6 +112,7 @@ impl Engine {
             }),
             generation: Uuid::new_v4().to_string(),
             stamp: AtomicU64::new(1),
+            ai: Mutex::new(ai),
         }))
     }
     pub fn stamp(&self) -> u64 {
@@ -130,27 +136,36 @@ impl Engine {
             .save_policy(&policy)
             .map_err(|_| Failure::new("STORAGE_ERROR"))?;
         inner.policy = policy;
+        self.cancel_source(&mut inner, false);
+        self.changed();
+        Ok(())
+    }
+    fn cancel_source(&self, inner: &mut Inner, ai: bool) {
         for task in inner
             .tasks
             .values_mut()
-            .filter(|t| !t.review.state.terminal())
+            .filter(|t| t.review.client.starts_with("ai:") == ai && !t.review.state.terminal())
         {
-            if task.review.state == State::AwaitingUser || task.review.state == State::Queued {
+            if matches!(task.review.state, State::AwaitingUser | State::Queued) {
                 task.review.state = State::Failed;
                 task.review.error = Some(Failure::new("POLICY_CHANGED"));
                 task.finished = Some(Instant::now());
             }
             task.cancel.send_replace(true);
         }
-        for session in inner.sessions.keys().cloned().collect::<Vec<_>>() {
+        let sessions = inner
+            .sessions
+            .iter()
+            .filter(|(_, s)| s.client.starts_with("ai:") == ai)
+            .map(|(id, _)| id.clone())
+            .collect::<Vec<_>>();
+        for session in sessions {
+            inner.sessions.remove(&session);
             let remote = self.remote.clone();
             tokio::spawn(async move {
                 remote.close(&session).await;
             });
         }
-        inner.sessions.clear();
-        self.changed();
-        Ok(())
     }
     pub fn reviews(&self) -> Result<Vec<Review>> {
         let inner = self.lock()?;
@@ -261,7 +276,13 @@ impl Engine {
     }
     pub fn approve(self: &Arc<Self>, id: &str, approved: bool) -> Result<()> {
         let mut inner = self.lock()?;
-        let revision = inner.policy.revision;
+        let client = &inner
+            .tasks
+            .get(id)
+            .ok_or_else(|| Failure::new("TASK_NOT_FOUND"))?
+            .review
+            .client;
+        let revision = self.effective_policy(client, &inner.policy)?.revision;
         let task = inner
             .tasks
             .get_mut(id)
@@ -304,16 +325,17 @@ impl Engine {
             this.work(id).await;
         });
     }
-    async fn validate(&self, target: &Target, revision: u64) -> Result<()> {
+    async fn validate(&self, target: &Target, revision: u64, client: &str) -> Result<()> {
         let targets = self.remote.targets().await?;
         let current = targets
             .into_iter()
             .find(|t| t.id == target.id && t.digest == target.digest)
             .ok_or_else(|| Failure::new("CONNECTION_NOT_ALLOWED"))?;
         let inner = self.lock()?;
-        if !inner.policy.enabled
-            || inner.policy.revision != revision
-            || !inner.policy.authorized(&current.id, &current.digest)
+        let policy = self.effective_policy(client, &inner.policy)?;
+        if !policy.enabled
+            || policy.revision != revision
+            || !policy.authorized(&current.id, &current.digest)
         {
             return Err(Failure::new("POLICY_CHANGED"));
         }
@@ -402,7 +424,8 @@ impl Engine {
             .ok()
             .and_then(|v| v["tool"].as_str().map(str::to_owned))
             .unwrap_or_default();
-        let record = json!({"timestamp":timestamp,"client_id":task.review.client,"connection_id":task.review.target.id,"operation":tool,"mode":inner.policy.mode,"state":task.review.state,"exit_code":task.result.get("exit_code")});
+        let mode = task.mode;
+        let record = json!({"timestamp":timestamp,"client_id":task.review.client,"connection_id":task.review.target.id,"operation":tool,"mode":mode,"state":task.review.state,"exit_code":task.result.get("exit_code")});
         drop(inner);
         let _ = self.store.audit(record);
     }
@@ -459,11 +482,14 @@ impl Engine {
                 return;
             }
         };
-        if let Err(e) = self.validate(&review.target, revision).await {
+        if let Err(e) = self
+            .validate(&review.target, revision, &review.client)
+            .await
+        {
             self.finish(&id, Err(e));
             return;
         }
-        if !self.store.client(&review.client).is_ok_and(|c| c.enabled) {
+        if !self.client_enabled(&review.client) {
             self.finish(&id, Err(Failure::new("CLIENT_REVOKED")));
             return;
         }
@@ -487,7 +513,8 @@ impl Engine {
             }
         }
         let needs_approval = self
-            .policy()
+            .lock()
+            .and_then(|inner| self.effective_policy(&review.client, &inner.policy))
             .is_ok_and(|p| p.mode == crate::policy::Mode::Controlled)
             && review.call.mutation()
             && !approved;
@@ -506,7 +533,10 @@ impl Engine {
             self.finish(&id, Err(Failure::new("OUTCOME_UNKNOWN")));
             return;
         }
-        if let Err(e) = self.validate(&review.target, revision).await {
+        if let Err(e) = self
+            .validate(&review.target, revision, &review.client)
+            .await
+        {
             self.finish(&id, Err(e));
             return;
         }
@@ -530,8 +560,11 @@ impl Engine {
             .await;
         if matches!(review.call, Call::OpenSession(_))
             && (*cancelled.borrow()
-                || self.validate(&review.target, revision).await.is_err()
-                || !self.store.client(&review.client).is_ok_and(|c| c.enabled))
+                || self
+                    .validate(&review.target, revision, &review.client)
+                    .await
+                    .is_err()
+                || !self.client_enabled(&review.client))
         {
             self.remote.close(&session).await;
             result = Err(Failure::new(if *cancelled.borrow() {
@@ -547,26 +580,34 @@ impl Engine {
         }
         self.finish(&id, result);
     }
-    async fn dispatch(self: &Arc<Self>, client: &str, call: Call) -> Result<Value> {
-        if !self.store.client(client).is_ok_and(|c| c.enabled) {
+    async fn dispatch(
+        self: &Arc<Self>,
+        client: &str,
+        call: Call,
+        epoch: Option<u64>,
+    ) -> Result<Value> {
+        if !self.client_enabled(client) {
             return Err(Failure::new("CLIENT_REVOKED"));
         }
-        if !self.policy()?.enabled {
+        if !self.effective_policy(client, &self.policy()?)?.enabled {
             return Err(Failure::new("MCP_DISABLED"));
         }
-        let targets = self.remote.targets().await?;
+        let targets = self.bound_targets(client, self.remote.targets().await?)?;
         {
             let mut inner = self.lock()?;
+            self.verify_internal_epoch(client, epoch)?;
             let before = inner.policy.known_targets.len();
-            inner
-                .policy
-                .observe(targets.iter().map(|t| (t.id.clone(), t.digest.clone())));
+            if !client.starts_with("ai:") {
+                inner
+                    .policy
+                    .observe(targets.iter().map(|t| (t.id.clone(), t.digest.clone())));
+            }
             if before != inner.policy.known_targets.len() {
                 self.store
                     .save_policy(&inner.policy)
                     .map_err(|_| Failure::new("STORAGE_ERROR"))?;
             }
-            if !inner.policy.enabled {
+            if !self.effective_policy(client, &inner.policy)?.enabled {
                 return Err(Failure::new("MCP_DISABLED"));
             }
             let expired = inner
@@ -595,11 +636,11 @@ impl Engine {
         match &call {
             Call::GetStatus(_) => {
                 return Ok(
-                    json!({"app_version":self.remote.app_version(),"generation":self.generation,"mode":self.policy()?.mode,"limits":{"text_bytes":crate::contracts::MAX_TEXT,"output_bytes":crate::contracts::MAX_OUTPUT}}),
+                    json!({"app_version":self.remote.app_version(),"generation":self.generation,"mode":self.effective_policy(client, &self.policy()?)?.mode,"limits":{"text_bytes":crate::contracts::MAX_TEXT,"output_bytes":crate::contracts::MAX_OUTPUT}}),
                 );
             }
             Call::ListConnections(p) => {
-                let policy = self.policy()?;
+                let policy = self.effective_policy(client, &self.policy()?)?;
                 let search = p.search.to_lowercase();
                 let listed = targets
                     .iter()
@@ -700,7 +741,11 @@ impl Engine {
                 call.session_id().unwrap_or_default().to_owned(),
             )
         };
-        let policy = self.policy()?;
+        let policy = {
+            let inner = self.lock()?;
+            self.effective_policy(client, &inner.policy)?
+        };
+        let revision = policy.revision;
         if decide(
             policy.enabled,
             policy.authorized(&target.id, &target.digest),
@@ -716,9 +761,14 @@ impl Engine {
                 },
             ));
         }
-        self.validate(&target, policy.revision).await?;
+        self.validate(&target, revision, client).await?;
         if let Some(request_id) = call.request_id() {
             let mut inner = self.lock()?;
+            self.verify_internal_epoch(client, epoch)?;
+            let current = self.effective_policy(client, &inner.policy)?;
+            if current.revision != revision || !current.enabled {
+                return Err(Failure::new("POLICY_CHANGED"));
+            }
             if let Some(task) = inner
                 .tasks
                 .values()
@@ -772,7 +822,8 @@ impl Engine {
                     review,
                     session,
                     request_id: request_id.to_owned(),
-                    revision: policy.revision,
+                    revision,
+                    mode: policy.mode,
                     created: Instant::now(),
                     awaiting_since: None,
                     finished: None,
@@ -798,6 +849,9 @@ impl Handler for EngineHandler {
         Some(self.0.generation.clone())
     }
     async fn call(&self, client: &str, call: Call) -> Result<Value> {
-        self.0.dispatch(client, call).await
+        if client.starts_with("ai:") {
+            return Err(Failure::new("CLIENT_REVOKED"));
+        }
+        self.0.dispatch(client, call, None).await
     }
 }

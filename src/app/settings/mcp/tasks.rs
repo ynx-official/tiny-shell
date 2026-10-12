@@ -165,7 +165,23 @@ impl McpPanel {
             .iter()
             .find(|c| c.id == review.client)
             .map(|c| c.name().to_owned())
-            .unwrap_or_else(|| review.client.chars().take(8).collect());
+            .unwrap_or_else(|| {
+                if let Some(id) = review.client.strip_prefix("ai:") {
+                    let title = crate::app::ai::service()
+                        .ok()
+                        .and_then(|s| {
+                            s.snapshot()
+                                .conversations
+                                .iter()
+                                .find(|c| c.id == id)
+                                .map(|c| c.title.clone())
+                        })
+                        .unwrap_or_default();
+                    format!("{} · {}", t!("ai_assistant"), title)
+                } else {
+                    review.client.chars().take(8).collect()
+                }
+            });
         let id = review.id.clone();
         let title = format!(
             "{} · {} · {}",

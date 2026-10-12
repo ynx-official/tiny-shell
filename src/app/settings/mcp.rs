@@ -1,5 +1,6 @@
 //! MCP settings own transient UI state; authorization and execution remain in the engine.
 mod access;
+mod ai_access;
 mod clients;
 mod model;
 mod permissions;
@@ -28,7 +29,7 @@ use gpui_component::{
 use rust_i18n::t;
 use std::collections::HashSet;
 use tiny_shell_mcp::{
-    engine::{Review, Target},
+    engine::{AiPolicy, Review, Target},
     policy::{Mode, Policy, Scope},
     storage::Registration,
 };
@@ -40,9 +41,18 @@ pub(crate) fn page(view: &Entity<TinyShell>) -> SettingPage {
         .group(
             SettingGroup::new().item(SettingItem::render(move |_, window, cx| {
                 window
-                    .use_keyed_state("mcp-settings-panel", cx, |window, cx| {
-                        McpPanel::new(view.clone(), window, cx)
-                    })
+                    .use_keyed_state(
+                        format!(
+                            "mcp-settings-panel-{}-{}",
+                            view.read(cx).mcp_settings_navigation,
+                            view.read(cx)
+                                .mcp_requested_task
+                                .as_deref()
+                                .unwrap_or_default()
+                        ),
+                        cx,
+                        |window, cx| McpPanel::new(view.clone(), window, cx),
+                    )
                     .into_any_element()
             })),
         )
@@ -50,6 +60,7 @@ pub(crate) fn page(view: &Entity<TinyShell>) -> SettingPage {
 
 struct Snapshot {
     policy: Option<Policy>,
+    ai_policy: Option<AiPolicy>,
     targets: Vec<Target>,
     clients: Vec<Registration>,
     reviews: Vec<Review>,
@@ -76,6 +87,8 @@ struct McpPanel {
 #[derive(Clone)]
 enum PolicyChange {
     Enabled(bool),
+    AiEnabled(bool),
+    AiMode(Mode),
     Mode(Mode),
     Scope(Scope),
     Selection(Vec<Target>, bool),
@@ -95,10 +108,15 @@ impl McpPanel {
             }
         });
         // Keyed state forwards notifications; observing its owner creates a render loop.
+        let initial_tab = if owner.read(cx).mcp_requested_task.is_some() {
+            3
+        } else {
+            0
+        };
         Self {
             owner,
             search,
-            tab: 0,
+            tab: initial_tab,
             authorized_only: false,
             show_revoked: false,
             capabilities: false,
@@ -124,6 +142,7 @@ impl McpPanel {
     fn snapshot(&self, cx: &App) -> Snapshot {
         let mut snapshot = Snapshot {
             policy: None,
+            ai_policy: None,
             targets: self.targets(cx),
             clients: Vec::new(),
             reviews: Vec::new(),
@@ -134,6 +153,10 @@ impl McpPanel {
         match mcp::service() {
             Ok(service) => {
                 snapshot.bridge_error = service.listener_error.lock().ok().and_then(|e| e.clone());
+                match service.engine.ai_policy() {
+                    Ok(policy) => snapshot.ai_policy = Some(policy),
+                    Err(e) => snapshot.data_error = Some(e.code),
+                }
                 match service.engine.policy() {
                     Ok(policy) => snapshot.policy = Some(policy),
                     Err(e) => snapshot.data_error = Some(e.code),
@@ -146,7 +169,7 @@ impl McpPanel {
                     Ok(reviews) => snapshot.reviews = reviews,
                     Err(e) => snapshot.data_error = Some(e.code),
                 }
-                if self.tab == 2 {
+                if self.tab == 3 {
                     match service.engine.store.audit_tail() {
                         Ok(records) => snapshot.history = records,
                         Err(_) => snapshot.data_error = Some("STORAGE_ERROR".into()),
@@ -170,6 +193,16 @@ impl McpPanel {
             let before = serde_json::to_value(&policy).map_err(|_| "STORAGE_ERROR".to_string())?;
             let targets = self.targets(cx);
             match change {
+                PolicyChange::AiEnabled(enabled) => {
+                    let _enter = service.runtime.enter();
+                    return service.engine.set_ai_enabled(enabled).map_err(|e| e.code);
+                }
+                PolicyChange::AiMode(mode) => {
+                    let mut policy = service.engine.ai_policy().map_err(|e| e.code)?;
+                    policy.mode = mode;
+                    let _enter = service.runtime.enter();
+                    return service.engine.set_ai_policy(policy).map_err(|e| e.code);
+                }
                 PolicyChange::Enabled(enabled) => policy.enabled = enabled,
                 PolicyChange::Mode(mode) => policy.mode = mode,
                 PolicyChange::Scope(Scope::Specified) => model::specify(&mut policy, &targets),
@@ -201,6 +234,8 @@ impl McpPanel {
 
     fn request_policy(&self, change: PolicyChange, window: &mut Window, cx: &mut Context<Self>) {
         let confirmation = match &change {
+            PolicyChange::AiEnabled(true) => Some(("ai_allow_ssh", "ai_permission_notice")),
+            PolicyChange::AiMode(Mode::Full) => Some(("mcp_full", "ai_full_confirm")),
             PolicyChange::Mode(Mode::Full) => Some(("mcp_full", "mcp_full_confirm")),
             PolicyChange::Scope(Scope::All) => Some(("mcp_all_connections", "mcp_all_confirm")),
             _ => None,
@@ -220,8 +255,17 @@ impl McpPanel {
 
     fn render_header(&self, snapshot: &Snapshot, cx: &mut Context<Self>) -> gpui::Div {
         let policy = snapshot.policy.as_ref();
-        let enabled = policy.is_some_and(|p| p.enabled);
-        let ready = snapshot.bridge_error.is_none() && policy.is_some();
+        let ai = self.tab == 0;
+        let enabled = if ai {
+            snapshot.ai_policy.is_some_and(|p| p.enabled)
+        } else {
+            policy.is_some_and(|p| p.enabled)
+        };
+        let ready = if ai {
+            snapshot.ai_policy.is_some()
+        } else {
+            snapshot.bridge_error.is_none() && policy.is_some()
+        };
         let authorized = policy.map_or(0, |p| {
             snapshot
                 .targets
@@ -237,9 +281,19 @@ impl McpPanel {
         let status = if !ready {
             t!("mcp_unavailable").to_string()
         } else if enabled {
-            t!("mcp_bridge_running").to_string()
+            t!(if ai {
+                "ai_ssh_enabled"
+            } else {
+                "mcp_bridge_running"
+            })
+            .to_string()
         } else {
-            t!("mcp_disabled").to_string()
+            t!(if ai {
+                "ai_ssh_disabled"
+            } else {
+                "mcp_disabled"
+            })
+            .to_string()
         };
         v_flex()
             .gap_2()
@@ -253,18 +307,26 @@ impl McpPanel {
                         h_flex()
                             .gap_2()
                             .child(
-                                Switch::new("mcp-enabled")
+                                Switch::new(if ai { "ai-ssh-enabled" } else { "mcp-enabled" })
                                     .checked(enabled)
-                                    .disabled(policy.is_none())
-                                    .on_click(cx.listener(|this, checked, window, cx| {
+                                    .disabled(if ai {
+                                        snapshot.ai_policy.is_none()
+                                    } else {
+                                        policy.is_none()
+                                    })
+                                    .on_click(cx.listener(move |this, checked, window, cx| {
                                         this.request_policy(
-                                            PolicyChange::Enabled(*checked),
+                                            if ai {
+                                                PolicyChange::AiEnabled(*checked)
+                                            } else {
+                                                PolicyChange::Enabled(*checked)
+                                            },
                                             window,
                                             cx,
                                         )
                                     })),
                             )
-                            .child(t!("mcp_enable").to_string()),
+                            .child(t!(if ai { "ai_allow_ssh" } else { "mcp_enable" }).to_string()),
                     )
                     .child(
                         Button::new("mcp-stop-all")
@@ -276,6 +338,9 @@ impl McpPanel {
                             .disabled(policy.is_none())
                             .on_click(cx.listener(|_, _, window, cx| {
                                 let result = mcp::service().and_then(|service| {
+                                    if let Ok(ai) = crate::app::ai::service() {
+                                        ai.stop_all();
+                                    }
                                     let _enter = service.runtime.enter();
                                     service.engine.stop_all().map_err(|e| e.code)
                                 });
@@ -299,17 +364,22 @@ impl McpPanel {
                         cx.theme().muted_foreground
                     }))
                     .child(div().text_sm().child(status))
-                    .when_some(policy, |row, policy| {
-                        row.child(
-                            div()
-                                .text_xs()
-                                .text_color(cx.theme().muted_foreground)
-                                .child(format!(
-                                    "{} · {}",
-                                    t!(mode_key(policy.mode)),
-                                    t!("mcp_authorized_count", count = authorized)
-                                )),
-                        )
+                    .when(!ai, |row| {
+                        row.when_some(policy, |row, policy| {
+                            row.child(
+                                div()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(format!(
+                                        "{} · {}",
+                                        t!(mode_key(policy.mode)),
+                                        t!("mcp_authorized_count", count = authorized)
+                                    )),
+                            )
+                        })
+                    })
+                    .when(ai, |row| {
+                        row.child(hint(t!("ai_global_scope").to_string(), cx))
                     })
                     .when(pending > 0, |row| {
                         row.child(
@@ -318,13 +388,21 @@ impl McpPanel {
                                 .ghost()
                                 .label(t!("mcp_pending_count", count = pending).to_string())
                                 .on_click(cx.listener(|this, _, _, cx| {
-                                    this.tab = 2;
+                                    this.tab = 3;
                                     cx.notify();
                                 })),
                         )
                     }),
             )
-            .child(hint(t!("mcp_description").to_string(), cx))
+            .child(hint(
+                t!(if ai {
+                    "ai_global_permission_hint"
+                } else {
+                    "mcp_description"
+                })
+                .to_string(),
+                cx,
+            ))
     }
 }
 
@@ -337,12 +415,21 @@ impl Render for McpPanel {
             .filter(|r| r.state == tiny_shell_mcp::tasks::State::AwaitingUser)
             .count();
         let content = match self.tab {
-            1 => self.render_clients(&snapshot, window, cx),
-            2 => self.render_tasks(&snapshot, window, cx),
+            0 => self.render_ai_access(&snapshot, window, cx),
+            2 => self.render_clients(&snapshot, window, cx),
+            3 => self.render_tasks(&snapshot, window, cx),
             _ => self.render_access(&snapshot, window, cx),
         };
         // The settings page has a native title, page header and group gutters.
         // Keep the bridge controls visible while only the active tab scrolls.
+        let visible_error = if self.tab == 0 {
+            snapshot.data_error.as_ref()
+        } else {
+            snapshot
+                .bridge_error
+                .as_ref()
+                .or(snapshot.data_error.as_ref())
+        };
         let scale = (window.rem_size() / px(14.)).max(1.);
         let panel_height = (window.viewport_size().height - px(148.) * scale).max(px(160.));
         v_flex()
@@ -352,27 +439,13 @@ impl Render for McpPanel {
             .min_h_0()
             .gap_3()
             .pb_3()
-            .child(self.render_header(&snapshot, cx))
-            .when_some(
-                snapshot
-                    .bridge_error
-                    .as_ref()
-                    .or(snapshot.data_error.as_ref()),
-                |panel, error| {
-                    panel.child(
-                        div()
-                            .text_sm()
-                            .text_color(cx.theme().danger)
-                            .child(t!("mcp_action_failed", code = error).to_string()),
-                    )
-                },
-            )
             .child(
                 TabBar::new("mcp-page-tabs")
                     .underline()
                     .small()
                     .selected_index(self.tab)
-                    .child(Tab::new().label(t!("mcp_tab_access").to_string()))
+                    .child(Tab::new().label(t!("ai_builtin").to_string()))
+                    .child(Tab::new().label(t!("settings_mcp").to_string()))
                     .child(Tab::new().label(t!("mcp_tab_clients").to_string()))
                     .child(Tab::new().label(if pending == 0 {
                         t!("mcp_tab_tasks").to_string()
@@ -384,6 +457,15 @@ impl Render for McpPanel {
                         cx.notify();
                     })),
             )
+            .child(self.render_header(&snapshot, cx))
+            .when_some(visible_error, |panel, error| {
+                panel.child(
+                    div()
+                        .text_sm()
+                        .text_color(cx.theme().danger)
+                        .child(t!("mcp_action_failed", code = error).to_string()),
+                )
+            })
             .child(
                 v_flex()
                     .id("mcp-tab-content")
@@ -429,4 +511,4 @@ fn hint(value: impl Into<gpui::SharedString>, cx: &App) -> gpui::Div {
         .whitespace_normal()
         .child(value.into())
 }
-use permissions::mode_key;
+pub(crate) use permissions::mode_key;

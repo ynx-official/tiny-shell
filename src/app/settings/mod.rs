@@ -1,5 +1,6 @@
 pub(crate) mod about;
 pub(crate) mod actions;
+pub(crate) mod ai;
 pub(crate) mod appearance;
 pub(crate) mod controls;
 pub(crate) mod form;

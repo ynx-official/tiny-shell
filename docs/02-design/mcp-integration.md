@@ -40,6 +40,8 @@ TinyShell 作为 MCP Server，让外部 AI 客户端使用用户已保存并授�
 
 第一版范围外建议：
 
+2026-10-12 用户另行确认并授权内置 AI 扩展，将下列第一项中的聊天与模型 Key 配置纳入[内置 AI 需求](../01-requirements/ai-conversations.md)。此处保留原 MCP 首版范围作为历史基线；模型计费管理仍不实现。设置改称 MCP / CLI，外部和内置独立开关共用原权限，详见[AI 契约](../03-architecture/ai-conversations.md)。
+
 - TinyShell 内置 AI 聊天、模型 API Key、模型计费与 MCP Client 功能。
 - 通过公网访问 TinyShell 的 MCP、远程 HTTP 服务及后台常驻服务。
 - 操作本地终端、RDP、同步配置、密钥导出、连接新增或删除。

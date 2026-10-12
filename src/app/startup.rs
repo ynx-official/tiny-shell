@@ -62,6 +62,11 @@ impl TinyShell {
         )
         .danger(true)
         .confirm_label(t!("close_window_confirm").to_string())
+        .pending_on_confirm(
+            t!("close_window_closing_title").to_string(),
+            t!("close_window_closing_desc").to_string(),
+            t!("close_window_closing").to_string(),
+        )
         .on_close({
             let owner = owner.clone();
             move |_, _, cx| {
@@ -126,7 +131,8 @@ impl TinyShell {
         window: &mut gpui::Window,
         cx: &mut gpui::Context<Self>,
     ) {
-        self.close_prompt_open = false;
+        // The confirmation remains visible and busy until this window is removed.
+        self.close_prompt_open = true;
         self.pending_close_window = Some(window.window_handle());
         if self.close_sync_completed {
             self.pending_close_window = None;
@@ -165,6 +171,18 @@ impl TinyShell {
         }
         close_report.log();
         crate::app::deregister_window(window.window_handle(), cx);
+        if crate::app::window_registry()
+            .lock()
+            .is_ok_and(|r| r.is_empty())
+        {
+            if let Ok(ai) = crate::app::ai::service() {
+                ai.stop_all();
+            }
+            if let Ok(service) = crate::app::mcp::service() {
+                let _enter = service.runtime.enter();
+                let _ = service.engine.stop_all();
+            }
+        }
         cx.notify();
     }
 }

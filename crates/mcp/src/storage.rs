@@ -300,7 +300,7 @@ fn read_json<T: DeserializeOwned>(path: &Path) -> Result<T> {
 fn atomic_json<T: Serialize>(path: &Path, value: &T) -> Result<()> {
     atomic_bytes(path, &serde_json::to_vec_pretty(value)?)
 }
-fn atomic_bytes(path: &Path, bytes: &[u8]) -> Result<()> {
+pub fn atomic_bytes(path: &Path, bytes: &[u8]) -> Result<()> {
     reject_link(path)?;
     let temp = path.with_extension(format!("{}.tmp", Uuid::new_v4()));
     let result = (|| {
@@ -340,6 +340,14 @@ fn atomic_bytes(path: &Path, bytes: &[u8]) -> Result<()> {
         let _ = fs::remove_file(&temp);
     }
     result
+}
+/// Bounded local reads reject symlinks just like writes; callers own their format.
+pub fn private_bytes(path: &Path, limit: u64) -> Result<Vec<u8>> {
+    reject_link(path)?;
+    if fs::metadata(path)?.len() > limit {
+        bail!("local data exceeds limit");
+    }
+    Ok(fs::read(path)?)
 }
 #[cfg(unix)]
 fn secure(path: &Path, directory: bool) -> Result<()> {

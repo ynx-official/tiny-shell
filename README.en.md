@@ -113,6 +113,12 @@ After an SSH connection is established, the built-in SFTP manager can handle rem
 - **Image inspection**: View image repositories, tags, sizes, and creation times on the target host.
 - **Non-disruptive layout**: The window expands to the right when space is available to preserve terminal width, with an overlay fallback when space is limited.
 
+### Built-in AI (development source builds)
+
+The sparkle button next to clean mode opens a native chat dock; Back opens local history. Configure an OpenAI-compatible Provider, base URL, key and models in Settings → AI. Discovered models support search and a bounded scrolling picker. Enable global SSH access and choose its mode in MCP / CLI → Built-in AI. Only external MCP requires machine grants. The first message fixes the conversation target.
+
+Keys use the system credential vault and local history is encrypted. A visible temporary mode is used when the vault is unavailable. See [AI design and validation](docs/02-design/ai-conversations.md).
+
 ### Configuration Sync and Migration
 
 - **WebDAV and S3**: Synchronize connection and application settings through widely available storage backends.

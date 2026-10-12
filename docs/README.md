@@ -5,6 +5,9 @@
 
 ## 设计
 
+- [内置 AI 会话](02-design/ai-conversations.md)：原生聊天、工具步骤、本机加密历史、模型配置及按来源独立的 SSH 权限。
+- [内置 AI 需求与验收](01-requirements/ai-conversations.md)：已确认范围及 AI-01 至 AI-15 验收行为。
+
 - [应用图标与平台导出](02-design/application-icons.md)：已选定的 A 圆润终端图标、平台适配与验证。
 
 - [软件图标候选方案](02-design/application-icon-candidates.md)：三套方案、小尺寸对比与 A 方案选择记录。
@@ -25,9 +28,12 @@
 
 - [MCP 功能设计](02-design/mcp-integration.md)：SSH 命令与远程文本操作、三种权限模式、本机桥接和任务反馈，已批准实施基线。
 
-- [MCP 设置交互](02-design/mcp-settings-interaction.md)：已确认的三页签、连接授权搜索、客户端配置和任务审阅。
+- [MCP 设置交互](02-design/mcp-settings-interaction.md)：外部 MCP 的连接授权搜索、客户端配置和任务审阅基线；新增 AI 全局权限 Tab 见内置 AI 交互。
 
 ## 架构
+
+- [内置 AI 实现契约](03-architecture/ai-conversations.md)：模块、能力、数据、协议、取消和恢复。
+- [内置 AI 安全边界](03-architecture/ai-threat-model.md)：模型、Provider、SSH、凭据与历史的信任边界。
 
 - [MCP 开发契约](03-architecture/mcp-contracts.md)：工具、IPC、存储、状态机、资源限制和平台入口。
 
@@ -36,6 +42,8 @@
 - [构建与打包](05-operations/build-and-package.md)：源码运行、平台依赖、FreeRDP 选项、质量检查与安装包生成。
 
 ## 质量验证
+
+- [内置 AI 实施与验证](04-quality/ai-conversations.md)：回归、模型/SSH替身闭环、系统凭据和原生验收状态。
 
 - [Rust 1.96.1 升级验证](04-quality/rust-1-96-1-validation.md)：固定工具链、全目标测试、实际覆盖率与平台验证范围。
 

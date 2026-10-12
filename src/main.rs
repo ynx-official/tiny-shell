@@ -1,8 +1,9 @@
 #![windows_subsystem = "windows"]
 
+use app::assets::Assets;
 use gpui::KeyBinding;
-use gpui_component_assets::Assets;
 
+mod ai;
 mod app;
 mod backend;
 mod crypto;

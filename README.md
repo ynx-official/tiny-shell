@@ -106,6 +106,12 @@ Linux 发布以 Ubuntu 24.04 的 glibc 为基线。AppImage 携带 FreeRDP / Win
 
 ![TinyShell 深色主题概览](preview.png)
 
+### AI 会话（源码开发版）
+
+点击头部纯净模式右侧的星光按钮进入 AI 对话，返回查看本地历史。在设置 → AI 中保存 OpenAI 兼容 Provider、Base URL、Key 和模型；模型列表支持手动输入及刷新后搜索。需要 SSH 操作时，在 MCP / CLI → 内置 AI 中开启全局 SSH 访问并选择模式，无需勾选机器。首次发送后对话固定目标。
+
+Key 使用系统凭据存储，历史本机加密保存；凭据不可用时界面提示临时模式。详情及验证范围见[内置 AI 文档](docs/02-design/ai-conversations.md)。
+
 ### 🎨 调整主题与工作区
 
 根据使用环境选择浅色或深色模式，也可以导入自定义主题。终端字体、字号、行间距与主题支持实时调整，无需重启。

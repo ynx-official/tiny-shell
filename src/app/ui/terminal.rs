@@ -722,6 +722,20 @@ impl TinyShell {
                             })),
                     )
                     .child(
+                        Button::new("tab-bar-ai")
+                            .secondary().small().rounded(px(999.))
+                            .when(self.ai_open, |b| b.primary())
+                            .child(crate::app::ai::icon())
+                            .map(|button| {
+                                let (active, pending) = crate::app::ai::service().map(|s| s.activity_counts()).unwrap_or_default();
+                                button.when(active > 0, |b| b.child(div().text_xs().text_color(if pending > 0 {cx.theme().warning} else if self.ai_open {cx.theme().primary_foreground} else {cx.theme().foreground}).child(active.to_string())))
+                                    .tooltip(if active > 0 { t!("ai_activity_count", active=active, pending=pending).to_string() } else {t!("ai_open").to_string()})
+                            })
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                window.prevent_default(); cx.stop_propagation(); this.toggle_ai(window,cx);
+                            })),
+                    )
+                    .child(
                         Button::new("tab-bar-more")
                             .secondary()
                             .small()

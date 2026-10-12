@@ -36,6 +36,7 @@ gpui_platform = { git = "https://github.com/zed-industries/zed", features = ["fo
 gpui-component = { git = "https://github.com/longbridge/gpui-component", rev = "ca85b5588f5feea021f1ee86cb13703dc6f30ec4" }
 gpui-component-assets = { git = "https://github.com/longbridge/gpui-component", rev = "ca85b5588f5feea021f1ee86cb13703dc6f30ec4" }
 menu = { git = "https://github.com/zed-industries/zed" }
+markdown = "=1.0.0"
 portable-pty = "0.8"
 rfd = "0.15"
 russh = "0.49"
@@ -66,6 +67,7 @@ base64 = "0.22"
 chacha20poly1305 = "0.10"
 hmac = "0.12"
 hex = "0.4"
+keyring = { version = "=4.2.0", default-features = false, features = ["v1"] }
 rand = "0.8"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
 regex = "1"
@@ -125,6 +127,9 @@ opt-level = 1
 cc = "1.2.63"
 pkg-config = "0.3"
 winres = "0.1.12"
+
+[dev-dependencies]
+gpui = { git = "https://github.com/zed-industries/zed", features = ["test-support"] }
 
 [patch.crates-io]
 block = { path = "vendor/block-0.1.6" }
