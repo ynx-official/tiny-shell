@@ -41,6 +41,8 @@ JSON-RPC 缺失方法/畸形结构由 SDK 处理；工具参数解析错误返�
 
 `mcp/clients/<UUID>.json` 包含 schema_version、id、label、enabled 和 32 字节随机秘密；注册撤销后秘密失效。目录 Unix 0700、文件 0600；Windows 用受保护 DACL 只允许当前登录用户。拒绝符号链接目录/注册文件；不把秘密放到客户端配置、日志或公开 DTO。客户端标签不作为身份验证。
 
+2026-10-12 为用户要求的客户端重命名增加可选 display_name，schema_version 保持 1。label 保留原注册模板，用于选择配置格式；Registration::name 优先返回 display_name，否则返回 label，已有注册无需迁移。Store::rename_client 校验单行名称并仅更新显示元数据，重复保存同名不写文件；改回模板名称时不序列化 display_name。Store::register_or_reuse 仅复用同类型、启用且仍为默认名称的注册，改名实例允许与新注册并存。共享 Store 克隆的元数据更新、默认注册复用和撤销使用同一互斥锁，防止重命名使用旧 enabled 状态覆盖撤销。原子保存和文件权限规则保持，IPC 与工具契约没有变化。旧版严格反序列化器不保证读取新增字段；需要降级时先改回模板名称以移除别名字段。
+
 策略、注册和日志都不参与连接同步、导入导出。写入采用同目录临时文件 + 刷新 + 原子替换；加载损坏配置 fail closed，设置显示错误，不能自动恢复完全访问。应用内只保留一份进程级协调器。政策 revision 变化使所有未执行审批失效；撤销和关闭优先阻止新请求并取消相关活动任务。
 
 元数据记录 `mcp/audit.jsonl`：timestamp/client_id/connection_id/operation/mode/state/exit_code；不存正文、命令、输出、凭据。按七天和 10 MiB 截短；在设置中清空。任务正文内存三十分钟，清理后 TASK_NOT_FOUND，不自动重放。request_id 去重至少同保留期；同客户端 ID + 相同规范化参数返回同任务，不同参数 REQUEST_ID_CONFLICT。

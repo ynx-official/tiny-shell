@@ -15,13 +15,33 @@ pub struct Registration {
     pub schema_version: u32,
     pub id: String,
     pub label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
     pub enabled: bool,
     pub secret: String,
+}
+impl Registration {
+    /// A local alias never changes the template used to export client configuration.
+    pub fn name(&self) -> &str {
+        self.display_name.as_deref().unwrap_or(&self.label)
+    }
+}
+pub enum RegistrationOutcome {
+    Created(Registration),
+    Existing(Registration),
+}
+pub fn normalize_client_name(name: &str) -> Result<&str> {
+    let name = name.trim();
+    if name.is_empty() || name.chars().count() > 128 || name.chars().any(char::is_control) {
+        bail!("invalid client name");
+    }
+    Ok(name)
 }
 #[derive(Clone)]
 pub struct Store {
     root: PathBuf,
     audit_lock: std::sync::Arc<std::sync::Mutex<()>>,
+    registration_lock: std::sync::Arc<std::sync::Mutex<()>>,
 }
 impl Store {
     pub fn new(config_dir: &Path) -> Result<Self> {
@@ -31,6 +51,7 @@ impl Store {
         Ok(Self {
             root,
             audit_lock: std::sync::Arc::new(std::sync::Mutex::new(())),
+            registration_lock: std::sync::Arc::new(std::sync::Mutex::new(())),
         })
     }
     pub fn root(&self) -> &Path {
@@ -167,11 +188,26 @@ impl Store {
             schema_version: 1,
             id: Uuid::new_v4().to_string(),
             label: label.to_owned(),
+            display_name: None,
             enabled: true,
             secret: hex::encode(bytes),
         };
         atomic_json(&self.client_path(&client.id)?, &client)?;
         Ok(client)
+    }
+    pub fn register_or_reuse(&self, label: &str) -> Result<RegistrationOutcome> {
+        let _guard = self
+            .registration_lock
+            .lock()
+            .map_err(|_| anyhow::anyhow!("MCP registration lock poisoned"))?;
+        if let Some(existing) = self
+            .clients()?
+            .into_iter()
+            .find(|client| client.enabled && client.label == label && client.name() == label)
+        {
+            return Ok(RegistrationOutcome::Existing(existing));
+        }
+        Ok(RegistrationOutcome::Created(self.register(label)?))
     }
     fn client_path(&self, id: &str) -> Result<PathBuf> {
         let id = Uuid::parse_str(id).context("invalid registration ID")?;
@@ -197,13 +233,31 @@ impl Store {
                 clients.push(self.client(id)?);
             }
         }
-        clients.sort_by(|a, b| a.label.cmp(&b.label));
+        clients.sort_by(|a, b| a.name().cmp(b.name()).then_with(|| a.id.cmp(&b.id)));
         Ok(clients)
     }
     pub fn revoke(&self, id: &str) -> Result<()> {
+        let _guard = self
+            .registration_lock
+            .lock()
+            .map_err(|_| anyhow::anyhow!("MCP registration lock poisoned"))?;
         let mut client = self.client(id)?;
         client.enabled = false;
         atomic_json(&self.client_path(id)?, &client)
+    }
+    pub fn rename_client(&self, id: &str, name: &str) -> Result<Registration> {
+        let name = normalize_client_name(name)?;
+        // Serialize metadata edits with revocation so a stale name edit cannot restore access.
+        let _guard = self
+            .registration_lock
+            .lock()
+            .map_err(|_| anyhow::anyhow!("MCP registration lock poisoned"))?;
+        let mut client = self.client(id)?;
+        if client.name() != name {
+            client.display_name = (name != client.label).then(|| name.to_owned());
+            atomic_json(&self.client_path(id)?, &client)?;
+        }
+        Ok(client)
     }
 }
 pub fn default_config_dir() -> Result<PathBuf> {

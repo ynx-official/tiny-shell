@@ -111,7 +111,7 @@ impl McpPanel {
                     .clients
                     .iter()
                     .find(|c| c.id == client_id)
-                    .map(|c| c.label.clone())
+                    .map(|c| c.name().to_owned())
                     .unwrap_or_else(|| client_id.chars().take(8).collect());
                 let connection_id = record["connection_id"].as_str().unwrap_or("");
                 let target = snapshot
@@ -164,7 +164,7 @@ impl McpPanel {
             .clients
             .iter()
             .find(|c| c.id == review.client)
-            .map(|c| c.label.clone())
+            .map(|c| c.name().to_owned())
             .unwrap_or_else(|| review.client.chars().take(8).collect());
         let id = review.id.clone();
         let title = format!(
