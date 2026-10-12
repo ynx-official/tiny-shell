@@ -75,12 +75,13 @@ impl Store {
             "tiny-shell.ai.{}",
             hex::encode(Sha256::digest(canonical.to_string_lossy().as_bytes()))
         );
-        let settings = if root.join("providers.json").exists() {
+        let settings: Settings = if root.join("providers.json").exists() {
             serde_json::from_slice(&private_bytes(&root.join("providers.json"), 1024 * 1024)?)
                 .map_err(|_| anyhow!("AI_STORAGE_ERROR"))?
         } else {
             Settings::default()
         };
+        settings.execution.validate()?;
         let has_history = std::fs::read_dir(root.join("conversations"))?
             .filter_map(Result::ok)
             .any(|e| e.path().extension().is_some_and(|x| x == "enc"));
@@ -128,6 +129,7 @@ impl Store {
                     ensure!(c.id == id, "AI_HISTORY_CORRUPT");
                     if c.state.active() {
                         c.state = TurnState::Interrupted;
+                        c.continuation = None;
                         c.error = Some("AI_INTERRUPTED".into());
                         for activity in &mut c.activities {
                             if matches!(

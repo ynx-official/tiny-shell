@@ -72,6 +72,62 @@ impl Provider {
 pub(crate) struct Settings {
     pub providers: Vec<Provider>,
     pub default_provider: Option<String>,
+    #[serde(default)]
+    pub execution: ExecutionSettings,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub(crate) struct ExecutionSettings {
+    pub tool_calls: usize,
+    pub model_requests: usize,
+    pub background_notifications: bool,
+}
+impl Default for ExecutionSettings {
+    fn default() -> Self {
+        Self {
+            tool_calls: 16,
+            model_requests: 8,
+            background_notifications: false,
+        }
+    }
+}
+impl ExecutionSettings {
+    pub fn validate(&self) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            (1..=128).contains(&self.tool_calls) && (1..=64).contains(&self.model_requests),
+            "AI_INVALID_BUDGET"
+        );
+        Ok(())
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum LimitKind {
+    ToolCalls,
+    ModelRequests,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(crate) struct Continuation {
+    pub token: String,
+    pub kind: LimitKind,
+    pub used: usize,
+    pub allowance: usize,
+}
+
+#[derive(Clone)]
+pub(crate) struct PendingContinuation {
+    pub conversation: String,
+    pub title: String,
+    pub updated: i64,
+    pub choice: Continuation,
+}
+#[derive(Default)]
+pub(crate) struct RunAttention {
+    pub background_notifications: bool,
+    pub active: std::collections::HashSet<String>,
+    pub pending: Vec<PendingContinuation>,
 }
 #[derive(Clone, Serialize, Deserialize)]
 pub(crate) struct BoundTarget {
@@ -129,6 +185,7 @@ pub(crate) enum TurnState {
     Idle,
     Generating,
     AwaitingApproval,
+    AwaitingContinuation,
     RunningTool,
     Failed,
     Interrupted,
@@ -137,7 +194,10 @@ impl TurnState {
     pub fn active(self) -> bool {
         matches!(
             self,
-            Self::Generating | Self::AwaitingApproval | Self::RunningTool
+            Self::Generating
+                | Self::AwaitingApproval
+                | Self::AwaitingContinuation
+                | Self::RunningTool
         )
     }
 }
@@ -163,6 +223,8 @@ pub(crate) struct Conversation {
     pub activities: Vec<Activity>,
     pub state: TurnState,
     pub error: Option<String>,
+    #[serde(default)]
+    pub continuation: Option<Continuation>,
     pub updated: i64,
 }
 impl Conversation {
@@ -183,6 +245,7 @@ impl Conversation {
             activities: Vec::new(),
             state: TurnState::Idle,
             error: None,
+            continuation: None,
             updated: chrono::Utc::now().timestamp(),
         }
     }

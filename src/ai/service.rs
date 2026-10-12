@@ -9,9 +9,17 @@ use std::{
     },
 };
 use tokio::sync::watch;
+mod budget;
+mod continuation;
+#[cfg(test)]
+mod continuation_tests;
+#[cfg(test)]
+mod optimization_tests;
 mod runner;
 #[cfg(test)]
 mod tests;
+mod tools;
+mod toolset;
 
 #[derive(Clone, Default)]
 pub(crate) struct Snapshot {
@@ -30,6 +38,7 @@ pub(crate) struct Snapshot {
 struct State {
     snapshot: Snapshot,
     cancel: HashMap<String, watch::Sender<bool>>,
+    continuations: HashMap<String, tokio::sync::oneshot::Sender<()>>,
 }
 pub(crate) struct Service {
     state: Mutex<State>,
@@ -49,6 +58,7 @@ impl Service {
             state: Mutex::new(State {
                 snapshot: Snapshot::default(),
                 cancel: HashMap::new(),
+                continuations: HashMap::new(),
             }),
             store: Mutex::new(None),
             persistence: Mutex::new(()),
@@ -99,7 +109,12 @@ impl Service {
                     conversations.iter().filter(|c| c.state.active()).count(),
                     conversations
                         .iter()
-                        .filter(|c| c.state == TurnState::AwaitingApproval)
+                        .filter(|c| {
+                            matches!(
+                                c.state,
+                                TurnState::AwaitingApproval | TurnState::AwaitingContinuation
+                            )
+                        })
                         .count(),
                 )
             })

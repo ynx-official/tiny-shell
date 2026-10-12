@@ -1,6 +1,9 @@
+mod attention;
 mod composer;
 mod markdown;
+pub(crate) mod notifications;
 mod panel;
+mod scroll;
 mod tool_steps;
 use crate::{
     TinyShell,
@@ -69,8 +72,12 @@ pub(crate) fn current_target(
     Some(target(saved, config))
 }
 impl TinyShell {
-    pub(crate) fn poll_ai(&mut self) -> bool {
-        let stamp = service().map(|s| s.stamp()).unwrap_or(0);
+    pub(crate) fn poll_ai(&mut self, cx: &mut Context<Self>) -> bool {
+        attention::dispatch_activations(cx);
+        let stamp = service()
+            .map(|s| s.stamp())
+            .unwrap_or(0)
+            .wrapping_add(notifications::stamp());
         if stamp == self.ai_stamp {
             false
         } else {
@@ -128,6 +135,10 @@ pub(crate) fn error_text(code: &str) -> String {
         "AI_STORAGE_ERROR" | "AI_HISTORY_LIMIT" => "ai_storage_error",
         "AI_CANCELLED" | "AI_INTERRUPTED" => "ai_interrupted",
         "AI_TOOL_LIMIT" => "ai_tool_limit",
+        "AI_RESPONSE_TOOL_LIMIT" => "ai_response_tool_limit",
+        "AI_INVALID_BUDGET" => "ai_invalid_budget",
+        "AI_CONTINUATION_EXPIRED" => "ai_continuation_expired",
+        "AI_TOOLS_HALTED" => "ai_tools_halted",
         "AI_NETWORK_ERROR" | "AI_TIMEOUT" | "AI_STREAM_INTERRUPTED" => "ai_network_error",
         "AI_INVALID_NAME" => "ai_invalid_name",
         "AI_INVALID_MESSAGE" => "ai_invalid_message",

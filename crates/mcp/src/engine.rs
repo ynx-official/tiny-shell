@@ -20,6 +20,7 @@ use std::{
 use tokio::sync::watch;
 use uuid::Uuid;
 mod internal;
+mod waiting;
 pub use internal::{AiPolicy, InternalClient};
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -97,11 +98,13 @@ pub struct Engine {
     pub generation: String,
     stamp: AtomicU64,
     ai: Mutex<internal::Access>,
+    changes: watch::Sender<u64>,
 }
 impl Engine {
     pub fn new(store: Store, remote: Arc<dyn Remote>) -> anyhow::Result<Arc<Self>> {
         let policy = store.load_policy()?;
         let ai = internal::Access::load(&store, &policy)?;
+        let (changes, _) = watch::channel(0);
         Ok(Arc::new(Self {
             store,
             remote,
@@ -113,6 +116,7 @@ impl Engine {
             generation: Uuid::new_v4().to_string(),
             stamp: AtomicU64::new(1),
             ai: Mutex::new(ai),
+            changes,
         }))
     }
     pub fn stamp(&self) -> u64 {
@@ -120,6 +124,8 @@ impl Engine {
     }
     fn changed(&self) {
         self.stamp.fetch_add(1, Ordering::Relaxed);
+        self.changes
+            .send_modify(|version| *version = version.wrapping_add(1));
     }
     fn lock(&self) -> Result<std::sync::MutexGuard<'_, Inner>> {
         self.inner
@@ -342,7 +348,6 @@ impl Engine {
         Ok(())
     }
     fn finish(&self, id: &str, result: Result<Value>) {
-        self.changed();
         let Ok(mut inner) = self.lock() else { return };
         let Some(task) = inner.tasks.get_mut(id) else {
             return;
@@ -369,6 +374,7 @@ impl Engine {
                     let session_id = task.session.clone();
                     inner.sessions.insert(session_id, session);
                     drop(inner);
+                    self.changed();
                     self.audit(id);
                     return;
                 }
@@ -392,6 +398,7 @@ impl Engine {
                 task.review.state = State::AwaitingUser;
                 task.awaiting_since = Some(Instant::now());
                 task.review.error = Some(error);
+                self.changed();
                 return;
             }
             Err(mut error) => {
@@ -407,6 +414,7 @@ impl Engine {
         }
         task.finished = Some(Instant::now());
         drop(inner);
+        self.changed();
         self.audit(id);
     }
     fn audit(&self, id: &str) {
@@ -592,6 +600,10 @@ impl Engine {
         if !self.effective_policy(client, &self.policy()?)?.enabled {
             return Err(Failure::new("MCP_DISABLED"));
         }
+        // A task query needs current authorization and ownership, not SSH target loading.
+        if let Call::GetTask(query) = &call {
+            return self.wait_task(client, query, epoch).await;
+        }
         let targets = self.bound_targets(client, self.remote.targets().await?)?;
         {
             let mut inner = self.lock()?;
@@ -660,34 +672,7 @@ impl Engine {
                 );
             }
             Call::GetTask(p) => {
-                let inner = self.lock()?;
-                let task = inner
-                    .tasks
-                    .get(&p.task_id)
-                    .filter(|t| t.review.client == client)
-                    .ok_or_else(|| Failure::new("TASK_NOT_FOUND"))?;
-                let mut result = task.result.clone();
-                let mut outputs = Vec::new();
-                let stdout = result.get("stdout").and_then(Value::as_str).unwrap_or("");
-                let stderr = result.get("stderr").and_then(Value::as_str).unwrap_or("");
-                let all = format!("{stdout}{stderr}");
-                let start = all.ceil_char_boundary(p.offset.min(all.len()));
-                let end = all.floor_char_boundary(start.saturating_add(p.limit).min(all.len()));
-                if start < stdout.len() {
-                    outputs
-                        .push(json!({"stream":"stdout","text":&all[start..end.min(stdout.len())]}));
-                }
-                if end > stdout.len() {
-                    outputs
-                        .push(json!({"stream":"stderr","text":&all[start.max(stdout.len())..end]}));
-                }
-                if let Some(object) = result.as_object_mut() {
-                    object.remove("stdout");
-                    object.remove("stderr");
-                }
-                return Ok(
-                    json!({"id":p.task_id,"state":task.review.state,"error":task.review.error,"result":result,"output":outputs,"next_offset":(end<all.len()).then_some(end),"truncated":task.result.get("truncated").and_then(Value::as_bool).unwrap_or(false)}),
-                );
+                return self.wait_task(client, p, epoch).await;
             }
             Call::CancelTask(p) => {
                 let mut inner = self.lock()?;

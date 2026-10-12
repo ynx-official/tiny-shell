@@ -24,6 +24,7 @@ use gpui_component::{
 };
 use rust_i18n::t;
 use std::rc::Rc;
+mod execution;
 
 type PermissionsAction = Rc<dyn Fn(&mut Window, &mut gpui::App)>;
 
@@ -31,6 +32,13 @@ pub(crate) fn page(owner: &Entity<TinyShell>) -> SettingPage {
     let owner = owner.clone();
     SettingPage::new(t!("settings_ai").to_string())
         .icon(crate::app::ai::icon())
+        .group(
+            SettingGroup::new().item(SettingItem::render(|_, window, cx| {
+                window
+                    .use_keyed_state("ai-execution-settings", cx, execution::ExecutionForm::new)
+                    .into_any_element()
+            })),
+        )
         .group(
             SettingGroup::new().item(SettingItem::render(move |_, window, cx| {
                 window

@@ -23,13 +23,17 @@
 | open_session | connection_id、request_id | task_id；终态 result.session_id |
 | close_session | session_id、request_id | task_id；终态 result.closed |
 | run_command | session_id、command、request_id、cwd（省略使用登录目录）、timeout_ms（30000，1000–300000） | task_id |
-| get_task | task_id、offset（0）、limit（65536，4–65536） | id/state/error/result、output（带 stream 的 UTF-8 文本片段）、next_offset/truncated |
+| get_task | task_id、offset（0）、limit（65536，4–65536）、wait_ms（0，0–10000） | id/state/error/result、output（带 stream 的 UTF-8 文本片段）、next_offset/truncated |
 | cancel_task | task_id | state、cancellation_requested |
 | list_directory | session_id、path、offset（0）、limit（50，1–100） | entries、next_offset；entry name/type/size/modified |
 | read_file | session_id、path | content/encoding/line_ending/version/size；完整文本，没有截断读 |
 | write_file | session_id、path、content、mode（create/update）、expected_version（update 必须）、request_id | task_id；终态 result.version/size |
 
 工具名称为上表原名。完整工具 Schema 由 Rust 类型导出至 [mcp-tools.schema.json](mcp-tools.schema.json)，更新方式为 `cargo run -p tiny-shell-mcp --example export-schemas`；实现类型是生成来源，不手改生成文件。输出页最少四字节，确保多字节 UTF-8 字符可完整前进；原设计的一字节下限据此调整。结构化结果统一为 `{ok:true,data:{…}}` 或 `{ok:false,error:{code,message}}`。相同 JSON 放入 MCP text content，structuredContent 同步设置。输出 Schema 描述统一 envelope，具体 data 结构由公开 DTO 定义。任务提交成功只说明请求已接收，必须 get_task 查询终态。命令退出码非零为 failed / COMMAND_FAILED，仍可取回 stdout/stderr/exit_code。
+
+2026-10-12 用户确认实施工具描述、状态等待、会话管理和重复调用控制四项优化。外部仍暴露原十个工具，新增的 wait_ms 是向后兼容的可选参数：省略或为零立即查询，非零时等待该任务状态变化、进入终态或达到等待上限。完成、审批、取消和权限撤销通过引擎通知唤醒；订阅在初次快照之前建立，防止完成通知丢失。每次返回重新核对客户端、内部能力代数及任务归属；任务查询无需重新加载远端连接配置，实际执行仍验证目标摘要。十秒等待处于现有十五秒 IPC 调用期限内。更新后的描述引导复用连接/会话并使用等待查询。
+
+本轮内置 AI 的四工具裁剪、应用管理会话、单轮预算及短时读缓存只用于进程内 AI 协调器；外部调用方继续使用现有 request_id 幂等、资源上限及独立会话。详见[AI 实现契约](ai-conversations.md)和[优化验证](../04-quality/ai-tool-call-optimization.md)。因项目新增“编译类命令由用户明确发起”的约定，静态 Schema 导出文件尚待用户运行上述生成命令同步 wait_ms 和新描述；运行时工具 Schema 直接由当前 Rust 类型生成。
 
 JSON-RPC 缺失方法/畸形结构由 SDK 处理；工具参数解析错误返回 INVALID_ARGUMENT，且不能触发远端 I/O。错误只包含固定安全说明；不返回底层带凭据、密钥路径或本机配置的原始异常。
 

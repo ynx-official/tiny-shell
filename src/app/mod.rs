@@ -197,6 +197,7 @@ pub(crate) enum DialogKind {
     /// 本地强行重置隐私信息加密密码。
     ResetPrivacyPassword,
     DeleteConfirmation,
+    AiContinuation,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -1407,7 +1408,7 @@ impl TinyShell {
                 let active = match this.update(cx, |this, cx| {
                     this.drive_config_preferences_save(cx);
                     let changed =
-                        this.drain_backend_events(cx) | this.poll_mcp(cx) | this.poll_ai();
+                        this.drain_backend_events(cx) | this.poll_mcp(cx) | this.poll_ai(cx);
                     let system_sampled = this.sample_system_if_due();
                     this.sample_sftp_latency_if_due();
                     let metrics_animated = this.animate_resource_metrics();

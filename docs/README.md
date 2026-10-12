@@ -43,6 +43,10 @@
 
 ## 质量验证
 
+- [AI 执行预算与系统通知](04-quality/ai-execution-budget.md)：可配置预算、可恢复暂停、原生通知、回归用例和本轮未运行范围。
+
+- [AI 与 MCP 调用链优化](04-quality/ai-tool-call-optimization.md)：工具裁剪、通知等待、应用管理会话、预算和重复控制的实际证据及手动验收。
+
 - [内置 AI 实施与验证](04-quality/ai-conversations.md)：回归、模型/SSH替身闭环、系统凭据和原生验收状态。
 
 - [Rust 1.96.1 升级验证](04-quality/rust-1-96-1-validation.md)：固定工具链、全目标测试、实际覆盖率与平台验证范围。

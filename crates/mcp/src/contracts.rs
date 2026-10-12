@@ -104,6 +104,9 @@ pub struct GetTask {
     #[serde(default = "output_size")]
     #[schemars(range(min = 4, max = 65536))]
     pub limit: usize,
+    #[serde(default)]
+    #[schemars(range(min = 0, max = 10000))]
+    pub wait_ms: u64,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -203,7 +206,7 @@ impl Call {
             }
             Self::GetTask(p) => {
                 valid_id(&p.task_id)?;
-                if p.limit < 4 || p.limit > 65536 {
+                if p.limit < 4 || p.limit > 65536 || p.wait_ms > 10000 {
                     return Err(invalid());
                 }
             }
@@ -280,30 +283,34 @@ fn tool<T: JsonSchema>(name: &'static str, description: &'static str, read: bool
 }
 pub fn tools() -> Vec<Tool> {
     vec![
-        tool::<Empty>("get_status", "Get TinyShell MCP status and limits.", true),
+        tool::<Empty>(
+            "get_status",
+            "Get TinyShell MCP status and limits once when needed; avoid repeated status checks during a task.",
+            true,
+        ),
         tool::<Connections>(
             "list_connections",
-            "List only authorized saved SSH connections.",
+            "List only authorized saved SSH connections. Reuse the selected connection ID instead of listing again for each operation.",
             true,
         ),
         tool::<OpenSession>(
             "open_session",
-            "Open a dedicated AI SSH session; returns a task ticket.",
+            "Open a dedicated AI SSH session; returns a task ticket. Await get_task with wait_ms=10000, then reuse result.session_id for subsequent operations on the same connection.",
             false,
         ),
         tool::<CloseSession>(
             "close_session",
-            "Close your AI session; never closes a human terminal.",
+            "Close your AI session when finished using the connection; never closes a human terminal. Returns a task ticket; await get_task with wait_ms=10000.",
             false,
         ),
         tool::<RunCommand>(
             "run_command",
-            "Run a non-interactive remote command; poll get_task. Controlled mode requires TinyShell approval.",
+            "Run a non-interactive remote command; returns a task ticket. Await get_task with wait_ms=10000 for completion. Controlled mode requires TinyShell approval. Never automatically repeat an unknown outcome.",
             false,
         ),
         tool::<GetTask>(
             "get_task",
-            "Read your task state and bounded output. Never automatically retry an unknown remote outcome.",
+            "Read your task state and bounded output. Set wait_ms up to 10000 to wait for a state change instead of polling frequently. Never automatically retry an unknown remote outcome.",
             true,
         ),
         tool::<CancelTask>(
@@ -318,12 +325,12 @@ pub fn tools() -> Vec<Tool> {
         ),
         tool::<ReadFile>(
             "read_file",
-            "Read complete remote text up to 256 KiB and its version.",
+            "Read complete remote text up to 256 KiB and its version. Preserve the version for an update; avoid rereading unchanged content unnecessarily.",
             true,
         ),
         tool::<WriteFile>(
             "write_file",
-            "Create or update remote text; updates require expected_version and approval in controlled mode.",
+            "Create or update remote text; updates require expected_version and approval in controlled mode. Returns a task ticket; await get_task with wait_ms=10000. Never automatically repeat an unknown outcome.",
             false,
         ),
     ]

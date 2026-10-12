@@ -90,7 +90,7 @@ fn validate_message(message: &Message, finish: Option<&str>) -> Result<()> {
         !message.content.is_empty() || !message.tool_calls.is_empty(),
         "AI_EMPTY_RESPONSE"
     );
-    ensure!(message.tool_calls.len() <= 32, "AI_TOOL_LIMIT");
+    ensure!(message.tool_calls.len() <= 32, "AI_RESPONSE_TOOL_LIMIT");
     if !message.tool_calls.is_empty() {
         ensure!(finish == Some("tool_calls"), "AI_INVALID_TOOL");
         let mut ids = std::collections::HashSet::new();
@@ -179,7 +179,7 @@ impl Stream {
                         .as_u64()
                         .ok_or_else(|| anyhow!("AI_INVALID_TOOL"))?
                         as usize;
-                    ensure!(index < 32, "AI_TOOL_LIMIT");
+                    ensure!(index < 32, "AI_RESPONSE_TOOL_LIMIT");
                     let call = self.calls.entry(index).or_insert_with(
                         || json!({"id":"","type":"function","function":{"name":"","arguments":""}}),
                     );
@@ -272,6 +272,19 @@ pub(super) async fn complete(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn oversized_tool_responses_are_distinct_from_a_resumable_budget() {
+        let message = Message {
+            role: "assistant".into(), content: String::new(), tool_call_id: None,
+            tool_calls: (0..33).map(|i| json!({"id":format!("call-{i}"),"type":"function","function":{"name":"read_file","arguments":"{}"}})).collect(),
+        };
+        assert_eq!(
+            validate_message(&message, Some("tool_calls"))
+                .unwrap_err()
+                .to_string(),
+            "AI_RESPONSE_TOOL_LIMIT"
+        );
+    }
     #[test]
     fn json_fallback_does_not_accept_incomplete_or_invalid_tools() {
         let valid_call = json!({"id":"call-1","type":"function","function":{"name":"open_session","arguments":"{}"}});

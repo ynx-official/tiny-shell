@@ -36,10 +36,15 @@ impl Remote for Fake {
     }
     async fn close(&self, _: &str) {}
 }
-fn fixture(directory: PathBuf, p: Provider, engine: Option<Arc<Engine>>) -> Result<Arc<Service>> {
+pub(super) fn fixture(
+    directory: PathBuf,
+    p: Provider,
+    engine: Option<Arc<Engine>>,
+) -> Result<Arc<Service>> {
     let settings = Settings {
         providers: vec![p.clone()],
         default_provider: Some(p.id.clone()),
+        ..Settings::default()
     };
     let store = Store::fixture(directory, Some([9; 32]), &p.id, "fixture-key")?;
     Ok(Arc::new(Service {
@@ -50,6 +55,7 @@ fn fixture(directory: PathBuf, p: Provider, engine: Option<Arc<Engine>>) -> Resu
                 ..Snapshot::default()
             },
             cancel: HashMap::new(),
+            continuations: HashMap::new(),
         }),
         store: Mutex::new(Some(Arc::new(store))),
         persistence: Mutex::new(()),
@@ -58,7 +64,7 @@ fn fixture(directory: PathBuf, p: Provider, engine: Option<Arc<Engine>>) -> Resu
         engine,
     }))
 }
-fn provider(address: std::net::SocketAddr) -> Provider {
+pub(super) fn provider(address: std::net::SocketAddr) -> Provider {
     Provider {
         name: "fixture".into(),
         base_url: format!("http://{address}/v1"),
@@ -71,7 +77,7 @@ fn provider(address: std::net::SocketAddr) -> Provider {
         ..Provider::default()
     }
 }
-async fn request(socket: &mut tokio::net::TcpStream) -> Result<Value> {
+pub(super) async fn request(socket: &mut tokio::net::TcpStream) -> Result<Value> {
     let mut bytes = Vec::new();
     loop {
         let mut buf = [0; 4096];
@@ -95,7 +101,11 @@ async fn request(socket: &mut tokio::net::TcpStream) -> Result<Value> {
         }
     }
 }
-async fn response(socket: &mut tokio::net::TcpStream, delta: Value, reason: &str) -> Result<()> {
+pub(super) async fn response(
+    socket: &mut tokio::net::TcpStream,
+    delta: Value,
+    reason: &str,
+) -> Result<()> {
     let text = format!(
         "data: {}\n\ndata: {}\n\ndata: [DONE]\n\n",
         json!({"choices":[{"delta":delta}]}),
@@ -108,7 +118,7 @@ async fn response(socket: &mut tokio::net::TcpStream, delta: Value, reason: &str
     Ok(())
 }
 
-async fn settled(service: &Arc<Service>) -> Result<()> {
+pub(super) async fn settled(service: &Arc<Service>) -> Result<()> {
     tokio::time::timeout(Duration::from_secs(5), async {
         while service
             .snapshot()
@@ -477,32 +487,49 @@ async fn streaming_agent_uses_global_ai_approval_and_encrypted_history() -> Resu
             mode: Mode::Controlled,
         })
         .map_err(|e| anyhow!(e.code))?;
-    let target_id = target.id.clone();
     let server = tokio::spawn(async move {
-        for round in 0..3 {
+        for round in 0..2 {
             let (mut socket, _) = listener.accept().await?;
             let request = request(&mut socket).await?;
             ensure!(request["model"] == "fixture-model", "model missing");
             ensure!(request["stream"] == true, "stream missing");
-            let delta = match round {
-                0 => {
-                    json!({"tool_calls":[{"index":0,"id":"call-open","type":"function","function":{"name":"open_session","arguments":json!({"connection_id":target_id,"request_id":uuid::Uuid::new_v4().to_string()}).to_string()}}]})
-                }
-                1 => {
-                    let output = request["messages"]
-                        .as_array()
-                        .and_then(|m| m.iter().rev().find(|m| m["role"] == "tool"))
-                        .and_then(|m| m["content"].as_str())
-                        .ok_or_else(|| anyhow!("missing tool result"))?;
-                    let output: Value = serde_json::from_str(output)?;
-                    json!({"tool_calls":[{"index":0,"id":"call-command","type":"function","function":{"name":"run_command","arguments":json!({"session_id":output["result"]["session_id"],"command":"printf fixture","request_id":uuid::Uuid::new_v4().to_string()}).to_string()}}]})
-                }
-                _ => json!({"content":"检查完成"}),
+            let names = request["tools"]
+                .as_array()
+                .ok_or_else(|| anyhow!("tools missing"))?;
+            ensure!(names.len() == 4, "only operation tools should be exposed");
+            ensure!(
+                names
+                    .iter()
+                    .all(|tool| tool["function"]["parameters"]["properties"]
+                        .get("session_id")
+                        .is_none()),
+                "session ID must be application-owned"
+            );
+            let delta = if round == 0 {
+                json!({"tool_calls":[{"index":0,"id":"call-command","type":"function","function":{"name":"run_command","arguments":json!({"command":"printf fixture"}).to_string()}}]})
+            } else {
+                let output = request["messages"]
+                    .as_array()
+                    .and_then(|messages| {
+                        messages
+                            .iter()
+                            .rev()
+                            .find(|message| message["role"] == "tool")
+                    })
+                    .and_then(|message| message["content"].as_str())
+                    .ok_or_else(|| anyhow!("tool result missing"))?;
+                let output: Value = serde_json::from_str(output)?;
+                ensure!(output["state"] == "succeeded", "completed result expected");
+                ensure!(
+                    output["output"][0]["text"] == "fixture output",
+                    "command output missing"
+                );
+                json!({"content":"检查完成"})
             };
             response(
                 &mut socket,
                 delta,
-                if round == 2 { "stop" } else { "tool_calls" },
+                if round == 1 { "stop" } else { "tool_calls" },
             )
             .await?;
         }
@@ -537,7 +564,7 @@ async fn streaming_agent_uses_global_ai_approval_and_encrypted_history() -> Resu
         .ok_or_else(|| anyhow!("missing approval"))?;
     let pending = service.snapshot();
     let pending = pending.conversations[0].activities.last().unwrap();
-    assert_eq!(pending.message_index, Some(3));
+    assert_eq!(pending.message_index, Some(1));
     assert_eq!(pending.tool_call_id.as_deref(), Some("call-command"));
     assert_eq!(pending.task_id.as_deref(), Some(review.id.as_str()));
     // Toggling external access must not invalidate this internal approval.
@@ -578,8 +605,8 @@ async fn streaming_agent_uses_global_ai_approval_and_encrypted_history() -> Resu
     let plaintext = super::super::storage::unseal(&[9; 32], &id, &bytes)?;
     assert!(!String::from_utf8_lossy(&plaintext).contains("fixture-key"));
     let restored: Conversation = serde_json::from_slice(&plaintext)?;
-    assert_eq!(restored.messages.len(), 6);
-    assert_eq!(restored.activities.len(), 2);
+    assert_eq!(restored.messages.len(), 4);
+    assert_eq!(restored.activities.len(), 1);
     for activity in &restored.activities {
         let message = &restored.messages[activity.message_index.unwrap()];
         assert!(

@@ -734,6 +734,7 @@ impl TinyShell {
 
 impl Render for TinyShell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.present_ai_attention(window, cx);
         let workspace = self.render_workspace_shell(window, cx);
         for image in self.remote_desktop_surfaces.take_retired_images() {
             if let Err(error) = window.drop_image(image) {

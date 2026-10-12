@@ -214,7 +214,7 @@ impl ToolStep {
             "open_session" => "ai_step_open_session",
             "close_session" => "ai_step_close_session",
             "run_command" => "ai_step_run_command",
-            "list_dir" => "ai_step_list_dir",
+            "list_dir" | "list_directory" => "ai_step_list_dir",
             "read_file" => "ai_step_read_file",
             "write_file" => "ai_step_write_file",
             "get_task" => "ai_step_get_task",
@@ -227,7 +227,7 @@ impl ToolStep {
     pub fn preview(&self) -> Option<String> {
         let value = match self.name.as_str() {
             "run_command" => self.arguments.as_ref().and_then(|a| a["command"].as_str()),
-            "read_file" | "write_file" | "list_dir" => {
+            "read_file" | "write_file" | "list_dir" | "list_directory" => {
                 self.arguments.as_ref().and_then(|a| a["path"].as_str())
             }
             "open_session" | "close_session" => self.target.as_deref(),
@@ -253,6 +253,7 @@ fn task_state(state: &str) -> ToolState {
         "outcome_unknown" => ToolState::Unknown,
         "interrupted" => ToolState::Interrupted,
         "cancel_requested" => ToolState::CancelRequested,
+        "not_executed" => ToolState::Skipped,
         _ => ToolState::Unknown,
     }
 }
@@ -264,14 +265,14 @@ fn result_state(name: &str, text: &str, fallback: ToolState) -> ToolState {
             fallback
         };
     };
-    if result.get("error").is_some_and(|error| !error.is_null()) {
-        return ToolState::Failed;
-    }
     // A task lookup/cancellation is itself successful even if the inspected task failed.
     if !matches!(name, "get_task" | "cancel_task")
         && let Some(state) = result["state"].as_str()
     {
         return task_state(state);
+    }
+    if result.get("error").is_some_and(|error| !error.is_null()) {
+        return ToolState::Failed;
     }
     if result.is_object() {
         ToolState::Succeeded
@@ -357,6 +358,21 @@ mod tests {
             panic!("missing tool trace")
         };
         assert_eq!(group.steps[0].state, ToolState::Failed);
+    }
+    #[test]
+    fn guarded_and_uncertain_operations_keep_their_explicit_state_despite_errors() {
+        for (state, error, expected) in [
+            ("not_executed", "AI_TOOL_BUDGET", ToolState::Skipped),
+            ("outcome_unknown", "OUTCOME_UNKNOWN", ToolState::Unknown),
+            ("timed_out", "TIMEOUT", ToolState::TimedOut),
+        ] {
+            let mut c = Conversation::new(None, &Settings::default());
+            c.messages = vec![
+                call("run", "run_command", json!({}), ""),
+                result("run", json!({"state":state,"error":{"code":error}})),
+            ];
+            assert_eq!(trace(&c).steps[0].state, expected);
+        }
     }
 
     fn trace(c: &Conversation) -> ToolGroup {

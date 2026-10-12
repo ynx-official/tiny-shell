@@ -85,9 +85,26 @@ impl InternalClient {
     }
     /// Let the model adapter abandon an in-flight request when SSH authorization changes.
     pub async fn revoked(&self) {
+        let mut changes = self.engine.changes.subscribe();
         while self.is_valid() {
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            if changes.changed().await.is_err() {
+                return;
+            }
         }
+    }
+    pub fn mode(&self) -> Result<Mode> {
+        let access = self
+            .engine
+            .ai
+            .lock()
+            .map_err(|_| Failure::new("INTERNAL_ERROR"))?;
+        if !access.policy.enabled
+            || access.generation != self.generation
+            || !access.clients.contains_key(&self.id)
+        {
+            return Err(Failure::new("CLIENT_REVOKED"));
+        }
+        Ok(access.policy.mode)
     }
     pub fn stop(&self) -> Result<()> {
         self.engine.stop_client(&self.id)

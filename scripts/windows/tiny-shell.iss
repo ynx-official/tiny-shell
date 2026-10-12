@@ -65,8 +65,11 @@ Source: "{#RuntimeDir}\*.dll"; DestDir: "{app}"; Flags: ignoreversion
 #endif
 
 [Icons]
-Name: "{autoprograms}\TinyShell"; Filename: "{app}\tiny-shell.exe"
-Name: "{autodesktop}\TinyShell"; Filename: "{app}\tiny-shell.exe"; Tasks: desktopicon
+Name: "{autoprograms}\TinyShell"; Filename: "{app}\tiny-shell.exe"; AppUserModelID: "TinyShell.Desktop"
+Name: "{autodesktop}\TinyShell"; Filename: "{app}\tiny-shell.exe"; AppUserModelID: "TinyShell.Desktop"; Tasks: desktopicon
+
+[Registry]
+Root: HKCU; Subkey: "Software\Classes\AppUserModelId\TinyShell.Desktop"; ValueType: string; ValueName: "DisplayName"; ValueData: "TinyShell"; Flags: uninsdeletekey
 
 [Run]
 Filename: "{app}\tiny-shell.exe"; Description: "{cm:LaunchProgram,TinyShell}"; Flags: nowait postinstall skipifsilent

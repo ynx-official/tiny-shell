@@ -21,7 +21,9 @@ pub(super) enum TurnFeedback {
     Dots,
 }
 pub(super) fn feedback_state(conversation: &Conversation) -> TurnFeedback {
-    if !conversation.state.active() {
+    if !conversation.state.active()
+        || conversation.state == crate::ai::TurnState::AwaitingContinuation
+    {
         return TurnFeedback::Hidden;
     }
     let start = conversation
@@ -133,6 +135,15 @@ mod tests {
     use gpui::{AppContext as _, Context, Render, TestAppContext, VisualTestContext, Window};
     use gpui_component::{IconName, Root, button::ButtonVariants as _};
     use std::{cell::Cell, rc::Rc};
+
+    #[test]
+    fn a_budget_pause_is_active_but_has_no_processing_animation() {
+        let mut c = Conversation::new(None, &Settings::default());
+        c.state = TurnState::AwaitingContinuation;
+        c.messages.push(Message::text("user", "fixture"));
+        assert!(c.state.active());
+        assert_eq!(feedback_state(&c), TurnFeedback::Hidden);
+    }
 
     #[test]
     fn processing_text_is_replaced_by_dots_when_the_first_body_byte_arrives() {

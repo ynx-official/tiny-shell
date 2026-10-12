@@ -29,7 +29,7 @@ pub(crate) struct AiPanel {
     rename: Entity<InputState>,
     rename_id: Option<String>,
     scroll: ScrollHandle,
-    scroll_stamp: Option<(String, usize, usize)>,
+    scroll_stamp: Option<super::scroll::ScrollStamp>,
     error: Option<String>,
     pub width: f32,
     drag: Option<(f32, f32)>,
@@ -107,8 +107,9 @@ impl AiPanel {
             return;
         };
         let text = self.input.read(cx).value().to_string();
-        match service().and_then(|s| s.send(id, text).map_err(|e| e.to_string())) {
+        match service().and_then(|s| s.send(id.clone(), text).map_err(|e| e.to_string())) {
             Ok(()) => {
+                super::attention::bind(id, window.window_handle());
                 self.input.update(cx, |i, cx| i.set_value("", window, cx));
                 self.scroll.scroll_to_bottom();
                 self.error = None;
@@ -354,18 +355,7 @@ impl AiPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
-        let stamp = (
-            c.id.clone(),
-            c.messages.len(),
-            c.messages.last().map_or(0, |m| m.content.len()),
-        );
-        if self.scroll_stamp.as_ref() != Some(&stamp) {
-            let new_conversation = self.scroll_stamp.as_ref().is_none_or(|old| old.0 != c.id);
-            if new_conversation || self.scroll.max_offset().y + self.scroll.offset().y <= px(32.) {
-                self.scroll.scroll_to_bottom();
-            }
-            self.scroll_stamp = Some(stamp);
-        }
+        super::scroll::follow(&self.scroll, &mut self.scroll_stamp, c);
         let mut messages = v_flex()
             .id("ai-messages")
             .flex_1()
@@ -512,6 +502,48 @@ impl AiPanel {
             );
         } else if matches!(c.state, TurnState::Failed | TurnState::Interrupted) {
             messages = messages.child(note(t!(state_key(c.state)).to_string(), cx));
+        }
+        if let Some(pause) = &c.continuation {
+            let id = c.id.clone();
+            let token = pause.token.clone();
+            let stop_id = id.clone();
+            let stop_token = token.clone();
+            messages = messages.child(
+                v_flex()
+                    .gap_2()
+                    .border_t_1()
+                    .border_color(cx.theme().border)
+                    .pt_3()
+                    .child(div().child(t!("ai_waiting_continuation").to_string()))
+                    .child(note(super::attention::description(pause), cx))
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .flex_wrap()
+                            .child(
+                                Button::new("ai-resume-paused")
+                                    .small()
+                                    .primary()
+                                    .label(t!("ai_continue_turn").to_string())
+                                    .on_click(move |_, _, _| {
+                                        if let Ok(s) = service() {
+                                            let _ = s.resume(&id, &token);
+                                        }
+                                    }),
+                            )
+                            .child(
+                                Button::new("ai-stop-paused")
+                                    .small()
+                                    .outline()
+                                    .label(t!("ai_terminate_turn").to_string())
+                                    .on_click(move |_, _, _| {
+                                        if let Ok(s) = service() {
+                                            let _ = s.terminate_continuation(&stop_id, &stop_token);
+                                        }
+                                    }),
+                            ),
+                    ),
+            );
         }
         if dots_message.is_none()
             && let Some(indicator) = super::composer::render_feedback(feedback, cx)
@@ -873,6 +905,12 @@ impl Render for AiPanel {
     }
 }
 impl AiPanel {
+    pub(crate) fn select_conversation(&mut self, id: String, cx: &mut Context<Self>) {
+        self.current = Some(id);
+        self.history = false;
+        self.error = None;
+        cx.notify();
+    }
     pub(crate) fn drag_move(&mut self, event: &gpui::MouseMoveEvent, cx: &mut Context<Self>) {
         if event.pressed_button != Some(MouseButton::Left) {
             self.drag = None;
@@ -901,6 +939,7 @@ fn state_key(state: TurnState) -> &'static str {
         TurnState::Idle => "ai_ready",
         TurnState::Generating => "ai_generating",
         TurnState::AwaitingApproval => "ai_waiting_approval",
+        TurnState::AwaitingContinuation => "ai_waiting_continuation",
         TurnState::RunningTool => "ai_running_tool",
         TurnState::Failed => "ai_failed",
         TurnState::Interrupted => "ai_interrupted",
