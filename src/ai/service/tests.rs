@@ -46,7 +46,11 @@ pub(super) fn fixture(
         default_provider: Some(p.id.clone()),
         ..Settings::default()
     };
-    let store = Store::fixture(directory, Some([9; 32]), &p.id, "fixture-key")?;
+    let audit = engine
+        .as_ref()
+        .map(|e| e.audit.clone())
+        .unwrap_or_else(|| tiny_shell_mcp::audit::Store::with_key(directory.clone(), [23; 32]));
+    let store = Store::fixture(directory, Some([9; 32]), &p.id, &p.base_url, "fixture-key")?;
     Ok(Arc::new(Service {
         state: Mutex::new(State {
             snapshot: Snapshot {
@@ -60,8 +64,10 @@ pub(super) fn fixture(
         store: Mutex::new(Some(Arc::new(store))),
         persistence: Mutex::new(()),
         stamp: AtomicU64::new(1),
+        configuration_stamp: AtomicU64::new(1),
         runtime: tokio::runtime::Handle::current(),
         engine,
+        audit,
     }))
 }
 pub(super) fn provider(address: std::net::SocketAddr) -> Provider {
@@ -163,7 +169,7 @@ async fn text_only_conditions_do_not_share_ssh_metadata_or_tools() -> Result<()>
             target: bound.remote(),
             commands: AtomicUsize::new(0),
         });
-        let engine = Engine::new(
+        let engine = fixture_engine(
             tiny_shell_mcp::storage::Store::new(&directory)?,
             remote.clone(),
         )?;
@@ -191,6 +197,7 @@ async fn text_only_conditions_do_not_share_ssh_metadata_or_tools() -> Result<()>
         settled(&service).await?;
         assert!(service.snapshot().conversations[0].state == TurnState::Idle);
         assert_eq!(remote.commands.load(Ordering::SeqCst), 0);
+        service.audit.close().await?;
         std::fs::remove_dir_all(directory)?;
     }
     Ok(())
@@ -287,6 +294,7 @@ async fn first_message_fixes_target_and_rejects_a_second_active_turn() -> Result
             .map(|t| &t.id),
         Some(&first.id)
     );
+    service.audit.close().await?;
     std::fs::remove_dir_all(directory)?;
     Ok(())
 }
@@ -341,6 +349,7 @@ async fn history_feedback_does_not_finish_a_pending_provider_operation() -> Resu
         service.snapshot().history_notice.as_deref(),
         Some("AI_INVALID_NAME")
     );
+    service.audit.close().await?;
     std::fs::remove_dir_all(directory)?;
     Ok(())
 }
@@ -353,6 +362,7 @@ async fn unsaved_endpoint_never_receives_a_saved_key() -> Result<()> {
     let service = fixture(directory.clone(), p.clone(), None)?;
     p.base_url.push_str("/different");
     assert!(service.test_provider(p, None).is_err());
+    service.audit.close().await?;
     std::fs::remove_dir_all(directory)?;
     Ok(())
 }
@@ -392,6 +402,7 @@ async fn stop_cancels_a_provider_that_stalls_in_its_json_body() -> Result<()> {
     .await?;
     server.await??;
     assert!(service.snapshot().conversations[0].state == TurnState::Interrupted);
+    service.audit.close().await?;
     std::fs::remove_dir_all(directory)?;
     Ok(())
 }
@@ -415,7 +426,7 @@ async fn stale_target_metadata_is_not_sent_to_the_provider() -> Result<()> {
         target: target.clone(),
         commands: AtomicUsize::new(0),
     });
-    let engine = Engine::new(
+    let engine = fixture_engine(
         tiny_shell_mcp::storage::Store::new(&directory)?,
         remote.clone(),
     )?;
@@ -452,6 +463,7 @@ async fn stale_target_metadata_is_not_sent_to_the_provider() -> Result<()> {
         }
     })
     .await?;
+    service.audit.close().await?;
     std::fs::remove_dir_all(directory)?;
     Ok(())
 }
@@ -474,7 +486,7 @@ async fn streaming_agent_uses_global_ai_approval_and_encrypted_history() -> Resu
         target: target.clone(),
         commands: AtomicUsize::new(0),
     });
-    let engine = Engine::new(
+    let engine = fixture_engine(
         tiny_shell_mcp::storage::Store::new(&directory)?,
         remote.clone(),
     )?;
@@ -629,6 +641,19 @@ async fn streaming_agent_uses_global_ai_approval_and_encrypted_history() -> Resu
             .join(format!("{id}.enc"))
             .exists()
     );
+    service.audit.close().await?;
     std::fs::remove_dir_all(directory)?;
     Ok(())
+}
+
+fn fixture_engine(
+    store: tiny_shell_mcp::storage::Store,
+    remote: std::sync::Arc<dyn tiny_shell_mcp::engine::Remote>,
+) -> anyhow::Result<std::sync::Arc<tiny_shell_mcp::engine::Engine>> {
+    let directory = store.root().parent().unwrap_or(store.root()).to_path_buf();
+    tiny_shell_mcp::engine::Engine::with_audit(
+        store,
+        remote,
+        tiny_shell_mcp::audit::Store::with_key(directory, [23; 32]),
+    )
 }

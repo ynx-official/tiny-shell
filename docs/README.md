@@ -5,8 +5,10 @@
 
 ## 设计
 
+- [AI 会话用量与操作审计设计](02-design/ai-usage-and-audit.md)：Approved；对话 Token、AI/MCP 操作详情、审批时间线及加密留存方案。
+
 - [内置 AI 会话](02-design/ai-conversations.md)：原生聊天、工具步骤、本机加密历史、模型配置及按来源独立的 SSH 权限。
-- [内置 AI 需求与验收](01-requirements/ai-conversations.md)：已确认范围及 AI-01 至 AI-15 验收行为。
+- [内置 AI 需求与验收](01-requirements/ai-conversations.md)：已确认范围及 AI-01 至 AI-23 验收行为。
 
 - [应用图标与平台导出](02-design/application-icons.md)：已选定的 A 圆润终端图标、平台适配与验证。
 
@@ -32,6 +34,9 @@
 
 ## 架构
 
+- [AI 与 MCP 配置云同步](sync/ai-mcp-sync.md)：Approved；协议 v4、隐私密码密钥库、跨设备配置、冲突和旧凭据迁移。
+
+- [AI 用量与审计实现契约](03-architecture/ai-usage-and-audit.md)：请求结算、事件关联、SQLite 密文、留存和失败保护。
 - [内置 AI 实现契约](03-architecture/ai-conversations.md)：模块、能力、数据、协议、取消和恢复。
 - [内置 AI 安全边界](03-architecture/ai-threat-model.md)：模型、Provider、SSH、凭据与历史的信任边界。
 
@@ -43,7 +48,10 @@
 
 ## 质量验证
 
-- [AI 执行预算与系统通知](04-quality/ai-execution-budget.md)：可配置预算、可恢复暂停、原生通知、回归用例和本轮未运行范围。
+- [AI/MCP 云同步验证](04-quality/ai-mcp-sync.md)：回归代码、未执行的编译/运行项及双设备手动验收清单。
+
+- [AI 用量与审计质量记录](04-quality/ai-usage-and-audit.md)：Windows 全目标测试、凭据库、构建和隔离原生窗口验证，以及剩余真实服务验收范围。
+- [AI 执行预算与系统通知](04-quality/ai-execution-budget.md)：可配置预算、可恢复暂停、通知回归及尚未原生验证的通知按钮范围。
 
 - [AI 与 MCP 调用链优化](04-quality/ai-tool-call-optimization.md)：工具裁剪、通知等待、应用管理会话、预算和重复控制的实际证据及手动验收。
 

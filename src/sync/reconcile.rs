@@ -15,6 +15,8 @@ pub enum SyncEntityKind {
     ConnectionGroup,
     QuickCommandCategory,
     QuickCommand,
+    AiSettings,
+    McpPermissions,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -96,6 +98,8 @@ pub struct ThreeWayMerge {
     unavailable_secret_count: u32,
     unavailable_session_secret_count: u32,
     unavailable_managed_key_secret_count: u32,
+    expected_ai_stamp: Option<u64>,
+    expected_mcp_stamp: Option<u64>,
 }
 
 impl ThreeWayMerge {
@@ -158,6 +162,8 @@ impl ThreeWayMerge {
                 unavailable_secret_count: self.unavailable_secret_count,
                 unavailable_session_secret_count: self.unavailable_session_secret_count,
                 unavailable_managed_key_secret_count: self.unavailable_managed_key_secret_count,
+                expected_ai_stamp: self.expected_ai_stamp,
+                expected_mcp_stamp: self.expected_mcp_stamp,
             },
         )?;
         Ok(())
@@ -181,6 +187,8 @@ struct MergeStats {
     unavailable_secret_count: u32,
     unavailable_session_secret_count: u32,
     unavailable_managed_key_secret_count: u32,
+    expected_ai_stamp: Option<u64>,
+    expected_mcp_stamp: Option<u64>,
 }
 
 struct EntityCatalog {
@@ -248,6 +256,20 @@ impl EntityCatalog {
                 );
             }
         }
+        if let Some(ai) = &config.automation.ai {
+            catalog.insert(
+                SyncEntityKind::AiSettings,
+                "ai-settings".into(),
+                EntitySnapshot::Active(serde_json::to_value(ai)?),
+            );
+        }
+        if let Some(mcp) = &config.automation.mcp {
+            catalog.insert(
+                SyncEntityKind::McpPermissions,
+                "mcp-permissions".into(),
+                EntitySnapshot::Active(serde_json::to_value(mcp)?),
+            );
+        }
         Ok(catalog)
     }
 
@@ -285,6 +307,7 @@ pub fn reconcile_three_way(
         unavailable_session_secret_count: 0,
         unavailable_managed_key_secret_count: 0,
         base_payload: Some(baseline.clone()),
+        automation: local.automation.cloned().unwrap_or_default(),
     };
     let baseline_config = super::merge::decode_payload(baseline.clone(), privacy_password);
     let remote_config = super::merge::decode_payload(remote.clone(), privacy_password);
@@ -293,6 +316,8 @@ pub fn reconcile_three_way(
         unavailable_secret_count: remote_config.unavailable_secret_count,
         unavailable_session_secret_count: remote_config.unavailable_session_secret_count,
         unavailable_managed_key_secret_count: remote_config.unavailable_managed_key_secret_count,
+        expected_ai_stamp: local.automation.expected_ai_stamp,
+        expected_mcp_stamp: local.automation.expected_mcp_stamp,
     };
     let local = EntityCatalog::from_config(&local)?;
     let baseline = EntityCatalog::from_config(&baseline_config)?;
@@ -305,6 +330,19 @@ pub fn reconcile_three_way(
         let mut base = baseline.get(key);
         let mut local_value = local.get(key);
         let mut remote_value = remote_catalog.get(key);
+        // Missing singleton fields mean an older protocol or unavailable service,
+        // never deletion. Empty provider lists are explicit AI configuration edits.
+        if matches!(
+            key.kind,
+            SyncEntityKind::AiSettings | SyncEntityKind::McpPermissions
+        ) {
+            if matches!(local_value, EntitySnapshot::Missing) {
+                local_value = base.clone();
+            }
+            if matches!(remote_value, EntitySnapshot::Missing) {
+                remote_value = base.clone();
+            }
+        }
         if key.kind == SyncEntityKind::QuickCommand {
             merge_command_usage_snapshots(&mut base, &mut local_value, &mut remote_value)?;
         }
@@ -336,6 +374,8 @@ pub fn reconcile_three_way(
         unavailable_secret_count: stats.unavailable_secret_count,
         unavailable_session_secret_count: stats.unavailable_session_secret_count,
         unavailable_managed_key_secret_count: stats.unavailable_managed_key_secret_count,
+        expected_ai_stamp: stats.expected_ai_stamp,
+        expected_mcp_stamp: stats.expected_mcp_stamp,
     })
 }
 
@@ -404,6 +444,8 @@ fn snapshot_label(kind: SyncEntityKind, snapshot: &EntitySnapshot) -> Option<Str
             .as_str()
             .or_else(|| value.get("name").and_then(Value::as_str)),
         SyncEntityKind::QuickCommandCategory => value.get("name").and_then(Value::as_str),
+        SyncEntityKind::AiSettings => Some("AI"),
+        SyncEntityKind::McpPermissions => Some("MCP"),
     };
     label.map(str::to_string)
 }
@@ -423,6 +465,7 @@ fn build_merged_config(
     let mut category_order = Vec::new();
     let mut categories: HashMap<String, QuickCommandCategory> = HashMap::new();
     let mut commands = Vec::new();
+    let mut automation = super::automation::AutomationConfig::default();
 
     for key in order {
         let snapshot = decisions.get(key).unwrap_or(&EntitySnapshot::Missing);
@@ -464,6 +507,15 @@ fn build_merged_config(
                         .context("decode quick command")?,
                 );
             }
+            (SyncEntityKind::AiSettings, EntitySnapshot::Active(value)) => {
+                automation.ai =
+                    Some(serde_json::from_value(value.clone()).context("decode AI configuration")?);
+            }
+            (SyncEntityKind::McpPermissions, EntitySnapshot::Active(value)) => {
+                automation.mcp = Some(
+                    serde_json::from_value(value.clone()).context("decode MCP configuration")?,
+                );
+            }
             (_, EntitySnapshot::Missing | EntitySnapshot::Deleted(_)) => {}
         }
     }
@@ -479,6 +531,8 @@ fn build_merged_config(
         .filter_map(|id| categories.remove(&id))
         .collect();
 
+    automation.expected_ai_stamp = stats.expected_ai_stamp;
+    automation.expected_mcp_stamp = stats.expected_mcp_stamp;
     let merged = MergedConfig {
         sessions,
         deleted_sessions,
@@ -491,6 +545,7 @@ fn build_merged_config(
         unavailable_session_secret_count: stats.unavailable_session_secret_count,
         unavailable_managed_key_secret_count: stats.unavailable_managed_key_secret_count,
         base_payload: Some(remote_payload.clone()),
+        automation,
     };
     Ok(super::merge::normalize_merged_config(&merged))
 }
@@ -537,6 +592,7 @@ mod tests {
             unavailable_session_secret_count: 0,
             unavailable_managed_key_secret_count: 0,
             base_payload: None,
+            automation: Default::default(),
         }
     }
 
@@ -565,6 +621,7 @@ mod tests {
             keys: &config.managed_keys,
             commands: &config.quick_command_categories,
             base_payload: Some(base),
+            automation: Default::default(),
         }
     }
 

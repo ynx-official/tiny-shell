@@ -42,6 +42,13 @@ impl Service {
                 c.title = text.trim().chars().take(40).collect();
             }
             c.messages.push(Message::text("user", text));
+            c.turns.push(TurnRecord {
+                id: uuid::Uuid::new_v4().to_string(),
+                user_message: c.messages.len() - 1,
+                started_ms: tiny_shell_mcp::audit::now_ms(),
+                finished_ms: None,
+                state: "running".into(),
+            });
             c.state = TurnState::Generating;
             c.error = None;
             c.continuation = None;
@@ -52,6 +59,15 @@ impl Service {
             (c, p, execution, rx)
         };
         self.changed();
+        let mut turn_context = self.audit_context(&conversation);
+        turn_context.operation_id = conversation.turn_id();
+        self.audit.record(tiny_shell_mcp::audit::Event::new(
+            turn_context,
+            "turn_started",
+            "model",
+            "running",
+            json!({"user_request":conversation.messages.last().map(|m|&m.content)}),
+        ));
         let service = self.clone();
         self.runtime.spawn(async move {
             let supports_tools = provider
@@ -98,8 +114,30 @@ impl Service {
                         }
                     }
                 }
+                if let Some(turn) = c.turns.last_mut() {
+                    turn.finished_ms = Some(tiny_shell_mcp::audit::now_ms());
+                    turn.state = if result.is_ok() {
+                        "completed"
+                    } else {
+                        "failed"
+                    }
+                    .into();
+                }
                 Ok(())
             });
+            let mut context = service.audit_context(&conversation);
+            context.operation_id = conversation.turn_id();
+            service.audit.record(tiny_shell_mcp::audit::Event::new(
+                context,
+                "turn_finished",
+                "model",
+                if result.is_ok() {
+                    "completed"
+                } else {
+                    "failed"
+                },
+                json!({"error":result.as_ref().err().map(ToString::to_string)}),
+            ));
             if let Ok(mut state) = service.state.lock() {
                 state.cancel.remove(&id);
                 state.continuations.remove(&id);
@@ -190,6 +228,38 @@ impl Service {
             };
             let service = self.clone();
             let id = c.id.clone();
+            let request_id = uuid::Uuid::new_v4().to_string();
+            let request_record = ModelRequest {
+                id: request_id.clone(),
+                conversation_id: Some(c.id.clone()),
+                turn_id: c.turn_id(),
+                provider_id: p.id.clone(),
+                provider_name: p.name.clone(),
+                model: c.model.clone(),
+                conversation_title: c.title.clone(),
+                response_model: None,
+                provider_request_id: None,
+                http_status: None,
+                started_ms: tiny_shell_mcp::audit::now_ms(),
+                first_byte_ms: None,
+                finished_ms: None,
+                state: "pending".into(),
+                usage: None,
+                error: None,
+            };
+            self.mutate(&c.id, |c| {
+                c.requests.push(request_record.clone());
+                Ok(())
+            })?;
+            self.request_event(c, &request_record, "model_started");
+            let observing = self.clone();
+            let observed_conversation = c.clone();
+            let request_holder = Arc::new(Mutex::new(request_record));
+            let observed_id = request_holder.clone();
+            let first_byte_holder = request_holder.clone();
+            let partial = Arc::new(Mutex::new(String::new()));
+            let delta_partial = partial.clone();
+            let delta_id = request_id.clone();
             let summarize = runtime.budget.safety_halted();
             if summarize && !summary_requested {
                 messages.push(json!({"role":"system","content":"Further tool execution is unavailable for this turn. Summarize verified results, failures and unexecuted steps. Do not claim unexecuted work succeeded."}));
@@ -203,20 +273,41 @@ impl Service {
                 &messages,
                 if summarize { &[] } else { &tools },
                 &mut cancel,
-                move |delta| {
-                    let _ = service.mutate(&id, |c| {
-                        if let Some(m) = c.messages.get_mut(index) {
-                            m.content.push_str(&delta);
+                super::super::provider::Observer {
+                    delta: move |delta: String| {
+                        if let Ok(mut text) = delta_partial.lock() {
+                            text.push_str(&delta);
                         }
-                        Ok(())
-                    });
+                        if let Ok(mut record) = first_byte_holder.lock()
+                            && record.first_byte_ms.is_none()
+                        {
+                            record.first_byte_ms = Some(tiny_shell_mcp::audit::now_ms());
+                        }
+                        let _ = service.mutate(&id, |c| {
+                            if let Some(m) = c.messages.get_mut(index) {
+                                m.content.push_str(&delta);
+                            }
+                            if let Some(record) = c.requests.iter_mut().find(|r| r.id == delta_id)
+                                && record.first_byte_ms.is_none()
+                            {
+                                record.first_byte_ms = Some(tiny_shell_mcp::audit::now_ms());
+                            }
+                            Ok(())
+                        });
+                    },
+                    metadata: move |metadata| {
+                        observing.observe_usage(&observed_conversation, &observed_id, metadata)
+                    },
                 },
             );
             let complete = if let Some(client) = capability {
-                tokio::select! { result = request => result?, _ = client.revoked() => return Err(anyhow!("AI_ACCESS_CHANGED")) }
+                tokio::select! { result = request => result, _ = client.revoked() => Err(anyhow!("AI_ACCESS_CHANGED")) }
             } else {
-                request.await?
+                request.await
             };
+            let partial = partial.lock().map(|s| s.clone()).unwrap_or_default();
+            self.finish_request(c, &request_holder, &complete, &partial);
+            let complete = complete?;
             self.mutate(&c.id, |c| {
                 if let Some(m) = c.messages.get_mut(index) {
                     *m = complete.clone();
@@ -230,11 +321,19 @@ impl Service {
             }
             let client = capability.ok_or_else(|| anyhow!("AI_TOOLS_DISABLED"))?;
             for (position, tool) in complete.tool_calls.iter().enumerate() {
-                ensure!(!*cancel.borrow(), "AI_CANCELLED");
-                ensure!(client.is_valid(), "AI_ACCESS_CHANGED");
+                if *cancel.borrow() || !client.is_valid() {
+                    self.finish_unexecuted(&c.id, &complete.tool_calls[position..])?;
+                    return Err(anyhow!(if *cancel.borrow() {
+                        "AI_CANCELLED"
+                    } else {
+                        "AI_ACCESS_CHANGED"
+                    }));
+                }
                 let name = tool["function"]["name"]
                     .as_str()
                     .ok_or_else(|| anyhow!("AI_INVALID_TOOL"))?;
+                let mut remaining_recorded = false;
+                let mut invoked = false;
                 let result = async {
                     let args: Value = serde_json::from_str(
                         tool["function"]["arguments"]
@@ -243,6 +342,7 @@ impl Service {
                     )?;
                     ensure!(args.is_object(), "AI_INVALID_TOOL");
                     if summarize {
+                        self.audit_unexecuted(c, std::slice::from_ref(tool), "AI_TOOL_BUDGET");
                         return Ok(json!({"state":"not_executed","error":"AI_TOOL_BUDGET"}));
                     }
                     if !runtime.budget.safety_halted() && runtime.budget.exhausted() {
@@ -258,6 +358,7 @@ impl Service {
                             .await
                         {
                             self.finish_unexecuted(&c.id, &complete.tool_calls[position..])?;
+                            remaining_recorded = true;
                             return Err(error);
                         }
                         runtime.budget.extend(execution.tool_calls);
@@ -269,6 +370,7 @@ impl Service {
                         message_index: Some(index),
                         tool_call_id: tool["id"].as_str().map(str::to_owned),
                     };
+                    invoked = true;
                     self.invoke(c, client, &mut runtime, activity, args, &mut cancel)
                         .await
                 }
@@ -281,6 +383,13 @@ impl Service {
                             "AI_CANCELLED" | "AI_ACCESS_CHANGED"
                         ) =>
                     {
+                        if !remaining_recorded {
+                            self.finish_unexecuted(
+                                &c.id,
+                                &complete.tool_calls
+                                    [if invoked { position + 1 } else { position }..],
+                            )?;
+                        }
                         return Err(e);
                     }
                     Err(e) => serde_json::to_string(&json!({"error":e.to_string()}))?,
@@ -304,6 +413,9 @@ impl Service {
         }
     }
     fn finish_unexecuted(&self, id: &str, tools: &[Value]) -> Result<()> {
+        if let Some(c) = self.snapshot().conversations.iter().find(|c| c.id == id) {
+            self.audit_unexecuted(c, tools, "AI_CANCELLED");
+        }
         self.mutate(id, |c| {
             for tool in tools {
                 c.messages.push(Message {
@@ -315,6 +427,23 @@ impl Service {
             }
             Ok(())
         })
+    }
+    fn audit_unexecuted(&self, c: &Conversation, tools: &[Value], reason: &str) {
+        for tool in tools {
+            let mut context = self.audit_context(c);
+            context.tool_call_id = tool["id"].as_str().map(str::to_owned);
+            let arguments = tool["function"]["arguments"]
+                .as_str()
+                .and_then(|s| serde_json::from_str::<Value>(s).ok())
+                .unwrap_or_else(|| tool["function"]["arguments"].clone());
+            self.audit.record(tiny_shell_mcp::audit::Event::new(
+                context,
+                "tool_not_executed",
+                tool["function"]["name"].as_str().unwrap_or("unknown"),
+                "not_executed",
+                json!({"arguments":arguments,"reason":reason,"remote_executed":false}),
+            ));
+        }
     }
     pub(super) async fn persist_async(self: &Arc<Self>, id: &str) {
         let service = self.clone();

@@ -25,40 +25,88 @@ use gpui_component::{
 use rust_i18n::t;
 use std::rc::Rc;
 mod execution;
+mod notifications;
 
 type PermissionsAction = Rc<dyn Fn(&mut Window, &mut gpui::App)>;
 
 pub(crate) fn page(owner: &Entity<TinyShell>) -> SettingPage {
     let owner = owner.clone();
+    let audit_owner = owner.clone();
     SettingPage::new(t!("settings_ai").to_string())
         .icon(crate::app::ai::icon())
+        .default_open(true)
         .group(
-            SettingGroup::new().item(SettingItem::render(|_, window, cx| {
-                window
-                    .use_keyed_state("ai-execution-settings", cx, execution::ExecutionForm::new)
-                    .into_any_element()
-            })),
+            SettingGroup::new()
+                .title(t!("ai_settings_provider").to_string())
+                .item(SettingItem::render(move |_, window, cx| {
+                    window
+                        .use_keyed_state("ai-provider-form", cx, |window, cx| {
+                            let weak = owner.downgrade();
+                            ProviderForm::new(
+                                Rc::new(move |window, cx| {
+                                    if let Some(owner) = weak.upgrade() {
+                                        owner.update(cx, |o, cx| {
+                                            o.mcp_requested_task = None;
+                                            o.show_ai_settings(5, window, cx);
+                                        });
+                                    }
+                                }),
+                                window,
+                                cx,
+                            )
+                        })
+                        .into_any_element()
+                })),
         )
         .group(
-            SettingGroup::new().item(SettingItem::render(move |_, window, cx| {
-                window
-                    .use_keyed_state("ai-provider-form", cx, |window, cx| {
-                        let weak = owner.downgrade();
-                        ProviderForm::new(
-                            Rc::new(move |window, cx| {
-                                if let Some(owner) = weak.upgrade() {
-                                    owner.update(cx, |o, cx| {
-                                        o.mcp_requested_task = None;
-                                        o.show_ai_settings(5, window, cx);
-                                    });
-                                }
-                            }),
-                            window,
+            SettingGroup::new()
+                .title(t!("ai_settings_budget").to_string())
+                .item(SettingItem::render(|_, window, cx| {
+                    window
+                        .use_keyed_state("ai-budget-settings", cx, execution::BudgetForm::new)
+                        .into_any_element()
+                })),
+        )
+        .group(
+            SettingGroup::new()
+                .title(t!("ai_settings_notifications").to_string())
+                .item(SettingItem::render(|_, window, cx| {
+                    window
+                        .use_keyed_state(
+                            "ai-notification-settings",
                             cx,
+                            notifications::NotificationForm::new,
                         )
-                    })
-                    .into_any_element()
-            })),
+                        .into_any_element()
+                })),
+        )
+        .group(
+            SettingGroup::new()
+                .title(t!("audit_title").to_string())
+                .item(SettingItem::render(move |_, _, _| {
+                    let audit_owner = audit_owner.clone();
+                    v_flex()
+                        .gap_2()
+                        .child(
+                            div()
+                                .text_sm()
+                                .child(t!("audit_settings_entry_note").to_string()),
+                        )
+                        .child(
+                            Button::new("ai-open-audit")
+                                .small()
+                                .outline()
+                                .label(t!("audit_open").to_string())
+                                .on_click(move |_, _, cx| {
+                                    crate::app::audit::open(
+                                        tiny_shell_mcp::audit::Filter::default(),
+                                        audit_owner.clone(),
+                                        cx,
+                                    )
+                                }),
+                        )
+                        .into_any_element()
+                })),
         )
 }
 struct ProviderForm {
@@ -469,6 +517,13 @@ impl Render for ProviderForm {
         content = content.child(chips);
         content = content
             .child(note(t!("ai_model_capability_notice").to_string(), cx))
+            .child(self.checkbox(
+                "ai-stream-usage",
+                "audit_stream_usage",
+                self.draft.stream_usage,
+                cx,
+                |this, on, _, _| this.draft.stream_usage = on,
+            ))
             .child(self.checkbox(
                 "ai-provider-enabled",
                 "ai_provider_enabled",

@@ -13,7 +13,7 @@
 
 ## UI design system
 
-- Scope: 快速连接窗口（`src/app/connection_manager/`）、主终端工作区（`src/app/ui.rs`、`src/app/ui/`）、AI 会话与设置（`src/app/ai/`、`src/app/settings/ai.rs`）及 MCP / CLI 设置（`src/app/settings/mcp.rs`）
+- Scope: 快速连接窗口（`src/app/connection_manager/`）、主终端工作区（`src/app/ui.rs`、`src/app/ui/`）、AI 会话与设置（`src/app/ai/`、`src/app/settings/ai.rs`）、会话用量与审计（`src/app/audit/`）及 MCP / CLI 设置（`src/app/settings/mcp.rs`）
 - Skill: `awesome-design-md`
 - Source: `VoltAgent/awesome-design-md`
 - Style ID: `sentry`

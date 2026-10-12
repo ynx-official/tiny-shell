@@ -81,7 +81,7 @@ async fn controlled_approval_deduplication_and_client_isolation() -> anyhow::Res
         target: target.clone(),
         executions: AtomicUsize::new(0),
     });
-    let engine = Engine::new(store, remote.clone())?;
+    let engine = fixture_engine(store, remote.clone())?;
     let mut policy = engine.policy().map_err(error)?;
     policy.enabled = true;
     policy.mode = Mode::Controlled;
@@ -164,6 +164,27 @@ async fn controlled_approval_deduplication_and_client_isolation() -> anyhow::Res
     engine.approve(id, false).map_err(error)?;
     assert!(engine.approve(id, true).is_err());
     assert_eq!(remote.executions.load(Ordering::SeqCst), 1);
+    let audit_page = engine
+        .audit
+        .page(tiny_shell_mcp::audit::Filter {
+            approvals_only: true,
+            limit: 200,
+            ..Default::default()
+        })
+        .await?;
+    assert!(
+        audit_page
+            .events
+            .iter()
+            .any(|e| e.kind == "approval_approved")
+    );
+    assert!(
+        audit_page
+            .events
+            .iter()
+            .any(|e| e.kind == "approval_rejected" && e.context.task_id.as_deref() == Some(id))
+    );
+    assert_eq!(engine.audit.summary(None).await?.requests, 0);
     let mut policy = engine.policy().map_err(error)?;
     policy.mode = Mode::ReadOnly;
     engine.set_policy(policy).map_err(error)?;
@@ -238,4 +259,100 @@ async fn controlled_approval_deduplication_and_client_isolation() -> anyhow::Res
             .is_ok()
     );
     Ok(())
+}
+
+#[tokio::test]
+async fn unavailable_audit_blocks_remote_mutation_but_preserves_read_only_queries()
+-> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let store = Store::new(dir.path())?;
+    let client = store.register("audit-fixture")?;
+    let blocked = dir.path().join("not-a-directory");
+    std::fs::write(&blocked, b"fixture")?;
+    let audit = tiny_shell_mcp::audit::Store::with_key(blocked, [23; 32]);
+    let target = Target {
+        id: uuid::Uuid::new_v4().to_string(),
+        name: "fixture".into(),
+        group: None,
+        host: "example.invalid".into(),
+        port: 22,
+        user: "fixture".into(),
+        digest: "fixture-digest".into(),
+    };
+    let remote = Arc::new(Fake {
+        target: target.clone(),
+        executions: AtomicUsize::new(0),
+    });
+    let engine = Engine::with_audit(store, remote.clone(), audit.clone())?;
+    let mut policy = engine.policy().map_err(error)?;
+    policy.enabled = true;
+    policy.mode = Mode::Full;
+    policy.grant(target.id.clone(), target.digest.clone());
+    engine.set_policy(policy).map_err(error)?;
+    let handler = EngineHandler(engine.clone());
+    assert!(
+        handler
+            .call(&client.id, parse("get_status", json!({}))?)
+            .await
+            .is_ok()
+    );
+    let opened = handler
+        .call(
+            &client.id,
+            parse(
+                "open_session",
+                json!({"connection_id":target.id,"request_id":uuid::Uuid::new_v4().to_string()}),
+            )?,
+        )
+        .await
+        .map_err(error)?;
+    let open_task = opened["task_id"].as_str().unwrap();
+    wait(&engine, open_task, State::Succeeded).await?;
+    let task = handler
+        .call(&client.id, parse("get_task", json!({"task_id":open_task}))?)
+        .await
+        .map_err(error)?;
+    let session = task["result"]["session_id"].as_str().unwrap();
+    let command = handler.call(&client.id,parse("run_command",json!({"session_id":session,"command":"touch /fixture","request_id":uuid::Uuid::new_v4().to_string()}))?).await.map_err(error)?;
+    let task_id = command["task_id"].as_str().unwrap();
+    wait(&engine, task_id, State::Failed).await?;
+    assert_eq!(remote.executions.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        engine
+            .reviews()
+            .map_err(error)?
+            .iter()
+            .find(|r| r.id == task_id)
+            .unwrap()
+            .error
+            .as_ref()
+            .unwrap()
+            .code,
+        "AUDIT_UNAVAILABLE"
+    );
+    assert!(!audit.status().durable);
+    assert!(
+        audit
+            .page(tiny_shell_mcp::audit::Filter {
+                limit: 200,
+                ..Default::default()
+            })
+            .await?
+            .events
+            .iter()
+            .any(|e| e.temporary)
+    );
+    Ok(())
+}
+
+fn fixture_engine(
+    store: tiny_shell_mcp::storage::Store,
+    remote: std::sync::Arc<dyn tiny_shell_mcp::engine::Remote>,
+) -> anyhow::Result<std::sync::Arc<tiny_shell_mcp::engine::Engine>> {
+    let directory = store.root().parent().unwrap_or(store.root()).to_path_buf();
+    tiny_shell_mcp::engine::Engine::with_audit(
+        store,
+        remote,
+        tiny_shell_mcp::audit::Store::with_key(directory, [23; 32]),
+    )
 }

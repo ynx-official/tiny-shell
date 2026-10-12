@@ -19,6 +19,11 @@ use std::rc::Rc;
 #[allow(dead_code)]
 #[path = "../src/ai/model.rs"]
 mod model;
+#[allow(dead_code)]
+#[path = "../src/ai/usage.rs"]
+mod usage;
+use model::Conversation;
+use usage::{ModelRequest, TurnRecord};
 mod ai {
     pub(crate) use super::model::*;
 }

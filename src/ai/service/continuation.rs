@@ -42,6 +42,9 @@ impl Service {
         })
     }
     pub fn resume(&self, id: &str, token: &str) -> Result<()> {
+        self.resume_from(id, token, "application")
+    }
+    pub fn resume_from(&self, id: &str, token: &str, channel: &str) -> Result<()> {
         let mut state = self.state.lock().map_err(|_| anyhow!("AI_STORAGE_ERROR"))?;
         ensure!(
             state.cancel.get(id).is_some_and(|cancel| !*cancel.borrow()),
@@ -53,6 +56,7 @@ impl Service {
             .iter_mut()
             .find(|c| c.id == id)
             .ok_or_else(|| anyhow!("AI_CONTINUATION_EXPIRED"))?;
+        let decision_snapshot = c.clone();
         ensure!(
             c.state == TurnState::AwaitingContinuation
                 && c.continuation
@@ -72,10 +76,20 @@ impl Service {
             c.state = TurnState::Generating;
         }
         self.changed();
+        drop(state);
+        self.budget_event(
+            &decision_snapshot,
+            "budget_approved",
+            "approved",
+            serde_json::json!({"actor":"local_user","channel":channel,"decision":"extend_budget"}),
+        );
         Ok(())
     }
 
     pub fn terminate_continuation(&self, id: &str, token: &str) -> Result<()> {
+        self.terminate_from(id, token, "application")
+    }
+    pub fn terminate_from(&self, id: &str, token: &str, channel: &str) -> Result<()> {
         let state = self.state.lock().map_err(|_| anyhow!("AI_STORAGE_ERROR"))?;
         let c = state
             .snapshot
@@ -95,7 +109,15 @@ impl Service {
             .ok_or_else(|| anyhow!("AI_CONTINUATION_EXPIRED"))?;
         ensure!(!*cancel.borrow(), "AI_CONTINUATION_EXPIRED");
         cancel.send_replace(true);
+        let decision_snapshot = c.clone();
         self.changed();
+        drop(state);
+        self.budget_event(
+            &decision_snapshot,
+            "budget_rejected",
+            "rejected",
+            serde_json::json!({"actor":"local_user","channel":channel,"decision":"terminate_turn"}),
+        );
         Ok(())
     }
 
@@ -129,11 +151,20 @@ impl Service {
                 kind,
                 used,
                 allowance,
+                audit_id: Some(uuid::Uuid::new_v4().to_string()),
             });
             state.continuations.insert(id.to_owned(), sender);
         }
         self.changed();
         self.persist_async(id).await;
+        if let Some(c) = self.snapshot().conversations.iter().find(|c| c.id == id) {
+            self.budget_event(
+                c,
+                "budget_requested",
+                "pending",
+                serde_json::json!({"used":used,"allowance":allowance,"kind":kind}),
+            );
+        }
         let revoked = async {
             if let Some(client) = capability {
                 client.revoked().await;
@@ -190,6 +221,7 @@ impl Service {
                     .snapshot
                     .settings
                     .execution = execution;
+                service.configuration_changed();
                 Ok(())
             })();
             service.notice(result);

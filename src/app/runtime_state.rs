@@ -450,6 +450,10 @@ impl UpdateRuntimeState {
 }
 
 pub(crate) struct SyncRuntimeState {
+    pub(crate) ai_configuration_stamp: Option<u64>,
+    pub(crate) mcp_configuration_stamp: Option<u64>,
+    /// Unsaved password retained across transient preflight failures, never serialized.
+    pub(crate) provisional_privacy_password: Option<String>,
     pub(crate) in_progress: bool,
     pub(crate) status: SharedString,
     pub(crate) failed: bool,
@@ -468,6 +472,9 @@ pub(crate) struct SyncRuntimeState {
 impl SyncRuntimeState {
     pub(crate) fn new(status: SharedString) -> Self {
         Self {
+            ai_configuration_stamp: None,
+            mcp_configuration_stamp: None,
+            provisional_privacy_password: None,
             in_progress: false,
             status,
             failed: false,

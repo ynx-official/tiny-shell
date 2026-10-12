@@ -66,6 +66,21 @@ pub struct InternalClient {
     generation: u64,
 }
 impl InternalClient {
+    pub async fn call_traced(
+        &self,
+        call: Call,
+        mut context: crate::audit::Context,
+    ) -> Result<Value> {
+        if !self.is_valid() {
+            return Err(Failure::new("CLIENT_REVOKED"));
+        }
+        context.source = crate::audit::Source::Ai;
+        context.client_id = Some(self.id.clone());
+        context.conversation_id = self.id.strip_prefix("ai:").map(str::to_owned);
+        self.engine
+            .dispatch_traced(&self.id, call, Some(self.generation), context)
+            .await
+    }
     pub async fn call(&self, call: Call) -> Result<Value> {
         if !self.is_valid() {
             return Err(Failure::new("CLIENT_REVOKED"));
@@ -139,8 +154,17 @@ impl Engine {
         self.set_ai_policy(policy)
     }
     pub fn set_ai_policy(&self, policy: AiPolicy) -> Result<()> {
+        self.set_ai_policy_checked(policy, None)
+    }
+    pub fn set_synced_ai_policy(&self, policy: AiPolicy, expected_stamp: u64) -> Result<()> {
+        self.set_ai_policy_checked(policy, Some(expected_stamp))
+    }
+    fn set_ai_policy_checked(&self, policy: AiPolicy, expected_stamp: Option<u64>) -> Result<()> {
         // Same lock order as dispatch: make persistence, epoch change and cancellation atomic.
         let mut inner = self.lock()?;
+        if expected_stamp.is_some_and(|stamp| stamp != self.configuration_stamp()) {
+            return Err(Failure::new("POLICY_CHANGED"));
+        }
         let mut access = self.ai.lock().map_err(|_| Failure::new("INTERNAL_ERROR"))?;
         if access.policy == policy {
             return Ok(());
@@ -155,7 +179,19 @@ impl Engine {
             .map_err(|_| Failure::new("STORAGE_ERROR"))?,
         )
         .map_err(|_| Failure::new("STORAGE_ERROR"))?;
+        let actor = if expected_stamp.is_some() {
+            "cloud_sync"
+        } else {
+            "local_user"
+        };
+        let channel = if expected_stamp.is_some() {
+            "synchronization"
+        } else {
+            "application"
+        };
+        self.audit.record(crate::audit::Event::new(crate::audit::Context::new(crate::audit::Source::Local),"policy_changed","permissions","completed",json!({"scope":"builtin_ai_all_conversations","before":{"enabled":access.policy.enabled,"mode":access.policy.mode},"after":{"enabled":policy.enabled,"mode":policy.mode},"actor":actor,"channel":channel})));
         access.policy = policy;
+        self.configuration_stamp.fetch_add(1, Ordering::Relaxed);
         access.generation = access.generation.wrapping_add(1);
         drop(access);
         self.cancel_source(&mut inner, true);
@@ -268,11 +304,9 @@ impl Engine {
             .map(|(id, _)| id.clone())
             .collect::<Vec<_>>();
         for session in sessions {
-            inner.sessions.remove(&session);
-            let remote = self.remote.clone();
-            tokio::spawn(async move {
-                remote.close(&session).await;
-            });
+            if let Some(active) = inner.sessions.remove(&session) {
+                self.close_automatically(session, active, "turn_finished_or_cancelled");
+            }
         }
         self.changed();
         Ok(())

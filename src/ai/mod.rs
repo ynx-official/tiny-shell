@@ -1,10 +1,13 @@
 //! Model traffic and local conversation data; never reads a human terminal.
+mod key_vault;
 mod model;
 mod provider;
 mod service;
 mod storage;
+mod usage;
 pub(crate) use model::*;
 pub(crate) use service::{Service, Snapshot};
+pub(crate) use usage::{ModelRequest, TurnRecord};
 
 #[cfg(test)]
 mod tests {

@@ -92,7 +92,7 @@ impl SyncBaseline {
         let remote_revision = payload.revision.clone();
         Self {
             target_id: target.stable_id(),
-            protocol_version: crate::sync::protocol::V3_FORMAT_VERSION,
+            protocol_version: payload.schema_version,
             payload,
             remote_revision,
             remote_etag,
@@ -203,7 +203,7 @@ impl SyncStateRepository {
 
     pub fn save(&self, target: &SyncTargetKey, mut baseline: SyncBaseline) -> Result<()> {
         baseline.target_id = target.stable_id();
-        baseline.protocol_version = crate::sync::protocol::V3_FORMAT_VERSION;
+        baseline.protocol_version = baseline.payload.schema_version;
         let mut state = self.load_file()?;
         if let Some(existing) = state
             .baselines
@@ -330,6 +330,8 @@ mod tests {
                 deleted_group_snapshots: Vec::new(),
                 privacy_password_verifier: None,
                 secrets: Vec::new(),
+                ai: None,
+                mcp: None,
             },
             remote_revision: "revision".into(),
             remote_etag: Some("etag".into()),

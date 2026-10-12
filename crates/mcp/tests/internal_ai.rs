@@ -44,7 +44,7 @@ async fn ai_global_access_does_not_require_mcp_machine_grants() -> anyhow::Resul
         .collect::<Vec<_>>();
     let store = Store::new(dir.path())?;
     let external = store.register("test")?;
-    let engine = Engine::new(store, Arc::new(Fake(targets.clone())))?;
+    let engine = fixture_engine(store, Arc::new(Fake(targets.clone())))?;
     let mut policy = engine.policy().map_err(|e| anyhow::anyhow!(e.code))?;
     policy.enabled = true;
     policy.grant(targets[0].id.clone(), targets[0].digest.clone());
@@ -141,7 +141,7 @@ async fn permission_modes_and_pending_approvals_are_isolated_by_source() -> anyh
     };
     let store = Store::new(dir.path())?;
     let external = store.register("test")?;
-    let engine = Engine::new(store, Arc::new(Fake(vec![target.clone()])))?;
+    let engine = fixture_engine(store, Arc::new(Fake(vec![target.clone()])))?;
     let mut policy = engine.policy().map_err(|e| anyhow::anyhow!(e.code))?;
     policy.enabled = true;
     policy.mode = Mode::Controlled;
@@ -274,7 +274,7 @@ async fn old_ai_settings_migrate_once_and_remain_independent_after_restart() -> 
         store.root().join("ai-access.json"),
         br#"{"schema_version":1,"enabled":true}"#,
     )?;
-    let engine = Engine::new(store.clone(), Arc::new(Fake(Vec::new())))?;
+    let engine = fixture_engine(store.clone(), Arc::new(Fake(Vec::new())))?;
     assert_eq!(
         engine.ai_policy().map_err(|e| anyhow::anyhow!(e.code))?,
         AiPolicy {
@@ -286,7 +286,7 @@ async fn old_ai_settings_migrate_once_and_remain_independent_after_restart() -> 
     engine
         .set_policy(policy)
         .map_err(|e| anyhow::anyhow!(e.code))?;
-    let restored = Engine::new(store, Arc::new(Fake(Vec::new())))?;
+    let restored = fixture_engine(store, Arc::new(Fake(Vec::new())))?;
     assert_eq!(
         restored
             .ai_policy()
@@ -340,7 +340,7 @@ async fn target_lookup_cannot_resurrect_access_after_a_disable_enable_cycle() ->
         started,
         resume: tokio::sync::Notify::new(),
     });
-    let engine = Engine::new(Store::new(dir.path())?, remote.clone())?;
+    let engine = fixture_engine(Store::new(dir.path())?, remote.clone())?;
     engine
         .set_ai_enabled(true)
         .map_err(|e| anyhow::anyhow!(e.code))?;
@@ -379,7 +379,7 @@ async fn internal_access_is_independent_bound_and_cannot_be_forged() -> anyhow::
         .collect();
     let store = Store::new(dir.path())?;
     let external = store.register("test")?;
-    let engine = Engine::new(store, Arc::new(Fake(targets.clone())))?;
+    let engine = fixture_engine(store, Arc::new(Fake(targets.clone())))?;
     let mut policy = engine.policy().map_err(|e| anyhow::anyhow!(e.code))?;
     policy.mode = Mode::Full;
     for t in &targets {
@@ -467,4 +467,16 @@ async fn internal_access_is_independent_bound_and_cannot_be_forged() -> anyhow::
     );
     assert!(dir.path().join("mcp/ai-access.json").exists());
     Ok(())
+}
+
+fn fixture_engine(
+    store: tiny_shell_mcp::storage::Store,
+    remote: std::sync::Arc<dyn tiny_shell_mcp::engine::Remote>,
+) -> anyhow::Result<std::sync::Arc<tiny_shell_mcp::engine::Engine>> {
+    let directory = store.root().parent().unwrap_or(store.root()).to_path_buf();
+    tiny_shell_mcp::engine::Engine::with_audit(
+        store,
+        remote,
+        tiny_shell_mcp::audit::Store::with_key(directory, [23; 32]),
+    )
 }

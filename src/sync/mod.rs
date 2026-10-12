@@ -1,3 +1,4 @@
+pub(crate) mod automation;
 mod backend;
 mod http;
 mod merge;
@@ -151,6 +152,7 @@ pub enum UploadBlockReason {
     UnavailableSecrets {
         session_secret_count: u32,
         managed_key_secret_count: u32,
+        ai_key_count: u32,
     },
 }
 
@@ -171,6 +173,9 @@ pub enum SyncResult {
         reason: UploadBlockReason,
     },
     Downloaded {
+        automation: automation::AutomationConfig,
+        ai_provider_count: Option<usize>,
+        privacy_password: Option<String>,
         credentials: SyncCredentials,
         target: state::SyncTargetKey,
         payload: protocol::V3SyncPayload,

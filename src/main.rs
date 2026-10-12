@@ -31,6 +31,11 @@ pub(crate) use app::keybinding_recorder::{
 pub(crate) use app::{PaneLayout, SelectorEntry, SftpContextMenuState, TabGroup, TinyShell};
 
 fn main() {
+    #[cfg(debug_assertions)]
+    if std::env::args().nth(1).as_deref() == Some("--audit-preview") {
+        app::audit::preview::run();
+        return;
+    }
     if std::env::args().nth(1).as_deref() == Some("--mcp") {
         if tiny_shell_mcp::stdio::run(std::env::args().skip(2)).is_err() {
             eprintln!(

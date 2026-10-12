@@ -252,6 +252,29 @@ impl AiPanel {
                         row.child(note(t!(state_key(c.state)).to_string(), cx))
                     })
                     .child(
+                        Button::new(format!("ai-usage-{id}"))
+                            .ghost()
+                            .xsmall()
+                            .label(crate::app::audit::compact_usage_label(c))
+                            .tooltip(crate::app::audit::usage_label(c))
+                            .on_click({
+                                let conversation = c.id.clone();
+                                let owner = self.owner.clone();
+                                move |_, _, cx| {
+                                    if let Some(owner) = owner.upgrade() {
+                                        crate::app::audit::open(
+                                            tiny_shell_mcp::audit::Filter {
+                                                conversation_id: Some(conversation.clone()),
+                                                ..Default::default()
+                                            },
+                                            owner,
+                                            cx,
+                                        )
+                                    }
+                                }
+                            }),
+                    )
+                    .child(
                         Button::new(format!("ai-rename-{id}"))
                             .ghost()
                             .xsmall()
@@ -735,6 +758,29 @@ impl AiPanel {
                     ),
             )
             .child(messages)
+            .child(
+                Button::new("ai-conversation-usage")
+                    .ghost()
+                    .xsmall()
+                    .label(crate::app::audit::usage_label(c))
+                    .tooltip(t!("audit_open").to_string())
+                    .on_click({
+                        let conversation = c.id.clone();
+                        let owner = self.owner.clone();
+                        move |_, _, cx| {
+                            if let Some(owner) = owner.upgrade() {
+                                crate::app::audit::open(
+                                    tiny_shell_mcp::audit::Filter {
+                                        conversation_id: Some(conversation.clone()),
+                                        ..Default::default()
+                                    },
+                                    owner,
+                                    cx,
+                                )
+                            }
+                        }
+                    }),
+            )
             .child(
                 v_flex()
                     .gap_2()

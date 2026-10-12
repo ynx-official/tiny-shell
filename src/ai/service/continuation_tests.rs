@@ -41,6 +41,7 @@ async fn continuation_is_single_use_and_does_not_accept_a_stale_choice() -> Resu
     assert!(service.resume(&id, &pause.token).is_err());
     task.await??;
     assert!(service.snapshot().conversations[0].continuation.is_none());
+    service.audit.close().await?;
     std::fs::remove_dir_all(directory)?;
     Ok(())
 }
@@ -69,6 +70,7 @@ async fn stopping_a_paused_turn_wakes_the_wait_and_cannot_be_overridden() -> Res
     assert!(service.resume(&id, &pause.token).is_err());
     assert_eq!(task.await?.unwrap_err().to_string(), "AI_CANCELLED");
     assert!(service.snapshot().conversations[0].continuation.is_none());
+    service.audit.close().await?;
     std::fs::remove_dir_all(directory)?;
     Ok(())
 }
@@ -114,6 +116,7 @@ async fn rejection_is_single_use_and_prevents_a_later_allow() -> Result<()> {
     assert!(service.terminate_continuation(&id, &pause.token).is_err());
     assert!(service.resume(&id, &pause.token).is_err());
     assert_eq!(task.await?.unwrap_err().to_string(), "AI_CANCELLED");
+    service.audit.close().await?;
     std::fs::remove_dir_all(directory)?;
     Ok(())
 }
@@ -162,6 +165,7 @@ async fn a_choice_is_bound_to_its_conversation() -> Result<()> {
     service.resume(&first, &pause.token)?;
     task.await??;
     assert!(!service.continuation_live(&first, &pause.token));
+    service.audit.close().await?;
     std::fs::remove_dir_all(directory)?;
     Ok(())
 }

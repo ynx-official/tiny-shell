@@ -73,7 +73,7 @@ pub(crate) fn page(view: &Entity<TinyShell>, inputs: SyncSettingsInputs) -> Sett
                             inputs.privacy_password.read(cx).value().chars().count() >= 8;
                         let can_upload = !in_progress
                             && conflicts.is_empty()
-                            && (!include_secrets || privacy_password_valid);
+                            && (privacy_password_valid || (!include_secrets && inputs.privacy_password.read(cx).value().is_empty()));
 
                         v_flex()
                             .w_full()
@@ -209,8 +209,6 @@ pub(crate) fn page(view: &Entity<TinyShell>, inputs: SyncSettingsInputs) -> Sett
                                         }
                                     })),
                             )
-                            .when(include_secrets, |content| {
-                                content
                                     .child(labeled_input_with_hint(
                                         t!("sync_privacy_password").to_string(),
                                         t!("sync_privacy_password_hint").to_string(),
@@ -237,7 +235,7 @@ pub(crate) fn page(view: &Entity<TinyShell>, inputs: SyncSettingsInputs) -> Sett
                                                 }
                                             })),
                                     )
-                            })
+
                             .child(
                                 h_flex()
                                     .gap_2()
@@ -482,6 +480,8 @@ fn conflict_panel(
                 t!("sync_entity_quick_command_category").to_string()
             }
             SyncEntityKind::QuickCommand => t!("sync_entity_quick_command").to_string(),
+            SyncEntityKind::AiSettings => t!("sync_entity_ai_settings").to_string(),
+            SyncEntityKind::McpPermissions => t!("sync_entity_mcp_permissions").to_string(),
         };
         let can_copy = conflict.can_copy_local_session();
         panel = panel.child(

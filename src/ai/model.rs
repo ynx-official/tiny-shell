@@ -2,12 +2,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Model {
     pub id: String,
     pub supports_tools: bool,
 }
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Provider {
     pub id: String,
     pub name: String,
@@ -17,6 +17,11 @@ pub(crate) struct Provider {
     pub enabled: bool,
     pub allow_http: bool,
     pub allow_no_key: bool,
+    #[serde(default = "usage_enabled")]
+    pub stream_usage: bool,
+}
+fn usage_enabled() -> bool {
+    true
 }
 impl Default for Provider {
     fn default() -> Self {
@@ -29,6 +34,7 @@ impl Default for Provider {
             enabled: true,
             allow_http: false,
             allow_no_key: false,
+            stream_usage: true,
         }
     }
 }
@@ -68,7 +74,7 @@ impl Provider {
         .map_err(|_| anyhow::anyhow!("AI_BAD_URL"))
     }
 }
-#[derive(Clone, Default, Serialize, Deserialize)]
+#[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Settings {
     pub providers: Vec<Provider>,
     pub default_provider: Option<String>,
@@ -114,6 +120,8 @@ pub(crate) struct Continuation {
     pub kind: LimitKind,
     pub used: usize,
     pub allowance: usize,
+    #[serde(default)]
+    pub audit_id: Option<String>,
 }
 
 #[derive(Clone)]
@@ -226,6 +234,10 @@ pub(crate) struct Conversation {
     #[serde(default)]
     pub continuation: Option<Continuation>,
     pub updated: i64,
+    #[serde(default)]
+    pub requests: Vec<super::ModelRequest>,
+    #[serde(default)]
+    pub turns: Vec<super::TurnRecord>,
 }
 impl Conversation {
     pub fn new(target: Option<BoundTarget>, settings: &Settings) -> Self {
@@ -247,6 +259,8 @@ impl Conversation {
             error: None,
             continuation: None,
             updated: chrono::Utc::now().timestamp(),
+            requests: Vec::new(),
+            turns: Vec::new(),
         }
     }
 }

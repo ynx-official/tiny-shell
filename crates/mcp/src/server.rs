@@ -32,12 +32,24 @@ impl ServerHandler for Bridge {
         _context: RequestContext<RoleServer>,
     ) -> std::result::Result<CallToolResponse, ErrorData> {
         let arguments = serde_json::Value::Object(request.arguments.unwrap_or_default());
-        let value = match contracts::Call::parse(&request.name, arguments.clone()) {
-            Err(e) => e.envelope(),
-            Ok(_) => {
-                crate::ipc::invoke(&self.config_dir, &self.client_id, &request.name, arguments)
-                    .await
-                    .unwrap_or_else(|e| e.envelope())
+        // Forward bounded original arguments so GUI-side validation failures are audited too.
+        let value = match crate::ipc::invoke(
+            &self.config_dir,
+            &self.client_id,
+            &request.name,
+            arguments.clone(),
+        )
+        .await
+        {
+            Ok(value) => value,
+            Err(error) => {
+                let audit = crate::audit::Store::new(self.config_dir.clone());
+                let mut context = crate::audit::Context::client(&self.client_id);
+                context.source = crate::audit::Source::External;
+                let recorded=audit.durable(crate::audit::Event::new(context,"external_transport_failed",&request.name,"failed",serde_json::json!({"arguments":arguments,"error":error.code,"transport":"stdio","verified_by_gui":false}))).await;
+                let mut failure = error.envelope();
+                failure["audit_persisted"] = recorded.into();
+                failure
             }
         };
         let mut result = CallToolResult::structured(value.clone());

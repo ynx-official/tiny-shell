@@ -8,7 +8,7 @@
 
 - `src/ai/model.rs`：Provider、模型能力、绑定目标、消息及轮次状态。
 - `src/ai/provider.rs`：OpenAI 兼容 HTTP/SSE、模型发现及固定消息测试。不开启重定向，不发送内部凭据。
-- `src/ai/storage.rs`：系统凭据、本机认证加密、受限读取、原子保存和临时模式。
+- `src/ai/storage.rs` 与 `key_vault.rs`：隐私密码保护的 API Key、系统凭据保护的历史主密钥、本机认证加密、受限读取、原子保存和临时模式。配置同步、旧凭据迁移与身份绑定见[同步契约](../sync/ai-mcp-sync.md)。
 - `src/ai/service.rs` 与 `service/runner.rs`：后台运行、取消、快照、消息上下文与工具闭环。`service/toolset.rs` 定义内置工具边界，`service/tools.rs` 管理会话和任务等待，`service/budget.rs` 负责预算与结果复用。UI 线程不等待网络或凭据存储。
 - `src/app/ai/`、`src/app/settings/ai.rs`：原生右栏、历史和 Provider 草稿；UI 只读取快照、发出操作。
 - `crates/mcp/src/engine/internal.rs`：不可通过 IPC 构造的内部能力；共享引擎继续负责 SSH、文件、审批、取消和审计。
@@ -37,10 +37,11 @@ ToolGroupView 的根布局禁止纵向 flex 压缩，长答复由外层聊天滚
 | --- | --- |
 | `ai/providers.json` | Provider 元数据；不含 Key。 |
 | `ai/conversations/<UUID>.enc` | `TSAI1` 标记、24 字节随机 nonce、XChaCha20-Poly1305 密文；AAD 为对话 UUID，单文件读取上限 16 MiB。 |
-| 系统凭据存储 | Provider Key 与随机 32 字节历史密钥；服务名包含配置目录规范路径的 SHA-256。 |
+| `ai/keys.enc` | 云同步隐私密码加密的服务商 Key，绑定服务商 ID 与地址。 |
+| 系统凭据存储 | 随机 32 字节历史密钥；服务名包含配置目录规范路径的 SHA-256。旧 Provider Key 的迁移见同步契约。 |
 | `mcp/ai-access.json` | 内置访问开关和全局模式，schema_version=2；v1 一次性迁移，保留原开关并复制当时共享模式，后续独立；原 `mcp/policy.json` 格式不变。 |
 
-Provider 与历史保存在独立目录，不进入 ConfigStore 的同步/归档对象。持久化串行锁隔离保存与删除，I/O 前复制快照并释放状态锁，避免删除后由迟到检查点重新创建历史。凭据不可用时 Key 可仅在内存中使用；无历史主密钥时不落盘聊天，不生成替代密钥覆盖已有密文。
+Provider 与历史保存在独立目录，连接归档不包含它们；AI/MCP 配置由应用协调进入云同步，规则以[同步契约](../sync/ai-mcp-sync.md)为准。持久化串行锁隔离保存与删除，I/O 前复制快照并释放状态锁，避免删除后由迟到检查点重新创建历史。未配置隐私密码时新 Key 仅在内存中使用；无历史主密钥时不落盘聊天，不生成替代密钥覆盖已有密文。
 
 ## 轮次、取消与恢复
 
@@ -65,6 +66,8 @@ Provider 与历史保存在独立目录，不进入 ConfigStore 的同步/归档
 ## 可恢复预算与平台提醒（2026-10-12）
 
 `Settings.execution` 采用 serde 默认值，保存在既有 `ai/providers.json` 中；与 Provider 草稿分开保存，复用持久化串行锁。发送时取得不可变预算快照（工具 1–128，默认 16；模型 1–64，默认 8），背景通知偏好则按最新已保存设置读取。
+
+2026-10-12 设置导航修订：`src/app/settings/ai.rs` 使用三个具名 SettingGroup，复用组件库与快捷键一致的侧栏子菜单/分组定位。Provider、BudgetForm、NotificationForm 使用独立 keyed state，分别位于“模型服务 / 执行预算 / 通知提醒”。预算与通知保存前读取最新 ExecutionSettings，仅覆盖本组字段，然后调用原 save_execution；共享 busy 与持久化串行锁避免并发保存，不新增配置字段。SettingPage 在设置顶层仍为索引 4，MCP 为索引 5，既有对话跳转入口不变。
 
 `Budget` 区分可扩展的调用 ceiling 与不可绕过的 safety_halted。继续不清空缓存、累计调用数、相同结果计数或 uncertain 指纹。runner 在下一次模型请求或批内下一次工具执行之前检查预算，保存带随机 token 的 Continuation，并通过独立 oneshot 等待；与取消 watch、内部能力撤销一起 select。Service 在锁内核对 token 与取消状态，只接受一次选择。未选择不发请求、不执行工具；恢复使用同一消息序列、待执行批次及已打开的独立 SSH 会话。批内暂停终止时为剩余调用保存 not_executed 配对结果，不向 Provider 请求总结。重启加载活动状态时清空 continuation 并标记中断，不恢复 runner。
 

@@ -13,7 +13,10 @@ use gpui::{AppContext as _, Context, Window};
 pub(crate) use panel::AiPanel;
 use std::sync::{Arc, OnceLock};
 static SERVICE: OnceLock<Result<Arc<Service>, String>> = OnceLock::new();
-pub(crate) fn initialize(runtime: &tokio::runtime::Handle) {
+pub(crate) fn initialize(
+    runtime: &tokio::runtime::Handle,
+    config: &crate::session::config::ConfigStore,
+) {
     SERVICE.get_or_init(|| {
         let directory = crate::session::config::ConfigStore::config_directory()
             .map_err(|_| "AI_STORAGE_ERROR".to_owned())?;
@@ -21,6 +24,9 @@ pub(crate) fn initialize(runtime: &tokio::runtime::Handle) {
             directory,
             runtime.clone(),
             super::mcp::service().ok().map(|s| s.engine.clone()),
+            crate::app::config_sync::open_webdav_password(config.sync_secrets_password_sealed())
+                .ok()
+                .filter(|p| !p.is_empty()),
         ))
     });
 }
@@ -74,6 +80,17 @@ pub(crate) fn current_target(
 impl TinyShell {
     pub(crate) fn poll_ai(&mut self, cx: &mut Context<Self>) -> bool {
         attention::dispatch_activations(cx);
+        if let Ok(service) = service() {
+            let stamp = service.configuration_stamp();
+            if self
+                .sync_runtime
+                .ai_configuration_stamp
+                .replace(stamp)
+                .is_some_and(|old| old != stamp)
+            {
+                self.note_local_config_saved(cx);
+            }
+        }
         let stamp = service()
             .map(|s| s.stamp())
             .unwrap_or(0)
@@ -130,9 +147,13 @@ pub(crate) fn error_text(code: &str) -> String {
         "AI_BAD_URL" | "AI_BASE_URL_REQUIRED" => "ai_bad_url",
         "AI_ENDPOINT_KEY_REQUIRED" => "ai_endpoint_key_required",
         "AI_VAULT_UNAVAILABLE" => "ai_vault_unavailable",
+        "AI_SYNC_PASSWORD_REQUIRED" => "ai_sync_password_required",
+        "AI_KEY_LOCKED" => "ai_key_locked",
+        "AI_KEY_VAULT_CORRUPT" => "ai_key_vault_corrupt",
         "AI_HISTORY_LOCKED" => "ai_history_locked",
         "AI_HISTORY_CORRUPT" => "ai_history_corrupt",
         "AI_STORAGE_ERROR" | "AI_HISTORY_LIMIT" => "ai_storage_error",
+        "AUDIT_UNAVAILABLE" => "audit_mutation_blocked",
         "AI_CANCELLED" | "AI_INTERRUPTED" => "ai_interrupted",
         "AI_TOOL_LIMIT" => "ai_tool_limit",
         "AI_RESPONSE_TOOL_LIMIT" => "ai_response_tool_limit",

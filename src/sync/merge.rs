@@ -20,8 +20,9 @@ enum MergePreference {
     Remote,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct MergedConfig {
+    pub(crate) automation: super::automation::AutomationConfig,
     pub sessions: Vec<Session>,
     pub deleted_sessions: Vec<DeletedSession>,
     pub deleted_connection_groups: Vec<DeletedConnectionGroup>,
@@ -36,6 +37,7 @@ pub struct MergedConfig {
 }
 
 pub struct MergeLocal<'a> {
+    pub(crate) automation: Option<&'a super::automation::AutomationConfig>,
     pub sessions: &'a [Session],
     pub deleted_sessions: &'a [DeletedSession],
     pub connection_groups: &'a [String],
@@ -64,6 +66,7 @@ pub fn merge_payload(
             keys: local_keys,
             commands: local_commands,
             base_payload: None,
+            automation: Default::default(),
         },
         remote,
         Some(privacy_password),
@@ -114,6 +117,7 @@ pub(crate) fn decode_payload(remote: V3SyncPayload, privacy_password: &str) -> M
             keys: &[],
             commands: &[],
             base_payload: None,
+            automation: Default::default(),
         },
         remote,
         Some(privacy_password),
@@ -141,8 +145,55 @@ fn merge_payload_with_secret_access(
         keys: &keys,
         commands: &commands,
         base_payload: local.base_payload,
+        automation: local.automation,
     };
+    let automation = local.automation;
+    let initial = local.base_payload.is_none();
     let mut merged = merge_projected_payload(local, projected, privacy_password, preference);
+    merged.automation.expected_ai_stamp = automation.and_then(|a| a.expected_ai_stamp);
+    merged.automation.expected_mcp_stamp = automation.and_then(|a| a.expected_mcp_stamp);
+    let local_ai = automation.and_then(|a| a.ai.as_ref());
+    if let Some(ai) = &base_payload.ai {
+        let (resolved, unavailable) = ai.value.resolve(local_ai, privacy_password);
+        merged.unavailable_secret_count += unavailable;
+        merged.automation.ai = match preference {
+            MergePreference::Local if initial => {
+                Some(super::automation::merge_initial_ai(local_ai, resolved))
+            }
+            MergePreference::Local => local_ai.cloned().or(Some(resolved)),
+            MergePreference::Remote => Some(resolved),
+        };
+    } else {
+        merged.automation.ai = local_ai.cloned();
+    }
+    let local_mcp = automation.and_then(|a| a.mcp.as_ref());
+    merged.automation.mcp = match preference {
+        MergePreference::Local
+            if initial
+                && local_mcp.is_none_or(|mcp| {
+                    !mcp.enabled
+                        && mcp.mode == tiny_shell_mcp::policy::Mode::ReadOnly
+                        && mcp.scope == tiny_shell_mcp::policy::Scope::Specified
+                        && mcp.grants.is_empty()
+                        && !mcp.ai_enabled
+                        && mcp.ai_mode == tiny_shell_mcp::policy::Mode::ReadOnly
+                }) =>
+        {
+            base_payload
+                .mcp
+                .as_ref()
+                .map(|e| e.value.clone())
+                .or_else(|| local_mcp.cloned())
+        }
+        MergePreference::Local => local_mcp
+            .cloned()
+            .or_else(|| base_payload.mcp.as_ref().map(|e| e.value.clone())),
+        MergePreference::Remote => base_payload
+            .mcp
+            .as_ref()
+            .map(|e| e.value.clone())
+            .or_else(|| local_mcp.cloned()),
+    };
     merged.base_payload = Some(base_payload);
     merged
 }
@@ -327,6 +378,7 @@ pub(crate) fn normalize_merged_config(config: &MergedConfig) -> MergedConfig {
             keys: &config.managed_keys,
             commands: &config.quick_command_categories,
             base_payload: config.base_payload.as_ref(),
+            automation: Default::default(),
         },
         ProjectedPayload::default(),
         None,
@@ -337,6 +389,7 @@ pub(crate) fn normalize_merged_config(config: &MergedConfig) -> MergedConfig {
     normalized.unavailable_session_secret_count = config.unavailable_session_secret_count;
     normalized.unavailable_managed_key_secret_count = config.unavailable_managed_key_secret_count;
     normalized.base_payload.clone_from(&config.base_payload);
+    normalized.automation = config.automation.clone();
     normalized
 }
 
@@ -566,6 +619,7 @@ fn merge_projected_payload(
         unavailable_session_secret_count: session_stats.unavailable_count,
         unavailable_managed_key_secret_count: managed_key_stats.unavailable_count,
         base_payload: None,
+        automation: Default::default(),
     }
 }
 
@@ -1327,6 +1381,7 @@ mod tests {
                 keys: &[],
                 commands: &[],
                 base_payload: None,
+                automation: Default::default(),
             },
             payload.into(),
         );
@@ -1525,6 +1580,7 @@ mod tests {
                 keys: &[local_key],
                 commands: &[],
                 base_payload: None,
+                automation: Default::default(),
             },
             payload.into(),
             "",
@@ -1713,6 +1769,7 @@ mod tests {
                 keys: &[key("local-key", "Local key", "local-key-content")],
                 commands: &[],
                 base_payload: None,
+                automation: Default::default(),
             },
             payload.into(),
             "",
@@ -1760,6 +1817,7 @@ mod tests {
                 keys: &[],
                 commands: &[],
                 base_payload: None,
+                automation: Default::default(),
             },
             payload.into(),
             "",
@@ -1796,6 +1854,7 @@ mod tests {
                 keys: &[],
                 commands: &[],
                 base_payload: None,
+                automation: Default::default(),
             },
             payload.into(),
             "",
@@ -1829,6 +1888,7 @@ mod tests {
                 keys: &[],
                 commands: &[],
                 base_payload: None,
+                automation: Default::default(),
             },
             payload.into(),
         );
@@ -1866,6 +1926,7 @@ mod tests {
                 keys: &[],
                 commands: &[],
                 base_payload: None,
+                automation: Default::default(),
             },
             payload.into(),
         );
@@ -1898,6 +1959,7 @@ mod tests {
                 keys: &first.managed_keys,
                 commands: &first.quick_command_categories,
                 base_payload: first.base_payload.as_ref(),
+                automation: Default::default(),
             },
             payload.into(),
             "",
@@ -1953,6 +2015,7 @@ mod tests {
                 keys: &[],
                 commands: &[],
                 base_payload: None,
+                automation: Default::default(),
             },
             payload.into(),
             "",

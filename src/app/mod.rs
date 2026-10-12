@@ -1,5 +1,7 @@
 pub(crate) mod ai;
 pub(crate) mod assets;
+pub(crate) mod audit;
+mod automation_sync;
 mod backend_events;
 pub(crate) mod config_persistence;
 pub(crate) mod config_sync;
@@ -997,7 +999,7 @@ impl TinyShell {
             std::process::abort();
         });
         mcp::initialize(runtime.handle());
-        ai::initialize(runtime.handle());
+        ai::initialize(runtime.handle(), &config);
         let mut this = Self {
             focus_handle: cx.focus_handle(),
             selector_focus_handle: cx.focus_handle(),

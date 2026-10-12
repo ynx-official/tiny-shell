@@ -130,6 +130,21 @@ impl SyncFormSnapshot {
 }
 
 pub(crate) fn sync_failure_status(failure: &SyncFailure) -> String {
+    if matches!(
+        failure.detail.as_str(),
+        "AI_SYNC_PASSWORD_REQUIRED"
+            | "AI_KEY_LOCKED"
+            | "AI_KEY_VAULT_CORRUPT"
+            | "AI_VAULT_UNAVAILABLE"
+            | "AI_BUSY"
+            | "AI_LOADING"
+    ) {
+        return t!(
+            "sync_failed",
+            error = super::ai::error_text(&failure.detail)
+        )
+        .to_string();
+    }
     let detail = match (failure.backend, failure.category) {
         (Some(SyncBackendKind::WebDav), SyncErrorCategory::EndpointRequired) => {
             t!("sync_webdav_endpoint_required").to_string()
@@ -192,6 +207,10 @@ fn upload_preflight_result(
             reason: UploadBlockReason::UnavailableSecrets {
                 session_secret_count: merged.unavailable_session_secret_count,
                 managed_key_secret_count: merged.unavailable_managed_key_secret_count,
+                ai_key_count: merged.unavailable_secret_count.saturating_sub(
+                    merged.unavailable_session_secret_count
+                        + merged.unavailable_managed_key_secret_count,
+                ),
             },
         }
     } else {
@@ -273,6 +292,10 @@ impl TinyShell {
         let events = self.async_runtime.events_tx.clone();
         let task = self.runtime.spawn(async move {
             let result = operation.await;
+            if cancellation.is_cancelled() {
+                return;
+            }
+            let result = super::automation_sync::finalize(result).await;
             if !cancellation.is_cancelled() {
                 let _ = events.send(BackendEvent::SyncFinished {
                     result: Box::new(result),
@@ -425,26 +448,21 @@ impl TinyShell {
                 cx.notify();
                 return;
             }
-            let sealed_privacy_password = if self.config.sync_include_secrets() {
-                match seal_privacy_password(&form.privacy_password) {
-                    Ok(sealed_password) => Some(sealed_password),
-                    Err(error) => {
-                        self.sync_runtime
-                            .set_failed(t!("sync_failed", error = format!("{error:#}")).into());
-                        cx.notify();
-                        return;
-                    }
-                }
-            } else {
-                None
-            };
+            if (self.config.sync_include_secrets() || !form.privacy_password.is_empty())
+                && form.privacy_password.chars().count() < PRIVACY_PASSWORD_MIN_LEN
+            {
+                self.sync_runtime
+                    .set_failed(t!("sync_privacy_password_required").into());
+                cx.notify();
+                return;
+            }
             if let SyncBackendCredentials::WebDav {
                 endpoint,
                 username,
                 password,
-            } = form.credentials.backend
+            } = &form.credentials.backend
             {
-                let sealed_password = match seal_webdav_password(&password) {
+                let sealed_password = match seal_webdav_password(password) {
                     Ok(sealed_password) => sealed_password,
                     Err(error) => {
                         self.sync_runtime
@@ -453,12 +471,9 @@ impl TinyShell {
                         return;
                     }
                 };
-                self.config.set_sync_connection(endpoint, username);
+                self.config
+                    .set_sync_connection(endpoint.clone(), username.clone());
                 self.config.set_sync_webdav_password_sealed(sealed_password);
-            }
-            if let Some((sealed, hash)) = sealed_privacy_password {
-                self.config.set_sync_secrets_password_sealed(sealed);
-                self.config.set_sync_secrets_password_hash(hash);
             }
         }
 
@@ -470,7 +485,15 @@ impl TinyShell {
                 } else {
                     t!("sync_disabled").into()
                 };
-                self.schedule_automatic_sync(enabled, cx);
+                // Remember the privacy password only after remote verification
+                // and key persistence succeed; changing this switch is not a reset.
+                self.sync_runtime.provisional_privacy_password = enabled
+                    .then(|| form.privacy_password.clone())
+                    .filter(|password| !password.is_empty());
+                self.schedule_automatic_sync(false, cx);
+                if enabled {
+                    self.upload_sync_config(form, cx);
+                }
             }
             Err(error) => {
                 self.config = previous_config;
@@ -485,13 +508,12 @@ impl TinyShell {
         if self.config.sync_backend() != "webdav" {
             anyhow::bail!("automatic sync requires WebDAV");
         }
-        let privacy_password = if self.config.sync_include_secrets() {
-            crypto::open_with_hardware_key(
+        let privacy_password = match &self.sync_runtime.provisional_privacy_password {
+            Some(password) => password.clone(),
+            None => crypto::open_with_hardware_key(
                 self.config.sync_secrets_password_sealed(),
                 &hardware_uuid(),
-            )?
-        } else {
-            String::new()
+            )?,
         };
         Ok(SyncFormSnapshot {
             credentials: SyncCredentials {
@@ -754,6 +776,18 @@ impl TinyShell {
                         reason: UploadBlockReason::PasswordMismatch,
                     },
                     Ok(PrivacyPasswordStatus::Verified | PrivacyPasswordStatus::NotConfigured) => {
+                        let local_automation =
+                            match super::automation_sync::capture_background(&privacy_password)
+                                .await
+                            {
+                                Ok(configuration) => configuration,
+                                Err(error) => {
+                                    return SyncResult::Failed(SyncFailure::other(
+                                        Some(credentials.backend.kind()),
+                                        error,
+                                    ));
+                                }
+                            };
                         if let Some(baseline) = local_base_payload.as_ref() {
                             match sync::reconcile_three_way(
                                 sync::MergeLocal {
@@ -764,6 +798,7 @@ impl TinyShell {
                                     keys: &local_keys,
                                     commands: &local_commands,
                                     base_payload: Some(baseline),
+                                    automation: Some(&local_automation),
                                 },
                                 baseline,
                                 payload.clone(),
@@ -818,6 +853,7 @@ impl TinyShell {
                                 keys: &local_keys,
                                 commands: &local_commands,
                                 base_payload: local_base_payload.as_ref(),
+                                automation: Some(&local_automation),
                             },
                             payload.clone(),
                             &privacy_password,
@@ -837,11 +873,34 @@ impl TinyShell {
                     )),
                 },
                 Err(failure) if failure.category == SyncErrorCategory::RemoteMissing => {
+                    let local_automation =
+                        match super::automation_sync::capture_background(&privacy_password).await {
+                            Ok(configuration) => configuration,
+                            Err(error) => {
+                                return SyncResult::Failed(SyncFailure::other(
+                                    Some(credentials.backend.kind()),
+                                    error,
+                                ));
+                            }
+                        };
                     SyncResult::UploadPreflightReady(sync::UploadPreflightReady {
                         credentials,
                         privacy_password,
                         include_secrets,
-                        merged: None,
+                        merged: Some(MergedConfig {
+                            sessions: local_sessions,
+                            deleted_sessions: local_deleted_sessions,
+                            connection_groups: local_connection_groups,
+                            deleted_connection_groups: local_deleted_connection_groups,
+                            managed_keys: local_keys,
+                            quick_command_categories: local_commands,
+                            decrypted_count: 0,
+                            unavailable_secret_count: 0,
+                            unavailable_session_secret_count: 0,
+                            unavailable_managed_key_secret_count: 0,
+                            base_payload: None,
+                            automation: local_automation,
+                        }),
                         remote_payload: None,
                         etag: None,
                     })
@@ -853,82 +912,79 @@ impl TinyShell {
 
     pub(crate) fn continue_sync_upload(
         &mut self,
-        credentials: SyncCredentials,
-        privacy_password: String,
-        include_secrets: bool,
-        merged: Option<MergedConfig>,
-        etag: Option<String>,
+        plan: sync::UploadPreflightReady,
         cx: &mut Context<Self>,
     ) {
-        let remote_exists = merged.is_some();
-        let payload = match merged.as_ref() {
-            Some(merged) => crate::sync::protocol::V3SyncPayload::from_config(
-                self.config.sync_device_id().to_string(),
-                merged,
-                include_secrets,
-                &privacy_password,
-                merged.base_payload.as_ref(),
-            ),
-            None => crate::sync::protocol::V3SyncPayload::from_config(
-                self.config.sync_device_id().to_string(),
-                &MergedConfig {
-                    sessions: self.config.sessions().to_vec(),
-                    deleted_sessions: self.config.deleted_sessions().to_vec(),
-                    connection_groups: self.config.connection_groups().to_vec(),
-                    deleted_connection_groups: self.config.deleted_connection_groups().to_vec(),
-                    managed_keys: self.config.managed_keys().to_vec(),
-                    quick_command_categories: self
-                        .config
-                        .quick_command_categories()
-                        .unwrap_or_default()
-                        .to_vec(),
-                    decrypted_count: 0,
-                    unavailable_secret_count: 0,
-                    unavailable_session_secret_count: 0,
-                    unavailable_managed_key_secret_count: 0,
-                    base_payload: None,
-                },
-                include_secrets,
-                &privacy_password,
-                None,
-            ),
-        };
-        let payload = match payload {
-            Ok(payload) => payload,
-            Err(error) => {
-                self.sync_runtime.in_progress = false;
-                self.sync_runtime
-                    .set_failed(t!("sync_failed", error = format!("{error:#}")).into());
-                cx.notify();
-                if self.close_sync_running {
-                    self.complete_close_sync(cx);
-                } else {
-                    self.continue_queued_close_sync(cx);
-                }
-                return;
-            }
-        };
-        let mode = if remote_exists && etag.is_none() {
-            UploadMode::Force
-        } else {
-            UploadMode::conditional(etag)
-        };
-        let uploaded_privacy_password = include_secrets.then_some(privacy_password);
         self.sync_runtime.in_progress = true;
         self.sync_runtime.status = t!("sync_uploading").into();
         cx.notify();
-
-        let target = sync::state::SyncTargetKey::from_credentials(&credentials.backend);
+        let device_id = self.config.sync_device_id().to_owned();
         self.spawn_sync_operation(async move {
+            let sync::UploadPreflightReady {
+                credentials,
+                privacy_password,
+                include_secrets,
+                merged,
+                remote_payload,
+                etag,
+            } = plan;
+            let Some(merged) = merged else {
+                return SyncResult::Failed(SyncFailure::other(
+                    None,
+                    "missing local synchronization snapshot",
+                ));
+            };
+            let password = privacy_password.clone();
+            let prepared = merged.clone();
+            let previous = remote_payload.clone();
+            let payload = match tokio::task::spawn_blocking(move || {
+                crate::sync::protocol::V3SyncPayload::from_config(
+                    device_id,
+                    &prepared,
+                    include_secrets,
+                    &password,
+                    previous.as_ref(),
+                )
+            })
+            .await
+            {
+                Ok(Ok(payload)) => payload,
+                Ok(Err(error)) => {
+                    return SyncResult::Failed(SyncFailure::other(
+                        Some(credentials.backend.kind()),
+                        error,
+                    ));
+                }
+                Err(_) => return SyncResult::Failed(SyncFailure::other(None, "AI_STORAGE_ERROR")),
+            };
+            let target = sync::state::SyncTargetKey::from_credentials(&credentials.backend);
+            let unchanged = remote_payload
+                .as_ref()
+                .is_some_and(|remote| payload.is_content_equivalent(remote));
+            let uploaded_password = (!privacy_password.is_empty()).then_some(privacy_password);
+            if unchanged {
+                return SyncResult::Uploaded {
+                    target,
+                    payload: remote_payload.unwrap_or(payload),
+                    etag,
+                    privacy_password: uploaded_password,
+                    merged: Some(merged),
+                };
+            }
+            let mode = if remote_payload.is_some() && etag.is_none() {
+                UploadMode::Force
+            } else {
+                UploadMode::conditional(etag)
+            };
             match sync::upload(credentials, payload.clone(), mode).await {
                 Ok(etag) => SyncResult::Uploaded {
                     target,
                     payload,
                     etag,
-                    privacy_password: uploaded_privacy_password,
-                    merged,
+                    privacy_password: uploaded_password,
+                    merged: Some(merged),
                 },
-                Err(failure) => SyncResult::Failed(failure),
+                Err(error) => SyncResult::Failed(error),
             }
         });
     }
@@ -963,6 +1019,27 @@ impl TinyShell {
             match sync::download(credentials.clone(), &privacy_password).await {
                 Ok((payload, etag)) => match payload.privacy_password_status(&privacy_password) {
                     Ok(password_status) => {
+                        let local_automation = match super::automation_sync::capture_background(
+                            if matches!(
+                                password_status,
+                                PrivacyPasswordStatus::Verified
+                                    | PrivacyPasswordStatus::NotConfigured
+                            ) {
+                                &privacy_password
+                            } else {
+                                ""
+                            },
+                        )
+                        .await
+                        {
+                            Ok(configuration) => configuration,
+                            Err(error) => {
+                                return SyncResult::Failed(SyncFailure::other(
+                                    Some(credentials.backend.kind()),
+                                    error,
+                                ));
+                            }
+                        };
                         let MergedConfig {
                             sessions,
                             deleted_sessions,
@@ -972,6 +1049,7 @@ impl TinyShell {
                             quick_command_categories,
                             decrypted_count,
                             unavailable_secret_count,
+                            automation,
                             ..
                         } = match password_status {
                             PrivacyPasswordStatus::Verified
@@ -985,6 +1063,7 @@ impl TinyShell {
                                         keys: &local_keys,
                                         commands: &local_commands,
                                         base_payload: local_base_payload.as_ref(),
+                                        automation: Some(&local_automation),
                                     },
                                     payload.clone(),
                                     &privacy_password,
@@ -1000,6 +1079,7 @@ impl TinyShell {
                                         keys: &local_keys,
                                         commands: &local_commands,
                                         base_payload: local_base_payload.as_ref(),
+                                        automation: Some(&local_automation),
                                     },
                                     payload.clone(),
                                 )
@@ -1008,6 +1088,15 @@ impl TinyShell {
                         let target =
                             sync::state::SyncTargetKey::from_credentials(&credentials.backend);
                         SyncResult::Downloaded {
+                            automation,
+                            ai_provider_count: None,
+                            privacy_password: matches!(
+                                password_status,
+                                PrivacyPasswordStatus::Verified
+                                    | PrivacyPasswordStatus::NotConfigured
+                            )
+                            .then_some(privacy_password)
+                            .filter(|password| !password.is_empty()),
                             credentials,
                             target,
                             payload: payload.clone(),
@@ -1048,57 +1137,83 @@ impl TinyShell {
             return;
         };
 
-        // 校验本地有可同步的隐私信息
-        let has_secrets = self.config.sessions().iter().any(|s| {
-            !s.password.is_empty()
-                || !s.passphrase.is_empty()
-                || !s.private_key_inline.is_empty()
-                || !s.proxy_password.is_empty()
-        }) || self
-            .config
-            .managed_keys()
-            .iter()
-            .any(|k| !k.inline_content.is_empty() || !k.passphrase.is_empty());
-        if !has_secrets {
-            self.sync_runtime.in_progress = false;
-            self.sync_runtime.status = t!("sync_reset_no_local_secrets").into();
-            cx.notify();
-            return;
-        }
-
-        let payload = match crate::sync::protocol::V3SyncPayload::from_config(
-            self.config.sync_device_id().to_string(),
-            &MergedConfig {
-                sessions: self.config.sessions().to_vec(),
-                deleted_sessions: self.config.deleted_sessions().to_vec(),
-                connection_groups: self.config.connection_groups().to_vec(),
-                deleted_connection_groups: self.config.deleted_connection_groups().to_vec(),
-                managed_keys: self.config.managed_keys().to_vec(),
-                quick_command_categories: self
-                    .config
-                    .quick_command_categories()
-                    .unwrap_or_default()
-                    .to_vec(),
-                decrypted_count: 0,
-                unavailable_secret_count: 0,
-                unavailable_session_secret_count: 0,
-                unavailable_managed_key_secret_count: 0,
-                base_payload: None,
-            },
-            true,
-            &new_password,
-            None,
-        ) {
-            Ok(payload) => payload,
-            Err(err) => {
-                self.sync_runtime.in_progress = false;
-                self.sync_runtime.status = t!("sync_failed", error = format!("{err:#}")).into();
-                cx.notify();
-                return;
-            }
+        let previous_password =
+            match open_webdav_password(self.config.sync_secrets_password_sealed()) {
+                Ok(password) => password,
+                Err(error) => {
+                    self.sync_runtime.in_progress = false;
+                    self.sync_runtime
+                        .set_failed(t!("sync_failed", error = format!("{error:#}")).into());
+                    return;
+                }
+            };
+        let device_id = self.config.sync_device_id().to_owned();
+        let mut local = MergedConfig {
+            sessions: self.config.sessions().to_vec(),
+            deleted_sessions: self.config.deleted_sessions().to_vec(),
+            connection_groups: self.config.connection_groups().to_vec(),
+            deleted_connection_groups: self.config.deleted_connection_groups().to_vec(),
+            managed_keys: self.config.managed_keys().to_vec(),
+            quick_command_categories: self
+                .config
+                .quick_command_categories()
+                .unwrap_or_default()
+                .to_vec(),
+            decrypted_count: 0,
+            unavailable_secret_count: 0,
+            unavailable_session_secret_count: 0,
+            unavailable_managed_key_secret_count: 0,
+            base_payload: None,
+            automation: Default::default(),
         };
-
         self.spawn_sync_operation(async move {
+            local.automation =
+                match super::automation_sync::capture_background(&previous_password).await {
+                    Ok(configuration) => configuration,
+                    Err(error) => {
+                        return SyncResult::Failed(SyncFailure::other(
+                            Some(credentials.backend.kind()),
+                            error,
+                        ));
+                    }
+                };
+            let has_secrets = local.sessions.iter().any(|session| {
+                !session.password.is_empty()
+                    || !session.passphrase.is_empty()
+                    || !session.private_key_inline.is_empty()
+                    || !session.proxy_password.is_empty()
+            }) || local
+                .managed_keys
+                .iter()
+                .any(|key| !key.inline_content.is_empty() || !key.passphrase.is_empty())
+                || local
+                    .automation
+                    .ai
+                    .as_ref()
+                    .is_some_and(|ai| !ai.settings.providers.is_empty());
+            if !has_secrets {
+                return SyncResult::Failed(SyncFailure::other(
+                    None,
+                    t!("sync_reset_no_local_secrets"),
+                ));
+            }
+            let password = new_password.clone();
+            let payload = match tokio::task::spawn_blocking(move || {
+                crate::sync::protocol::V3SyncPayload::from_config(
+                    device_id, &local, true, &password, None,
+                )
+            })
+            .await
+            {
+                Ok(Ok(payload)) => payload,
+                Ok(Err(error)) => {
+                    return SyncResult::Failed(SyncFailure::other(
+                        Some(credentials.backend.kind()),
+                        error,
+                    ));
+                }
+                Err(_) => return SyncResult::Failed(SyncFailure::other(None, "AI_STORAGE_ERROR")),
+            };
             match sync::upload(credentials.clone(), payload.clone(), UploadMode::Force).await {
                 Ok(etag) => SyncResult::PrivacyPasswordReset {
                     target: sync::state::SyncTargetKey::from_credentials(&credentials.backend),
@@ -1106,7 +1221,7 @@ impl TinyShell {
                     new_password,
                     etag,
                 },
-                Err(failure) => SyncResult::Failed(failure),
+                Err(error) => SyncResult::Failed(error),
             }
         });
     }
@@ -1221,6 +1336,7 @@ mod tests {
                 unavailable_session_secret_count: 1,
                 unavailable_managed_key_secret_count: 2,
                 base_payload: None,
+                automation: Default::default(),
             },
             test_remote_payload(),
             Some("etag-1".into()),
@@ -1232,6 +1348,7 @@ mod tests {
                 reason: UploadBlockReason::UnavailableSecrets {
                     session_secret_count: 1,
                     managed_key_secret_count: 2,
+                    ai_key_count: 0,
                 },
                 ..
             }
@@ -1256,6 +1373,7 @@ mod tests {
                 unavailable_session_secret_count: 0,
                 unavailable_managed_key_secret_count: 0,
                 base_payload: None,
+                automation: Default::default(),
             },
             test_remote_payload(),
             Some("etag-2".into()),
@@ -1341,6 +1459,8 @@ mod tests {
             deleted_group_snapshots: Vec::new(),
             privacy_password_verifier: None,
             secrets: Vec::new(),
+            ai: None,
+            mcp: None,
         }
     }
 

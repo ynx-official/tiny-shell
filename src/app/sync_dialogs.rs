@@ -163,10 +163,12 @@ impl TinyShell {
             crate::sync::UploadBlockReason::UnavailableSecrets {
                 session_secret_count,
                 managed_key_secret_count,
+                ai_key_count,
             } => t!(
                 "sync_upload_blocked_dialog_message",
                 sessions = session_secret_count,
-                keys = managed_key_secret_count
+                keys = managed_key_secret_count,
+                ai = ai_key_count
             )
             .to_string(),
         };

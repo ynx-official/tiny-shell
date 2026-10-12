@@ -1,4 +1,7 @@
-use super::{Conversation, Settings, TurnState};
+use super::{
+    Conversation, Settings, TurnState,
+    key_vault::{KeyVault, StoredKey},
+};
 use anyhow::{Result, anyhow, ensure};
 use chacha20poly1305::{
     XChaCha20Poly1305, XNonce,
@@ -45,7 +48,8 @@ pub(super) struct Store {
     root: PathBuf,
     service: String,
     master: Option<[u8; 32]>,
-    volatile: Mutex<HashMap<String, String>>,
+    volatile: Mutex<HashMap<String, StoredKey>>,
+    vault: Mutex<KeyVault>,
 }
 type Opened = (Store, Settings, Vec<Conversation>, Option<String>);
 impl Store {
@@ -54,16 +58,21 @@ impl Store {
         directory: PathBuf,
         master: Option<[u8; 32]>,
         id: &str,
+        base_url: &str,
         key: &str,
     ) -> Result<Self> {
         let root = directory.join("ai");
         private_directory(&root)?;
         private_directory(&root.join("conversations"))?;
         Ok(Self {
+            vault: Mutex::new(KeyVault::open(root.join("keys.enc"))?),
             root,
             service: format!("tiny-shell-test-{}", uuid::Uuid::new_v4()),
             master,
-            volatile: Mutex::new(HashMap::from([(id.to_owned(), key.to_owned())])),
+            volatile: Mutex::new(HashMap::from([(
+                id.to_owned(),
+                StoredKey::new(id, base_url, key),
+            )])),
         })
     }
     pub fn open(directory: PathBuf) -> Result<Opened> {
@@ -100,6 +109,7 @@ impl Store {
             })
             .ok();
         let store = Self {
+            vault: Mutex::new(KeyVault::open(root.join("keys.enc"))?),
             root,
             service,
             master,
@@ -131,6 +141,16 @@ impl Store {
                         c.state = TurnState::Interrupted;
                         c.continuation = None;
                         c.error = Some("AI_INTERRUPTED".into());
+                        for request in &mut c.requests {
+                            if matches!(request.state.as_str(), "pending" | "running") {
+                                request.state = "interrupted".into();
+                                request.finished_ms = Some(tiny_shell_mcp::audit::now_ms());
+                            }
+                        }
+                        if let Some(turn) = c.turns.last_mut() {
+                            turn.state = "interrupted".into();
+                            turn.finished_ms = Some(tiny_shell_mcp::audit::now_ms());
+                        }
                         for activity in &mut c.activities {
                             if matches!(
                                 activity.state.as_str(),
@@ -161,42 +181,42 @@ impl Store {
         self.volatile.lock().is_ok_and(|keys| keys.contains_key(id))
     }
     pub fn key_saved(&self, id: &str) -> bool {
-        Self::entry(&self.service, id)
-            .and_then(|e| {
-                e.get_password()
-                    .map_err(|_| anyhow!("AI_VAULT_UNAVAILABLE"))
-            })
-            .is_ok_and(|k| !k.is_empty())
+        if self
+            .vault
+            .lock()
+            .is_ok_and(|vault| vault.values().is_ok_and(|values| values.contains_key(id)))
+        {
+            return true;
+        }
+        false
     }
-    pub fn key(&self, id: &str) -> Result<String> {
+    pub fn key(&self, id: &str, base_url: &str) -> Result<String> {
         if let Some(key) = self
             .volatile
             .lock()
             .map_err(|_| anyhow!("AI_STORAGE_ERROR"))?
             .get(id)
         {
-            return Ok(key.clone());
+            return key.resolve(id, base_url);
         }
-        match Self::entry(&self.service, id)?.get_password() {
-            Ok(k) => Ok(k),
-            Err(keyring::Error::NoEntry) => Ok(String::new()),
-            Err(_) => Err(anyhow!("AI_VAULT_UNAVAILABLE")),
-        }
+        let vault = self.vault.lock().map_err(|_| anyhow!("AI_STORAGE_ERROR"))?;
+        vault
+            .values()?
+            .get(id)
+            .map_or_else(|| Ok(String::new()), |key| key.resolve(id, base_url))
     }
-    pub fn set_key(&self, id: &str, key: &str) -> Result<()> {
+    pub fn set_key(&self, id: &str, base_url: &str, key: &str) -> Result<()> {
         ensure!(!key.is_empty() && key.len() <= 16384, "AI_KEY_REQUIRED");
-        if Self::entry(&self.service, id)
-            .and_then(|e| {
-                e.set_password(key)
-                    .map_err(|_| anyhow!("AI_VAULT_UNAVAILABLE"))
-            })
-            .is_err()
-        {
+        let mut vault = self.vault.lock().map_err(|_| anyhow!("AI_STORAGE_ERROR"))?;
+        if !vault.unlocked() {
             self.volatile
                 .lock()
                 .map_err(|_| anyhow!("AI_STORAGE_ERROR"))?
-                .insert(id.into(), key.into());
+                .insert(id.into(), StoredKey::new(id, base_url, key));
         } else {
+            let mut values = vault.values()?.clone();
+            values.insert(id.to_owned(), StoredKey::new(id, base_url, key));
+            vault.replace(values)?;
             self.volatile
                 .lock()
                 .map_err(|_| anyhow!("AI_STORAGE_ERROR"))?
@@ -205,15 +225,162 @@ impl Store {
         Ok(())
     }
     pub fn delete_key(&self, id: &str) -> Result<()> {
+        let mut vault = self.vault.lock().map_err(|_| anyhow!("AI_STORAGE_ERROR"))?;
+        if vault.unlocked() {
+            let mut values = vault.values()?.clone();
+            values.remove(id);
+            vault.replace(values)?;
+        } else if self.root.join("keys.enc").exists() {
+            return Err(anyhow!("AI_KEY_LOCKED"));
+        }
+        drop(vault);
         let mut volatile = self
             .volatile
             .lock()
             .map_err(|_| anyhow!("AI_STORAGE_ERROR"))?;
-        match Self::entry(&self.service, id)?.delete_credential() {
-            Ok(()) | Err(keyring::Error::NoEntry) => {}
-            Err(_) => return Err(anyhow!("AI_VAULT_UNAVAILABLE")),
-        };
+        let deletion =
+            Self::entry(&self.service, id).and_then(|entry| match entry.delete_credential() {
+                Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+                Err(_) => Err(anyhow!("AI_VAULT_UNAVAILABLE")),
+            });
+        if !self.has_key_file() {
+            deletion?;
+        }
         volatile.remove(id);
+        Ok(())
+    }
+
+    pub fn unlock_keys(&self, password: &str, settings: &Settings) -> Result<()> {
+        let mut vault = self.vault.lock().map_err(|_| anyhow!("AI_STORAGE_ERROR"))?;
+        vault.unlock(password)?;
+        let mut values = vault.values()?.clone();
+        let mut migrated = Vec::new();
+        for provider in &settings.providers {
+            // Once a password vault exists it is authoritative. Native leftovers
+            // from a failed cleanup must never resurrect a cleared or removed key.
+            if self.has_key_file() {
+                break;
+            }
+            if let Ok(entry) = Self::entry(&self.service, &provider.id)
+                && let Ok(key) = entry.get_password()
+                && !key.is_empty()
+            {
+                values
+                    .entry(provider.id.clone())
+                    .or_insert_with(|| StoredKey::new(&provider.id, &provider.base_url, &key));
+                migrated.push(entry);
+            }
+        }
+        let mut volatile = self
+            .volatile
+            .lock()
+            .map_err(|_| anyhow!("AI_STORAGE_ERROR"))?;
+        for (id, key) in volatile.iter() {
+            values.insert(id.clone(), key.clone());
+        }
+        if values != *vault.values()?
+            || (!migrated.is_empty() && !self.root.join("keys.enc").exists())
+        {
+            vault.replace(values)?;
+        }
+        volatile.clear();
+        // Delete legacy entries only after the password-encrypted file is durable.
+        for entry in migrated {
+            entry
+                .delete_credential()
+                .map_err(|_| anyhow!("AI_VAULT_UNAVAILABLE"))?;
+        }
+        Ok(())
+    }
+
+    pub fn rotate_keys(&self, password: &str) -> Result<()> {
+        self.vault
+            .lock()
+            .map_err(|_| anyhow!("AI_STORAGE_ERROR"))?
+            .rotate(password)
+    }
+
+    /// Preflight reads legacy keys only after cloud password verification. A
+    /// failed upload must not delete native credentials or create a new vault.
+    pub fn prepare_keys(&self, password: &str, settings: &Settings) -> Result<()> {
+        let mut vault = self.vault.lock().map_err(|_| anyhow!("AI_STORAGE_ERROR"))?;
+        if !vault.unlocked() {
+            vault.unlock(password)?;
+        }
+        let mut volatile = self
+            .volatile
+            .lock()
+            .map_err(|_| anyhow!("AI_STORAGE_ERROR"))?;
+        for provider in &settings.providers {
+            if self.has_key_file() {
+                break;
+            }
+            if vault.values()?.contains_key(&provider.id) || volatile.contains_key(&provider.id) {
+                continue;
+            }
+            if let Ok(entry) = Self::entry(&self.service, &provider.id)
+                && let Ok(key) = entry.get_password()
+                && !key.is_empty()
+            {
+                volatile.insert(
+                    provider.id.clone(),
+                    StoredKey::new(&provider.id, &provider.base_url, &key),
+                );
+            }
+        }
+        Ok(())
+    }
+
+    pub fn keys_locked(&self) -> bool {
+        self.vault.lock().is_ok_and(|vault| !vault.unlocked())
+    }
+    pub fn has_key_file(&self) -> bool {
+        self.root.join("keys.enc").exists()
+    }
+    pub fn adopt_password(&self, password: &str, settings: &Settings) -> Result<()> {
+        if self.keys_locked() {
+            return self.unlock_keys(password, settings);
+        }
+        {
+            let mut vault = self.vault.lock().map_err(|_| anyhow!("AI_STORAGE_ERROR"))?;
+            if !vault.uses_password(password) {
+                vault.rotate(password)?;
+            }
+        }
+        self.unlock_keys(password, settings)
+    }
+
+    pub fn replace_keys(
+        &self,
+        keys: &std::collections::BTreeMap<String, String>,
+        settings: &Settings,
+    ) -> Result<()> {
+        let values: std::collections::BTreeMap<_, _> = settings
+            .providers
+            .iter()
+            .filter_map(|provider| {
+                keys.get(&provider.id)
+                    .filter(|key| !key.is_empty())
+                    .map(|key| {
+                        (
+                            provider.id.clone(),
+                            StoredKey::new(&provider.id, &provider.base_url, key),
+                        )
+                    })
+            })
+            .collect();
+        let mut vault = self.vault.lock().map_err(|_| anyhow!("AI_STORAGE_ERROR"))?;
+        let mut volatile = self
+            .volatile
+            .lock()
+            .map_err(|_| anyhow!("AI_STORAGE_ERROR"))?;
+        if vault.unlocked() {
+            vault.replace(values)?;
+            volatile.clear();
+        } else {
+            ensure!(!self.root.join("keys.enc").exists(), "AI_KEY_LOCKED");
+            *volatile = values.into_iter().collect();
+        }
         Ok(())
     }
     pub fn save_settings(&self, settings: &Settings) -> Result<()> {
@@ -249,6 +416,38 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn passwordless_keys_are_temporary_and_addresses_are_bound() -> Result<()> {
+        let directory =
+            std::env::temp_dir().join(format!("tiny-shell-ai-test-{}", uuid::Uuid::new_v4()));
+        let id = uuid::Uuid::new_v4().to_string();
+        let url = "https://fixture.example.test/v1";
+        let store = Store::fixture(directory.clone(), None, &id, url, "synthetic-key")?;
+        assert!(store.key_temporary(&id));
+        assert!(!store.has_key_file());
+        assert_eq!(store.key(&id, url)?, "synthetic-key");
+        assert!(store.key(&id, "https://other.example.test/v1").is_err());
+        store.unlock_keys("sync-password", &Settings::default())?;
+        assert!(!store.key_temporary(&id));
+        assert!(store.key_saved(&id));
+        assert!(
+            !String::from_utf8_lossy(&std::fs::read(directory.join("ai/keys.enc"))?)
+                .contains("synthetic-key")
+        );
+        let reopened = Store::fixture(directory.clone(), None, "unused", url, "temporary")?;
+        assert!(reopened.key(&id, url).is_err());
+        assert!(
+            reopened
+                .unlock_keys("wrong-password", &Settings::default())
+                .is_err()
+        );
+        reopened.unlock_keys("sync-password", &Settings::default())?;
+        assert_eq!(reopened.key(&id, url)?, "synthetic-key");
+        assert!(reopened.key(&id, "https://other.example.test/v1").is_err());
+        std::fs::remove_dir_all(directory)?;
+        Ok(())
+    }
 
     #[cfg(windows)]
     #[test]
@@ -300,14 +499,26 @@ mod tests {
     fn temporary_history_never_overwrites_existing_ciphertext() -> Result<()> {
         let directory =
             std::env::temp_dir().join(format!("tiny-shell-ai-test-{}", uuid::Uuid::new_v4()));
-        let store = Store::fixture(directory.clone(), Some([19; 32]), "fixture", "fixture-key")?;
+        let store = Store::fixture(
+            directory.clone(),
+            Some([19; 32]),
+            "fixture",
+            "https://fixture.example.test/v1",
+            "fixture-key",
+        )?;
         let mut c = Conversation::new(None, &Settings::default());
         c.messages
             .push(super::super::Message::text("user", "preserve this"));
         store.save(&c)?;
         let path = store.path(&c.id)?;
         let cipher = std::fs::read(&path)?;
-        let locked = Store::fixture(directory.clone(), None, "fixture", "temporary-key")?;
+        let locked = Store::fixture(
+            directory.clone(),
+            None,
+            "fixture",
+            "https://fixture.example.test/v1",
+            "temporary-key",
+        )?;
         c.messages
             .push(super::super::Message::text("user", "memory only"));
         locked.save(&c)?;

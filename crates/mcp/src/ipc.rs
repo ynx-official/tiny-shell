@@ -17,10 +17,21 @@ use uuid::Uuid;
 
 #[async_trait]
 pub trait Handler: Send + Sync {
+    fn audit_store(&self) -> Option<Arc<crate::audit::Store>> {
+        None
+    }
     fn generation(&self) -> Option<String> {
         None
     }
     async fn call(&self, client: &str, call: Call) -> crate::contracts::Result<Value>;
+    async fn call_with_context(
+        &self,
+        client: &str,
+        call: Call,
+        _context: crate::audit::Context,
+    ) -> crate::contracts::Result<Value> {
+        self.call(client, call).await
+    }
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -101,7 +112,7 @@ pub async fn serve_stream<S: AsyncRead + AsyncWrite + Unpin>(
     generation: String,
     handler: Arc<dyn Handler>,
 ) -> Result<()> {
-    let client = tokio::time::timeout(Duration::from_secs(5), async {
+    let authenticated = tokio::time::timeout(Duration::from_secs(5), async {
         let challenge = Challenge::new(&generation);
         write_frame(&mut stream, &challenge).await?;
         let auth: Authentication = read_frame(&mut stream).await?;
@@ -112,22 +123,51 @@ pub async fn serve_stream<S: AsyncRead + AsyncWrite + Unpin>(
         challenge.verify(&client.id, &client.secret, &auth.proof)?;
         Ok::<_, anyhow::Error>(client)
     })
-    .await??;
+    .await;
+    let client = match authenticated {
+        Ok(Ok(client)) => client,
+        _ => {
+            if let Some(audit) = handler.audit_store() {
+                audit.record(crate::audit::Event::new(crate::audit::Context::new(crate::audit::Source::External),"authentication_rejected","transport","rejected",serde_json::json!({"reason":"authentication_failed","unverified_identity":true})));
+            }
+            bail!("MCP authentication rejected");
+        }
+    };
+    let request: Request = match tokio::time::timeout(
+        Duration::from_secs(15),
+        read_frame(&mut stream),
+    )
+    .await
+    {
+        Ok(Ok(request)) => request,
+        _ => {
+            if let Some(audit) = handler.audit_store() {
+                let mut context = crate::audit::Context::client(&client.id);
+                context.source = crate::audit::Source::External;
+                context.client_name = Some(client.name().to_owned());
+                audit.record(crate::audit::Event::new(context,"external_rejected","transport","rejected",serde_json::json!({"reason":"malformed_oversized_or_timed_out_request","payload_not_retained":true})));
+            }
+            bail!("MCP invalid request frame");
+        }
+    };
     let response = tokio::time::timeout(Duration::from_secs(15), async {
-        let request: Request = read_frame(&mut stream).await?;
+        let mut context=crate::audit::Context::client(&client.id);context.instance_id=Some(generation.clone());context.client_name=Some(client.name().to_string());
+        if let Some(audit)=handler.audit_store(){audit.record(crate::audit::Event::new(context.clone(),"external_received",&request.tool,"received",serde_json::json!({"client_name":client.name(),"arguments":request.arguments,"transport":"authenticated_ipc"})));}
+        let tool_name=request.tool.clone();
         let data = if request.generation != generation {
             Failure::new("INSTANCE_CHANGED").envelope()
         } else if !store.client(&client.id).is_ok_and(|c| c.enabled) {
             Failure::new("CLIENT_REVOKED").envelope()
         } else {
             match Call::parse(&request.tool, request.arguments) {
-                Ok(call) => match handler.call(&client.id, call).await {
+                Ok(call) => match handler.call_with_context(&client.id, call,context.clone()).await {
                     Ok(value) => crate::contracts::success(value),
                     Err(e) => e.envelope(),
                 },
                 Err(e) => e.envelope(),
             }
         };
+        if data["ok"]==false && let Some(audit)=handler.audit_store(){audit.record(crate::audit::Event::new(context,"external_rejected",&tool_name,"rejected",serde_json::json!({"error":data["error"]})));}
         Ok::<_, anyhow::Error>(data)
     })
     .await??;

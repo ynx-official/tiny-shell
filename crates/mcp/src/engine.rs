@@ -19,6 +19,7 @@ use std::{
 };
 use tokio::sync::watch;
 use uuid::Uuid;
+mod audit;
 mod internal;
 mod waiting;
 pub use internal::{AiPolicy, InternalClient};
@@ -63,6 +64,8 @@ pub struct Review {
     pub preview: Value,
 }
 struct Task {
+    audit_context: crate::audit::Context,
+    audit_store: Arc<crate::audit::Store>,
     review: Review,
     session: String,
     request_id: String,
@@ -82,6 +85,7 @@ impl Task {
     }
 }
 struct Session {
+    audit_context: crate::audit::Context,
     client: String,
     target: Target,
     last_used: Instant,
@@ -92,20 +96,35 @@ struct Inner {
     sessions: HashMap<String, Session>,
 }
 pub struct Engine {
+    pub audit: Arc<crate::audit::Store>,
     pub store: Store,
     remote: Arc<dyn Remote>,
     inner: Mutex<Inner>,
     pub generation: String,
     stamp: AtomicU64,
+    configuration_stamp: AtomicU64,
     ai: Mutex<internal::Access>,
     changes: watch::Sender<u64>,
 }
 impl Engine {
     pub fn new(store: Store, remote: Arc<dyn Remote>) -> anyhow::Result<Arc<Self>> {
+        let directory = store
+            .root()
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("AUDIT_INVALID_PATH"))?
+            .to_path_buf();
+        Self::with_audit(store, remote, crate::audit::Store::new(directory))
+    }
+    pub fn with_audit(
+        store: Store,
+        remote: Arc<dyn Remote>,
+        audit: Arc<crate::audit::Store>,
+    ) -> anyhow::Result<Arc<Self>> {
         let policy = store.load_policy()?;
         let ai = internal::Access::load(&store, &policy)?;
         let (changes, _) = watch::channel(0);
         Ok(Arc::new(Self {
+            audit,
             store,
             remote,
             inner: Mutex::new(Inner {
@@ -115,12 +134,16 @@ impl Engine {
             }),
             generation: Uuid::new_v4().to_string(),
             stamp: AtomicU64::new(1),
+            configuration_stamp: AtomicU64::new(1),
             ai: Mutex::new(ai),
             changes,
         }))
     }
     pub fn stamp(&self) -> u64 {
         self.stamp.load(Ordering::Relaxed)
+    }
+    pub fn configuration_stamp(&self) -> u64 {
+        self.configuration_stamp.load(Ordering::Relaxed)
     }
     fn changed(&self) {
         self.stamp.fetch_add(1, Ordering::Relaxed);
@@ -135,13 +158,34 @@ impl Engine {
     pub fn policy(&self) -> Result<Policy> {
         Ok(self.lock()?.policy.clone())
     }
-    pub fn set_policy(&self, mut policy: Policy) -> Result<()> {
+    pub fn set_policy(&self, policy: Policy) -> Result<()> {
+        self.set_policy_checked(policy, None)
+    }
+    pub fn set_synced_policy(&self, policy: Policy, expected_stamp: u64) -> Result<()> {
+        self.set_policy_checked(policy, Some(expected_stamp))
+    }
+    fn set_policy_checked(&self, mut policy: Policy, expected_stamp: Option<u64>) -> Result<()> {
         let mut inner = self.lock()?;
+        if expected_stamp.is_some_and(|stamp| stamp != self.configuration_stamp()) {
+            return Err(Failure::new("POLICY_CHANGED"));
+        }
         policy.revision = inner.policy.revision.saturating_add(1);
         self.store
             .save_policy(&policy)
             .map_err(|_| Failure::new("STORAGE_ERROR"))?;
+        let actor = if expected_stamp.is_some() {
+            "cloud_sync"
+        } else {
+            "local_user"
+        };
+        let channel = if expected_stamp.is_some() {
+            "synchronization"
+        } else {
+            "application"
+        };
+        self.audit.record(crate::audit::Event::new(crate::audit::Context::new(crate::audit::Source::Local),"policy_changed","permissions","completed",json!({"scope":"external_mcp_cli","before":inner.policy,"after":policy,"actor":actor,"channel":channel})));
         inner.policy = policy;
+        self.configuration_stamp.fetch_add(1, Ordering::Relaxed);
         self.cancel_source(&mut inner, false);
         self.changed();
         Ok(())
@@ -152,6 +196,11 @@ impl Engine {
             .values_mut()
             .filter(|t| t.review.client.starts_with("ai:") == ai && !t.review.state.terminal())
         {
+            task.record(
+                "approval_invalidated",
+                "invalidated",
+                json!({"reason":"policy_changed"}),
+            );
             if matches!(task.review.state, State::AwaitingUser | State::Queued) {
                 task.review.state = State::Failed;
                 task.review.error = Some(Failure::new("POLICY_CHANGED"));
@@ -166,11 +215,9 @@ impl Engine {
             .map(|(id, _)| id.clone())
             .collect::<Vec<_>>();
         for session in sessions {
-            inner.sessions.remove(&session);
-            let remote = self.remote.clone();
-            tokio::spawn(async move {
-                remote.close(&session).await;
-            });
+            if let Some(active) = inner.sessions.remove(&session) {
+                self.close_automatically(session, active, "policy_changed");
+            }
         }
     }
     pub fn reviews(&self) -> Result<Vec<Review>> {
@@ -198,15 +245,13 @@ impl Engine {
             .map(|(id, _)| id.clone())
             .collect::<Vec<_>>();
         for session in &expired {
-            inner.sessions.remove(session);
-            let remote = self.remote.clone();
-            let session = session.clone();
-            tokio::spawn(async move {
-                remote.close(&session).await;
-            });
+            if let Some(active) = inner.sessions.remove(session) {
+                self.close_automatically(session.clone(), active, "idle_timeout");
+            }
         }
         let mut changed = previous != inner.tasks.len() || !expired.is_empty();
         for task in inner.tasks.values_mut().filter(|t| t.approval_expired()) {
+            task.record("approval_expired", "expired", json!({"reason":"deadline"}));
             task.review.state = State::Failed;
             task.review.error = Some(Failure::new("APPROVAL_EXPIRED"));
             task.finished = Some(Instant::now());
@@ -241,13 +286,9 @@ impl Engine {
         {
             Self::cancel(task);
         }
-        let sessions = inner.sessions.keys().cloned().collect::<Vec<_>>();
-        inner.sessions.clear();
-        for session in sessions {
-            let remote = self.remote.clone();
-            tokio::spawn(async move {
-                remote.close(&session).await;
-            });
+        let sessions = inner.sessions.drain().collect::<Vec<_>>();
+        for (id, session) in sessions {
+            self.close_automatically(id, session, "application_shutdown");
         }
         self.changed();
         Ok(())
@@ -271,11 +312,9 @@ impl Engine {
             .map(|(id, _)| id.clone())
             .collect::<Vec<_>>();
         for id in sessions {
-            inner.sessions.remove(&id);
-            let remote = self.remote.clone();
-            tokio::spawn(async move {
-                remote.close(&id).await;
-            });
+            if let Some(active) = inner.sessions.remove(&id) {
+                self.close_automatically(id, active, "client_revoked");
+            }
         }
         self.changed();
         Ok(())
@@ -298,18 +337,33 @@ impl Engine {
         }
         self.changed();
         if task.revision != revision || task.approval_expired() {
+            task.record(
+                "approval_expired",
+                "expired",
+                json!({"decision":"expired","current_revision":revision}),
+            );
             task.review.state = State::Failed;
             task.review.error = Some(Failure::new("APPROVAL_EXPIRED"));
             task.finished = Some(Instant::now());
             return Err(Failure::new("APPROVAL_EXPIRED"));
         }
         if !approved {
+            task.record(
+                "approval_rejected",
+                "rejected",
+                json!({"decision":"rejected","actor":"local_user","channel":"application"}),
+            );
             task.review.state = State::Failed;
             task.review.error = Some(Failure::new("APPROVAL_DENIED"));
             task.finished = Some(Instant::now());
             return Ok(());
         }
         task.approved = true;
+        task.record(
+            "approval_approved",
+            "approved",
+            json!({"decision":"approved","actor":"local_user","channel":"application"}),
+        );
         task.review.error = None;
         task.review.state = State::Queued;
         drop(inner);
@@ -317,6 +371,7 @@ impl Engine {
         Ok(())
     }
     fn cancel(task: &mut Task) {
+        task.record("cancel_requested", "cancel_requested", json!({}));
         task.cancel.send_replace(true);
         if matches!(task.review.state, State::Queued | State::AwaitingUser) {
             task.review.state = State::Cancelled;
@@ -324,6 +379,11 @@ impl Engine {
         } else if task.review.state == State::Running {
             task.review.state = State::CancelRequested;
         }
+        let state = serde_json::to_value(task.review.state)
+            .ok()
+            .and_then(|v| v.as_str().map(str::to_owned))
+            .unwrap_or_else(|| "unknown".into());
+        task.record("cancel_decision",&state,json!({"actor":"application","remote_outcome_may_be_unknown":task.review.state==State::CancelRequested}));
     }
     fn launch(self: &Arc<Self>, id: String) {
         let this = self.clone();
@@ -364,6 +424,7 @@ impl Engine {
             Ok(data) => {
                 if matches!(task.review.call, Call::OpenSession(_)) {
                     let session = Session {
+                        audit_context: task.audit_context.clone(),
                         client: task.review.client.clone(),
                         target: task.review.target.clone(),
                         last_used: Instant::now(),
@@ -397,6 +458,11 @@ impl Engine {
             {
                 task.review.state = State::AwaitingUser;
                 task.awaiting_since = Some(Instant::now());
+                task.record(
+                    "approval_requested",
+                    "awaiting_user",
+                    json!({"approval_kind":"credentials","credential_values_saved":false}),
+                );
                 task.review.error = Some(error);
                 self.changed();
                 return;
@@ -433,6 +499,11 @@ impl Engine {
             .and_then(|v| v["tool"].as_str().map(str::to_owned))
             .unwrap_or_default();
         let mode = task.mode;
+        let state = serde_json::to_value(task.review.state)
+            .ok()
+            .and_then(|v| v.as_str().map(str::to_owned))
+            .unwrap_or_else(|| "unknown".into());
+        task.record("execution_result", &state, json!({"result":task.result}));
         let record = json!({"timestamp":timestamp,"client_id":task.review.client,"connection_id":task.review.target.id,"operation":tool,"mode":mode,"state":task.review.state,"exit_code":task.result.get("exit_code")});
         drop(inner);
         let _ = self.store.audit(record);
@@ -533,6 +604,11 @@ impl Engine {
             {
                 task.review.state = State::AwaitingUser;
                 task.awaiting_since = Some(Instant::now());
+                task.record(
+                    "approval_requested",
+                    "awaiting_user",
+                    json!({"approval_kind":"operation_permission"}),
+                );
             }
             self.changed();
             return;
@@ -562,6 +638,23 @@ impl Engine {
             }
         }
         let cancelled = cancel.clone();
+        let durable = self.execution_record(&review, revision, approved).await;
+        if review.call.mutation() && !durable {
+            self.finish(&id, Err(Failure::new("AUDIT_UNAVAILABLE")));
+            return;
+        }
+        // The durable write is an await point: revocation/cancellation must still win afterwards.
+        if *cancel.borrow() || !self.client_enabled(&review.client) {
+            self.finish(&id, Err(Failure::new("CANCELLED")));
+            return;
+        }
+        if let Err(error) = self
+            .validate(&review.target, revision, &review.client)
+            .await
+        {
+            self.finish(&id, Err(error));
+            return;
+        }
         let mut result = self
             .remote
             .execute(&review.target, &session, &review.call, cancel)
@@ -593,6 +686,16 @@ impl Engine {
         client: &str,
         call: Call,
         epoch: Option<u64>,
+    ) -> Result<Value> {
+        self.dispatch_traced(client, call, epoch, crate::audit::Context::client(client))
+            .await
+    }
+    async fn dispatch_operation(
+        self: &Arc<Self>,
+        client: &str,
+        call: Call,
+        epoch: Option<u64>,
+        audit_context: &mut crate::audit::Context,
     ) -> Result<Value> {
         if !self.client_enabled(client) {
             return Err(Failure::new("CLIENT_REVOKED"));
@@ -629,17 +732,16 @@ impl Engine {
                 .map(|(id, _)| id.clone())
                 .collect::<Vec<_>>();
             for session in expired {
-                inner.sessions.remove(&session);
-                let remote = self.remote.clone();
-                tokio::spawn(async move {
-                    remote.close(&session).await;
-                });
+                if let Some(active) = inner.sessions.remove(&session) {
+                    self.close_automatically(session, active, "idle_timeout");
+                }
             }
             inner.tasks.retain(|_, t| {
                 t.finished
                     .is_none_or(|at| at.elapsed() < Duration::from_secs(1800))
             });
             for task in inner.tasks.values_mut().filter(|t| t.approval_expired()) {
+                task.record("approval_expired", "expired", json!({"reason":"deadline"}));
                 task.review.state = State::Failed;
                 task.review.error = Some(Failure::new("APPROVAL_EXPIRED"));
                 task.finished = Some(Instant::now());
@@ -700,6 +802,9 @@ impl Engine {
                 {
                     return Err(Failure::new("REQUEST_ID_CONFLICT"));
                 }
+                audit_context.parent_id = Some(task.audit_context.operation_id.clone());
+                audit_context.task_id = Some(task.review.id.clone());
+                self.audit.record(crate::audit::Event::new(audit_context.clone(),"idempotent_reuse",audit::tool_name(&call),"idempotent",json!({"original_operation":task.audit_context.operation_id,"task_id":task.review.id,"remote_executed_again":false})));
                 return Ok(json!({"task_id":task.review.id}));
             }
         }
@@ -731,6 +836,8 @@ impl Engine {
             self.effective_policy(client, &inner.policy)?
         };
         let revision = policy.revision;
+        audit_context.target_id = Some(target.id.clone());
+        audit_context.target_name = Some(target.name.clone());
         if decide(
             policy.enabled,
             policy.authorized(&target.id, &target.digest),
@@ -791,6 +898,7 @@ impl Engine {
                 return Err(Failure::new("SESSION_LIMIT"));
             }
             let id = Uuid::new_v4().to_string();
+            audit_context.task_id = Some(id.clone());
             let (cancel, _) = watch::channel(false);
             let review = Review {
                 id: id.clone(),
@@ -804,6 +912,8 @@ impl Engine {
             inner.tasks.insert(
                 id.clone(),
                 Task {
+                    audit_context: audit_context.clone(),
+                    audit_store: self.audit.clone(),
                     review,
                     session,
                     request_id: request_id.to_owned(),
@@ -830,6 +940,24 @@ impl Engine {
 pub struct EngineHandler(pub Arc<Engine>);
 #[async_trait]
 impl Handler for EngineHandler {
+    fn audit_store(&self) -> Option<Arc<crate::audit::Store>> {
+        Some(self.0.audit.clone())
+    }
+    async fn call_with_context(
+        &self,
+        client: &str,
+        call: Call,
+        mut context: crate::audit::Context,
+    ) -> Result<Value> {
+        if client.starts_with("ai:") {
+            return Err(Failure::new("CLIENT_REVOKED"));
+        }
+        context.source = crate::audit::Source::External;
+        context.conversation_id = None;
+        context.turn_id = None;
+        context.model_request_id = None;
+        self.0.dispatch_traced(client, call, None, context).await
+    }
     fn generation(&self) -> Option<String> {
         Some(self.0.generation.clone())
     }

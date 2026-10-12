@@ -1,4 +1,5 @@
 //! OpenAI-compatible HTTP and streaming adapter.
+use super::usage::Metadata;
 use super::{Message, Provider};
 use anyhow::{Result, anyhow, ensure};
 use futures::StreamExt;
@@ -56,11 +57,20 @@ pub(super) async fn models(p: &Provider, key: &str) -> Result<Vec<String>> {
     ids.dedup();
     Ok(ids)
 }
-pub(super) async fn test(p: &Provider, key: &str) -> Result<()> {
+pub(super) async fn test(
+    p: &Provider,
+    key: &str,
+    mut observed: impl FnMut(Metadata),
+) -> Result<()> {
     ensure!(!key.is_empty() || p.allow_no_key, "AI_KEY_REQUIRED");
     ensure!(!p.default_model.is_empty(), "AI_NO_MODEL");
     let response=authorized(client()?.post(p.endpoint("chat/completions")?),key).json(&json!({"model":p.default_model,"messages":[{"role":"user","content":"Reply OK."}],"stream":false,"max_tokens":8})).send().await.map_err(|_|anyhow!("AI_NETWORK_ERROR"))?;
+    observed(Metadata {
+        http_status: Some(response.status().as_u16()),
+        ..Metadata::default()
+    });
     let value = json_response(response).await?;
+    observed(Metadata::parse(&value));
     ensure!(
         value["choices"][0]["message"].is_object(),
         "AI_BAD_RESPONSE"
@@ -143,6 +153,7 @@ struct Stream {
     calls: BTreeMap<usize, Value>,
     finish: Option<String>,
     done: bool,
+    metadata: Option<Metadata>,
 }
 impl Stream {
     fn push(&mut self, chunk: &[u8]) -> Result<Vec<String>> {
@@ -164,6 +175,12 @@ impl Stream {
             }
             let value: Value =
                 serde_json::from_str(data).map_err(|_| anyhow!("AI_BAD_RESPONSE"))?;
+            let metadata = Metadata::parse(&value);
+            if metadata.present() {
+                self.metadata
+                    .get_or_insert_with(Metadata::default)
+                    .merge(metadata);
+            }
             let choice = &value["choices"][0];
             if let Some(reason) = choice["finish_reason"].as_str() {
                 self.finish = Some(reason.into());
@@ -218,6 +235,10 @@ impl Stream {
         Ok(message)
     }
 }
+pub(super) struct Observer<D, M> {
+    pub delta: D,
+    pub metadata: M,
+}
 pub(super) async fn complete(
     p: &Provider,
     model: &str,
@@ -225,10 +246,17 @@ pub(super) async fn complete(
     messages: &[Value],
     tools: &[Value],
     cancel: &mut watch::Receiver<bool>,
-    mut delta: impl FnMut(String),
+    observer: Observer<impl FnMut(String), impl FnMut(Metadata)>,
 ) -> Result<Message> {
+    let Observer {
+        mut delta,
+        metadata: mut observed,
+    } = observer;
     ensure!(!*cancel.borrow(), "AI_CANCELLED");
     let mut body = json!({"model":model,"messages":messages,"stream":true});
+    if p.stream_usage {
+        body["stream_options"] = json!({"include_usage":true});
+    }
     if !tools.is_empty() {
         body["tools"] = tools.to_vec().into();
     }
@@ -236,11 +264,26 @@ pub(super) async fn complete(
         .json(&body)
         .send();
     let response = tokio::select! {result=send=>result.map_err(|_|anyhow!("AI_NETWORK_ERROR"))?,_=cancel.changed()=>return Err(anyhow!("AI_CANCELLED"))};
+    observed(Metadata {
+        http_status: Some(response.status().as_u16()),
+        ..Metadata::default()
+    });
     ensure!(
         response.status().is_success(),
         "AI_HTTP_{}",
         response.status().as_u16()
     );
+    if let Some(id) = response
+        .headers()
+        .get("x-request-id")
+        .and_then(|v| v.to_str().ok())
+        .filter(|s| s.len() <= 256)
+    {
+        observed(Metadata {
+            provider_request_id: Some(id.into()),
+            ..Metadata::default()
+        });
+    }
     if response
         .headers()
         .get(reqwest::header::CONTENT_TYPE)
@@ -248,6 +291,7 @@ pub(super) async fn complete(
         .is_some_and(|v| v.starts_with("application/json"))
     {
         let value = tokio::select! { result = json_response(response) => result?, _ = cancel.changed() => return Err(anyhow!("AI_CANCELLED")) };
+        observed(Metadata::parse(&value));
         let result = json_message(&value)?;
         delta(result.content.clone());
         return Ok(result);
@@ -259,7 +303,11 @@ pub(super) async fn complete(
         let Some(chunk) = next else {
             break;
         };
-        for text in parser.push(&chunk.map_err(|_| anyhow!("AI_STREAM_INTERRUPTED"))?)? {
+        let parsed = parser.push(&chunk.map_err(|_| anyhow!("AI_STREAM_INTERRUPTED"))?);
+        if let Some(metadata) = parser.metadata.take() {
+            observed(metadata);
+        }
+        for text in parsed? {
             delta(text);
         }
         if parser.done {
@@ -272,6 +320,15 @@ pub(super) async fn complete(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn usage_tail_survives_empty_choices_and_a_later_content_validation_failure() {
+        let mut stream = Stream::default();
+        stream.push(b"data: {\"choices\":[],\"usage\":{\"prompt_tokens\":9,\"completion_tokens\":3,\"total_tokens\":12}}\n\ndata: {\"id\":\"response-id\",\"model\":\"reported-model\",\"choices\":[]}\n\n").unwrap();
+        let metadata = stream.metadata.take().unwrap();
+        assert_eq!(metadata.usage.unwrap().total, Some(12));
+        assert_eq!(metadata.response_model.as_deref(), Some("reported-model"));
+        assert!(stream.finish().is_err());
+    }
     #[test]
     fn oversized_tool_responses_are_distinct_from_a_resumable_budget() {
         let message = Message {

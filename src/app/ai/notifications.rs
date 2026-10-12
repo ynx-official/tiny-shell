@@ -68,12 +68,16 @@ fn activate(activation: Option<Activation>, action: NotificationAction) {
             // this exact pause token once; it does not resubmit a message or change SSH policy.
             if let Ok(service) = super::service() {
                 let result = match action {
-                    NotificationAction::Continue => {
-                        service.resume(&activation.conversation, &activation.token)
-                    }
-                    NotificationAction::Terminate => {
-                        service.terminate_continuation(&activation.conversation, &activation.token)
-                    }
+                    NotificationAction::Continue => service.resume_from(
+                        &activation.conversation,
+                        &activation.token,
+                        "system_notification",
+                    ),
+                    NotificationAction::Terminate => service.terminate_from(
+                        &activation.conversation,
+                        &activation.token,
+                        "system_notification",
+                    ),
                     NotificationAction::Open => return,
                 };
                 report(if result.is_err() {
@@ -231,6 +235,16 @@ fn send(activation: Option<Activation>, test: bool) {
     }
 }
 
+#[cfg(target_os = "windows")]
+fn register_windows_identity() -> std::io::Result<()> {
+    use winreg::{RegKey, enums::HKEY_CURRENT_USER};
+    // Per-user registration also supports portable builds without impersonating another app.
+    let (key, _) = RegKey::predef(HKEY_CURRENT_USER)
+        .create_subkey("Software\\Classes\\AppUserModelId\\TinyShell.Desktop")?;
+    key.set_value("DisplayName", &"TinyShell")?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -263,14 +277,4 @@ mod tests {
             assert_eq!(action_from_argument(Some(argument)), None);
         }
     }
-}
-
-#[cfg(target_os = "windows")]
-fn register_windows_identity() -> std::io::Result<()> {
-    use winreg::{RegKey, enums::HKEY_CURRENT_USER};
-    // Per-user registration also supports portable builds without impersonating another app.
-    let (key, _) = RegKey::predef(HKEY_CURRENT_USER)
-        .create_subkey("Software\\Classes\\AppUserModelId\\TinyShell.Desktop")?;
-    key.set_value("DisplayName", &"TinyShell")?;
-    Ok(())
 }

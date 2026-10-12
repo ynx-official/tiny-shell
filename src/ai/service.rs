@@ -9,6 +9,7 @@ use std::{
     },
 };
 use tokio::sync::watch;
+mod audit;
 mod budget;
 mod continuation;
 #[cfg(test)]
@@ -16,6 +17,7 @@ mod continuation_tests;
 #[cfg(test)]
 mod optimization_tests;
 mod runner;
+mod sync;
 #[cfg(test)]
 mod tests;
 mod tools;
@@ -45,15 +47,22 @@ pub(crate) struct Service {
     store: Mutex<Option<Arc<Store>>>,
     persistence: Mutex<()>,
     stamp: AtomicU64,
+    configuration_stamp: AtomicU64,
     pub runtime: tokio::runtime::Handle,
     pub engine: Option<Arc<tiny_shell_mcp::engine::Engine>>,
+    pub audit: Arc<tiny_shell_mcp::audit::Store>,
 }
 impl Service {
     pub fn new(
         directory: PathBuf,
         runtime: tokio::runtime::Handle,
         engine: Option<Arc<tiny_shell_mcp::engine::Engine>>,
+        privacy_password: Option<String>,
     ) -> Arc<Self> {
+        let audit = engine
+            .as_ref()
+            .map(|e| e.audit.clone())
+            .unwrap_or_else(|| tiny_shell_mcp::audit::Store::new(directory.clone()));
         let service = Arc::new(Self {
             state: Mutex::new(State {
                 snapshot: Snapshot::default(),
@@ -63,20 +72,30 @@ impl Service {
             store: Mutex::new(None),
             persistence: Mutex::new(()),
             stamp: AtomicU64::new(1),
+            configuration_stamp: AtomicU64::new(1),
             runtime: runtime.clone(),
             engine,
+            audit,
         });
         let worker = service.clone();
         runtime.spawn_blocking(move || {
-            let result = Store::open(directory).map(|(store, settings, conversations, warning)| {
-                let keys = settings
-                    .providers
-                    .iter()
-                    .filter(|p| store.key_saved(&p.id))
-                    .map(|p| p.id.clone())
-                    .collect();
-                (store, settings, conversations, warning, keys)
-            });
+            let result =
+                Store::open(directory).map(|(store, settings, conversations, mut warning)| {
+                    if let Some(password) = privacy_password {
+                        if let Err(error) = store.unlock_keys(&password, &settings) {
+                            warning = Some(error.to_string());
+                        }
+                    } else if !settings.providers.is_empty() {
+                        warning = Some("AI_SYNC_PASSWORD_REQUIRED".into());
+                    }
+                    let keys = settings
+                        .providers
+                        .iter()
+                        .filter(|p| store.key_saved(&p.id))
+                        .map(|p| p.id.clone())
+                        .collect();
+                    (store, settings, conversations, warning, keys)
+                });
             if let Ok(mut state) = worker.state.lock() {
                 match result {
                     Ok((store, settings, conversations, warning, keys)) => {
@@ -99,6 +118,12 @@ impl Service {
     }
     pub fn stamp(&self) -> u64 {
         self.stamp.load(Ordering::Relaxed)
+    }
+    pub fn configuration_stamp(&self) -> u64 {
+        self.configuration_stamp.load(Ordering::Relaxed)
+    }
+    fn configuration_changed(&self) {
+        self.configuration_stamp.fetch_add(1, Ordering::Relaxed);
     }
     pub fn activity_counts(&self) -> (usize, usize) {
         self.state
@@ -219,6 +244,7 @@ impl Service {
                 let store = service.storage()?;
                 for id in &ids {
                     store.delete(id)?;
+                    service.history_deleted(id);
                     let mut state = service
                         .state
                         .lock()
@@ -319,7 +345,7 @@ impl Service {
                 .lock()
                 .map_err(|_| anyhow!("AI_STORAGE_ERROR"))?;
             service.check_endpoint(&provider, false)?;
-            let result = service.storage()?.key(&provider.id);
+            let result = service.storage()?.key(&provider.id, &provider.base_url);
             if provider.allow_no_key {
                 Ok(result.unwrap_or_default())
             } else {
@@ -393,7 +419,7 @@ impl Service {
                     settings.default_provider = None;
                 }
                 if let Some(key) = key {
-                    store.set_key(&provider.id, &key)?;
+                    store.set_key(&provider.id, &provider.base_url, &key)?;
                 }
                 store.save_settings(&settings)?;
                 let temporary_key = store.key_temporary(&provider.id);
@@ -403,6 +429,7 @@ impl Service {
                     .lock()
                     .map_err(|_| anyhow!("AI_STORAGE_ERROR"))?;
                 state.snapshot.settings = settings;
+                service.configuration_changed();
                 state.snapshot.temporary = store.temporary();
                 if temporary_key {
                     state.snapshot.temporary_keys.insert(provider.id.clone());
@@ -455,6 +482,7 @@ impl Service {
                     .lock()
                     .map_err(|_| anyhow!("AI_STORAGE_ERROR"))?;
                 state.snapshot.settings = settings;
+                service.configuration_changed();
                 state.snapshot.keys_saved.remove(&id);
                 state.snapshot.temporary_keys.remove(&id);
                 Ok(())
@@ -477,6 +505,7 @@ impl Service {
             if result.is_ok()
                 && let Ok(mut state) = service.state.lock()
             {
+                service.configuration_changed();
                 state.snapshot.keys_saved.remove(&id);
                 state.snapshot.temporary_keys.remove(&id);
             }
@@ -490,11 +519,7 @@ impl Service {
         self.begin_operation()?;
         let service = self.clone();
         self.runtime.spawn(async move {
-            let result = async {
-                let key = service.request_key(&provider, key).await?;
-                super::provider::test(&provider, &key).await
-            }
-            .await;
+            let result = service.test_provider_request(&provider, key).await;
             match result {
                 Ok(()) => {
                     service.notice(Ok(()));

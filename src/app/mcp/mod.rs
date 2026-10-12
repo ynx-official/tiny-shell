@@ -26,6 +26,7 @@ pub(crate) fn initialize(runtime: &tokio::runtime::Handle) {
         let remote = Arc::new(McpRemote::new());
         let engine =
             Engine::new(store.clone(), remote.clone()).map_err(|_| "STORAGE_ERROR".to_owned())?;
+        engine.audit.start_profile(engine.generation.clone());
         let listener_error = Arc::new(Mutex::new(None));
         let error = listener_error.clone();
         let handler = Arc::new(EngineHandler(engine.clone()));
@@ -84,7 +85,18 @@ pub(crate) fn provide_credentials(task: &str, session: Session) -> Result<(), St
     result
 }
 impl crate::TinyShell {
-    pub(crate) fn poll_mcp(&mut self, _cx: &mut gpui::Context<Self>) -> bool {
+    pub(crate) fn poll_mcp(&mut self, cx: &mut gpui::Context<Self>) -> bool {
+        if let Ok(service) = service() {
+            let stamp = service.engine.configuration_stamp();
+            if self
+                .sync_runtime
+                .mcp_configuration_stamp
+                .replace(stamp)
+                .is_some_and(|old| old != stamp)
+            {
+                self.note_local_config_saved(cx);
+            }
+        }
         let stamp = service()
             .map(|s| {
                 let _enter = s.runtime.enter();

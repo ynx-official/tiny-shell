@@ -9,6 +9,7 @@ use super::super::model::{
 };
 
 pub const V3_FORMAT_VERSION: u32 = 3;
+pub const CURRENT_FORMAT_VERSION: u32 = 4;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct EntityVersion {
     pub generation: u64,
@@ -71,8 +72,12 @@ pub struct V3QuickCommand {
     pub usage: crate::session::command_usage::CommandUsage,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct V3SyncPayload {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) ai: Option<SyncEntity<crate::sync::automation::SyncAiConfiguration>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) mcp: Option<SyncEntity<crate::sync::automation::McpConfiguration>>,
     pub schema_version: u32,
     pub revision: String,
     pub updated_at: String,
@@ -289,8 +294,53 @@ impl V3SyncPayload {
             &device_id,
             updated_at,
         );
+        let ai = config
+            .automation
+            .ai
+            .as_ref()
+            .map(|ai| -> anyhow::Result<_> {
+                Ok(SyncEntity {
+                    id: "ai-settings".into(),
+                    version: version("ai-settings", "ai-settings"),
+                    value: ai.export(
+                        password,
+                        base_payload.and_then(|p| p.ai.as_ref()).map(|e| &e.value),
+                    )?,
+                })
+            })
+            .transpose()?
+            .or_else(|| base_payload.and_then(|p| p.ai.clone()));
+        let mcp = config
+            .automation
+            .mcp
+            .as_ref()
+            .map(|mcp| SyncEntity {
+                id: "mcp-permissions".into(),
+                version: version("mcp-permissions", "mcp-permissions"),
+                value: mcp.clone(),
+            })
+            .or_else(|| base_payload.and_then(|p| p.mcp.clone()));
+        let needs_password = include_secrets
+            || ai.as_ref().is_some_and(|a| {
+                a.value
+                    .keys
+                    .values()
+                    .any(|key| matches!(key, SyncSecret::Encrypted(_)))
+            });
+        let privacy_password_verifier = if needs_password {
+            anyhow::ensure!(password.chars().count() >= 8, "AI_SYNC_PASSWORD_REQUIRED");
+            let previous = base_payload.and_then(|p| p.privacy_password_verifier.as_ref());
+            match previous {
+                Some(verifier) if crate::crypto::verify_privacy_password(password, verifier)? => {
+                    Some(verifier.clone())
+                }
+                _ => Some(crate::crypto::hash_privacy_password(password)?),
+            }
+        } else {
+            base_payload.and_then(|p| p.privacy_password_verifier.clone())
+        };
         Ok(Self {
-            schema_version: V3_FORMAT_VERSION,
+            schema_version: CURRENT_FORMAT_VERSION,
             revision: uuid::Uuid::new_v4().to_string(),
             updated_at: chrono::Utc::now().to_rfc3339(),
             device_id,
@@ -306,10 +356,10 @@ impl V3SyncPayload {
             deleted_quick_commands,
             deleted_session_snapshots,
             deleted_group_snapshots,
-            privacy_password_verifier: include_secrets
-                .then(|| crate::crypto::hash_privacy_password(password))
-                .transpose()?,
+            privacy_password_verifier,
             secrets: Vec::new(),
+            ai,
+            mcp,
         })
     }
     pub fn privacy_password_status(
@@ -473,6 +523,8 @@ impl V3SyncPayload {
             deleted_group_snapshots,
             privacy_password_verifier,
             secrets: Vec::new(),
+            ai: None,
+            mcp: None,
         }
     }
 }
@@ -589,6 +641,8 @@ fn find_entity_version(
             .or_else(|| tombstone(&payload.deleted_quick_command_categories, entity_id)),
         "quick-command" => active(&payload.quick_commands, entity_id)
             .or_else(|| tombstone(&payload.deleted_quick_commands, entity_id)),
+        "ai-settings" => payload.ai.as_ref().map(|e| e.version.clone()),
+        "mcp-permissions" => payload.mcp.as_ref().map(|e| e.version.clone()),
         _ => None,
     }
 }
@@ -607,13 +661,26 @@ pub fn serialize_payload(payload: &V3SyncPayload) -> anyhow::Result<Vec<u8>> {
 pub fn parse_payload(raw: &[u8]) -> anyhow::Result<V3SyncPayload> {
     let payload: V3SyncPayload = serde_json::from_slice(raw)
         .map_err(|error| anyhow::anyhow!("parse v3 sync payload: {error}"))?;
-    if payload.schema_version != V3_FORMAT_VERSION {
+    if !matches!(
+        payload.schema_version,
+        V3_FORMAT_VERSION | CURRENT_FORMAT_VERSION
+    ) {
         return Err(anyhow::anyhow!(
             "unsupported synchronized configuration version {}",
             payload.schema_version
         ));
     }
     Ok(payload)
+}
+
+impl std::fmt::Debug for V3SyncPayload {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SyncPayload")
+            .field("schema_version", &self.schema_version)
+            .field("revision", &self.revision)
+            .field("configuration", &"<redacted>")
+            .finish()
+    }
 }
 #[cfg(test)]
 mod tests {
@@ -695,6 +762,7 @@ mod tests {
             unavailable_session_secret_count: 0,
             unavailable_managed_key_secret_count: 0,
             base_payload: None,
+            automation: Default::default(),
         };
 
         let payload =
@@ -736,6 +804,7 @@ mod tests {
             unavailable_session_secret_count: 0,
             unavailable_managed_key_secret_count: 0,
             base_payload: None,
+            automation: Default::default(),
         };
         let base =
             V3SyncPayload::from_config("device-a".into(), &base_config, false, "", None).unwrap();

@@ -77,7 +77,7 @@ async fn fixture(
         target_reads: AtomicUsize::new(0),
         release: Notify::new(),
     });
-    let engine = Engine::new(Store::new(dir)?, remote.clone())?;
+    let engine = fixture_engine(Store::new(dir)?, remote.clone())?;
     engine
         .set_ai_policy(AiPolicy {
             enabled: true,
@@ -249,4 +249,16 @@ async fn waiting_observes_cancellation_without_waiting_for_the_remote_result() -
     assert_eq!(result["state"], "cancel_requested");
     remote.release.notify_one();
     Ok(())
+}
+
+fn fixture_engine(
+    store: tiny_shell_mcp::storage::Store,
+    remote: std::sync::Arc<dyn tiny_shell_mcp::engine::Remote>,
+) -> anyhow::Result<std::sync::Arc<tiny_shell_mcp::engine::Engine>> {
+    let directory = store.root().parent().unwrap_or(store.root()).to_path_buf();
+    tiny_shell_mcp::engine::Engine::with_audit(
+        store,
+        remote,
+        tiny_shell_mcp::audit::Store::with_key(directory, [23; 32]),
+    )
 }

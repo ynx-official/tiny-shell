@@ -4,7 +4,7 @@ use serde_json::{Value, json};
 use std::{sync::atomic::AtomicUsize, time::Duration};
 use tiny_shell_mcp::{
     contracts::{Call, Failure, Result as McpResult},
-    engine::{AiPolicy, Engine, Remote, Target},
+    engine::{AiPolicy, Remote, Target},
     policy::Mode,
 };
 use tokio::net::TcpListener;
@@ -107,7 +107,7 @@ async fn batch_with_choice(
         closes: AtomicUsize::new(0),
         sessions: Mutex::new(Vec::new()),
     });
-    let engine = Engine::new(
+    let engine = fixture_engine(
         tiny_shell_mcp::storage::Store::new(&directory)?,
         remote.clone(),
     )?;
@@ -207,6 +207,7 @@ async fn batch_with_choice(
     })
     .await?;
     let snapshot = service.snapshot();
+    service.audit.close().await?;
     std::fs::remove_dir_all(directory)?;
     Ok((snapshot, remote, bodies))
 }
@@ -418,7 +419,7 @@ async fn stopping_during_approval_cancels_the_wait_without_executing_the_command
         closes: AtomicUsize::new(0),
         sessions: Mutex::new(Vec::new()),
     });
-    let engine = Engine::new(
+    let engine = fixture_engine(
         tiny_shell_mcp::storage::Store::new(&directory)?,
         remote.clone(),
     )?;
@@ -459,6 +460,19 @@ async fn stopping_during_approval_cancels_the_wait_without_executing_the_command
             .iter()
             .any(|task| task.state == tiny_shell_mcp::tasks::State::Cancelled)
     );
+    service.audit.close().await?;
     std::fs::remove_dir_all(directory)?;
     Ok(())
+}
+
+fn fixture_engine(
+    store: tiny_shell_mcp::storage::Store,
+    remote: std::sync::Arc<dyn tiny_shell_mcp::engine::Remote>,
+) -> anyhow::Result<std::sync::Arc<tiny_shell_mcp::engine::Engine>> {
+    let directory = store.root().parent().unwrap_or(store.root()).to_path_buf();
+    tiny_shell_mcp::engine::Engine::with_audit(
+        store,
+        remote,
+        tiny_shell_mcp::audit::Store::with_key(directory, [23; 32]),
+    )
 }

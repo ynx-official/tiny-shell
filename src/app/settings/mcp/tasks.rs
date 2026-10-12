@@ -22,6 +22,22 @@ impl McpPanel {
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let mut content = v_flex().w_full().min_w_0().gap_3();
+        content = content.child(
+            Button::new("mcp-open-audit")
+                .small()
+                .outline()
+                .label(t!("audit_open").to_string())
+                .on_click(cx.listener(|this, _, _, cx| {
+                    crate::app::audit::open(
+                        tiny_shell_mcp::audit::Filter {
+                            source: Some(tiny_shell_mcp::audit::Source::External),
+                            ..Default::default()
+                        },
+                        this.owner.clone(),
+                        cx,
+                    )
+                })),
+        );
         if snapshot.reviews.is_empty() {
             content = content.child(hint(t!("mcp_no_tasks").to_string(), cx));
         }
@@ -412,6 +428,7 @@ fn error_key(code: &str) -> &'static str {
         "PERMISSION_DENIED" | "NOT_AUTHORIZED" => "mcp_error_permission",
         "CLIENT_REVOKED" => "mcp_error_revoked",
         "OUTCOME_UNKNOWN" => "mcp_error_unknown",
+        "AUDIT_UNAVAILABLE" => "audit_mutation_blocked",
         _ => "mcp_error_generic",
     }
 }
