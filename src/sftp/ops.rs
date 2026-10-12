@@ -296,10 +296,8 @@ impl TinyShell {
         } else {
             false
         };
-        if should_load {
-            if let Some(handle) = self.active_sftp_handle() {
-                handle.list_directory_tree(path);
-            }
+        if should_load && let Some(handle) = self.active_sftp_handle() {
+            handle.list_directory_tree(path);
         }
         cx.notify();
     }
@@ -344,10 +342,10 @@ impl TinyShell {
 
     pub(crate) fn select_sftp_entry(&mut self, entry: RemoteEntry, cx: &mut Context<Self>) {
         self.mark_sftp_entry_selected(&entry.full_path, cx);
-        if let Some(sftp) = self.active_sftp_mut() {
-            if !sftp.selected_entries.remove(&entry.full_path) {
-                sftp.selected_entries.insert(entry.full_path);
-            }
+        if let Some(sftp) = self.active_sftp_mut()
+            && !sftp.selected_entries.remove(&entry.full_path)
+        {
+            sftp.selected_entries.insert(entry.full_path);
         }
     }
 
@@ -1057,20 +1055,20 @@ impl TinyShell {
         if paths.is_empty() {
             return;
         }
-        if let Some(sftp) = self.active_sftp() {
-            if let Some(handle) = self.active_sftp_handle() {
-                tracing::info!(
-                    "[sftp] initiating batch upload of {} files to '{}'",
-                    paths.len(),
-                    sftp.current_path
-                );
-                handle.send_command(crate::sftp::SftpCommand::UploadPaths {
-                    locals: paths,
-                    remote_dir: sftp.current_path.clone(),
-                });
-                self.show_transfers_dialog(window, cx);
-                cx.notify();
-            }
+        if let Some(sftp) = self.active_sftp()
+            && let Some(handle) = self.active_sftp_handle()
+        {
+            tracing::info!(
+                "[sftp] initiating batch upload of {} files to '{}'",
+                paths.len(),
+                sftp.current_path
+            );
+            handle.send_command(crate::sftp::SftpCommand::UploadPaths {
+                locals: paths,
+                remote_dir: sftp.current_path.clone(),
+            });
+            self.show_transfers_dialog(window, cx);
+            cx.notify();
         }
     }
 }

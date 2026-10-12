@@ -486,16 +486,16 @@ impl TinyShell {
             .filter(|group| self.sftp_handles.contains_key(&group.id))
             .map(|group| group.id.clone());
 
-        if let Some(session_id) = closing_sftp_group {
-            if !crate::app::sftp_editor_window::request_session_close(
+        if let Some(session_id) = closing_sftp_group
+            && !crate::app::sftp_editor_window::request_session_close(
                 &session_id,
                 self.session_owner_id,
                 id.clone(),
                 cx.entity(),
                 cx,
-            ) {
-                return;
-            }
+            )
+        {
+            return;
         }
 
         let route_ids = self
@@ -546,16 +546,15 @@ impl TinyShell {
         self.unregister_backend_route(group_id, cx);
 
         for tab_id in tab_ids {
-            if let Some(tab) = self.workspace_state_mut().terminal_tab_mut(&tab_id) {
-                if matches!(tab.kind, TabKind::Ssh | TabKind::Rdp)
-                    && tab.disconnected_reason.is_none()
-                {
-                    tab.connected = false;
-                    tab.status = rust_i18n::t!("tab_manually_disconnected").into();
-                    tab.disconnected_reason =
-                        Some(rust_i18n::t!("tab_manually_disconnected").to_string());
-                    tab.send_backend(BackendCommand::Close);
-                }
+            if let Some(tab) = self.workspace_state_mut().terminal_tab_mut(&tab_id)
+                && matches!(tab.kind, TabKind::Ssh | TabKind::Rdp)
+                && tab.disconnected_reason.is_none()
+            {
+                tab.connected = false;
+                tab.status = rust_i18n::t!("tab_manually_disconnected").into();
+                tab.disconnected_reason =
+                    Some(rust_i18n::t!("tab_manually_disconnected").to_string());
+                tab.send_backend(BackendCommand::Close);
             }
         }
 
@@ -836,12 +835,11 @@ impl TinyShell {
     ) {
         // If the search bar is visible and the click is inside it, let the
         // search bar handle the event instead of switching pane focus.
-        if self.window_state.search_active {
-            if let Some(bounds) = self.window_state.search_bar_bounds {
-                if bounds.contains(&event.position) {
-                    return;
-                }
-            }
+        if self.window_state.search_active
+            && let Some(bounds) = self.window_state.search_bar_bounds
+            && bounds.contains(&event.position)
+        {
+            return;
         }
         self.focus_handle.focus(window, cx);
         // Check if click is in a different pane and focus it
@@ -854,51 +852,42 @@ impl TinyShell {
                 None
             }
         });
-        if let Some(tab_id) = clicked_tab_id {
-            if current_active.as_deref() != Some(tab_id.as_str()) {
-                self.focus_pane_with_id(tab_id.clone());
-                cx.notify();
-            }
+        if let Some(tab_id) = clicked_tab_id
+            && current_active.as_deref() != Some(tab_id.as_str())
+        {
+            self.focus_pane_with_id(tab_id.clone());
+            cx.notify();
         }
         if event.button == MouseButton::Left {
-            if event.modifiers.platform {
-                if let Some((row, col, _side)) = self.terminal_grid_point_and_side(event.position) {
-                    if let Some(snapshot) = self.active_snapshot() {
-                        if let Some(entity) = crate::terminal::highlight::find_entity_at_cell(
-                            &snapshot.cells,
-                            snapshot.rows,
-                            row,
-                            col,
-                        ) {
-                            use crate::session::highlight_rules::HighlightEntityKind;
-                            match entity.kind {
-                                HighlightEntityKind::Url => {
-                                    let _ = crate::app::platform::open_url(&entity.value);
-                                }
-                                HighlightEntityKind::Email => {
-                                    let _ = crate::app::platform::open_url(&format!(
-                                        "mailto:{}",
-                                        entity.value
-                                    ));
-                                }
-                                HighlightEntityKind::FilePath
-                                    if self.active_kind() == Some(TabKind::Local) =>
-                                {
-                                    let _ = crate::app::platform::open_path(&entity.value);
-                                }
-                                HighlightEntityKind::FilePath
-                                | HighlightEntityKind::IpAddress
-                                | HighlightEntityKind::MacAddress
-                                | HighlightEntityKind::Uuid => {
-                                    cx.write_to_clipboard(gpui::ClipboardItem::new_string(
-                                        entity.value,
-                                    ));
-                                }
-                            }
-                            return;
-                        }
+            if event.modifiers.platform
+                && let Some((row, col, _side)) = self.terminal_grid_point_and_side(event.position)
+                && let Some(snapshot) = self.active_snapshot()
+                && let Some(entity) = crate::terminal::highlight::find_entity_at_cell(
+                    &snapshot.cells,
+                    snapshot.rows,
+                    row,
+                    col,
+                )
+            {
+                use crate::session::highlight_rules::HighlightEntityKind;
+                match entity.kind {
+                    HighlightEntityKind::Url => {
+                        let _ = crate::app::platform::open_url(&entity.value);
+                    }
+                    HighlightEntityKind::Email => {
+                        let _ = crate::app::platform::open_url(&format!("mailto:{}", entity.value));
+                    }
+                    HighlightEntityKind::FilePath if self.active_kind() == Some(TabKind::Local) => {
+                        let _ = crate::app::platform::open_path(&entity.value);
+                    }
+                    HighlightEntityKind::FilePath
+                    | HighlightEntityKind::IpAddress
+                    | HighlightEntityKind::MacAddress
+                    | HighlightEntityKind::Uuid => {
+                        cx.write_to_clipboard(gpui::ClipboardItem::new_string(entity.value));
                     }
                 }
+                return;
             }
             self.begin_terminal_selection(event, cx);
         }
@@ -1285,10 +1274,10 @@ impl TinyShell {
                 .map(|group| group.pane_root.tab_ids())
                 .unwrap_or_default();
             for id in ids {
-                if let Some(tab) = self.workspace().terminal_tab(id) {
-                    if tab.kind == TabKind::Ssh {
-                        group_ssh_tabs.push(tab.id.clone());
-                    }
+                if let Some(tab) = self.workspace().terminal_tab(id)
+                    && tab.kind == TabKind::Ssh
+                {
+                    group_ssh_tabs.push(tab.id.clone());
                 }
             }
         }

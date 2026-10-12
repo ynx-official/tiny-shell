@@ -107,7 +107,7 @@ VERSION_TAG="v${VERSION_NUM}"
 
 if [[ "$SKIP_BUILD" == false ]]; then
   command -v cargo >/dev/null 2>&1 || fail "cargo is required unless --skip-build is used"
-  cargo build \
+  cargo build --workspace \
     --locked \
     --release \
     --target "$TARGET" \
@@ -120,6 +120,8 @@ if [[ -z "$BINARY" ]]; then
 fi
 [[ -f "$BINARY" ]] || fail "compiled binary not found: $BINARY"
 BINARY="$(realpath "$BINARY")"
+HELPER="$(dirname "$BINARY")/tiny-shell-mcp"
+[[ -f "$HELPER" ]] || fail "compiled MCP helper not found: $HELPER"
 
 DESKTOP_FILE="$(realpath assets/tiny-shell.desktop)"
 ICON_FILE="$(realpath assets/icons/256x256/tiny-shell.png)"
@@ -174,6 +176,7 @@ LDAI_NO_APPSTREAM=1 \
   "$LINUXDEPLOY_PATH" \
     --appdir "$APPDIR" \
     --executable "$BINARY" \
+    --executable "$HELPER" \
     --desktop-file "$DESKTOP_FILE" \
     --icon-file "$ICON_FILE" \
     --output appimage

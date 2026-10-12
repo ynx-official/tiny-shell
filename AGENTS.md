@@ -6,14 +6,14 @@
 
 - 项目名称：`tiny-shell`
 - 技术栈：Rust 2024、GPUI、gpui-component、Tokio
-- 最低 Rust 版本：`1.85.0`
+- 最低 Rust 版本：`1.96.1`；开发与 CI 工具链由 `rust-toolchain.toml` 固定。
 - 支持平台：macOS、Windows、Linux
 - 当前版本的唯一代码来源：`Cargo.toml` 中的 `[package].version`
 - CI 质量门禁：格式检查、Clippy、测试和多平台 release 构建
 
 ## UI design system
 
-- Scope: 快速连接窗口（`src/app/connection_manager/`）与主终端工作区（`src/app/ui.rs`、`src/app/ui/`）
+- Scope: 快速连接窗口（`src/app/connection_manager/`）、主终端工作区（`src/app/ui.rs`、`src/app/ui/`）与 MCP 设置（`src/app/settings/mcp.rs`）
 - Skill: `awesome-design-md`
 - Source: `VoltAgent/awesome-design-md`
 - Style ID: `sentry`
@@ -69,14 +69,14 @@
 
 ```bash
 cargo fmt --all -- --check
-cargo clippy --locked --all-targets -- -D warnings
-cargo test --locked --all-targets
+cargo clippy --workspace --locked --all-targets -- -D warnings
+cargo test --workspace --locked --all-targets
 ```
 
 涉及构建配置、依赖、平台代码或发布脚本时，还应执行适用平台的 release 构建：
 
 ```bash
-cargo build --locked --release
+cargo build --workspace --locked --release
 ```
 
 若因平台或环境限制无法运行某项检查，应在变更说明中明确列出未验证项及原因，不得默认为已通过。

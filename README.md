@@ -155,7 +155,7 @@ TinyShell 无法通过密码校验值恢复原密码，也无法在密码错误�
 
 ## 👨‍💻 开发
 
-准备 **Rust 1.85.0+、支持 Rust 2024 Edition 的 Cargo 和 Git**，并安装平台构建工具：
+准备 **Rust 1.96.1+、支持 Rust 2024 Edition 的 Cargo 和 Git**，并安装平台构建工具。仓库的 `rust-toolchain.toml` 固定使用 Rust 1.96.1，rustup 会自动选择对应工具链：
 
 | 平台 | 构建准备 |
 | --- | --- |

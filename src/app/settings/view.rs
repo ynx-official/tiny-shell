@@ -56,6 +56,7 @@ impl TinyShell {
                             .page(super::terminal::page(&settings_view))
                             .page(super::workspace::page(&settings_view))
                             .page(super::sync::page(&settings_view, inputs.sync.clone()))
+                            .page(super::mcp::page(&settings_view))
                             .page(super::proxy::page(&settings_view, inputs.proxy.clone()))
                             .page(super::keybindings::page(self, view, &focus_handle))
                             .page(super::update::page(

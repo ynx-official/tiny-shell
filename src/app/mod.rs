@@ -15,6 +15,7 @@ pub(crate) mod input_focus;
 pub(crate) mod keybinding_recorder;
 pub(crate) mod localization;
 pub(crate) mod managed_keys;
+pub(crate) mod mcp;
 pub(crate) mod monitoring;
 pub(crate) mod platform;
 mod remote_desktop_surface;
@@ -552,6 +553,7 @@ pub(crate) struct TinyShell {
     pub(crate) sftp_handles: std::collections::HashMap<String, crate::sftp::SftpHandle>,
 
     pub(crate) runtime: Arc<Runtime>,
+    pub(crate) mcp_stamp: u64,
     pub(crate) async_runtime: AsyncRuntimeState,
     pub(crate) pending_close_window: Option<AnyWindowHandle>,
     pub(crate) close_prompt_open: bool,
@@ -985,6 +987,7 @@ impl TinyShell {
             // abort explicitly instead of continuing with a partially usable UI.
             std::process::abort();
         });
+        mcp::initialize(runtime.handle());
         let mut this = Self {
             focus_handle: cx.focus_handle(),
             selector_focus_handle: cx.focus_handle(),
@@ -1158,6 +1161,7 @@ impl TinyShell {
             sftp_handles: std::collections::HashMap::new(),
 
             runtime,
+            mcp_stamp: 0,
             async_runtime: AsyncRuntimeState::new(events_tx, events_rx),
             pending_close_window: None,
             close_prompt_open: false,
@@ -1387,7 +1391,7 @@ impl TinyShell {
                 }
                 let active = match this.update(cx, |this, cx| {
                     this.drive_config_preferences_save(cx);
-                    let changed = this.drain_backend_events(cx);
+                    let changed = this.drain_backend_events(cx) | this.poll_mcp(cx);
                     let system_sampled = this.sample_system_if_due();
                     this.sample_sftp_latency_if_due();
                     let metrics_animated = this.animate_resource_metrics();
@@ -1871,18 +1875,18 @@ impl TinyShell {
         entries: Vec<crate::sftp::RemoteEntry>,
         _cx: &mut Context<Self>,
     ) {
-        if let Some(group) = self.tab_group_mut(&tab_id) {
-            if let Some(sftp) = group.sftp.as_mut() {
-                sftp.directory_entries.insert(path.clone(), entries.clone());
-                if sftp.current_path == path {
-                    sftp.entries = entries;
-                    if self.workspace().active_group_id() == Some(tab_id.as_str()) {
-                        self.sftp_workspace.pending_path_sync = Some(path.clone());
-                        // Children may arrive after the first layout and change the
-                        // scroll limit; center again using the completed listing.
-                        self.sftp_workspace.tree_scroll_target_bounds = None;
-                        self.sftp_workspace.pending_tree_scroll_path = Some(path);
-                    }
+        if let Some(group) = self.tab_group_mut(&tab_id)
+            && let Some(sftp) = group.sftp.as_mut()
+        {
+            sftp.directory_entries.insert(path.clone(), entries.clone());
+            if sftp.current_path == path {
+                sftp.entries = entries;
+                if self.workspace().active_group_id() == Some(tab_id.as_str()) {
+                    self.sftp_workspace.pending_path_sync = Some(path.clone());
+                    // Children may arrive after the first layout and change the
+                    // scroll limit; center again using the completed listing.
+                    self.sftp_workspace.tree_scroll_target_bounds = None;
+                    self.sftp_workspace.pending_tree_scroll_path = Some(path);
                 }
             }
         }
@@ -1895,18 +1899,18 @@ impl TinyShell {
         entries: Vec<crate::sftp::RemoteEntry>,
         _cx: &mut Context<Self>,
     ) {
-        if let Some(group) = self.tab_group_mut(&tab_id) {
-            if let Some(sftp) = group.sftp.as_mut() {
-                sftp.directory_entries.insert(path, entries);
-            }
+        if let Some(group) = self.tab_group_mut(&tab_id)
+            && let Some(sftp) = group.sftp.as_mut()
+        {
+            sftp.directory_entries.insert(path, entries);
         }
     }
 
     fn handle_sftp_status(&mut self, tab_id: String, text: String, _cx: &mut Context<Self>) {
-        if let Some(group) = self.tab_group_mut(&tab_id) {
-            if let Some(sftp) = group.sftp.as_mut() {
-                sftp.status = text.clone();
-            }
+        if let Some(group) = self.tab_group_mut(&tab_id)
+            && let Some(sftp) = group.sftp.as_mut()
+        {
+            sftp.status = text.clone();
         }
         if self.workspace().active_group_id() == Some(tab_id.as_str()) {
             self.status = text.into();
@@ -1927,17 +1931,17 @@ impl TinyShell {
     }
 
     fn handle_sftp_home(&mut self, tab_id: String, home: String, _cx: &mut Context<Self>) {
-        if let Some(group) = self.tab_group_mut(&tab_id) {
-            if let Some(sftp) = group.sftp.as_mut() {
-                sftp.home_dir = home.clone();
-                sftp.current_path = home.clone();
-                sftp.entries.clear();
-                Self::expand_sftp_tree_to_path(sftp, &home);
-                if self.workspace().active_group_id() == Some(tab_id.as_str()) {
-                    self.sftp_workspace.pending_path_sync = Some(home.clone());
-                    self.sftp_workspace.tree_scroll_target_bounds = None;
-                    self.sftp_workspace.pending_tree_scroll_path = Some(home);
-                }
+        if let Some(group) = self.tab_group_mut(&tab_id)
+            && let Some(sftp) = group.sftp.as_mut()
+        {
+            sftp.home_dir = home.clone();
+            sftp.current_path = home.clone();
+            sftp.entries.clear();
+            Self::expand_sftp_tree_to_path(sftp, &home);
+            if self.workspace().active_group_id() == Some(tab_id.as_str()) {
+                self.sftp_workspace.pending_path_sync = Some(home.clone());
+                self.sftp_workspace.tree_scroll_target_bounds = None;
+                self.sftp_workspace.pending_tree_scroll_path = Some(home);
             }
         }
         if let Some(terminal_tab_id) =
@@ -2122,15 +2126,14 @@ impl TinyShell {
             // An SSH workspace must never fall back to sampling the local
             // machine, including while connecting, disconnected, or after a
             // transient remote probe failure.
-            if let Some(ref tab_id) = self.system_tab_id.clone() {
-                if let Some(tab) = self.terminal_tab(tab_id)
-                    && tab.kind == TabKind::Ssh
-                {
-                    if tab.connected {
-                        self.request_active_system_snapshot();
-                    }
-                    return false;
+            if let Some(ref tab_id) = self.system_tab_id.clone()
+                && let Some(tab) = self.terminal_tab(tab_id)
+                && tab.kind == TabKind::Ssh
+            {
+                if tab.connected {
+                    self.request_active_system_snapshot();
                 }
+                return false;
             }
             let snapshot = match self.monitoring.system_sampler.lock() {
                 Ok(mut sampler) => sampler.sample().clone(),

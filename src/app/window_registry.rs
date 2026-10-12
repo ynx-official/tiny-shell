@@ -350,10 +350,10 @@ pub(crate) fn activate_window_with_retry(
 /// Update the stored screen bounds for `window_handle`.
 pub(crate) fn update_window_bounds(window_handle: AnyWindowHandle, bounds: Bounds<Pixels>) {
     let registry = window_registry();
-    if let Ok(mut guard) = registry.lock() {
-        if let Some(entry) = guard.iter_mut().find(|e| e.window_handle == window_handle) {
-            entry.screen_bounds = bounds;
-        }
+    if let Ok(mut guard) = registry.lock()
+        && let Some(entry) = guard.iter_mut().find(|e| e.window_handle == window_handle)
+    {
+        entry.screen_bounds = bounds;
     }
 }
 

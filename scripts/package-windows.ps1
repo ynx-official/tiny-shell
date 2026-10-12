@@ -19,10 +19,15 @@ if ([string]::IsNullOrWhiteSpace($Version)) {
 }
 
 if (-not $SkipBuild) {
-    cargo build --locked --release --target $Target
+    cargo build --workspace --locked --release --target $Target
     if ($LASTEXITCODE -ne 0) {
         throw "cargo build failed with exit code $LASTEXITCODE"
     }
+}
+
+$sourceHelper = Join-Path $root "target\$Target\release\tiny-shell-mcp.exe"
+if (-not (Test-Path -LiteralPath $sourceHelper -PathType Leaf)) {
+    throw "Compiled MCP helper not found: $sourceHelper"
 }
 
 $sourceExe = Join-Path $root "target\$Target\release\tiny-shell.exe"
@@ -75,6 +80,7 @@ Remove-Item -LiteralPath $portableDir -Recurse -Force -ErrorAction SilentlyConti
 Remove-Item -LiteralPath $portableArchive -Force -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Path $portableDir -Force | Out-Null
 Copy-Item -LiteralPath $sourceExe -Destination (Join-Path $portableDir "tiny-shell.exe")
+Copy-Item -LiteralPath $sourceHelper -Destination (Join-Path $portableDir "tiny-shell-mcp.exe")
 Copy-Item -LiteralPath (Join-Path $root "LICENSE") -Destination $portableDir
 if (-not [string]::IsNullOrWhiteSpace($RuntimeDir)) {
     $RuntimeDir = [System.IO.Path]::GetFullPath($RuntimeDir)
@@ -112,6 +118,7 @@ $licenseFile = Join-Path $root "LICENSE"
 $isccArgs = @(
     "/DMyAppVersion=$normalizedVersion",
     "/DSourceExe=$sourceExe",
+    "/DSourceHelper=$sourceHelper",
     "/DSetupIcon=$setupIcon",
     "/DLicenseFile=$licenseFile",
     "/DOutputDir=$OutputDir",

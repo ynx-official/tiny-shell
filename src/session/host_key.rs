@@ -39,6 +39,11 @@ pub(crate) struct HostKeyVerifier {
 }
 
 impl HostKeyVerifier {
+    #[cfg(test)]
+    pub(crate) fn in_path(host: &str, port: u16, path: PathBuf) -> Result<Self> {
+        let host = normalize_host(host).ok_or_else(|| anyhow!("invalid test host"))?;
+        Ok(Self { host, port, path })
+    }
     pub(crate) fn new(host: &str, port: u16) -> Result<Self> {
         let host = normalize_host(host)
             .ok_or_else(|| anyhow!(t!("ssh_host_key_invalid_host").to_string()))?;

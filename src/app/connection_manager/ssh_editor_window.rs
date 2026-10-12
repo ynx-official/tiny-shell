@@ -37,6 +37,10 @@ pub(crate) enum SshEditorRequest {
     Credentials {
         session: Session,
     },
+    McpCredentials {
+        session: Session,
+        task_id: String,
+    },
     Clone {
         session: Session,
     },
@@ -75,6 +79,7 @@ pub(crate) struct SshEditorWindow {
     ssh_config_selected: Option<usize>,
     config_key_path: String,
     connect_after_save: bool,
+    mcp_task_id: Option<String>,
     inputs: SshEditorInputs,
     error: Option<SharedString>,
     focus_handle: FocusHandle,
@@ -105,7 +110,14 @@ impl SshEditorWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let connect_after_save = matches!(&request, SshEditorRequest::Credentials { .. });
+        let connect_after_save = matches!(
+            &request,
+            SshEditorRequest::Credentials { .. } | SshEditorRequest::McpCredentials { .. }
+        );
+        let mcp_task_id = match &request {
+            SshEditorRequest::McpCredentials { task_id, .. } => Some(task_id.clone()),
+            _ => None,
+        };
         let (editing_id, baseline, session, group) = match request {
             SshEditorRequest::New { group, prefill } => (None, None, prefill, group),
             SshEditorRequest::Edit { session } => (
@@ -114,7 +126,8 @@ impl SshEditorWindow {
                 Some(session.clone()),
                 session.group.clone(),
             ),
-            SshEditorRequest::Credentials { session } => (
+            SshEditorRequest::Credentials { session }
+            | SshEditorRequest::McpCredentials { session, .. } => (
                 Some(session.id.clone()),
                 Some(session.clone()),
                 Some(session.clone()),
@@ -294,6 +307,7 @@ impl SshEditorWindow {
             ssh_config_selected,
             config_key_path,
             connect_after_save,
+            mcp_task_id,
             inputs,
             error: None,
             focus_handle: cx.focus_handle(),
@@ -404,6 +418,19 @@ impl SshEditorWindow {
                 return;
             }
         };
+        if let Some(task) = &self.mcp_task_id {
+            match crate::app::mcp::provide_credentials(task, session) {
+                Ok(()) => {
+                    crate::app::deregister_auxiliary_window(window.window_handle());
+                    window.remove_window();
+                }
+                Err(code) => {
+                    self.error = Some(format!("{}: {code}", t!("mcp_auth_failed")).into());
+                    cx.notify();
+                }
+            }
+            return;
+        }
         let editing_id = self.editing_id.clone();
         let baseline = self.baseline.clone();
         let connect_after_save = self.connect_after_save;
@@ -1110,7 +1137,9 @@ impl Render for SshEditorWindow {
                     .child(
                         Button::new("ssh-editor-submit")
                             .primary()
-                            .label(if self.connect_after_save {
+                            .label(if self.mcp_task_id.is_some() {
+                                t!("mcp_authenticate").to_string()
+                            } else if self.connect_after_save {
                                 t!("save_and_connect").to_string()
                             } else if is_editing {
                                 t!("save").to_string()

@@ -1,7 +1,7 @@
 # TinyShell 文档索引
 
-> 状态：Approved  
-> 最后更新：2026-10-10
+> 状态：Approved
+> 最后更新：2026-10-12
 
 ## 设计
 
@@ -23,11 +23,29 @@
 
 - [SSH 常用命令补全与使用频次](02-design/terminal-command-completion.md)
 
-- [MCP 功能设计](02-design/mcp-integration.md)：SSH 命令与远程文本操作、三种权限模式、本机桥接和任务反馈，Draft。
+- [MCP 功能设计](02-design/mcp-integration.md)：SSH 命令与远程文本操作、三种权限模式、本机桥接和任务反馈，已批准实施基线。
+
+- [MCP 设置交互](02-design/mcp-settings-interaction.md)：已确认的三页签、连接授权搜索、客户端配置和任务审阅。
+
+## 架构
+
+- [MCP 开发契约](03-architecture/mcp-contracts.md)：工具、IPC、存储、状态机、资源限制和平台入口。
 
 ## 开发与运维
 
 - [构建与打包](05-operations/build-and-package.md)：源码运行、平台依赖、FreeRDP 选项、质量检查与安装包生成。
+
+## 质量验证
+
+- [Rust 1.96.1 升级验证](04-quality/rust-1-96-1-validation.md)：固定工具链、全目标测试、实际覆盖率与平台验证范围。
+
+- [MCP 实施与验收](04-quality/mcp-implementation.md)：实施进度与实际测试证据。
+
+- [MCP 设置交互验证](04-quality/mcp-settings-interaction.md)：本轮失败回归、质量检查、配置适配与未完成的原生验收。
+
+- [MCP 真实应用基础冒烟](04-quality/mcp-live-smoke.md)：完全访问模式下真实 SSH/SFTP、版本冲突和清理结果，以及未验证范围。
+
+- [MCP 源码运行桥接回归](04-quality/mcp-cargo-run-bridge.md)：普通 cargo run 缺少独立 helper 时的配置导出与主程序 stdio 入口验证。
 
 ## 其他现有文档
 

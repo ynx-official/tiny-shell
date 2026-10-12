@@ -5,7 +5,12 @@ edition = "2024"
 authors = ["tiny-shell contributors"]
 description = "A modern, fast, GPUI Component-based desktop terminal client"
 license = "GPL-3.0-or-later"
-rust-version = "1.85.0"
+rust-version = "1.96.1"
+default-run = "tiny-shell"
+
+[workspace]
+members = ["crates/mcp"]
+resolver = "3"
 
 [features]
 # macOS/Linux source builds use FreeRDP when native dependencies can be
@@ -16,6 +21,7 @@ freerdp-auto = []
 freerdp = []
 
 [dependencies]
+tiny-shell-mcp = { path = "crates/mcp" }
 anyhow = "1"
 tokio-socks = "0.5"
 alacritty_terminal = { git = "https://github.com/zed-industries/alacritty", rev = "fcf32feacb367b75ec84dd40f041e4fd411d3cc1" }
@@ -85,6 +91,7 @@ section = "terminal"
 priority = "optional"
 assets = [
     ["target/release/tiny-shell", "usr/bin/", "755"],
+    ["target/release/tiny-shell-mcp", "usr/bin/", "755"],
     ["assets/tiny-shell.desktop", "usr/share/applications/", "644"],
     ["assets/icons/256x256/tiny-shell.png", "usr/share/icons/hicolor/256x256/apps/", "644"],
 ]

@@ -30,6 +30,15 @@ pub(crate) use app::keybinding_recorder::{
 pub(crate) use app::{PaneLayout, SelectorEntry, SftpContextMenuState, TabGroup, TinyShell};
 
 fn main() {
+    if std::env::args().nth(1).as_deref() == Some("--mcp") {
+        if tiny_shell_mcp::stdio::run(std::env::args().skip(2)).is_err() {
+            eprintln!(
+                "MCP bridge could not start; check the client registration and configuration."
+            );
+            std::process::exit(1);
+        }
+        std::process::exit(0);
+    }
     app::startup::sync_macos_launch_environment();
     app::startup::init_logging();
 

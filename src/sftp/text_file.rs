@@ -34,6 +34,9 @@ impl RemoteFileRevision {
     pub fn same_content(&self, other: &Self) -> bool {
         self.size == other.size && self.sha256 == other.sha256
     }
+    pub(crate) fn same_version(&self, other: &Self) -> bool {
+        self == other
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -345,14 +348,18 @@ pub(super) async fn read_remote_text_file(
     sftp: &SftpSession,
     remote: &str,
 ) -> Result<RemoteTextFile> {
+    read_remote_text_file_limited(sftp, remote, EDITOR_HARD_LIMIT_BYTES).await
+}
+pub(super) async fn read_remote_text_file_limited(
+    sftp: &SftpSession,
+    remote: &str,
+    limit: u64,
+) -> Result<RemoteTextFile> {
     let metadata = sftp
         .metadata(remote)
         .await
         .with_context(|| format!("stat remote {remote}"))?;
-    if metadata
-        .size
-        .is_some_and(|size| size > EDITOR_HARD_LIMIT_BYTES)
-    {
+    if metadata.size.is_some_and(|size| size > limit) {
         return Err(anyhow!(
             "file too large for in-memory editor ({} bytes, max {} bytes)",
             metadata.size.unwrap_or_default(),
@@ -360,14 +367,18 @@ pub(super) async fn read_remote_text_file(
         ));
     }
 
-    let mut file = sftp
+    let file = sftp
         .open(remote)
         .await
         .with_context(|| format!("open remote {remote}"))?;
-    let mut bytes = Vec::with_capacity(metadata.size.unwrap_or_default() as usize);
-    file.read_to_end(&mut bytes)
+    let mut bytes = Vec::with_capacity(metadata.size.unwrap_or_default().min(limit) as usize);
+    file.take(limit + 1)
+        .read_to_end(&mut bytes)
         .await
         .with_context(|| format!("read remote {remote}"))?;
+    if bytes.len() as u64 > limit {
+        return Err(anyhow!("remote file grew beyond the read limit"));
+    }
     decode_remote_text(bytes, metadata.mtime, metadata.permissions)
         .with_context(|| format!("decode remote {remote}"))
 }
@@ -452,13 +463,28 @@ pub(super) async fn save_remote_text_file(
     sftp: &SftpSession,
     save: RemoteTextSave,
 ) -> Result<SaveRemoteTextOutcome> {
-    let current = read_remote_text_file(sftp, &save.remote_path).await?;
-    if !save.force && !save.expected_revision.same_content(&current.revision) {
+    save_remote_text_file_limited(sftp, save, EDITOR_HARD_LIMIT_BYTES, false).await
+}
+pub(super) async fn save_remote_text_file_limited(
+    sftp: &SftpSession,
+    save: RemoteTextSave,
+    limit: u64,
+    strict: bool,
+) -> Result<SaveRemoteTextOutcome> {
+    let current = read_remote_text_file_limited(sftp, &save.remote_path, limit).await?;
+    let matches = |revision: &RemoteFileRevision| {
+        if strict {
+            save.expected_revision.same_version(revision)
+        } else {
+            save.expected_revision.same_content(revision)
+        }
+    };
+    if !save.force && !matches(&current.revision) {
         return Ok(SaveRemoteTextOutcome::Conflict(current));
     }
 
     let bytes = encode_remote_text(&save.content, save.format)?;
-    if bytes.len() as u64 > EDITOR_HARD_LIMIT_BYTES {
+    if bytes.len() as u64 > limit {
         return Err(anyhow!(
             "edited file is too large to save ({} bytes, max {} bytes)",
             bytes.len(),
@@ -476,18 +502,14 @@ pub(super) async fn save_remote_text_file(
         return Err(error);
     }
 
-    let before_replace = match read_remote_text_file(sftp, &save.remote_path).await {
+    let before_replace = match read_remote_text_file_limited(sftp, &save.remote_path, limit).await {
         Ok(file) => file,
         Err(error) => {
             remove_remote_file_if_present(sftp, &temp).await;
             return Err(error);
         }
     };
-    if !save.force
-        && !save
-            .expected_revision
-            .same_content(&before_replace.revision)
-    {
+    if !save.force && !matches(&before_replace.revision) {
         remove_remote_file_if_present(sftp, &temp).await;
         return Ok(SaveRemoteTextOutcome::Conflict(before_replace));
     }
@@ -497,7 +519,7 @@ pub(super) async fn save_remote_text_file(
         return Err(error);
     }
 
-    let saved = read_remote_text_file(sftp, &save.remote_path).await?;
+    let saved = read_remote_text_file_limited(sftp, &save.remote_path, limit).await?;
     let expected_saved =
         RemoteFileRevision::from_bytes(&bytes, saved.revision.modified, saved.revision.permissions);
     if !expected_saved.same_content(&saved.revision) {

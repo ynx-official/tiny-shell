@@ -292,15 +292,14 @@ impl TinyShell {
         self.sftp_workspace.pending_path_sync = Some("/".into());
         self.tabs_scroll_handle
             .scroll_to_item(self.terminal_tab_count() - 1);
-        if let Some(session_id) = self.active_session_id() {
-            if let Some(index) = self
+        if let Some(session_id) = self.active_session_id()
+            && let Some(index) = self
                 .config
                 .sessions()
                 .iter()
                 .position(|s| s.id == session_id)
-            {
-                self.saved_scroll_handle.scroll_to_item(index);
-            }
+        {
+            self.saved_scroll_handle.scroll_to_item(index);
         }
         cx.notify();
         self.register_backend_route(group_id.clone(), cx);
@@ -565,10 +564,9 @@ impl TinyShell {
                         .tab_groups_mut()
                         .iter_mut()
                         .find(|g| g.id == group_id)
+                        && let Some(sftp) = group.sftp.as_mut()
                     {
-                        if let Some(sftp) = group.sftp.as_mut() {
-                            sftp.status = rust_i18n::t!("sftp_connecting").to_string();
-                        }
+                        sftp.status = rust_i18n::t!("sftp_connecting").to_string();
                     }
                 }
             }

@@ -9,6 +9,12 @@ pub(crate) struct SftpClientHandler {
 }
 
 impl SftpClientHandler {
+    #[cfg(test)]
+    pub(crate) fn in_path(host: &str, port: u16, path: std::path::PathBuf) -> anyhow::Result<Self> {
+        Ok(Self {
+            host_key_verifier: HostKeyVerifier::in_path(host, port, path)?,
+        })
+    }
     pub(crate) fn new(host: &str, port: u16) -> anyhow::Result<Self> {
         Ok(Self {
             host_key_verifier: HostKeyVerifier::new(host, port)?,

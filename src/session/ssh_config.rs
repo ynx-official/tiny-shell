@@ -70,10 +70,10 @@ pub(crate) fn parse_ssh_config_content(content: &str) -> Result<Vec<SshConfigEnt
         match keyword_lower.as_str() {
             "host" => {
                 // Save previous entry if it exists and is not a wildcard
-                if let Some(entry) = current_host.take() {
-                    if !entry.is_wildcard {
-                        entries.push(entry);
-                    }
+                if let Some(entry) = current_host.take()
+                    && !entry.is_wildcard
+                {
+                    entries.push(entry);
                 }
 
                 // Host line may contain multiple patterns (Host a b c)
@@ -123,10 +123,10 @@ pub(crate) fn parse_ssh_config_content(content: &str) -> Result<Vec<SshConfigEnt
             "match" | "include" => {
                 // If we encounter a Match block, flush the current Host entry
                 // since Match blocks apply to all subsequent hosts until the next Match/Host
-                if let Some(entry) = current_host.take() {
-                    if !entry.is_wildcard {
-                        entries.push(entry);
-                    }
+                if let Some(entry) = current_host.take()
+                    && !entry.is_wildcard
+                {
+                    entries.push(entry);
                 }
                 // Don't create a new entry for Match/Include
             }
@@ -135,10 +135,10 @@ pub(crate) fn parse_ssh_config_content(content: &str) -> Result<Vec<SshConfigEnt
     }
 
     // Save the last entry if it's not a wildcard
-    if let Some(entry) = current_host.take() {
-        if !entry.is_wildcard {
-            entries.push(entry);
-        }
+    if let Some(entry) = current_host.take()
+        && !entry.is_wildcard
+    {
+        entries.push(entry);
     }
 
     Ok(entries)

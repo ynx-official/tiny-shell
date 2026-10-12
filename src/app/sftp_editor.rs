@@ -95,13 +95,13 @@ pub(crate) struct EditorTab {
 
 fn subscribe_input_changes(input: &Entity<InputState>, cx: &mut gpui::Context<SftpEditor>) {
     cx.subscribe(input, |this, emitter, event: &InputEvent, cx| {
-        if let InputEvent::Change = event {
-            if let Some(tab) = this.tabs.iter_mut().find(|tab| tab.input == emitter) {
-                let dirty = *tab.input.read(cx).text() != tab.saved_text;
-                if tab.dirty != dirty {
-                    tab.dirty = dirty;
-                    cx.notify();
-                }
+        if let InputEvent::Change = event
+            && let Some(tab) = this.tabs.iter_mut().find(|tab| tab.input == emitter)
+        {
+            let dirty = *tab.input.read(cx).text() != tab.saved_text;
+            if tab.dirty != dirty {
+                tab.dirty = dirty;
+                cx.notify();
             }
         }
     })

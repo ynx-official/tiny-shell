@@ -224,7 +224,7 @@ TinyShell handles sensitive values such as SSH passwords, private keys, and prox
 
 ### Requirements
 
-- [Rust](https://www.rust-lang.org/tools/install) `1.85.0` or later.
+- [Rust](https://www.rust-lang.org/tools/install) `1.96.1` or later. The repository's `rust-toolchain.toml` selects Rust 1.96.1 automatically when using rustup.
 - Cargo with Rust 2024 Edition support.
 - Git for cloning the repository and fetching Git dependencies.
 - Windows: MSVC Build Tools; Windows Remote Desktop uses the system `mstsc.exe` client, so FreeRDP is not required.

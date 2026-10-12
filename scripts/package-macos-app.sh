@@ -115,10 +115,10 @@ VERSION_NUM="${VERSION#v}"
 
 if [[ "$SKIP_BUILD" == false ]]; then
   if [[ -n "$TARGET" ]]; then
-    cargo build --locked --release --target "$TARGET" "${BUILD_ARGS[@]}"
+    cargo build --workspace --locked --release --target "$TARGET" "${BUILD_ARGS[@]}"
     BINARY="$ROOT_DIR/target/$TARGET/release/$APP_NAME"
   else
-    cargo build --locked --release "${BUILD_ARGS[@]}"
+    cargo build --workspace --locked --release "${BUILD_ARGS[@]}"
     BINARY="$ROOT_DIR/target/release/$APP_NAME"
   fi
 fi
@@ -138,6 +138,10 @@ SIGN_IDENTITY="${SIGN_IDENTITY:--}"
 rm -rf "$APP_DIR"
 mkdir -p "$MACOS_DIR" "$RESOURCES_DIR" "$FRAMEWORKS_DIR"
 cp "$BINARY" "$MACOS_DIR/$APP_NAME"
+HELPER="$(dirname "$BINARY")/tiny-shell-mcp"
+[[ -f "$HELPER" ]] || { echo "MCP helper not found: $HELPER" >&2; exit 1; }
+cp "$HELPER" "$MACOS_DIR/tiny-shell-mcp"
+chmod 0755 "$MACOS_DIR/tiny-shell-mcp"
 
 cp "$ROOT_DIR/assets/icons/tiny-shell.icns" "$RESOURCES_DIR/tiny-shell.icns"
 

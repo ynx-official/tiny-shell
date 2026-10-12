@@ -1,3 +1,4 @@
+pub(crate) mod mcp_service;
 pub mod ops;
 pub mod text_file;
 
@@ -772,10 +773,10 @@ impl SftpRuntime<'_> {
             let (tx, mut rx) = tokio::sync::mpsc::channel(16);
             let mut watcher =
                 match notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
-                    if let Ok(event) = res {
-                        if event.kind.is_modify() {
-                            let _ = tx.try_send(());
-                        }
+                    if let Ok(event) = res
+                        && event.kind.is_modify()
+                    {
+                        let _ = tx.try_send(());
                     }
                 }) {
                     Ok(w) => w,

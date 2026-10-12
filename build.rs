@@ -134,29 +134,27 @@ fn discover_freerdp() -> Result<Option<FreeRdpPaths>, String> {
     let explicitly_configured = explicit_build_paths || paths.runtime_dir.is_some();
 
     if target_is_windows() {
-        if !explicit_build_paths {
-            if let Some(prefix) = discover_windows_vcpkg_prefix() {
-                paths.include_dirs.insert(prefix.join("include"));
-                paths.include_dirs.insert(prefix.join("include/freerdp3"));
-                paths.include_dirs.insert(prefix.join("include/winpr3"));
-                paths.lib_dirs.insert(prefix.join("lib"));
-                if paths.runtime_dir.is_none() {
-                    paths.runtime_dir = Some(prefix.join("bin"));
-                }
+        if !explicit_build_paths && let Some(prefix) = discover_windows_vcpkg_prefix() {
+            paths.include_dirs.insert(prefix.join("include"));
+            paths.include_dirs.insert(prefix.join("include/freerdp3"));
+            paths.include_dirs.insert(prefix.join("include/winpr3"));
+            paths.lib_dirs.insert(prefix.join("lib"));
+            if paths.runtime_dir.is_none() {
+                paths.runtime_dir = Some(prefix.join("bin"));
             }
         }
         if paths.runtime_dir.is_none() {
             paths.runtime_dir = infer_windows_runtime_dir(&paths.lib_dirs);
         }
-    } else if paths.include_dirs.is_empty() || paths.lib_dirs.is_empty() {
-        if let Some(pkg_paths) = discover_with_pkg_config() {
-            if paths.include_dirs.is_empty() {
-                paths.include_dirs = pkg_paths.include_dirs;
-            }
-            if paths.lib_dirs.is_empty() {
-                paths.lib_dirs = pkg_paths.lib_dirs;
-                paths.link_via_pkg_config = true;
-            }
+    } else if (paths.include_dirs.is_empty() || paths.lib_dirs.is_empty())
+        && let Some(pkg_paths) = discover_with_pkg_config()
+    {
+        if paths.include_dirs.is_empty() {
+            paths.include_dirs = pkg_paths.include_dirs;
+        }
+        if paths.lib_dirs.is_empty() {
+            paths.lib_dirs = pkg_paths.lib_dirs;
+            paths.link_via_pkg_config = true;
         }
     }
 

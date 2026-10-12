@@ -57,7 +57,7 @@ jobs:
             libudev-dev
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.96.1
         with:
           components: rustfmt, clippy
 
@@ -79,14 +79,14 @@ jobs:
           test -f "$RUNNER_TEMP/tiny-shell.iconset/icon_512x512@2x.png"
 
       - name: Run Clippy
-        run: cargo clippy --locked --all-targets -- -D warnings
+        run: cargo clippy --workspace --locked --all-targets -- -D warnings
 
       - name: Run tests
-        run: cargo test --locked --all-targets
+        run: cargo test --workspace --locked --all-targets
 
       - name: Run release tests (Linux regression gate)
         if: runner.os == 'Linux'
-        run: cargo test --locked --release --all-targets
+        run: cargo test --workspace --locked --release --all-targets
 
   freerdp:
     name: FreeRDP backend (Linux)
@@ -107,7 +107,7 @@ jobs:
             libudev-dev
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.96.1
 
       - name: Cache cargo build
         uses: Swatinem/rust-cache@v2
@@ -115,12 +115,12 @@ jobs:
           shared-key: freerdp-linux
 
       - name: Test auto-detected FreeRDP backend
-        run: cargo test --locked --all-targets
+        run: cargo test --workspace --locked --all-targets
 
       - name: Check forced and disabled backend modes
         run: |
-          cargo check --locked --all-targets --no-default-features --features freerdp
-          cargo check --locked --all-targets --no-default-features
+          cargo check --workspace --locked --all-targets --no-default-features --features freerdp
+          cargo check --workspace --locked --all-targets --no-default-features
 
       - name: Build and smoke-test AppImage
         shell: bash
@@ -168,7 +168,7 @@ jobs:
           echo "DYLD_LIBRARY_PATH=${FREERDP_PREFIX}/lib${DYLD_LIBRARY_PATH:+:${DYLD_LIBRARY_PATH}}" >> "$GITHUB_ENV"
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.96.1
         with:
           components: rustfmt, clippy
 
@@ -181,15 +181,15 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Check embedded FreeRDP backend
-        run: cargo check --locked --all-targets
+        run: cargo check --workspace --locked --all-targets
 
       - name: Test embedded FreeRDP backend
-        run: cargo test --locked --all-targets
+        run: cargo test --workspace --locked --all-targets
 
       - name: Check forced and disabled backend modes
         run: |
-          cargo check --locked --all-targets --no-default-features --features freerdp
-          cargo check --locked --all-targets --no-default-features
+          cargo check --workspace --locked --all-targets --no-default-features --features freerdp
+          cargo check --workspace --locked --all-targets --no-default-features
 
   build:
     name: ${{ matrix.name }}
@@ -228,7 +228,7 @@ jobs:
             libudev-dev
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.96.1
         with:
           targets: ${{ matrix.target }}
 
@@ -243,8 +243,8 @@ jobs:
       # and Rust 1.98 can crash while linking this large binary in that mode.
       - name: Build (release, Windows native RDP)
         if: runner.os == 'Windows'
-        run: cargo build --locked --release --target ${{ matrix.target }} --no-default-features
+        run: cargo build --workspace --locked --release --target ${{ matrix.target }} --no-default-features
 
       - name: Build (release)
         if: runner.os != 'Windows'
-        run: cargo build --locked --release --target ${{ matrix.target }}
+        run: cargo build --workspace --locked --release --target ${{ matrix.target }}

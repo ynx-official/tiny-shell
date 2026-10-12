@@ -553,10 +553,10 @@ impl TinyShell {
                     if let Some(text) = this.active_terminal_selection_text() {
                         cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
                         let active_id = this.workspace().active_tab_id().map(str::to_owned);
-                        if let Some(active_id) = active_id {
-                            if let Some(tab) = this.terminal_tab_mut(&active_id) {
-                                tab.clear_selection();
-                            }
+                        if let Some(active_id) = active_id
+                            && let Some(tab) = this.terminal_tab_mut(&active_id)
+                        {
+                            tab.clear_selection();
                         }
                         window.prevent_default();
                         cx.stop_propagation();
@@ -684,28 +684,26 @@ impl TinyShell {
 
                         if let Some(active_id) = this.workspace().active_tab_id().map(str::to_owned)
                         {
-                            if let Some(scrollbar) = this.terminal_scrollbars.get(&active_id) {
-                                if let Some(new_display_offset) =
+                            if let Some(scrollbar) = this.terminal_scrollbars.get(&active_id)
+                                && let Some(new_display_offset) =
                                     scrollbar.future_display_offset.take()
-                                {
-                                    if let Some(tab) = this.terminal_tab_mut(&active_id) {
-                                        let current = tab.display_offset();
-                                        match new_display_offset.cmp(&current) {
-                                            std::cmp::Ordering::Greater => {
-                                                tab.scroll_up_by(new_display_offset - current)
-                                            }
-                                            std::cmp::Ordering::Less => {
-                                                tab.scroll_down_by(current - new_display_offset)
-                                            }
-                                            std::cmp::Ordering::Equal => {}
-                                        }
+                                && let Some(tab) = this.terminal_tab_mut(&active_id)
+                            {
+                                let current = tab.display_offset();
+                                match new_display_offset.cmp(&current) {
+                                    std::cmp::Ordering::Greater => {
+                                        tab.scroll_up_by(new_display_offset - current)
                                     }
+                                    std::cmp::Ordering::Less => {
+                                        tab.scroll_down_by(current - new_display_offset)
+                                    }
+                                    std::cmp::Ordering::Equal => {}
                                 }
                             }
-                            if let Some(snapshot) = this.active_snapshot().as_ref() {
-                                if let Some(scrollbar) = this.terminal_scrollbars.get(&active_id) {
-                                    scrollbar.update(snapshot, px(this.terminal_line_height()));
-                                }
+                            if let Some(snapshot) = this.active_snapshot().as_ref()
+                                && let Some(scrollbar) = this.terminal_scrollbars.get(&active_id)
+                            {
+                                scrollbar.update(snapshot, px(this.terminal_line_height()));
                             }
                         }
 
@@ -716,12 +714,12 @@ impl TinyShell {
                         let current_sizes = this.workspace_panels.read(cx).sizes().clone();
                         if let Some(current_first_size) = current_sizes.first().copied() {
                             if size_changed {
-                                if let Some(target_width) = this.last_sidebar_width {
-                                    if current_first_size != target_width {
-                                        this.workspace_panels.update(cx, |state, cx| {
-                                            state.resize_panel(0, target_width, window, cx);
-                                        });
-                                    }
+                                if let Some(target_width) = this.last_sidebar_width
+                                    && current_first_size != target_width
+                                {
+                                    this.workspace_panels.update(cx, |state, cx| {
+                                        state.resize_panel(0, target_width, window, cx);
+                                    });
                                 }
                             } else {
                                 this.last_sidebar_width = Some(current_first_size);

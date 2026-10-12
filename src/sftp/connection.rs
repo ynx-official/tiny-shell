@@ -23,6 +23,14 @@ pub(super) async fn connect_and_authenticate(
     session: &Session,
     proxy_config: &ConfigStore,
 ) -> Result<Arc<russh::client::Handle<SftpClientHandler>>> {
+    let handler = SftpClientHandler::new(&session.host, session.port)?;
+    connect_with_handler(session, proxy_config, handler).await
+}
+pub(super) async fn connect_with_handler(
+    session: &Session,
+    proxy_config: &ConfigStore,
+    handler: SftpClientHandler,
+) -> Result<Arc<russh::client::Handle<SftpClientHandler>>> {
     const CONNECTION_TIMEOUT: Duration = Duration::from_secs(60);
 
     tokio::time::timeout(CONNECTION_TIMEOUT, async move {
@@ -37,7 +45,6 @@ pub(super) async fn connect_and_authenticate(
             ..Default::default()
         });
         let addr = format!("{}:{}", session.host, session.port);
-        let handler = SftpClientHandler::new(&session.host, session.port)?;
         let stream = crate::session::config::connect_proxy(session, proxy_config).await?;
         let mut handle = client::connect_stream(config, stream, handler)
             .await

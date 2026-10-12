@@ -587,19 +587,21 @@ impl TinyShell {
             cx.stop_propagation();
             return;
         }
-        if event.keystroke.modifiers.secondary() && event.keystroke.key.eq_ignore_ascii_case("c") {
-            if let Some(text) = self.active_terminal_selection_text() {
-                cx.write_to_clipboard(ClipboardItem::new_string(text));
-                window.prevent_default();
-                cx.stop_propagation();
-                return;
-            }
+        if event.keystroke.modifiers.secondary()
+            && event.keystroke.key.eq_ignore_ascii_case("c")
+            && let Some(text) = self.active_terminal_selection_text()
+        {
+            cx.write_to_clipboard(ClipboardItem::new_string(text));
+            window.prevent_default();
+            cx.stop_propagation();
+            return;
         }
-        if event.keystroke.modifiers.secondary() && event.keystroke.key.eq_ignore_ascii_case("v") {
-            if let Some(clipboard) = cx.read_from_clipboard() {
-                self.paste_clipboard_item(&clipboard, window, cx);
-                return;
-            }
+        if event.keystroke.modifiers.secondary()
+            && event.keystroke.key.eq_ignore_ascii_case("v")
+            && let Some(clipboard) = cx.read_from_clipboard()
+        {
+            self.paste_clipboard_item(&clipboard, window, cx);
+            return;
         }
 
         // If the active tab is disconnected and user presses Enter, reconnect
@@ -624,19 +626,18 @@ impl TinyShell {
         }
 
         if event.prefer_character_input {
-            if let Some(text) = event.keystroke.key_char.as_deref() {
-                if !text.is_empty()
-                    && !event.keystroke.modifiers.control
-                    && !event.keystroke.modifiers.function
-                    && !event.keystroke.modifiers.platform
-                {
-                    self.send_terminal_input(text.as_bytes().to_vec(), window, cx);
-                    if !event.keystroke.modifiers.alt {
-                        self.track_terminal_completion_text(text);
-                        cx.notify();
-                    } else {
-                        self.invalidate_active_terminal_completion();
-                    }
+            if let Some(text) = event.keystroke.key_char.as_deref()
+                && !text.is_empty()
+                && !event.keystroke.modifiers.control
+                && !event.keystroke.modifiers.function
+                && !event.keystroke.modifiers.platform
+            {
+                self.send_terminal_input(text.as_bytes().to_vec(), window, cx);
+                if !event.keystroke.modifiers.alt {
+                    self.track_terminal_completion_text(text);
+                    cx.notify();
+                } else {
+                    self.invalidate_active_terminal_completion();
                 }
             }
             return;
@@ -1132,24 +1133,22 @@ impl TinyShell {
         // Track semantic entities; modifier-click exposes their primary action.
         let mut hovered_entity = None;
         let cmd_ctrl_pressed = event.modifiers.platform;
-        if let Some((row, col, _side)) = self.terminal_grid_point_and_side(event.position) {
-            if let Some(snapshot) = self.active_snapshot() {
-                if let Some(active_id) = self.preferred_terminal_tab_id() {
-                    if let Some(entity) = crate::terminal::highlight::find_entity_at_cell(
-                        &snapshot.cells,
-                        snapshot.rows,
-                        row,
-                        col,
-                    ) {
-                        hovered_entity = Some(crate::app::HoveredTerminalEntity {
-                            kind: entity.kind,
-                            value: entity.value,
-                            tab_id: active_id.clone(),
-                            cells: entity.cells,
-                        });
-                    }
-                }
-            }
+        if let Some((row, col, _side)) = self.terminal_grid_point_and_side(event.position)
+            && let Some(snapshot) = self.active_snapshot()
+            && let Some(active_id) = self.preferred_terminal_tab_id()
+            && let Some(entity) = crate::terminal::highlight::find_entity_at_cell(
+                &snapshot.cells,
+                snapshot.rows,
+                row,
+                col,
+            )
+        {
+            hovered_entity = Some(crate::app::HoveredTerminalEntity {
+                kind: entity.kind,
+                value: entity.value,
+                tab_id: active_id.clone(),
+                cells: entity.cells,
+            });
         }
 
         if self.hovered_entity != hovered_entity || self.cmd_ctrl_pressed != cmd_ctrl_pressed {

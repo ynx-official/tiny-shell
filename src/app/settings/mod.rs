@@ -5,6 +5,7 @@ pub(crate) mod controls;
 pub(crate) mod form;
 pub(crate) mod highlighting;
 pub(crate) mod keybindings;
+pub(crate) mod mcp;
 pub(crate) mod proxy;
 pub(crate) mod sync;
 pub(crate) mod terminal;

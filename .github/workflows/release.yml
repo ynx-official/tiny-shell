@@ -126,7 +126,7 @@ jobs:
           echo "TINY_SHELL_FREERDP_LIB_DIR=${FREERDP_PREFIX}/lib" >> "$GITHUB_ENV"
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.96.1
         with:
           targets: ${{ matrix.target }}
 
@@ -138,22 +138,22 @@ jobs:
 
       - name: Build (release, Windows native RDP)
         if: runner.os == 'Windows'
-        run: cargo build --locked --release --target ${{ matrix.target }} --no-default-features
+        run: cargo build --workspace --locked --release --target ${{ matrix.target }} --no-default-features
 
       - name: Build (release, FreeRDP Linux)
         if: runner.os == 'Linux'
-        run: cargo build --locked --release --target ${{ matrix.target }} --features freerdp
+        run: cargo build --workspace --locked --release --target ${{ matrix.target }} --features freerdp
 
       - name: Build (release, macOS base and RDP editions)
         if: runner.os == 'macOS'
         shell: bash
         run: |
           set -euo pipefail
-          cargo build --locked --release --target "${{ matrix.target }}" --features freerdp
+          cargo build --workspace --locked --release --target "${{ matrix.target }}" --features freerdp
           cp "target/${{ matrix.target }}/release/tiny-shell" \
             "target/${{ matrix.target }}/release/tiny-shell-rdp"
 
-          cargo build --locked --release --target "${{ matrix.target }}" --no-default-features
+          cargo build --workspace --locked --release --target "${{ matrix.target }}" --no-default-features
           cp "target/${{ matrix.target }}/release/tiny-shell" \
             "target/${{ matrix.target }}/release/tiny-shell-base"
 
@@ -227,6 +227,7 @@ jobs:
             # Linux
             mkdir "$STAGE"
             cp "target/${{ matrix.target }}/release/${{ matrix.bin }}" "$STAGE/"
+            cp "target/${{ matrix.target }}/release/tiny-shell-mcp" "$STAGE/"
             mkdir "$STAGE/lib"
             while read -r soname resolved; do
               if [[ "$soname" == libfreerdp*.so* || "$soname" == libwinpr*.so* ]]; then

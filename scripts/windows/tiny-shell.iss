@@ -5,6 +5,9 @@
 #ifndef SourceExe
   #error SourceExe must point to the compiled tiny-shell.exe
 #endif
+#ifndef SourceHelper
+  #error SourceHelper must point to the compiled tiny-shell-mcp.exe
+#endif
 
 #ifndef SetupIcon
   #error SetupIcon must point to tiny-shell.ico
@@ -56,6 +59,7 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 
 [Files]
 Source: "{#SourceExe}"; DestDir: "{app}"; DestName: "tiny-shell.exe"; Flags: ignoreversion
+Source: "{#SourceHelper}"; DestDir: "{app}"; Flags: ignoreversion
 #ifdef RuntimeDir
 Source: "{#RuntimeDir}\*.dll"; DestDir: "{app}"; Flags: ignoreversion
 #endif

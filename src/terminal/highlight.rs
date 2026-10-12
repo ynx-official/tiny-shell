@@ -791,7 +791,7 @@ fn logical_line_at_row<'a>(
     rows: usize,
     target_row: usize,
 ) -> Option<LogicalLine<'a>> {
-    if rows == 0 || target_row >= rows || cells.len() % rows != 0 {
+    if rows == 0 || target_row >= rows || !cells.len().is_multiple_of(rows) {
         return None;
     }
     let columns = cells.len() / rows;

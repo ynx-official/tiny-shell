@@ -504,10 +504,10 @@ impl TerminalWorkspaceState {
     }
 
     pub(crate) fn preferred_terminal_tab_id(&self) -> Option<String> {
-        if let Some(active_id) = self.active_tab.as_deref() {
-            if self.terminal_tab(active_id).is_some() {
-                return Some(active_id.to_owned());
-            }
+        if let Some(active_id) = self.active_tab.as_deref()
+            && self.terminal_tab(active_id).is_some()
+        {
+            return Some(active_id.to_owned());
         }
 
         self.active_group

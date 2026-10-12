@@ -425,11 +425,10 @@ impl SessionStore {
     ) -> bool {
         if !self.unrouted_events.contains_key(&route_id)
             && self.unrouted_events.len() >= MAX_UNROUTED_ROUTES
+            && let Some(dropped) = self.evict_oldest_unrouted_route()
         {
-            if let Some(dropped) = self.evict_oldest_unrouted_route() {
-                self.deferred_events
-                    .fetch_add(saturating_u64(dropped), Ordering::Relaxed);
-            }
+            self.deferred_events
+                .fetch_add(saturating_u64(dropped), Ordering::Relaxed);
         }
 
         let incoming_output_bytes = output_bytes(&event);
