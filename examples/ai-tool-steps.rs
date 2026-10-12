@@ -224,7 +224,7 @@ impl Render for Preview {
                                 gpui_component::text::TextView::markdown("preview-long-answer",
                                     (0..24).map(|_| "nginx 已启用并正在运行。主进程、工作进程和服务配置均正常。").collect::<Vec<_>>().join("\n\n"))
                             ))
-                            .when(self.pending_reply, |messages|messages.child(composer::processing(cx)))
+                            .when(self.pending_reply, |messages|messages.children(composer::render_feedback(composer::TurnFeedback::Dots,cx)))
                             ).child(div().p_3().border_t_1().border_color(cx.theme().border).child(composer::surface(
                                 &self.input,self.pending_reply,
                                 h_flex().gap_2().child(div().text_xs().child("Example SSH")).child(div().text_xs().child(t!("mcp_full").to_string())),

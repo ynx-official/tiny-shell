@@ -396,7 +396,23 @@ impl AiPanel {
                 );
             }
         }
-        for item in super::tool_steps::project(c) {
+        let items = super::tool_steps::project(c);
+        let feedback = super::composer::feedback_state(c);
+        let dots_message = if feedback == super::composer::TurnFeedback::Dots
+            && c.error.as_ref().or(self.error.as_ref()).is_none()
+        {
+            items.last().and_then(|item| match item {
+                super::tool_steps::ChatItem::Message(index)
+                    if c.messages[*index].role == "assistant" =>
+                {
+                    Some(*index)
+                }
+                _ => None,
+            })
+        } else {
+            None
+        };
+        for item in items {
             let ix = match item {
                 super::tool_steps::ChatItem::Message(index) => index,
                 super::tool_steps::ChatItem::Tools(group) => {
@@ -481,7 +497,10 @@ impl AiPanel {
                                     ))
                                 })
                         }),
-                    ),
+                    )
+                    .when(dots_message == Some(ix), |reply| {
+                        reply.child(super::composer::animated_dots(cx))
+                    }),
             );
         }
         if let Some(error) = c.error.as_ref().or(self.error.as_ref()) {
@@ -494,8 +513,10 @@ impl AiPanel {
         } else if matches!(c.state, TurnState::Failed | TurnState::Interrupted) {
             messages = messages.child(note(t!(state_key(c.state)).to_string(), cx));
         }
-        if super::composer::turn_in_progress(c) {
-            messages = messages.child(super::composer::processing(cx));
+        if dots_message.is_none()
+            && let Some(indicator) = super::composer::render_feedback(feedback, cx)
+        {
+            messages = messages.child(indicator);
         }
         let target_button = Button::new("ai-target").ghost().xsmall().label(
             c.target

@@ -14,8 +14,56 @@ use gpui_component::{
 use rust_i18n::t;
 use std::time::Duration;
 
-pub(super) fn turn_in_progress(conversation: &Conversation) -> bool {
-    conversation.state.active()
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum TurnFeedback {
+    Hidden,
+    Waiting,
+    Dots,
+}
+pub(super) fn feedback_state(conversation: &Conversation) -> TurnFeedback {
+    if !conversation.state.active() {
+        return TurnFeedback::Hidden;
+    }
+    let start = conversation
+        .messages
+        .iter()
+        .rposition(|message| message.role == "user")
+        .unwrap_or(0);
+    if conversation.messages[start..]
+        .iter()
+        .any(|message| message.role == "assistant" && !message.content.is_empty())
+    {
+        TurnFeedback::Dots
+    } else {
+        TurnFeedback::Waiting
+    }
+}
+
+pub(super) fn render_feedback(state: TurnFeedback, cx: &App) -> Option<gpui::Div> {
+    match state {
+        TurnFeedback::Hidden => None,
+        TurnFeedback::Waiting => Some(processing(cx)),
+        TurnFeedback::Dots => Some(animated_dots(cx)),
+    }
+}
+
+pub(super) fn animated_dots(cx: &App) -> gpui::Div {
+    h_flex()
+        .debug_selector(|| "ai-typing-dots".to_owned())
+        .flex_shrink_0()
+        .gap_0()
+        .text_sm()
+        .text_color(cx.theme().muted_foreground)
+        .children((0..3).map(|index| {
+            div().child(".").with_animation(
+                format!("ai-processing-dot-{index}"),
+                Animation::new(Duration::from_millis(1_200)).repeat(),
+                move |dot, progress| {
+                    let phase = (progress * 3. - index as f32).rem_euclid(3.);
+                    dot.opacity(if phase < 1. { 1. } else { 0.22 })
+                },
+            )
+        }))
 }
 
 pub(super) fn processing(cx: &App) -> gpui::Div {
@@ -36,16 +84,7 @@ pub(super) fn processing(cx: &App) -> gpui::Div {
                 .debug_selector(|| "ai-processing-text".to_owned())
                 .gap_0()
                 .child(div().child(t!("ai_processing").to_string()))
-                .children((0..3).map(|index| {
-                    div().child(".").with_animation(
-                        format!("ai-processing-dot-{index}"),
-                        Animation::new(Duration::from_millis(1_200)).repeat(),
-                        move |dot, progress| {
-                            let phase = (progress * 3. - index as f32).rem_euclid(3.);
-                            dot.opacity(if phase < 1. { 1. } else { 0.22 })
-                        },
-                    )
-                })),
+                .child(animated_dots(cx)),
         )
 }
 
@@ -96,20 +135,21 @@ mod tests {
     use std::{cell::Cell, rc::Rc};
 
     #[test]
-    fn processing_stays_visible_through_streaming_and_tool_work_until_the_turn_ends() {
+    fn processing_text_is_replaced_by_dots_when_the_first_body_byte_arrives() {
         let mut c = Conversation::new(None, &Settings::default());
         c.state = TurnState::Generating;
         c.messages.push(Message::text("user", "检查 nginx"));
         assert!(
-            turn_in_progress(&c),
+            feedback_state(&c) == TurnFeedback::Waiting,
             "sending should immediately paint assistant feedback"
         );
         c.messages.push(Message::text("assistant", ""));
-        assert!(turn_in_progress(&c));
-        c.messages.last_mut().unwrap().content = "正在检查".into();
-        assert!(
-            turn_in_progress(&c),
-            "streamed text must not finish this turn's processing feedback"
+        assert_eq!(feedback_state(&c), TurnFeedback::Waiting);
+        c.messages.last_mut().unwrap().content = "x".into();
+        assert_eq!(
+            feedback_state(&c),
+            TurnFeedback::Dots,
+            "body text must replace the waiting caption, leaving only dots"
         );
         c.messages.last_mut().unwrap().tool_calls = vec![serde_json::json!({"id":"fixture"})];
         for state in [
@@ -118,13 +158,14 @@ mod tests {
             TurnState::Generating,
         ] {
             c.state = state;
-            assert!(
-                turn_in_progress(&c),
-                "processing must persist throughout every active phase"
+            assert_eq!(
+                feedback_state(&c),
+                TurnFeedback::Dots,
+                "dots must persist throughout every active phase"
             );
         }
         c.state = TurnState::Idle;
-        assert!(!turn_in_progress(&c));
+        assert_eq!(feedback_state(&c), TurnFeedback::Hidden);
     }
     #[test]
     fn processing_disappears_on_completion_failure_or_stop() {
@@ -132,12 +173,37 @@ mod tests {
         c.messages.push(Message::text("assistant", ""));
         for state in [TurnState::Idle, TurnState::Failed, TurnState::Interrupted] {
             c.state = state;
-            assert!(!turn_in_progress(&c));
+            assert_eq!(feedback_state(&c), TurnFeedback::Hidden);
         }
     }
 
-    struct ProcessingHost;
-    impl Render for ProcessingHost {
+    #[test]
+    fn feedback_tracks_the_current_user_turn_and_never_restarts_waiting_after_tools() {
+        let mut c = Conversation::new(None, &Settings::default());
+        c.state = TurnState::Generating;
+        c.messages = vec![
+            Message::text("user", "previous request"),
+            Message::text("assistant", "previous reply"),
+            Message::text("user", "new request"),
+            Message::text("tool", "tool output is not reply body"),
+        ];
+        assert_eq!(
+            feedback_state(&c),
+            TurnFeedback::Waiting,
+            "old replies and tool output cannot count as this turn's first body byte"
+        );
+        c.messages.push(Message::text("assistant", "first body"));
+        c.messages.push(Message::text("tool", "completed result"));
+        c.messages.push(Message::text("assistant", ""));
+        assert_eq!(
+            feedback_state(&c),
+            TurnFeedback::Dots,
+            "a later model round must not bring back the processing caption"
+        );
+    }
+
+    struct WaitingHost;
+    impl Render for WaitingHost {
         fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
             v_flex()
                 .size_full()
@@ -145,17 +211,17 @@ mod tests {
                 .gap_3()
                 .child(
                     div()
-                        .debug_selector(|| "latest-reply".to_owned())
-                        .child("Streaming reply content"),
+                        .debug_selector(|| "current-request".to_owned())
+                        .child("User request"),
                 )
                 .child(processing(cx))
         }
     }
     #[gpui::test]
-    fn processing_uses_two_lines_after_the_latest_reply(cx: &mut TestAppContext) {
+    fn waiting_uses_two_lines_before_any_body_arrives(cx: &mut TestAppContext) {
         cx.update(gpui_component::init);
         let handle = cx.open_window(gpui::size(px(360.), px(220.)), |window, cx| {
-            let host = cx.new(|_| ProcessingHost);
+            let host = cx.new(|_| WaitingHost);
             Root::new(host, window, cx)
         });
         let root = handle.root(cx).unwrap();
@@ -165,18 +231,69 @@ mod tests {
             gpui::size(px(360.), px(220.)),
             |_, _| root.into_any_element(),
         );
-        let reply = visual.debug_bounds("latest-reply").unwrap();
+        let reply = visual.debug_bounds("current-request").unwrap();
         let role = visual.debug_bounds("ai-processing-role").unwrap();
         let text = visual.debug_bounds("ai-processing-text").unwrap();
         assert!(
             role.origin.y >= reply.bottom(),
-            "processing must follow the latest chat content"
+            "waiting feedback must follow the current user request"
         );
         assert!(
             text.origin.y >= role.bottom(),
             "processing text must be below the assistant label"
         );
         assert!(text.size.height > px(0.));
+    }
+
+    struct ReplyHost;
+    impl Render for ReplyHost {
+        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            v_flex()
+                .size_full()
+                .p_3()
+                .gap_1()
+                .child(
+                    div()
+                        .debug_selector(|| "existing-assistant-role".to_owned())
+                        .child(t!("ai_assistant").to_string()),
+                )
+                .child(
+                    div()
+                        .debug_selector(|| "streamed-body".to_owned())
+                        .child("Streaming reply"),
+                )
+                .children(render_feedback(TurnFeedback::Dots, cx))
+        }
+    }
+    #[gpui::test]
+    fn body_feedback_contains_only_dots_without_another_assistant_caption(cx: &mut TestAppContext) {
+        cx.update(gpui_component::init);
+        let handle = cx.open_window(gpui::size(px(360.), px(220.)), |window, cx| {
+            let host = cx.new(|_| ReplyHost);
+            Root::new(host, window, cx)
+        });
+        let root = handle.root(cx).unwrap();
+        let mut visual = VisualTestContext::from_window(handle.into(), cx);
+        visual.draw(
+            gpui::point(px(0.), px(0.)),
+            gpui::size(px(360.), px(220.)),
+            |_, _| root.into_any_element(),
+        );
+        assert!(visual.debug_bounds("existing-assistant-role").is_some());
+        assert!(
+            visual.debug_bounds("ai-processing-role").is_none(),
+            "body output must not add another assistant caption"
+        );
+        assert!(
+            visual.debug_bounds("ai-processing-text").is_none(),
+            "body output must not retain the waiting text"
+        );
+        let body = visual.debug_bounds("streamed-body").unwrap();
+        let dots = visual.debug_bounds("ai-typing-dots").unwrap();
+        assert!(
+            dots.origin.y >= body.bottom(),
+            "dots must follow the latest output"
+        );
     }
 
     struct ComposerHost {

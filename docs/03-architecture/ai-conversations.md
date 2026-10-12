@@ -27,7 +27,7 @@ Activity 增加可选 `message_index` 与 `tool_call_id`，由 runner 创建活�
 
 ToolGroupView 的根布局禁止纵向 flex 压缩，长答复由外层聊天滚动区承载。根节点同时裁剪圆角内的内容；若允许 flex 压缩，长答复会把工具组高度压至零，留下可见边框。回归使用真实 GPUI 滚动容器，覆盖运行 → 完成 → 追加长 Markdown 答复 → 展开结果。
 
-`src/app/ai/composer.rs` 复用 InputState 及按钮，负责同一输入容器排布和处理反馈。处理状态直接使用 TurnState::active()，覆盖 Generating、RunningTool 与 AwaitingApproval，流式正文及完整工具参数不会提前移除；Idle、Failed 和 Interrupted 不显示。AiPanel 把两行状态追加在所有消息/工具/异常之后，始终作为聊天内容的最后一项；它不写入 messages、不进入模型请求或持久化。三个点使用 GPUI 重复动画依次切换透明度，节点移除后自然停止，不新增后台定时器。输入使用 appearance(false) 去掉内部边框及禁用灰底，实际禁用语义和发送/停止事件保持原实现。
+`src/app/ai/composer.rs` 复用 InputState 及按钮，负责输入容器排布和临时反馈。TurnFeedback 在非活动轮为 Hidden；活动轮从最后一个 user 消息开始查找 assistant 的非空正文，没有正文时为 Waiting，已有正文时为 Dots。工具结果和历史旧轮不计入首次正文，后续模型请求不恢复 Waiting。AiPanel 将点附在最末助手回复容器中；末项为工具或异常时，使用无助手标识、无文案的独立点节点。只有 Waiting 使用两行助手标识/处理文案。反馈不写入 messages、不进入模型请求或持久化。三个点使用 GPUI 重复动画依次切换透明度，节点移除后自然停止，不新增后台定时器。输入使用 appearance(false) 去掉内部边框及禁用灰底，实际禁用语义和发送/停止事件保持原实现。
 
 配置目录沿用 `~/.config/tiny-shell`：
 
