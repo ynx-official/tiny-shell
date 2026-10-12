@@ -8074,7 +8074,7 @@ dependencies = [
 
 [[package]]
 name = "tiny-shell"
-version = "1.6.10"
+version = "2.0.0"
 dependencies = [
  "alacritty_terminal",
  "anyhow",
