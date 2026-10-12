@@ -1,7 +1,8 @@
 # TinyShell v2.0.0
 
 > 发布日期：2026-10-12
-> 状态：Review（准备发布，尚未创建标签与正式 Release；上述日期为计划发布日期）
+> 状态：Approved（四个平台构建、打包与正式发布均成功；测试按要求跳过）
+> 正式发布时间：2026-10-12 23:53（Asia/Shanghai）
 > 最后更新：2026-10-12
 > 发布测试策略：skip
 > 关联文档：[AI 对话](../../01-requirements/ai-conversations.md)、[MCP 契约](../../03-architecture/mcp-contracts.md)、[用量与审计](../../03-architecture/ai-usage-and-audit.md)、[AI/MCP 云同步](../../sync/ai-mcp-sync.md)、[同步验证记录](../../04-quality/ai-mcp-sync.md)
@@ -83,7 +84,15 @@ Windows 提供安装包和便携包；Linux 提供 AppImage 与压缩包；macOS
 - `cargo fmt --all -- --check`：版本资料变更后再次通过。差异及中英资源静态检查在功能实现阶段通过，发布前差异检查也通过。
 - `cargo build --workspace --locked --release --no-default-features`：Windows 本地 release 构建通过，耗时 1 分 19 秒，未运行测试套件或应用。
 - `python scripts/release_notes.py --check-current` 与 `--tag v2.0.0`：通过；另核对锁文件版本、单版本跳过测试标记及发布文档相对链接。
-- 四个平台标签构建、打包、更新清单与正式 Release：尚未触发，完成后据实回填。
+- 本地 Windows release EXE 的 `ProductVersion` 为 `2.0.0`；没有启动应用。
+- [v2.0.0 标签流水线](https://github.com/ynx-official/tiny-shell/actions/runs/38269653646)：全部成功；发布资料校验通过，`Test release tooling` 按本版本策略跳过。
+- Windows x86_64：release 构建、安装包、便携包及上传成功。
+- Linux x86_64：FreeRDP release 构建、AppImage、压缩包及上传成功。
+- macOS Apple Silicon 与 Intel：各自基础版及 RDP 版 release 构建、安装包、便携包及上传成功。
+- `Publish Release`：更新清单生成及非草稿、非预发布的正式 Release 创建成功；GitHub 最新正式版本为 `v2.0.0`，正式发布时间为 2026-10-12 23:53（Asia/Shanghai）。
+- 正式 Release 共 14 个文件：12 个平台产物、更新清单和发布说明。下载的清单版本为 `v2.0.0`，12 个产物的文件名、大小、下载地址及 SHA-256 均与 GitHub Release 记录一致，清单自身 SHA-256 也已核对。
+- 已下载正式 Windows 便携包，SHA-256 与发布记录一致；解包后的 EXE `ProductVersion` 为 `2.0.0`，包含 `tiny-shell-mcp.exe`；没有运行包内程序。
+- 未运行各平台应用或真实 AI/SSH/WebDAV/S3 服务，未执行新增同步测试及跨平台功能验收；剩余验收按下表与关联质量记录进行。
 
 ## 重点手动验收
 
@@ -98,7 +107,7 @@ Windows 提供安装包和便携包；Linux 提供 AppImage 与压缩包；macOS
 
 ## 变更依据
 
-- 目标标签：[`v2.0.0`](https://github.com/ynx-official/tiny-shell/releases/tag/v2.0.0)，尚未创建，不复用已发布标签。
+- 正式标签：[`v2.0.0`](https://github.com/ynx-official/tiny-shell/releases/tag/v2.0.0)，应用源码提交为 `b41c26d71ae19ce97608c8ab64bcda0ff61a933b`；已创建并推送，没有复用已发布标签。
 - 最近祖先发布标签与最近成功版本：[`v1.6.10`](https://github.com/ynx-official/tiny-shell/releases/tag/v1.6.10)，源码提交 `7dc5c0dd88e56251c1f427d4af467f2ffac496f2`。
 - 代码差异：[v1.6.10...v2.0.0](https://github.com/ynx-official/tiny-shell/compare/v1.6.10...v2.0.0)。
 - AI、MCP、预算、通知及连接交互的已提交范围为 `fab9422` 至 `7e02f89`；本次加密同步与用量审计提交为 `4b203eb`。图标与 README 依据 `9eebff1` 及 `b274933`。

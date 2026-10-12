@@ -113,15 +113,15 @@ After an SSH connection is established, the built-in SFTP manager can handle rem
 - **Image inspection**: View image repositories, tags, sizes, and creation times on the target host.
 - **Non-disruptive layout**: The window expands to the right when space is available to preserve terminal width, with an overlay fallback when space is limited.
 
-### Built-in AI (development source builds)
+### Built-in AI
 
 The sparkle button next to clean mode opens a native chat dock; Back opens local history. Configure an OpenAI-compatible Provider, base URL, key and models in Settings → AI. Discovered models support search and a bounded scrolling picker. Enable global SSH access and choose its mode in MCP / CLI → Built-in AI. Only external MCP requires machine grants. The first message fixes the conversation target.
 
-Keys use the system credential vault and local history is encrypted. A visible temporary mode is used when the vault is unavailable. See [AI design and validation](docs/02-design/ai-conversations.md).
+Keys are encrypted locally and in the cloud with the cloud sync privacy password. A remembered password unlocks them automatically; without one, new keys remain in memory for the current session. Chat history and operation audits use separate local encryption. AI models, budgets, notifications, and MCP permissions participate in sync; pairing tokens, history, and running tasks stay on each device. See [AI design and validation](docs/02-design/ai-conversations.md) and [AI/MCP sync](docs/sync/ai-mcp-sync.md).
 
 ### Configuration Sync and Migration
 
-- **WebDAV and S3**: Synchronize connection and application settings through widely available storage backends.
+- **WebDAV and S3**: Synchronize connection and application settings, including AI models and MCP permissions, through widely available storage backends. AI keys require the cloud sync privacy password.
 - **Automatic WebDAV reconciliation**: Pull, merge, and push when needed after startup, saves, window activation, wake, and configurable minute-based checks.
 - **Preflight validation**: Validate configuration and credentials before upload to reduce failures caused by incomplete settings.
 - **Privacy-password verification**: Check the privacy password before synchronizing sensitive fields and detect missing or inconsistent passwords early.
