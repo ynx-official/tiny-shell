@@ -69,8 +69,8 @@ function Convert-IconPng {
         $graphics.DrawImage($Source, $destination, $Bounds.X, $Bounds.Y, $Bounds.Width,
             $Bounds.Height, [Drawing.GraphicsUnit]::Pixel, $attributes)
         if ($Size -eq 16) {
-            # At 16px, the terminal outline is subpixel-width and bicubic sampling
-            # averages its brightest pixel down to gray. Restore optical contrast
+            # At 16px, fine symbol edges can be subpixel-width and bicubic sampling
+            # averages their brightest pixels down to gray. Restore optical contrast
             # after sampling, keeping geometry and alpha untouched.
             for ($y = 0; $y -lt $Size; $y++) {
                 for ($x = 0; $x -lt $Size; $x++) {

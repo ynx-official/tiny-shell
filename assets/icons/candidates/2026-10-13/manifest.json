@@ -1,0 +1,75 @@
+{
+  "created_at": "2026-10-13",
+  "generation_method": "built-in imagegen",
+  "selection_board": "selection-board.png",
+  "selected_candidate": {
+    "number": "03",
+    "label": "TS 字母",
+    "position": "top row, third column in the user's eight-candidate attachment",
+    "selected_on": "2026-10-13",
+    "selection_reason": "User explicitly requested using candidate 03 in the attached eight-candidate board as the new application icon."
+  },
+  "master": "ts-monogram.png",
+  "master_dimensions": [
+    1254,
+    1254
+  ],
+  "master_sha256": "c2c315b60db222185b8f8d1662dfb7465cd5d1c9af2c14d9b819961c9fdb51cc",
+  "platform_sources": [
+    "../../source/tiny-shell-brand.png",
+    "../../source/tiny-shell-macos.png"
+  ],
+  "export_script": "../../../../scripts/generate-icons.ps1",
+  "outputs": {
+    "window_png": "../../tiny-shell.png",
+    "windows": "../../tiny-shell.ico",
+    "macos": "../../tiny-shell.icns",
+    "linux": "../../256x256/tiny-shell.png",
+    "readme": "../../../readme/tiny-shell-header.svg"
+  },
+  "prompts": {
+    "comparison_board": "Use case: logo-brand.\nAsset type: ONE high-resolution logo exploration comparison board containing eight candidate logos for the actual desktop application TinyShell. The requested deliverable is this single composite image, ready for a Chinese-speaking user to choose a number, not eight separate images.\nProject context: TinyShell is a fast native Rust desktop terminal application for Windows, macOS and Linux. It unifies local shells, SSH remote connections, multi-pane workspaces, SFTP, host monitoring, and AI/MCP assistance. Brand personality: compact, fast, precise, capable, calm. The current mark is a black and white rounded terminal window containing >_. Explore fresh identities based on that context; show genuinely distinct silhouettes and constructions, not eight cosmetic tweaks to the same terminal window.\nArt direction: polished professional software identity design, exceptionally clean flat vector-like raster artwork, simple bold geometry, generous negative space, confident proportions, scalable minimal marks that would remain identifiable at small app-icon sizes. No photorealism. No 3D, no gradients, no glow, no shadows, no texture, no mockup devices, no mascots, no cloud symbols, no padlocks, no extra decorative badges.\nBoard: large landscape image ideally about 3200 by 2000 pixels. Warm ivory page. Precise FOUR COLUMNS by TWO ROWS, exactly eight equally sized cells with generous gutters and very subtle thin dividing rules. Simple editorial header at top, left aligned, exactly \"TinyShell\" in bold near-black sans serif and underneath exactly \"Logo 方向探索 · 8 款候选\". Each cell shows one large candidate centered, as a dark rounded-square application icon with the mark inside, and a small same-design standalone monochrome symbol preview below it. Main app icons occupy equal visual area. Never put words or the TinyShell name INSIDE the icons. At the bottom of each cell, show its two-digit number and short Chinese name as specified below in clear typography. Labels belong outside the icons. Nothing is clipped. Avoid extra tiny text, slogans, legends, or footnotes.\nNumbering is row-major: top row 01, 02, 03, 04; bottom row 05, 06, 07, 08. Each symbol must be thoughtfully designed, optically centered, and visibly unique:\n01 label \"01 极简提示符\": a striking oversized WHITE >_ terminal prompt only, no terminal-window outline, with decisive geometrical cuts, balanced wide underscore, near-black app tile. Precise, bold, timeless.\n02 label \"02 Shell 折线\": a WHITE compact angular folded ribbon forming an abstract S shell silhouette, whose central negative space subtly reads as a right-facing terminal chevron. Three broad economical folds, near-black tile. This should read as a unique brand mark rather than a standard terminal box.\n03 label \"03 TS 字母\": a WHITE bespoke geometric TS monogram, the broad T crossbar and the S integrated as one balanced compact construction, with a small terminal-style diagonal cut. No extra letters. Near-black tile. Distinctive lettermark.\n04 label \"04 连接节点\": TWO WHITE substantial interlocking open angle shapes, suggesting local-to-remote connection and a terminal arrow in their shared negative space; no chain illustration or network diagram. Near-black tile, robust simple silhouette.\n05 label \"05 分屏工作区\": WHITE abstract two-pane mark with a short vertical divider; a bold right-facing prompt in the left pane and one restrained cursor block in the right. Clean compact rectangular silhouette with generous open voids, no titlebar dots or fake code lines. Near-black tile.\n06 label \"06 开放边界\": WHITE open bracket/portal shape, with a terminal chevron that elegantly breaks through the right boundary; use an interrupted outer contour rather than a closed terminal window. A strong intentional continuous geometry. Near-black tile.\n07 label \"07 青绿 Shell\": a WHITE simplified abstract shell-like folded contour with a single MINT/TEAL segment and a clearly formed right-facing negative-space prompt, dark deep-green tile. Make this an iconic three-segment geometric shell, not a realistic seashell or fan. Only this mark has mint color. Restrained modern technical identity.\n08 label \"08 智能光标\": a WHITE compact terminal chevron combined with a warm AMBER geometric cursor; the cursor has a tiny intelligent angular notch integrated into its silhouette. Near-black tile. Convey AI assistance subtly, not through a disconnected generic sparkle or robot. Only this mark has amber color.\nStandalone preview below each main icon: repeat that exact symbol in solid dark ink on the ivory background, smaller, keeping the geometry. It demonstrates the monochrome logo version. Main designs 01-06 are strictly black and white; 07 and 08 are the two controlled color directions.\nDeliver the final single board as a crisp, beautiful usable comparison, with all eight numbers and names readable. Prioritize visual originality, simplicity, coherent presentation, and accurate typography.",
+    "selected_master": "Use case: precise-object-edit / logo-brand.\nInput image: the supplied eight-candidate TinyShell comparison board. It is the EDIT TARGET and authoritative design reference.\nThe user explicitly selected candidate 03 \"TS 字母\": TOP ROW, THIRD COLUMN, the black rounded-square app tile with a bold white geometric TS monogram. Extract and faithfully reproduce ONLY THAT SELECTED APP ICON as a single high-resolution standalone production master. Preserve its exact recognizable identity, proportions, geometry and optical spacing. Do not select the Shell folded S in column two; do not select the greater-than terminal in column one; the desired logo is the TS ligature in column THREE.\nIdentity invariants: white broad horizontal T crossbar on the upper left and its thick vertical stem; angular S on the right that has a distinctive long diagonal upper cut separating it from the T crossbar, a diagonal middle stroke, and a thick horizontal lower stroke. Together these form the same compact TS monogram shown in candidate 03, centered on black. Keep the small black diagonal separation intentional and clean. Do not invent a different font, move the letters apart, round their angular corners, or add a terminal prompt.\nOutput exactly ONE SQUARE 1024x1024 transparent PNG with the chosen icon. Pure black rounded-square tile occupying about 96% of the canvas (about 2% outer transparent margin on each side), softly rounded outer corners matching the selected tile. Outside this black tile must be truly transparent. The WHITE TS monogram occupies roughly 68% of tile width and 50% of tile height, centered slightly above vertical center as in the reference. Leave the area below 80% canvas height plain black without additional content. The large monogram must remain recognizable at small sizes. Flat neutral black/white/grayscale antialiasing only: remove incidental material shading or noise from the screenshot without changing the logo design.\nRemove ALL other cells, labels, numbers, board background, title, subtitle, standalone small black logo, and separators. No text except the actual TS monogram; no TinyShell wordmark, no number 03, no SSH, no >_, no window outline, no badges. No shadows, bevels, texture, gradients, glow, or 3D. Transparent outer area and black tile with white TS ONLY. This is production extraction of an already selected design, not further logo exploration."
+  },
+  "validation": {
+    "method": "non-compiling System.Drawing pixel and container inspection",
+    "asset_checks_passed": 23,
+    "checks": [
+      "window-1024",
+      "linux-256",
+      "ico-16",
+      "ico-20",
+      "ico-24",
+      "ico-32",
+      "ico-40",
+      "ico-48",
+      "ico-64",
+      "ico-128",
+      "ico-256",
+      "icns-ic11-32",
+      "icns-ic12-64",
+      "icns-ic07-128",
+      "icns-ic13-256",
+      "icns-ic08-256",
+      "icns-ic14-512",
+      "icns-ic09-512",
+      "icns-ic10-1024",
+      "icns-ic04-16-native-argb",
+      "icns-ic05-32-native-argb",
+      "readme-embedded-png",
+      "master-copies-identical"
+    ],
+    "visual_review": "window PNG and macOS ic10 actual payload inspected",
+    "rust_test": "not run; user did not request compilation",
+    "clippy": "not run; user did not request compilation",
+    "build": "not run; user did not request compilation",
+    "native_desktop": "not run",
+    "format_check": "cargo fmt --all -- --check: passed",
+    "diff_check": "git diff --check: passed",
+    "references": "all manifest output paths and current/archive icon-document local references valid"
+  },
+  "replaces": {
+    "candidate": "A rounded-terminal, selected 2026-10-10",
+    "archive": "../../../../docs/99-archive/application-icons-rounded-terminal-2026-10-10.md"
+  }
+}

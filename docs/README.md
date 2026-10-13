@@ -10,9 +10,10 @@
 - [内置 AI 会话](02-design/ai-conversations.md)：原生聊天、首轮自动标题、回复下方续聊建议、工具步骤与聊天内审阅、本机加密历史及独立 SSH 权限。
 - [内置 AI 需求与验收](01-requirements/ai-conversations.md)：已确认范围及 AI-01 至 AI-29 验收行为，含续聊建议两条直显与紧凑输入区。
 
-- [应用图标与平台导出](02-design/application-icons.md)：已选定的 A 圆润终端图标、平台适配与验证。
+- [应用图标与平台导出](02-design/application-icons.md)：已选定的 03 TS 字母图标、跨平台导出、实际验证范围与手动验收。
 
-- [软件图标候选方案](02-design/application-icon-candidates.md)：三套方案、小尺寸对比与 A 方案选择记录。
+- [软件图标历史候选](02-design/application-icon-candidates.md)：2026-10-10 三套方案、小尺寸对比与历史 A 方案选择记录。
+- [圆润终端图标历史约束](99-archive/application-icons-rounded-terminal-2026-10-10.md)：Superseded；原品牌规则、平台背景和当时的验证结果，已由 TS 字母图标替代。
 
 - [主工作区与常用命令布局](02-design/workspace-ui/design.md)
 

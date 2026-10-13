@@ -104,7 +104,7 @@ fn symbol_only_icons_do_not_have_a_bottom_wordmark() -> TestResult {
     let entries = icns_entries();
     for bytes in [WINDOW_ICON, LINUX_ICON, entries[b"ic10"]] {
         let image = image::load_from_memory_with_format(bytes, ImageFormat::Png)?.into_rgba8();
-        // The approved terminal-window mark is centered. Its bottom margin must
+        // The approved TS monogram is centered. Its bottom margin must
         // stay empty instead of reintroducing the previous TinyShell wordmark.
         for (x, y, pixel) in image.enumerate_pixels() {
             if y * 100 >= image.height() * 82 && pixel[3] >= 128 {

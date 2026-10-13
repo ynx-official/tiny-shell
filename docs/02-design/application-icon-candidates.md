@@ -1,7 +1,7 @@
 # 软件图标候选方案
 
 > 状态：Approved
-> 最后更新：2026-10-10
+> 最后更新：2026-10-13
 > 关联：[当前应用图标与平台导出](application-icons.md)、[文档索引](../README.md)、[完整生成提示与产物清单](../../assets/icons/candidates/2026-10-10/manifest.json)
 
 ## 目标与方案
@@ -12,7 +12,9 @@
 
 ## 选择结果
 
-用户于 2026-10-10 明确回复「第一种」，选定 A「圆润终端」。A 已应用到正式窗口 PNG、Windows ICO、macOS ICNS、Linux PNG 和两个平台母图，并同步 README 头图中的标识。B、C 作为比较素材保留；正式图标与最新验证结果统一见[应用图标与平台导出](application-icons.md)。
+用户于 2026-10-10 明确回复「第一种」，选定 A「圆润终端」。当时 A 应用到正式窗口 PNG、Windows ICO、macOS ICNS、Linux PNG 和两个平台母图，并同步 README 头图中的标识。B、C 作为比较素材保留。
+
+用户于 2026-10-13 从新八款候选中明确选择 03「TS 字母」，替代 A。本页仅保留 2026-10-10 的历史选择与验证；当前品牌约束和本次验证范围见[应用图标与平台导出](application-icons.md)，原约束已移入[圆润终端归档](../99-archive/application-icons-rounded-terminal-2026-10-10.md)。
 
 | 方案 | 特征 | 1024px 预览 | Windows ICO | macOS ICNS | Linux PNG |
 | --- | --- | --- | --- | --- | --- |
