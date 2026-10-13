@@ -25,6 +25,7 @@ use gpui_component::{
 use rust_i18n::t;
 use std::rc::Rc;
 mod execution;
+mod followups;
 mod notifications;
 
 type PermissionsAction = Rc<dyn Fn(&mut Window, &mut gpui::App)>;
@@ -105,6 +106,15 @@ pub(crate) fn page(owner: &Entity<TinyShell>) -> SettingPage {
                                     )
                                 }),
                         )
+                        .into_any_element()
+                })),
+        )
+        .group(
+            SettingGroup::new()
+                .title(t!("ai_settings_followups").to_string())
+                .item(SettingItem::render(|_, window, cx| {
+                    window
+                        .use_keyed_state("ai-followup-settings", cx, followups::FollowupForm::new)
                         .into_any_element()
                 })),
         )

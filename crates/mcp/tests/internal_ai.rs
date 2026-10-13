@@ -127,6 +127,128 @@ async fn task_state(
 }
 
 #[tokio::test]
+async fn conversation_overrides_control_execution_without_changing_global_or_sibling_modes()
+-> anyhow::Result<()> {
+    use tiny_shell_mcp::tasks::State;
+    let directory = tempfile::tempdir()?;
+    let target = Target {
+        id: uuid::Uuid::new_v4().to_string(),
+        name: "fixture".into(),
+        group: None,
+        host: "example.invalid".into(),
+        port: 22,
+        user: "test".into(),
+        digest: "fixture".into(),
+    };
+    let engine = fixture_engine(
+        Store::new(directory.path())?,
+        Arc::new(Fake(vec![target.clone()])),
+    )?;
+    engine.set_ai_enabled(true).unwrap();
+    let inherited = engine
+        .internal_client(&uuid::Uuid::new_v4().to_string(), target.clone())
+        .unwrap();
+    for mode in [Mode::ReadOnly, Mode::Controlled, Mode::Full] {
+        let id = uuid::Uuid::new_v4().to_string();
+        let client = engine
+            .checked_internal_client_with_mode(&id, target.clone(), Some(mode))
+            .await
+            .unwrap();
+        assert_eq!(client.mode().unwrap(), mode);
+        assert_eq!(inherited.mode().unwrap(), Mode::ReadOnly);
+        assert_eq!(engine.ai_policy().unwrap().mode, Mode::ReadOnly);
+        let opened = client.call(Call::parse("open_session", json!({"connection_id":target.id,"request_id":uuid::Uuid::new_v4().to_string()})).unwrap()).await.unwrap();
+        let task = opened["task_id"].as_str().unwrap();
+        task_state(&engine, task, State::Succeeded).await?;
+        let session = client
+            .call(Call::parse("get_task", json!({"task_id":task})).unwrap())
+            .await
+            .unwrap()["result"]["session_id"]
+            .clone();
+        let result = client.call(Call::parse("run_command", json!({"session_id":session,"command":"printf fixture","request_id":uuid::Uuid::new_v4().to_string()})).unwrap()).await;
+        match mode {
+            Mode::ReadOnly => assert_eq!(result.unwrap_err().code, "PERMISSION_DENIED"),
+            Mode::Controlled => {
+                let result = result.unwrap();
+                let task = result["task_id"].as_str().unwrap();
+                task_state(&engine, task, State::AwaitingUser).await?;
+                // Reissuing the capability cannot change a pending approval's mode.
+                assert!(
+                    engine
+                        .internal_client_with_mode(&id, target.clone(), Some(Mode::Full))
+                        .is_err()
+                );
+                assert_eq!(client.mode().unwrap(), Mode::Controlled);
+                engine.approve(task, true).unwrap();
+                task_state(&engine, task, State::Succeeded).await?;
+            }
+            Mode::Full => {
+                task_state(
+                    &engine,
+                    result.unwrap()["task_id"].as_str().unwrap(),
+                    State::Succeeded,
+                )
+                .await?
+            }
+        }
+        client.stop().unwrap();
+        let following = engine
+            .internal_client_with_mode(&id, target.clone(), None)
+            .unwrap();
+        assert_eq!(following.mode().unwrap(), Mode::ReadOnly);
+        assert!(
+            !client.is_valid(),
+            "a prior handle cannot acquire the next turn's permission"
+        );
+        assert_eq!(client.stop().unwrap_err().code, "CLIENT_REVOKED");
+        assert!(
+            inherited.is_valid(),
+            "another conversation's selection cannot revoke this one"
+        );
+    }
+    let id = uuid::Uuid::new_v4().to_string();
+    let overridden = engine
+        .internal_client_with_mode(&id, target.clone(), Some(Mode::Full))
+        .unwrap();
+    engine
+        .set_ai_policy(AiPolicy {
+            enabled: true,
+            mode: Mode::Controlled,
+        })
+        .unwrap();
+    assert!(!overridden.is_valid());
+    assert!(!inherited.is_valid());
+    assert_eq!(
+        engine
+            .internal_client_with_mode(&id, target.clone(), Some(Mode::Full))
+            .unwrap()
+            .mode()
+            .unwrap(),
+        Mode::Full
+    );
+    assert_eq!(
+        engine
+            .internal_client(&uuid::Uuid::new_v4().to_string(), target.clone())
+            .unwrap()
+            .mode()
+            .unwrap(),
+        Mode::Controlled
+    );
+    engine.set_ai_enabled(false).unwrap();
+    assert!(
+        engine
+            .internal_client_with_mode(&id, target.clone(), Some(Mode::Full))
+            .is_err()
+    );
+    engine.set_ai_enabled(true).unwrap();
+    assert!(
+        !overridden.is_valid(),
+        "the global enable switch must still revoke overrides"
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn permission_modes_and_pending_approvals_are_isolated_by_source() -> anyhow::Result<()> {
     use tiny_shell_mcp::tasks::State;
     let dir = tempfile::tempdir()?;

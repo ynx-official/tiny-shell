@@ -15,13 +15,24 @@ mod continuation;
 #[cfg(test)]
 mod continuation_tests;
 #[cfg(test)]
+mod followup_tests;
+mod followups;
+#[cfg(test)]
 mod optimization_tests;
+#[cfg(test)]
+mod permission_tests;
+mod permissions;
 mod runner;
 mod sync;
 #[cfg(test)]
 mod tests;
+mod title;
+#[cfg(test)]
+mod title_tests;
 mod tools;
 mod toolset;
+#[cfg(test)]
+mod usage_tests;
 
 #[derive(Clone, Default)]
 pub(crate) struct Snapshot {
@@ -40,6 +51,8 @@ pub(crate) struct Snapshot {
 struct State {
     snapshot: Snapshot,
     cancel: HashMap<String, watch::Sender<bool>>,
+    title_cancel: HashMap<String, watch::Sender<bool>>,
+    followup_cancel: HashMap<String, (String, watch::Sender<bool>)>,
     continuations: HashMap<String, tokio::sync::oneshot::Sender<()>>,
 }
 pub(crate) struct Service {
@@ -67,6 +80,8 @@ impl Service {
             state: Mutex::new(State {
                 snapshot: Snapshot::default(),
                 cancel: HashMap::new(),
+                title_cancel: HashMap::new(),
+                followup_cancel: HashMap::new(),
                 continuations: HashMap::new(),
             }),
             store: Mutex::new(None),
@@ -201,18 +216,23 @@ impl Service {
         Ok(())
     }
     pub fn rename(self: &Arc<Self>, id: String, title: String) {
+        // Record the user's choice before any async persistence or title response can race it.
+        if let Err(error) = self.mutate(&id, |c| {
+            ensure!(
+                !title.trim().is_empty() && title.chars().count() <= 100,
+                "AI_INVALID_NAME"
+            );
+            c.title = title.trim().into();
+            c.title_state = TitleState::Preserved;
+            Ok(())
+        }) {
+            self.history_notice(Err(error));
+            return;
+        }
+        self.cancel_title(&id);
         let service = self.clone();
         self.runtime.spawn_blocking(move || {
-            let result = service
-                .mutate(&id, |c| {
-                    ensure!(
-                        !title.trim().is_empty() && title.chars().count() <= 100,
-                        "AI_INVALID_NAME"
-                    );
-                    c.title = title.trim().into();
-                    Ok(())
-                })
-                .and_then(|_| service.checkpoint(&id));
+            let result = service.checkpoint(&id);
             service.history_notice(result);
         });
     }
@@ -222,10 +242,15 @@ impl Service {
         {
             cancel.send_replace(true);
         }
+        self.cancel_title(id);
+        self.cancel_followups(id);
     }
     pub fn stop_all(&self) {
         if let Ok(state) = self.state.lock() {
-            for cancel in state.cancel.values() {
+            for cancel in state.cancel.values().chain(state.title_cancel.values()) {
+                cancel.send_replace(true);
+            }
+            for (_, cancel) in state.followup_cancel.values() {
                 cancel.send_replace(true);
             }
         }

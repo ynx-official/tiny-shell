@@ -96,14 +96,45 @@ fn fixture() -> ToolGroup {
 impl Preview {
     fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let owner = cx.entity().downgrade();
-        let review: tool_steps::view::ReviewAction = Rc::new(move |_, _, cx| {
-            if let Some(owner) = owner.upgrade() {
-                owner.update(cx, |this, cx| {
-                    this.reviewed = true;
-                    cx.notify();
-                });
-            }
-        });
+        let review = tool_steps::review::ReviewActions {
+            load: Rc::new(|id| {
+                Ok(tiny_shell_mcp::engine::Review {
+                    id: id.into(),
+                    client: "ai:fixture".into(),
+                    target: tiny_shell_mcp::engine::Target {
+                        id: "fixture".into(),
+                        name: "Example SSH".into(),
+                        group: None,
+                        host: "example.invalid".into(),
+                        port: 22,
+                        user: "fixture".into(),
+                        digest: "fixture".into(),
+                    },
+                    call: tiny_shell_mcp::contracts::Call::RunCommand(
+                        tiny_shell_mcp::contracts::RunCommand {
+                            session_id: "fixture-session".into(),
+                            command: "systemctl is-active nginx".into(),
+                            request_id: "fixture-request".into(),
+                            cwd: Some("/tmp".into()),
+                            timeout_ms: 30000,
+                        },
+                    ),
+                    state: tiny_shell_mcp::tasks::State::AwaitingUser,
+                    error: None,
+                    preview: json!({}),
+                })
+            }),
+            decide: Rc::new(move |_, _, _, cx| {
+                if let Some(owner) = owner.upgrade() {
+                    owner.update(cx, |this, cx| {
+                        this.reviewed = true;
+                        cx.notify();
+                    });
+                }
+                Ok(())
+            }),
+            authenticate: Rc::new(|_, _, _| {}),
+        };
         let complete = cx.new(|_| ToolGroupView::new(fixture(), review.clone()));
         let mut pending = fixture();
         pending.steps[2].state = ToolState::AwaitingApproval;

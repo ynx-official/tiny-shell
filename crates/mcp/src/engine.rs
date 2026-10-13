@@ -231,6 +231,14 @@ impl Engine {
         });
         Ok(tasks.into_iter().map(|t| t.review.clone()).collect())
     }
+    /// Load only the operation being reviewed, without copying unrelated task previews.
+    pub fn review(&self, id: &str) -> Result<Review> {
+        self.lock()?
+            .tasks
+            .get(id)
+            .map(|task| task.review.clone())
+            .ok_or_else(|| Failure::new("TASK_NOT_FOUND"))
+    }
     pub fn maintain(&self) -> Result<()> {
         let mut inner = self.lock()?;
         let previous = inner.tasks.len();

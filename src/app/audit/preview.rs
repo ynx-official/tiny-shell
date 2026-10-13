@@ -85,6 +85,7 @@ async fn seed(store: &Arc<Store>, target: &str, conversation: &str) -> bool {
         let mut context = base.child();
         context.model_request_id = Some(context.operation_id.clone());
         let request = ModelRequest {
+            purpose: tiny_shell_mcp::audit::RequestPurpose::Chat,
             id: context.operation_id.clone(),
             conversation_id: Some(conversation.into()),
             turn_id: base.turn_id.clone().unwrap_or_default(),

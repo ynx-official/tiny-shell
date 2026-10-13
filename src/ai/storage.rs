@@ -1,5 +1,5 @@
 use super::{
-    Conversation, Settings, TurnState,
+    Conversation, FollowupState, Settings, TitleState, TurnState,
     key_vault::{KeyVault, StoredKey},
 };
 use anyhow::{Result, anyhow, ensure};
@@ -52,6 +52,24 @@ pub(super) struct Store {
     vault: Mutex<KeyVault>,
 }
 type Opened = (Store, Settings, Vec<Conversation>, Option<String>);
+fn recover_background_requests(c: &mut Conversation) {
+    // Auxiliary requests can still be running after the chat has already become Idle.
+    if c.title_state == TitleState::Generating {
+        c.title_state = TitleState::Failed;
+    }
+    if let Some(followups) = &mut c.followups
+        && followups.state == FollowupState::Generating
+    {
+        followups.state = FollowupState::Failed;
+        followups.items.clear();
+    }
+    for request in &mut c.requests {
+        if matches!(request.state.as_str(), "pending" | "running") {
+            request.state = "interrupted".into();
+            request.finished_ms = Some(tiny_shell_mcp::audit::now_ms());
+        }
+    }
+}
 impl Store {
     #[cfg(test)]
     pub fn fixture(
@@ -141,12 +159,6 @@ impl Store {
                         c.state = TurnState::Interrupted;
                         c.continuation = None;
                         c.error = Some("AI_INTERRUPTED".into());
-                        for request in &mut c.requests {
-                            if matches!(request.state.as_str(), "pending" | "running") {
-                                request.state = "interrupted".into();
-                                request.finished_ms = Some(tiny_shell_mcp::audit::now_ms());
-                            }
-                        }
                         if let Some(turn) = c.turns.last_mut() {
                             turn.state = "interrupted".into();
                             turn.finished_ms = Some(tiny_shell_mcp::audit::now_ms());
@@ -160,6 +172,7 @@ impl Store {
                             }
                         }
                     }
+                    recover_background_requests(&mut c);
                     Ok(c)
                 })();
                 match loaded {
@@ -416,6 +429,42 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn unfinished_followups_recover_without_replaying_the_completed_chat() {
+        let mut c = Conversation::new(None, &Settings::default());
+        c.followups = Some(crate::ai::Followups {
+            turn_id: "turn".into(),
+            request_id: "request".into(),
+            state: FollowupState::Generating,
+            items: Vec::new(),
+        });
+        recover_background_requests(&mut c);
+        assert!(c.state == TurnState::Idle);
+        assert_eq!(c.followups.unwrap().state, FollowupState::Failed);
+        assert!(c.messages.is_empty());
+    }
+
+    #[test]
+    fn idle_chat_recovers_an_interrupted_title_without_replaying_or_losing_usage() -> Result<()> {
+        let mut c = Conversation::new(None, &Settings::default());
+        c.title = "原有临时标题".into();
+        c.title_state = TitleState::Generating;
+        c.requests.push(serde_json::from_value(serde_json::json!({
+            "id":"request","conversation_id":c.id,"turn_id":"turn","purpose":"title",
+            "provider_id":"provider","provider_name":"fixture","model":"fixture",
+            "conversation_title":c.title,"started_ms":1,"state":"pending",
+            "usage":{"input":3,"output":2,"total":5}
+        }))?);
+        recover_background_requests(&mut c);
+        assert_eq!(c.title_state, TitleState::Failed);
+        assert_eq!(c.title, "原有临时标题");
+        assert!(c.state == TurnState::Idle);
+        assert_eq!(c.requests[0].state, "interrupted");
+        assert!(c.requests[0].finished_ms.is_some());
+        assert_eq!(c.usage_summary().total, 5);
+        assert_eq!(c.usage_summary().pending, 0);
+        Ok(())
+    }
 
     #[test]
     fn passwordless_keys_are_temporary_and_addresses_are_bound() -> Result<()> {

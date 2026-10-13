@@ -1,7 +1,7 @@
 # 内置 AI 实现契约
 
 > 状态：Review
-> 最后更新：2026-10-12
+> 最后更新：2026-10-13
 > 关联：[需求](../01-requirements/ai-conversations.md)、[交互](../02-design/ai-conversations.md)、[MCP 契约](mcp-contracts.md)、[安全边界](ai-threat-model.md)、[验证](../04-quality/ai-conversations.md)
 
 ## 职责与请求路径
@@ -19,17 +19,23 @@
 
 ## 数据与存储
 
+2026-10-13 对话权限覆盖：`Conversation.mode_override: Option<Mode>` 为 None 时跟随全局，旧历史缺少字段时也为 None。`service/permissions.rs` 在状态锁内同时检查活动状态及 runner 取消通道，拒绝运行中修改；成功后只保存当前对话，并记录本机权限变更审计。已有消息的对话复用加密 checkpoint，空白草稿仍不持久化，不进入全局设置或云同步。
+
+runner 将对话快照中的覆盖传给 `checked_internal_client_with_mode`。引擎 Binding 保存目标、可选模式和独立能力代数，`InternalClient::mode` 与有效 Policy 使用同一解析规则；模型工具声明、命令/写入审批及任务审计因此一致。每次发放新轮次能力分配新代数，仅替换本对话 Binding；前一轮有未终结任务或 SSH 会话时拒绝重发，旧句柄不能获得新权限或停止新轮次。全局变更仍统一撤销旧能力并取消内置任务，外部 MCP 不受影响。总开关、目标摘要和模型工具能力均不会被覆盖绕过。
+
 `Provider` 包含 UUID、名称、Base URL、启用状态、本机 HTTP/无 Key 选项、模型数组和默认模型。模型包含 ID 与 `supports_tools`，没有 API Key 字段。Provider 操作状态/反馈与历史重命名及删除反馈分开，历史完成不会解除进行中的 Provider 请求。发现列表使用独立快照，关联 Provider UUID 和地址，不使用拼接文案传递模型数据。
 
 `Conversation` 包含 UUID、标题、可选 BoundTarget、Provider UUID、模型、messages、activities、state、error 和更新时间。BoundTarget 仅保存连接 ID、公开名称/主机/端口/用户名与授权摘要，不保存密码、私钥或代理凭据。Message 保存角色、文本、完整 tool_calls 与 tool_call_id。
 
 Activity 增加可选 `message_index` 与 `tool_call_id`，由 runner 创建活动时写入，关联原助手消息中的调用。两字段采用 serde 默认值，旧加密历史可直接读取，无需迁移密文格式。`src/app/ai/tool_steps.rs` 将消息与活动投影为文本/工具组，不改写模型上下文；`tool_steps/view.rs` 独立保存展开状态与审阅回调。结果中的失败/终态优先于旧活动状态，缺失或截断结果不能凭空推断成功。旧轮次未完成的步骤不会随新轮次变为运行中。
 
+2026-10-13 聊天内审阅：`tool_steps/review.rs` 展示引擎准备的单任务快照并管理提交反馈；`src/app/ai/review.rs` 连接引擎及既有凭据编辑器。`Engine::review(id)` 只复制指定任务，避免渲染时复制其他对话的文件预览。加载与点击时均核对任务 ID、`ai:<conversation>` 来源、目标 ID/摘要及 AwaitingUser 状态；提交前核对展示快照与当前命令、预览、错误状态一致。文件预览缺失和 AUTH_REQUIRED 不允许走普通批准。按钮成功后停用；最终审批仍由 Engine::approve 原子检查待处理状态、权限代数和时限，继续使用既有审计及执行前目标/文件版本校验。预览不使用模型生成的参数摘要，也不增加 Provider 请求或持久化格式。
+
 ToolGroupView 的根布局禁止纵向 flex 压缩，长答复由外层聊天滚动区承载。根节点同时裁剪圆角内的内容；若允许 flex 压缩，长答复会把工具组高度压至零，留下可见边框。回归使用真实 GPUI 滚动容器，覆盖运行 → 完成 → 追加长 Markdown 答复 → 展开结果。
 
 `src/app/ai/composer.rs` 复用 InputState 及按钮，负责输入容器排布和临时反馈。TurnFeedback 在非活动轮为 Hidden；活动轮从最后一个 user 消息开始查找 assistant 的非空正文，没有正文时为 Waiting，已有正文时为 Dots。工具结果和历史旧轮不计入首次正文，后续模型请求不恢复 Waiting。AiPanel 将点附在最末助手回复容器中；末项为工具或异常时，使用无助手标识、无文案的独立点节点。只有 Waiting 使用两行助手标识/处理文案。反馈不写入 messages、不进入模型请求或持久化。三个点使用 GPUI 重复动画依次切换透明度，节点移除后自然停止，不新增后台定时器。输入使用 appearance(false) 去掉内部边框及禁用灰底，实际禁用语义和发送/停止事件保持原实现。
 
-`src/app/ai/scroll.rs` 统一聊天滚动策略。Generating 状态每次渲染都请求 ScrollHandle::scroll_to_bottom，不依赖消息长度变化或旧视口是否接近底部；GPUI 在本帧布局完成后按新的滚动范围定位，覆盖较大 SSE 分片和正文未变但 Markdown 重新排版的情况。其他状态保留原有规则：切换对话定位到底部，内容变化且原位置接近底部时跟随，否则保留历史阅读位置。无需后台定时器或新增持久化状态。
+`src/app/ai/scroll.rs` 统一聊天滚动策略。TurnState::active 覆盖生成、工具执行、等待审批与预算暂停，每次渲染均请求 ScrollHandle::scroll_to_bottom，不依赖消息长度变化或旧视口是否接近底部；GPUI 在本帧布局完成后按新的滚动范围定位，覆盖工具审阅加载和正文未变但 Markdown 重新排版的情况。整轮结束后，原位置距底部不超过 0.5px 时继续锚定底部，承接迟到的 Markdown 排版；小幅手动上滑也可离开锚点。切换对话定位到底部，非活动状态新增正文仍保留原有 32px 接近底部跟随规则，其余历史阅读位置保持。无需后台定时器或新增持久化状态。面板标题、用量与输入容器禁止纵向 flex 压缩，外层聊天框架裁剪到其分配的区域，只有 transcript 承载聊天滚动。
 
 配置目录沿用 `~/.config/tiny-shell`：
 
@@ -42,6 +48,24 @@ ToolGroupView 的根布局禁止纵向 flex 压缩，长答复由外层聊天滚
 | `mcp/ai-access.json` | 内置访问开关和全局模式，schema_version=2；v1 一次性迁移，保留原开关并复制当时共享模式，后续独立；原 `mcp/policy.json` 格式不变。 |
 
 Provider 与历史保存在独立目录，连接归档不包含它们；AI/MCP 配置由应用协调进入云同步，规则以[同步契约](../sync/ai-mcp-sync.md)为准。持久化串行锁隔离保存与删除，I/O 前复制快照并释放状态锁，避免删除后由迟到检查点重新创建历史。未配置隐私密码时新 Key 仅在内存中使用；无历史主密钥时不落盘聊天，不生成替代密钥覆盖已有密文。
+
+## 首轮后台命名（2026-10-13）
+
+`service/title.rs` 在新会话首轮成功结束时启动独立任务，冻结该轮 Provider、模型及轮 ID。只发送首条用户任务的前 4000 个字符；不附加 SSH 目标、工具输出或聊天历史，不提供 tools。请求为非流式，输出预算 128 tokens、整体超时 30 秒；结果规范化为不超过 20 个 Unicode 字符的单行标题，原始响应仍按既有脱敏规则留审计。
+
+`TitleState` 区分 AwaitingFirstTurn、Generating、Generated、Failed 和 Preserved；旧数据缺字段默认 Preserved，不补发请求。标题任务使用独立取消通道，不占聊天活动状态。手动改名同步改为 Preserved 并取消请求；删除和 stop_all 同样取消。结果只写仍为 Generating 的存活会话，检查点与删除沿用同一持久化锁，不能复活已删文件。重启时，即使聊天已 Idle，也将未完成命名标为失败、请求标为 interrupted，保留已有用量且不重试。
+
+模型请求新增带兼容默认值的 `RequestPurpose`（chat/title/followup/provider_test）。命名用量归属原会话和首轮，独立于 SSH 执行预算；工具审计只选择当前轮的 chat 请求，防止晚到辅助结果串入下一轮。请求用途保存在既有密文正文，无数据库迁移。
+
+## 轮后续聊建议（2026-10-13）
+
+`service/followups.rs` 在 runner 正常结束时取得已完成轮的最新消息快照，并冻结该轮 Provider、模型和轮 ID。只发送本轮用户请求前 4000 个 Unicode 字符及最终助手正文前 6000 个字符，不另加 SSH 元数据、工具原文或其他轮历史。Provider 辅助请求无 tools、非流式，输出上限 512 tokens、整体超时 20 秒，失败不自动重试。解析只接受 JSON 字符串数组，最多 3 项，每项最多 120 个 Unicode 字符；空文本、多行、控制及双向显示字符、对象形式的隐藏 prompt 均拒绝，重复项去重，空数组合法。
+
+`Conversation.followups` 为兼容默认 None 的轮次元数据，包含 turn_id、request_id、Generating/Ready/Failed 及完整候选文本，不写入 messages，也不进入后续模型聊天上下文。随本机加密历史持久化，旧历史不补生成；重启将未完成生成标为 Failed，并按既有逻辑结算中断请求。`execution.followup_suggestions` 默认 true，随既有配置同步。关闭并保存或同步关闭时取消生成，UI 隐藏已存候选；重新开启只影响后续成功轮，不发历史请求。
+
+每个后台请求使用独立取消通道，开始新轮、停止、删除、stop_all 均取消；结束写回时在同一状态锁内核对会话、轮次、请求 ID 和开关，旧任务不能清除新任务的取消通道。持久化与删除复用既有串行锁，已删除会话不能由迟到结果重建。候选 Token 使用 `RequestPurpose::Followup` 计入原会话和原轮，辅助请求独立于主执行预算，不增加工具权限。
+
+`app/ai/followups.rs` 是独立轻量 GPUI 组件；`panel/followups.rs` 将点击转给服务。添加文本先校验候选仍属于当前会话和轮次；直接发送在 `runner::start_turn` 同一锁内验证候选并开始下一轮，复用原 Provider/权限入口、活动轮互斥和审计。仅添加操作编辑 InputState；直接发送不清空原草稿。输入框服务器与候选操作 SVG 通过 `app/assets.rs` 静态嵌入，不需要网络资源。
 
 ## 轮次、取消与恢复
 
@@ -79,4 +103,4 @@ Provider 与历史保存在独立目录，连接归档不包含它们；AI/MCP �
 
 Windows `add_button` 的 arguments 与 macOS Action::button 的 identifier 使用固定动作 ID；解析只接受两个已登记 ID，通知正文映射 Open，其他数据忽略。macOS 通过 response.is_default_action 区分正文与按钮，close_reason 非空时不执行动作；继续按钮设置 authenticationRequired。按钮处理成功后沿用 Service stamp 更新 UI，清除失效弹窗，不显式拉回窗口再做二次选择。测试通知没有对话身份，按钮无业务副作用。无需增加依赖或改变配置/历史格式。
 
-JSON 回退与 SSE 共用完整性检查：禁止截断完成原因、重复 tool_call_id、非对象参数及不完整 JSON。只有用户主动测试、刷新或发送才调用 Provider。正式协议依据为 [Chat Completions](https://platform.openai.com/docs/api-reference/chat/create)，凭据适配为 [keyring 4.2.0](https://docs.rs/keyring/4.2.0/keyring/)。
+JSON 回退与 SSE 共用完整性检查：禁止截断完成原因、重复 tool_call_id、非对象参数及不完整 JSON。用户主动测试、刷新或发送会调用 Provider；新会话首轮成功后额外异步请求一次标题，开启续聊建议时每轮成功结束后额外请求一次候选。打开历史或重启不补发命名或候选请求。正式协议依据为 [Chat Completions](https://platform.openai.com/docs/api-reference/chat/create)，凭据适配为 [keyring 4.2.0](https://docs.rs/keyring/4.2.0/keyring/)。

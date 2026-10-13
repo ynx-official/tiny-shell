@@ -1,4 +1,4 @@
-use crate::ai::{Conversation, TurnState};
+use crate::ai::Conversation;
 use gpui::{ScrollHandle, px};
 
 pub(super) type ScrollStamp = (String, usize, usize);
@@ -15,10 +15,14 @@ pub(super) fn follow(
     );
     let changed = previous.as_ref() != Some(&stamp);
     let new_conversation = previous.as_ref().is_none_or(|old| old.0 != conversation.id);
-    // Parsing Markdown can change layout after the content stamp has settled.
-    // Request the bottom every streaming render so GPUI uses this frame's height.
-    if conversation.state == TurnState::Generating
-        || (changed && (new_conversation || scroll.max_offset().y + scroll.offset().y <= px(32.)))
+    let remaining = scroll.max_offset().y + scroll.offset().y;
+    // Tool reviews can grow without transcript changes. Follow every active phase;
+    // keep an already-bottom viewport anchored when the final Markdown settles.
+    // The tight idle tolerance lets even a small manual scroll leave the bottom.
+    if conversation.state.active()
+        || new_conversation
+        || remaining <= px(0.5)
+        || (changed && remaining <= px(32.))
     {
         scroll.scroll_to_bottom();
     }
@@ -147,6 +151,52 @@ mod tests {
             assert!(host.scroll.max_offset().y > before + px(100.));
         });
         assert_at_bottom(&host, &mut visual);
+    }
+
+    #[gpui::test]
+    fn tool_execution_and_user_waits_follow_without_new_transcript_bytes(cx: &mut TestAppContext) {
+        let (host, mut visual) = open_chat(cx);
+        for state in [
+            TurnState::RunningTool,
+            TurnState::AwaitingApproval,
+            TurnState::AwaitingContinuation,
+        ] {
+            host.update_in(&mut visual, |host, _, cx| {
+                host.conversation.state = state;
+                host.scroll.set_offset(point(px(0.), px(0.)));
+                host.body_width -= 25.;
+                cx.notify();
+            });
+            visual.run_until_parked();
+            assert_at_bottom(&host, &mut visual);
+        }
+    }
+
+    #[gpui::test]
+    fn final_markdown_reflow_keeps_the_bottom_after_the_turn_finishes(cx: &mut TestAppContext) {
+        let (host, mut visual) = open_chat(cx);
+        assert_at_bottom(&host, &mut visual);
+        host.update_in(&mut visual, |host, _, cx| {
+            host.conversation.state = TurnState::Idle;
+            host.body_width = 210.;
+            cx.notify();
+        });
+        visual.run_until_parked();
+        assert_at_bottom(&host, &mut visual);
+
+        host.update_in(&mut visual, |host, _, cx| {
+            let offset = host.scroll.offset();
+            host.scroll.set_offset(point(offset.x, offset.y + px(4.)));
+            cx.notify();
+        });
+        visual.run_until_parked();
+        host.read_with(&visual, |host, _| {
+            let remaining = host.scroll.max_offset().y + host.scroll.offset().y;
+            assert!(
+                remaining >= px(3.),
+                "a small manual scroll must remain usable"
+            );
+        });
     }
 
     #[gpui::test]

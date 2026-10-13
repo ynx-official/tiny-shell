@@ -7,6 +7,7 @@ mod storage;
 mod usage;
 pub(crate) use model::*;
 pub(crate) use service::{Service, Snapshot};
+pub(crate) use tiny_shell_mcp::audit::RequestPurpose;
 pub(crate) use usage::{ModelRequest, TurnRecord};
 
 #[cfg(test)]

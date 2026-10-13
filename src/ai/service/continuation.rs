@@ -221,6 +221,7 @@ impl Service {
                     .snapshot
                     .settings
                     .execution = execution;
+                service.cancel_disabled_followups();
                 service.configuration_changed();
                 Ok(())
             })();

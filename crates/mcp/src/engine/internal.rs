@@ -14,7 +14,12 @@ pub struct AiPolicy {
 pub(super) struct Access {
     policy: AiPolicy,
     generation: u64,
-    clients: HashMap<String, Target>,
+    clients: HashMap<String, Binding>,
+}
+struct Binding {
+    target: Target,
+    mode: Option<Mode>,
+    generation: u64,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -89,14 +94,16 @@ impl InternalClient {
             .dispatch(&self.id, call, Some(self.generation))
             .await
     }
-    /// Only built-in permission changes invalidate this capability.
+    /// Built-in policy changes or a new turn for this conversation revoke the handle.
     pub fn is_valid(&self) -> bool {
         let Ok(access) = self.engine.ai.lock() else {
             return false;
         };
         access.policy.enabled
-            && access.generation == self.generation
-            && access.clients.contains_key(&self.id)
+            && access
+                .clients
+                .get(&self.id)
+                .is_some_and(|b| b.generation == self.generation)
     }
     /// Let the model adapter abandon an in-flight request when SSH authorization changes.
     pub async fn revoked(&self) {
@@ -114,15 +121,21 @@ impl InternalClient {
             .lock()
             .map_err(|_| Failure::new("INTERNAL_ERROR"))?;
         if !access.policy.enabled
-            || access.generation != self.generation
-            || !access.clients.contains_key(&self.id)
+            || access
+                .clients
+                .get(&self.id)
+                .is_none_or(|b| b.generation != self.generation)
         {
             return Err(Failure::new("CLIENT_REVOKED"));
         }
-        Ok(access.policy.mode)
+        Ok(access
+            .clients
+            .get(&self.id)
+            .and_then(|b| b.mode)
+            .unwrap_or(access.policy.mode))
     }
     pub fn stop(&self) -> Result<()> {
-        self.engine.stop_client(&self.id)
+        self.engine.stop_client(&self.id, self.generation)
     }
 }
 impl Engine {
@@ -130,8 +143,10 @@ impl Engine {
         if let Some(generation) = expected {
             let access = self.ai.lock().map_err(|_| Failure::new("INTERNAL_ERROR"))?;
             if !access.policy.enabled
-                || generation != access.generation
-                || !access.clients.contains_key(client)
+                || access
+                    .clients
+                    .get(client)
+                    .is_none_or(|b| b.generation != generation)
             {
                 return Err(Failure::new("CLIENT_REVOKED"));
             }
@@ -193,6 +208,10 @@ impl Engine {
         access.policy = policy;
         self.configuration_stamp.fetch_add(1, Ordering::Relaxed);
         access.generation = access.generation.wrapping_add(1);
+        let revoked_generation = access.generation;
+        for binding in access.clients.values_mut() {
+            binding.generation = revoked_generation;
+        }
         drop(access);
         self.cancel_source(&mut inner, true);
         self.changed();
@@ -203,9 +222,18 @@ impl Engine {
         conversation: &str,
         target: Target,
     ) -> Result<InternalClient> {
+        self.internal_client_with_mode(conversation, target, None)
+    }
+    /// An explicit conversation mode overrides the default, never the global enable switch.
+    pub fn internal_client_with_mode(
+        self: &Arc<Self>,
+        conversation: &str,
+        target: Target,
+        mode: Option<Mode>,
+    ) -> Result<InternalClient> {
         crate::contracts::valid_id(conversation)?;
         let id = format!("ai:{conversation}");
-        let _inner = self.lock()?;
+        let inner = self.lock()?;
         let mut access = self.ai.lock().map_err(|_| Failure::new("INTERNAL_ERROR"))?;
         if !access.policy.enabled {
             return Err(Failure::new("CONNECTION_NOT_ALLOWED"));
@@ -213,15 +241,37 @@ impl Engine {
         if access
             .clients
             .get(&id)
-            .is_some_and(|t| t.id != target.id || t.digest != target.digest)
+            .is_some_and(|b| b.target.id != target.id || b.target.digest != target.digest)
         {
             return Err(Failure::new("TARGET_CHANGED"));
         }
-        access.clients.insert(id.clone(), target);
+        // A new turn gets a fresh epoch. Old handles must never inherit its mode,
+        // and pending approvals/sessions must finish before it can be issued.
+        if inner
+            .tasks
+            .values()
+            .any(|t| t.review.client == id && !t.review.state.terminal())
+            || inner.sessions.values().any(|s| s.client == id)
+        {
+            return Err(Failure::new("CLIENT_BUSY"));
+        }
+        access.generation = access.generation.wrapping_add(1);
+        let generation = access.generation;
+        access.clients.insert(
+            id.clone(),
+            Binding {
+                target,
+                mode,
+                generation,
+            },
+        );
+        drop(access);
+        drop(inner);
+        self.changed();
         Ok(InternalClient {
             engine: self.clone(),
             id,
-            generation: access.generation,
+            generation,
         })
     }
     /// Validate the current saved target before sharing any metadata with a provider.
@@ -230,7 +280,16 @@ impl Engine {
         conversation: &str,
         target: Target,
     ) -> Result<InternalClient> {
-        let client = self.internal_client(conversation, target.clone())?;
+        self.checked_internal_client_with_mode(conversation, target, None)
+            .await
+    }
+    pub async fn checked_internal_client_with_mode(
+        self: &Arc<Self>,
+        conversation: &str,
+        target: Target,
+        mode: Option<Mode>,
+    ) -> Result<InternalClient> {
+        let client = self.internal_client_with_mode(conversation, target.clone(), mode)?;
         if !self
             .remote
             .targets()
@@ -250,19 +309,19 @@ impl Engine {
             return Ok(external.clone());
         }
         let access = self.ai.lock().map_err(|_| Failure::new("INTERNAL_ERROR"))?;
-        let target = access
+        let binding = access
             .clients
             .get(client)
             .ok_or_else(|| Failure::new("CLIENT_REVOKED"))?;
         let mut policy = Policy {
             enabled: access.policy.enabled,
-            mode: access.policy.mode,
-            revision: access.generation,
+            mode: binding.mode.unwrap_or(access.policy.mode),
+            revision: binding.generation,
             ..Policy::default()
         };
         policy
             .grants
-            .insert(target.id.clone(), target.digest.clone());
+            .insert(binding.target.id.clone(), binding.target.digest.clone());
         Ok(policy)
     }
     pub(super) fn client_enabled(&self, client: &str) -> bool {
@@ -285,11 +344,12 @@ impl Engine {
             .ok_or_else(|| Failure::new("CLIENT_REVOKED"))?;
         Ok(targets
             .into_iter()
-            .filter(|t| t.id == bound.id && t.digest == bound.digest)
+            .filter(|t| t.id == bound.target.id && t.digest == bound.target.digest)
             .collect())
     }
-    fn stop_client(&self, client: &str) -> Result<()> {
+    fn stop_client(&self, client: &str, generation: u64) -> Result<()> {
         let mut inner = self.lock()?;
+        self.verify_internal_epoch(client, Some(generation))?;
         for task in inner
             .tasks
             .values_mut()

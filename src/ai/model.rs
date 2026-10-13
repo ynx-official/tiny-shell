@@ -88,6 +88,7 @@ pub(crate) struct ExecutionSettings {
     pub tool_calls: usize,
     pub model_requests: usize,
     pub background_notifications: bool,
+    pub followup_suggestions: bool,
 }
 impl Default for ExecutionSettings {
     fn default() -> Self {
@@ -95,6 +96,7 @@ impl Default for ExecutionSettings {
             tool_calls: 16,
             model_requests: 8,
             background_notifications: false,
+            followup_suggestions: true,
         }
     }
 }
@@ -220,14 +222,49 @@ pub(crate) struct Activity {
     #[serde(default)]
     pub tool_call_id: Option<String>,
 }
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum TitleState {
+    /// Old histories and user-chosen titles must never be renamed in the background.
+    #[default]
+    Preserved,
+    AwaitingFirstTurn,
+    Generating,
+    Generated,
+    Failed,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum FollowupState {
+    Generating,
+    Ready,
+    Failed,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub(crate) struct Followups {
+    pub turn_id: String,
+    pub request_id: String,
+    pub state: FollowupState,
+    pub items: Vec<String>,
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 pub(crate) struct Conversation {
     pub id: String,
     pub title: String,
+    #[serde(default)]
+    pub title_state: TitleState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub followups: Option<Followups>,
     pub target: Option<BoundTarget>,
     pub provider_id: Option<String>,
     pub model: String,
     pub messages: Vec<Message>,
+    /// None follows the global AI mode; the SSH enable switch remains global.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode_override: Option<tiny_shell_mcp::policy::Mode>,
     pub activities: Vec<Activity>,
     pub state: TurnState,
     pub error: Option<String>,
@@ -240,6 +277,18 @@ pub(crate) struct Conversation {
     pub turns: Vec<super::TurnRecord>,
 }
 impl Conversation {
+    pub fn visible_followups(&self) -> Option<&Followups> {
+        self.followups.as_ref().filter(|suggestions| {
+            self.state == TurnState::Idle
+                && self
+                    .turns
+                    .last()
+                    .is_some_and(|turn| turn.id == suggestions.turn_id && turn.state == "completed")
+                && suggestions.state == FollowupState::Ready
+                && !suggestions.items.is_empty()
+        })
+    }
+
     pub fn new(target: Option<BoundTarget>, settings: &Settings) -> Self {
         let provider = settings
             .providers
@@ -248,12 +297,15 @@ impl Conversation {
         Self {
             id: Uuid::new_v4().to_string(),
             title: String::new(),
+            title_state: TitleState::AwaitingFirstTurn,
+            followups: None,
             target,
             provider_id: provider.map(|p| p.id.clone()),
             model: provider
                 .map(|p| p.default_model.clone())
                 .unwrap_or_default(),
             messages: Vec::new(),
+            mode_override: None,
             activities: Vec::new(),
             state: TurnState::Idle,
             error: None,

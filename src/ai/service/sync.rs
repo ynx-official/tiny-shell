@@ -99,6 +99,7 @@ impl Service {
             .map_err(|_| anyhow!("AI_STORAGE_ERROR"))?
             .snapshot
             .settings = next.settings.clone();
+        self.cancel_disabled_followups();
         self.refresh_key_status(&store, &next.settings)?;
         self.configuration_changed();
         self.changed();

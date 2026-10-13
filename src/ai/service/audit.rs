@@ -15,6 +15,7 @@ impl Service {
             id: context.operation_id.clone(),
             conversation_id: None,
             turn_id: String::new(),
+            purpose: RequestPurpose::ProviderTest,
             provider_id: provider.id.clone(),
             provider_name: provider.name.clone(),
             model: provider.default_model.clone(),
@@ -72,7 +73,12 @@ impl Service {
         if let Ok(state) = self.state.lock()
             && let Some(live) = state.snapshot.conversations.iter().find(|v| v.id == c.id)
         {
-            context.model_request_id = live.requests.last().map(|r| r.id.clone());
+            context.model_request_id = live
+                .requests
+                .iter()
+                .rev()
+                .find(|r| r.turn_id == c.turn_id() && r.purpose == RequestPurpose::Chat)
+                .map(|r| r.id.clone());
         }
         context
     }
@@ -80,6 +86,7 @@ impl Service {
         let mut context = self.audit_context(c);
         context.operation_id = request.id.clone();
         context.model_request_id = Some(request.id.clone());
+        context.turn_id = Some(request.turn_id.clone());
         self.audit.record(Event::new(
             context,
             kind,
@@ -156,6 +163,7 @@ impl Service {
             let mut context = self.audit_context(c);
             context.operation_id = request.id.clone();
             context.model_request_id = Some(request.id.clone());
+            context.turn_id = Some(request.turn_id.clone());
             self.audit.record(Event::new(context,"model_finished","model",&request.state,serde_json::json!({"request":request,"response":result.as_ref().ok().map(|m|m.wire()),"partial_response":if result.is_err(){Some(partial)}else{None},"partial_response_complete":result.is_ok()})));
         }
     }

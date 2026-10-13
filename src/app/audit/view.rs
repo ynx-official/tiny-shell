@@ -24,11 +24,12 @@ pub(crate) fn usage_label(c: &crate::ai::Conversation) -> String {
     if c.requests.is_empty() && legacy {
         return t!("audit_legacy_usage").to_string();
     }
-    let label = format!(
-        "{} · {}",
-        t!("audit_total_tokens", count = summary.total),
-        t!("audit_unknown_requests", count = summary.unknown)
-    );
+    let mut parts = vec![
+        t!("audit_total_tokens", count = summary.total).to_string(),
+        t!("audit_request_count", count = summary.requests).to_string(),
+    ];
+    parts.extend(usage_status_labels(&summary));
+    let label = parts.join(" · ");
     if legacy {
         format!("{label} · {}", t!("audit_legacy_also"))
     } else {
@@ -43,9 +44,24 @@ pub(crate) fn compact_usage_label(c: &crate::ai::Conversation) -> String {
     format!(
         "{}{}",
         t!("audit_compact_tokens", count = sum.total),
-        if sum.unknown > 0 { " *" } else { "" }
+        if sum.unknown > 0 || sum.pending > 0 {
+            " *"
+        } else {
+            ""
+        }
     )
 }
+fn usage_status_labels(summary: &tiny_shell_mcp::audit::Summary) -> Vec<String> {
+    let mut labels = Vec::new();
+    if summary.pending > 0 {
+        labels.push(t!("audit_pending_requests", count = summary.pending).to_string());
+    }
+    if summary.unknown > 0 {
+        labels.push(t!("audit_unknown_requests", count = summary.unknown).to_string());
+    }
+    labels
+}
+
 fn source(source: Source) -> String {
     t!(match source {
         Source::Ai => "audit_source_ai",
@@ -105,6 +121,10 @@ fn title(event: &Event) -> String {
             "{}{} · {}",
             if event.details["purpose"] == "provider_connection_test" {
                 format!("{} · ", t!("audit_provider_test"))
+            } else if request["purpose"] == "title" {
+                format!("{} · ", t!("audit_title_generation"))
+            } else if request["purpose"] == "followup" {
+                format!("{} · ", t!("audit_followup_generation"))
             } else {
                 String::new()
             },
@@ -341,15 +361,18 @@ impl AuditPanel {
                         div()
                             .text_sm()
                             .text_color(cx.theme().muted_foreground)
-                            .child(
-                                t!(
-                                    "audit_usage_subtotals",
-                                    cached = summary.cached_input,
-                                    reasoning = summary.reasoning_output,
-                                    unknown = summary.unknown
-                                )
-                                .to_string(),
-                            ),
+                            .child({
+                                let mut parts = vec![
+                                    t!(
+                                        "audit_usage_subtotals",
+                                        cached = summary.cached_input,
+                                        reasoning = summary.reasoning_output
+                                    )
+                                    .to_string(),
+                                ];
+                                parts.extend(usage_status_labels(&summary));
+                                parts.join(" · ")
+                            }),
                     )
                     .child(
                         div()
@@ -798,5 +821,40 @@ impl AuditPanel {
                     ),
             )
             .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod usage_tests {
+    use super::*;
+    use tiny_shell_mcp::audit::Summary;
+
+    #[test]
+    fn usage_labels_show_request_count_and_only_nonzero_incomplete_states() {
+        assert!(usage_status_labels(&Summary::default()).is_empty());
+        let sum = Summary {
+            requests: 3,
+            confirmed: 1,
+            pending: 1,
+            unknown: 1,
+            ..Default::default()
+        };
+        assert_eq!(
+            usage_status_labels(&sum),
+            vec![
+                t!("audit_pending_requests", count = 1).to_string(),
+                t!("audit_unknown_requests", count = 1).to_string(),
+            ]
+        );
+        let c = crate::ai::Conversation::new(None, &crate::ai::Settings::default());
+        assert_eq!(
+            usage_label(&c),
+            format!(
+                "{} · {}",
+                t!("audit_total_tokens", count = 0),
+                t!("audit_request_count", count = 0)
+            )
+        );
+        assert!(!usage_label(&c).contains(&t!("audit_unknown_requests", count = 0).to_string()));
     }
 }

@@ -187,7 +187,17 @@ impl Database {
     }
     pub fn summary(&self, conversation: Option<String>) -> Result<Summary> {
         let conversation = conversation.map(|s| hex::encode(Sha256::digest(s.as_bytes())));
-        let mut statement=self.conn.prepare("SELECT input,output,total,cached,reasoning FROM model_requests WHERE conversation IS NOT NULL AND (?1 IS NULL OR conversation=?1)")?;
+        // Model events use the request ID as their operation ID. Reuse the indexed terminal
+        // state instead of treating every NULL usage as unknown (or adding a parallel state).
+        // Missing/pruned events conservatively leave incomplete usage unknown.
+        let mut statement = self.conn.prepare(
+            "SELECT m.input,m.output,m.total,m.cached,m.reasoning,
+                COALESCE((SELECT e.state IN ('pending','running') FROM events e
+                    WHERE e.op=m.id AND e.model_record=1
+                    ORDER BY e.priority DESC,e.seq DESC LIMIT 1),0)
+             FROM model_requests m WHERE m.conversation IS NOT NULL
+                AND (?1 IS NULL OR m.conversation=?1)",
+        )?;
         let rows = statement.query_map([conversation], |r| {
             let number = |index| -> rusqlite::Result<Option<u64>> {
                 r.get::<_, Option<i64>>(index)?
@@ -202,18 +212,22 @@ impl Database {
                     })
                     .transpose()
             };
-            Ok(super::Usage {
-                input: number(0)?,
-                output: number(1)?,
-                total: number(2)?,
-                cached_input: number(3)?,
-                reasoning_output: number(4)?,
-                ..super::Usage::default()
-            })
+            Ok((
+                super::Usage {
+                    input: number(0)?,
+                    output: number(1)?,
+                    total: number(2)?,
+                    cached_input: number(3)?,
+                    reasoning_output: number(4)?,
+                    ..super::Usage::default()
+                },
+                r.get::<_, bool>(5)?,
+            ))
         })?;
         let mut summary = Summary::default();
         for row in rows {
-            summary.add(Some(&row?));
+            let (usage, pending) = row?;
+            summary.add(Some(&usage), pending);
         }
         Ok(summary)
     }
@@ -502,6 +516,113 @@ mod tests {
         );
         drop(reopened);
         Ok(())
+    }
+    #[test]
+    fn usage_summary_waits_for_completion_and_preserves_prior_unknown_requests() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut db = Database::open(dir.path(), Some([31; 32])).unwrap();
+        let mut first = Context::client("ai:usage-lifecycle");
+        first.model_request_id = Some(first.operation_id.clone());
+        let record = |context: &Context, kind: &str, state: &str, usage: Value| {
+            Event::new(
+                context.clone(),
+                kind,
+                "model",
+                state,
+                json!({"request":{
+                    "started_ms":super::super::now_ms(),"state":state,"usage":usage
+                }}),
+            )
+        };
+        db.append(&mut record(&first, "model_started", "pending", Value::Null))
+            .unwrap();
+        assert_eq!(
+            db.summary(None).unwrap().unknown,
+            0,
+            "in-flight usage is not missing usage"
+        );
+        db.append(&mut record(
+            &first,
+            "model_finished",
+            "completed",
+            Value::Null,
+        ))
+        .unwrap();
+        assert_eq!(db.summary(None).unwrap().unknown, 1);
+        let mut second = Context::client("ai:usage-lifecycle");
+        second.model_request_id = Some(second.operation_id.clone());
+        db.append(&mut record(
+            &second,
+            "model_started",
+            "pending",
+            Value::Null,
+        ))
+        .unwrap();
+        assert_eq!(db.summary(None).unwrap().unknown, 1);
+        let usage = json!({"input":40,"output":15,"total":55});
+        db.append(&mut record(
+            &second,
+            "model_usage",
+            "pending",
+            usage.clone(),
+        ))
+        .unwrap();
+        db.append(&mut record(&second, "model_finished", "completed", usage))
+            .unwrap();
+        // Late active events must not revert the first request to waiting or erase its unknown usage.
+        db.append(&mut record(&first, "model_started", "pending", Value::Null))
+            .unwrap();
+        let summary = db.summary(None).unwrap();
+        assert_eq!(
+            (
+                summary.requests,
+                summary.confirmed,
+                summary.unknown,
+                summary.total
+            ),
+            (2, 1, 1, 55)
+        );
+        drop(db);
+        let db = Database::open(dir.path(), Some([31; 32])).unwrap();
+        let summary = db.summary(Some("usage-lifecycle".into())).unwrap();
+        assert_eq!(
+            (
+                summary.requests,
+                summary.confirmed,
+                summary.unknown,
+                summary.total
+            ),
+            (2, 1, 1, 55)
+        );
+    }
+    #[test]
+    fn interrupted_model_usage_changes_from_waiting_to_unknown_on_profile_recovery() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut db = Database::open(dir.path(), Some([32; 32])).unwrap();
+        let mut context = Context::client("ai:recovered-usage");
+        context.instance_id = Some("previous-instance".into());
+        context.model_request_id = Some(context.operation_id.clone());
+        db.append(&mut Event::new(
+            context,
+            "model_started",
+            "model",
+            "pending",
+            json!({
+                "request":{"started_ms":super::super::now_ms(),"state":"pending","usage":null}
+            }),
+        ))
+        .unwrap();
+        assert_eq!(db.summary(None).unwrap().pending, 1);
+        drop(db);
+        let mut db = Database::open(dir.path(), Some([32; 32])).unwrap();
+        db.start_profile(dir.path(), "new-instance").unwrap();
+        let summary = db.summary(None).unwrap();
+        assert_eq!(
+            (summary.requests, summary.pending, summary.unknown),
+            (1, 0, 1)
+        );
+        db.start_profile(dir.path(), "new-instance").unwrap();
+        assert_eq!(db.summary(None).unwrap().unknown, 1);
     }
     #[test]
     fn usage_updates_are_idempotent_and_external_operations_never_enter_token_totals() {

@@ -10,7 +10,7 @@ use gpui::{
     Subscription, WeakEntity, Window, div, prelude::FluentBuilder as _, px,
 };
 use gpui_component::{
-    ActiveTheme as _, Disableable as _, IconName, Sizable as _,
+    ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _,
     button::{Button, ButtonVariants as _},
     h_flex,
     input::{Input, InputEvent, InputState},
@@ -19,6 +19,7 @@ use gpui_component::{
     v_flex,
 };
 use rust_i18n::t;
+mod followups;
 
 pub(crate) struct AiPanel {
     owner: WeakEntity<TinyShell>,
@@ -131,6 +132,39 @@ impl AiPanel {
                 o.show_ai_settings(index, window, cx);
             });
         }
+    }
+    fn select_mode(
+        &mut self,
+        id: String,
+        mode: Option<tiny_shell_mcp::policy::Mode>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if mode == Some(tiny_shell_mcp::policy::Mode::Full) {
+            let panel = cx.entity();
+            ConfirmationDialog::new(
+                t!("mcp_full").to_string(),
+                t!("ai_conversation_full_confirm").to_string(),
+            )
+            .danger(true)
+            .on_ok(move |_, _, cx| panel.update(cx, |this, cx| this.save_mode(&id, mode, cx)))
+            .open(window, cx);
+        } else {
+            self.save_mode(&id, mode, cx);
+        }
+    }
+    fn save_mode(
+        &mut self,
+        id: &str,
+        mode: Option<tiny_shell_mcp::policy::Mode>,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let result =
+            service().and_then(|s| s.set_conversation_mode(id, mode).map_err(|e| e.to_string()));
+        let success = result.is_ok();
+        self.error = result.err();
+        cx.notify();
+        success
     }
     fn confirm_delete(&self, ids: Vec<String>, window: &mut Window, cx: &mut Context<Self>) {
         ConfirmationDialog::new(
@@ -371,7 +405,33 @@ impl AiPanel {
             )
             .into_any_element()
     }
+    // GPUI builders retain large temporaries in unoptimized builds. Keep each
+    // subtree in its own frame and erase it before composing the outer layout:
+    // Windows gives the UI thread only 1 MiB of stack by default.
+    #[inline(never)]
     fn render_conversation(
+        &mut self,
+        c: &Conversation,
+        snapshot: &crate::ai::Snapshot,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let header = self.render_conversation_header(c, cx);
+        let messages = self.render_transcript(c, snapshot, window, cx);
+        let usage = self.render_conversation_usage(c);
+        let composer = self.render_composer(c, snapshot, cx);
+        v_flex()
+            .size_full()
+            .min_h_0()
+            .child(header)
+            .child(messages)
+            .child(usage)
+            .child(composer)
+            .into_any_element()
+    }
+
+    #[inline(never)]
+    fn render_transcript(
         &mut self,
         c: &Conversation,
         snapshot: &crate::ai::Snapshot,
@@ -381,6 +441,7 @@ impl AiPanel {
         super::scroll::follow(&self.scroll, &mut self.scroll_stamp, c);
         let mut messages = v_flex()
             .id("ai-messages")
+            .debug_selector(|| "ai-messages".to_owned())
             .flex_1()
             .min_h_0()
             .overflow_y_scroll()
@@ -429,15 +490,7 @@ impl AiPanel {
             let ix = match item {
                 super::tool_steps::ChatItem::Message(index) => index,
                 super::tool_steps::ChatItem::Tools(group) => {
-                    let owner = cx.entity().downgrade();
-                    let review: super::tool_steps::view::ReviewAction =
-                        std::rc::Rc::new(move |task, window, cx| {
-                            if let Some(owner) = owner.upgrade() {
-                                owner.update(cx, |this, cx| {
-                                    this.settings(5, Some(task), window, cx)
-                                });
-                            }
-                        });
+                    let review = super::review::actions(c, self.owner.clone());
                     let initial = group.clone();
                     let trace = window.use_keyed_state(
                         format!("ai-steps-{}-{}", c.id, group.key),
@@ -573,13 +626,55 @@ impl AiPanel {
         {
             messages = messages.child(indicator);
         }
-        let target_button = Button::new("ai-target").ghost().xsmall().label(
-            c.target
-                .as_ref()
-                .map(|t| t.name.clone())
-                .unwrap_or_else(|| t!("ai_plain_chat").to_string()),
-        );
-        let target_button = if c.messages.is_empty() {
+        if snapshot.settings.execution.followup_suggestions
+            && let Some(suggestions) = self.render_followups(c, window, cx)
+        {
+            messages = messages.child(suggestions);
+        }
+        messages.into_any_element()
+    }
+
+    fn render_target_selector(&self, c: &Conversation, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let target_label = c
+            .target
+            .as_ref()
+            .map(|t| t.name.clone())
+            .unwrap_or_else(|| t!("ai_plain_chat").to_string());
+        let target_button = Button::new("ai-target")
+            .ghost()
+            .xsmall()
+            .w_full()
+            .min_w_0()
+            .border_1()
+            .border_color(cx.theme().border)
+            .rounded(px(6.))
+            .tooltip(t!("ai_target_scope_hint").to_string())
+            .child(
+                h_flex()
+                    .w_full()
+                    .min_w_0()
+                    .gap_1()
+                    .child(
+                        div()
+                            .flex_shrink_0()
+                            .debug_selector(|| "ai-target-icon".to_owned())
+                            .child(if c.target.is_some() {
+                                Icon::default().path("icons/server.svg").size(px(14.))
+                            } else {
+                                Icon::new(IconName::EyeOff).size(px(14.))
+                            }),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .text_ellipsis()
+                            .text_left()
+                            .child(target_label),
+                    ),
+            );
+        if c.messages.is_empty() {
             let view = cx.entity();
             let id = c.id.clone();
             let pid = c.provider_id.clone();
@@ -643,7 +738,15 @@ impl AiPanel {
                 .into_any_element()
         } else {
             target_button.into_any_element()
-        };
+        }
+    }
+
+    fn render_model_selector(
+        &self,
+        c: &Conversation,
+        snapshot: &crate::ai::Snapshot,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
         let view = cx.entity();
         let id = c.id.clone();
         let target = c.target.clone();
@@ -658,6 +761,7 @@ impl AiPanel {
         let model_button = Button::new("ai-model")
             .ghost()
             .xsmall()
+            .tooltip(model_label.clone())
             .w_full()
             .min_w_0()
             .child(
@@ -695,6 +799,82 @@ impl AiPanel {
                 }
                 menu
             });
+        model_button.into_any_element()
+    }
+
+    fn render_conversation_header(
+        &self,
+        c: &Conversation,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        h_flex()
+            .flex_shrink_0()
+            .gap_2()
+            .p_2()
+            .border_b_1()
+            .border_color(cx.theme().border)
+            .child(
+                Button::new("ai-back")
+                    .ghost()
+                    .xsmall()
+                    .icon(IconName::ArrowLeft)
+                    .tooltip(t!("ai_history").to_string())
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.history = true;
+                        cx.notify();
+                    })),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .overflow_hidden()
+                    .text_ellipsis()
+                    .child(if c.title.is_empty() {
+                        t!("ai_new").to_string()
+                    } else {
+                        c.title.clone()
+                    }),
+            )
+            .into_any_element()
+    }
+
+    fn render_conversation_usage(&self, c: &Conversation) -> gpui::AnyElement {
+        Button::new("ai-conversation-usage")
+            .debug_selector(|| "ai-conversation-usage".to_owned())
+            .flex_none()
+            .ghost()
+            .xsmall()
+            .label(crate::app::audit::usage_label(c))
+            .tooltip(t!("audit_open").to_string())
+            .on_click({
+                let conversation = c.id.clone();
+                let owner = self.owner.clone();
+                move |_, _, cx| {
+                    if let Some(owner) = owner.upgrade() {
+                        crate::app::audit::open(
+                            tiny_shell_mcp::audit::Filter {
+                                conversation_id: Some(conversation.clone()),
+                                ..Default::default()
+                            },
+                            owner,
+                            cx,
+                        )
+                    }
+                }
+            })
+            .into_any_element()
+    }
+
+    #[inline(never)]
+    fn render_composer(
+        &self,
+        c: &Conversation,
+        snapshot: &crate::ai::Snapshot,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let target_button = self.render_target_selector(c, cx);
+        let model_button = self.render_model_selector(c, snapshot, cx);
         let policy = super::super::mcp::service()
             .ok()
             .and_then(|s| s.engine.ai_policy().ok());
@@ -715,113 +895,70 @@ impl AiPanel {
             .iter()
             .find(|p| Some(&p.id) == c.provider_id.as_ref())
             .is_some_and(|p| p.models.iter().any(|m| m.id == c.model && m.supports_tools));
-        let permission_label = t!(super::ssh_status_key(
-            policy,
+        let effective_policy = policy.map(|mut policy| {
+            policy.mode = c.mode_override.unwrap_or(policy.mode);
+            policy
+        });
+        let status_key = super::ssh_status_key(
+            effective_policy,
             c.target.is_some(),
             target_current,
-            supports_tools
-        ))
-        .to_string();
+            supports_tools,
+        );
+        let permission_hint = if let Some(policy) = effective_policy
+            .filter(|p| p.enabled && c.target.is_some() && target_current && supports_tools)
+        {
+            t!(super::permissions::summary_key(policy.mode)).to_string()
+        } else {
+            t!(status_key).to_string()
+        };
+        let view = cx.entity();
+        let permission_id = c.id.clone();
+        let permission_button = super::permissions::selector(
+            c.mode_override,
+            policy.map(|p| p.mode),
+            c.state.active(),
+            cx,
+            move |mode, window, cx| {
+                view.update(cx, |this, cx| {
+                    this.select_mode(permission_id.clone(), mode, window, cx)
+                })
+            },
+        );
         let cid = c.id.clone();
         let active = c.state.active();
         v_flex()
-            .size_full()
-            .min_h_0()
-            .child(
-                h_flex()
-                    .gap_2()
-                    .p_2()
-                    .border_b_1()
-                    .border_color(cx.theme().border)
-                    .child(
-                        Button::new("ai-back")
-                            .ghost()
-                            .xsmall()
-                            .icon(IconName::ArrowLeft)
-                            .tooltip(t!("ai_history").to_string())
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.history = true;
-                                cx.notify();
-                            })),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .overflow_hidden()
-                            .text_ellipsis()
-                            .child(if c.title.is_empty() {
-                                t!("ai_new").to_string()
-                            } else {
-                                c.title.clone()
-                            }),
-                    ),
-            )
-            .child(messages)
-            .child(
-                Button::new("ai-conversation-usage")
+            .flex_shrink_0()
+            .gap_2()
+            .p_3()
+            .border_t_1()
+            .border_color(cx.theme().border)
+            .child(super::composer::surface(
+                &self.input,
+                active,
+                super::composer::context(target_button, permission_hint, cx),
+                super::composer::toolbar(model_button, permission_button, cx),
+                Button::new("ai-send")
+                    .small()
                     .ghost()
-                    .xsmall()
-                    .label(crate::app::audit::usage_label(c))
-                    .tooltip(t!("audit_open").to_string())
-                    .on_click({
-                        let conversation = c.id.clone();
-                        let owner = self.owner.clone();
-                        move |_, _, cx| {
-                            if let Some(owner) = owner.upgrade() {
-                                crate::app::audit::open(
-                                    tiny_shell_mcp::audit::Filter {
-                                        conversation_id: Some(conversation.clone()),
-                                        ..Default::default()
-                                    },
-                                    owner,
-                                    cx,
-                                )
+                    .icon(if active {
+                        IconName::Pause
+                    } else {
+                        IconName::ArrowUp
+                    })
+                    .disabled(!active && self.input.read(cx).value().trim().is_empty())
+                    .tooltip(t!(if active { "ai_stop" } else { "ai_send" }).to_string())
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        if active {
+                            if let Ok(s) = service() {
+                                s.stop(&cid);
                             }
+                        } else {
+                            this.send(window, cx);
                         }
-                    }),
-            )
-            .child(
-                v_flex()
-                    .gap_2()
-                    .p_3()
-                    .border_t_1()
-                    .border_color(cx.theme().border)
-                    .child(super::composer::surface(
-                        &self.input,
-                        active,
-                        h_flex().flex_wrap().gap_1().child(target_button).child(
-                            Button::new("ai-permissions")
-                                .ghost()
-                                .xsmall()
-                                .label(permission_label)
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    this.settings(5, None, window, cx)
-                                })),
-                        ),
-                        model_button,
-                        Button::new("ai-send")
-                            .small()
-                            .ghost()
-                            .icon(if active {
-                                IconName::Pause
-                            } else {
-                                IconName::ArrowUp
-                            })
-                            .disabled(!active && self.input.read(cx).value().trim().is_empty())
-                            .tooltip(t!(if active { "ai_stop" } else { "ai_send" }).to_string())
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                if active {
-                                    if let Ok(s) = service() {
-                                        s.stop(&cid);
-                                    }
-                                } else {
-                                    this.send(window, cx);
-                                }
-                            })),
-                        cx,
-                    )),
-            )
+                    })),
+                cx,
+            ))
             .into_any_element()
     }
 }
@@ -841,17 +978,37 @@ impl Render for AiPanel {
             self.current = None;
             self.history = true;
         }
+        self.render_snapshot(&snapshot, window, cx)
+    }
+}
+impl AiPanel {
+    fn render_snapshot(
+        &mut self,
+        snapshot: &crate::ai::Snapshot,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
         let body = if self.history {
-            self.render_history(&snapshot, window, cx)
+            self.render_history(snapshot, window, cx)
         } else if let Some(c) = snapshot
             .conversations
             .iter()
             .find(|c| Some(&c.id) == self.current.as_ref())
         {
-            self.render_conversation(c, &snapshot, window, cx)
+            self.render_conversation(c, snapshot, window, cx)
         } else {
             note(t!("loading").to_string(), cx).into_any_element()
         };
+        self.render_frame(body, snapshot, cx)
+    }
+
+    #[inline(never)]
+    fn render_frame(
+        &self,
+        body: gpui::AnyElement,
+        snapshot: &crate::ai::Snapshot,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
         let owner = self.owner.clone();
         let mut panel = v_flex()
             .relative()
@@ -864,6 +1021,7 @@ impl Render for AiPanel {
             .text_sm()
             .child(
                 h_flex()
+                    .flex_shrink_0()
                     .gap_2()
                     .p_2()
                     .border_b_1()
@@ -931,25 +1089,29 @@ impl Render for AiPanel {
                 }),
             );
         }
-        panel.child(div().flex_1().min_h_0().child(body)).child(
-            div()
-                .id("ai-resize")
-                .absolute()
-                .left_0()
-                .top_0()
-                .bottom_0()
-                .w(px(5.))
-                .cursor_col_resize()
-                .on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(|this, event: &gpui::MouseDownEvent, _, cx| {
-                        this.drag = Some((event.position.x.as_f32(), this.width));
-                        cx.notify();
-                    }),
-                ),
-        )
+        panel
+            .child(div().flex_1().min_h_0().overflow_hidden().child(body))
+            .child(
+                div()
+                    .id("ai-resize")
+                    .absolute()
+                    .left_0()
+                    .top_0()
+                    .bottom_0()
+                    .w(px(5.))
+                    .cursor_col_resize()
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, event: &gpui::MouseDownEvent, _, cx| {
+                            this.drag = Some((event.position.x.as_f32(), this.width));
+                            cx.notify();
+                        }),
+                    ),
+            )
+            .into_any_element()
     }
 }
+
 impl AiPanel {
     pub(crate) fn select_conversation(&mut self, id: String, cx: &mut Context<Self>) {
         self.current = Some(id);
@@ -991,3 +1153,6 @@ fn state_key(state: TurnState) -> &'static str {
         TurnState::Interrupted => "ai_interrupted",
     }
 }
+
+#[cfg(test)]
+mod tests;

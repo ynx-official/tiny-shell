@@ -1,5 +1,8 @@
 //! Compact native trace; expanding a step never invokes the tool again.
-use super::{StepKey, ToolGroup, ToolState, ToolStep};
+use super::{
+    StepKey, ToolGroup, ToolState, ToolStep,
+    review::{ReviewActions, ReviewView},
+};
 use gpui::{
     App, Context, InteractiveElement as _, IntoElement, ParentElement as _, Render,
     StatefulInteractiveElement as _, Styled as _, Window, div, prelude::FluentBuilder as _, px,
@@ -13,17 +16,16 @@ use gpui_component::{
     v_flex,
 };
 use rust_i18n::t;
-use std::{collections::HashSet, rc::Rc};
+use std::collections::HashSet;
 
-pub(crate) type ReviewAction = Rc<dyn Fn(String, &mut Window, &mut App)>;
 pub(crate) struct ToolGroupView {
     group: ToolGroup,
     expanded: HashSet<StepKey>,
     collapsed: bool,
-    review: ReviewAction,
+    review: ReviewActions,
 }
 impl ToolGroupView {
-    pub fn new(group: ToolGroup, review: ReviewAction) -> Self {
+    pub fn new(group: ToolGroup, review: ReviewActions) -> Self {
         Self {
             group,
             expanded: HashSet::new(),
@@ -35,20 +37,22 @@ impl ToolGroupView {
         if self.group == group {
             return;
         }
-        if group.state() == ToolState::AwaitingApproval
-            && self.group.state() != ToolState::AwaitingApproval
-        {
+        if group.steps.iter().any(|step| {
+            step.state == ToolState::AwaitingApproval
+                && !self.group.steps.iter().any(|old| {
+                    old.task_id == step.task_id && old.state == ToolState::AwaitingApproval
+                })
+        }) {
             self.collapsed = false;
         }
         self.group = group;
         cx.notify();
     }
-    fn review_button(&self, step: &ToolStep) -> Option<Button> {
+    fn review_button(&self, step: &ToolStep, cx: &Context<Self>) -> Option<Button> {
         if step.state != ToolState::AwaitingApproval {
             return None;
         }
-        let task = step.task_id.clone()?;
-        let action = self.review.clone();
+        step.task_id.as_ref()?;
         let id = format!("ai-step-review-{}-{}", step.key.message, step.key.call);
         Some(
             Button::new(id.clone())
@@ -56,15 +60,16 @@ impl ToolGroupView {
                 .outline()
                 .xsmall()
                 .label(t!("ai_review").to_string())
-                .on_click(move |_, window, cx| {
+                .on_click(cx.listener(move |this, _, _, cx| {
                     cx.stop_propagation();
-                    action(task.clone(), window, cx);
-                }),
+                    this.collapsed = false;
+                    cx.notify();
+                })),
         )
     }
 }
 impl Render for ToolGroupView {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let status = self.group.state();
         let group_key = self.group.key;
         let mut trace = v_flex()
@@ -126,7 +131,8 @@ impl Render for ToolGroupView {
                         self.group
                             .steps
                             .iter()
-                            .find_map(|step| self.review_button(step)),
+                            .filter(|_| self.collapsed)
+                            .find_map(|step| self.review_button(step, cx)),
                     ),
             );
         if !self.collapsed {
@@ -218,6 +224,31 @@ impl Render for ToolGroupView {
                                 cx.notify();
                             })),
                     );
+                if step.state == ToolState::AwaitingApproval {
+                    if let Some(task) = &step.task_id {
+                        let actions = self.review.clone();
+                        let task = task.clone();
+                        let review = window.use_keyed_state(
+                            format!("ai-inline-review-{task}"),
+                            cx,
+                            |_, _| ReviewView::new(task, actions),
+                        );
+                        row = row.child(review);
+                    } else {
+                        row = row.child(
+                            div()
+                                .px_3()
+                                .pb_3()
+                                .text_xs()
+                                .whitespace_normal()
+                                .text_color(cx.theme().warning)
+                                .child(
+                                    t!("ai_review_unavailable", code = "TASK_NOT_FOUND")
+                                        .to_string(),
+                                ),
+                        );
+                    }
+                }
                 if expanded {
                     let mut detail = v_flex().w_full().min_w_0().px_3().pb_3().gap_2().child(
                         div()
@@ -303,7 +334,7 @@ fn literal(text: &str) -> String {
     let fence = "`".repeat(longest.max(2) + 1);
     format!("{fence}text\n{text}\n{fence}")
 }
-fn raw_block(id: String, title: String, text: String, cx: &App) -> gpui::Div {
+pub(super) fn raw_block(id: String, title: String, text: String, cx: &App) -> gpui::Div {
     let copy = text.clone();
     v_flex()
         .w_full()
@@ -350,7 +381,15 @@ mod tests {
     use super::*;
     use gpui::{AppContext as _, Entity, ScrollHandle, TestAppContext, VisualTestContext};
     use gpui_component::Root;
-    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    fn unavailable_reviews() -> ReviewActions {
+        ReviewActions {
+            load: Rc::new(|_| Err("TASK_NOT_FOUND".into())),
+            decide: Rc::new(|_, _, _, _| panic!("expanding a trace must not submit a decision")),
+            authenticate: Rc::new(|_, _, _| panic!("review must stay inside the conversation")),
+        }
+    }
 
     #[test]
     fn tool_output_cannot_escape_into_media_or_html() {
@@ -366,8 +405,6 @@ mod tests {
     #[gpui::test]
     fn steps_expand_collapse_and_keep_the_approval_action_reachable(cx: &mut TestAppContext) {
         cx.update(gpui_component::init);
-        let reviewed = Rc::new(RefCell::new(None));
-        let result = reviewed.clone();
         let group = ToolGroup {
             key: 0,
             steps: vec![ToolStep {
@@ -385,12 +422,7 @@ mod tests {
             }],
         };
         let handle = cx.open_window(gpui::size(px(360.), px(600.)), |window, cx| {
-            let view = cx.new(|_| {
-                ToolGroupView::new(
-                    group,
-                    Rc::new(move |task, _, _| *result.borrow_mut() = Some(task)),
-                )
-            });
+            let view = cx.new(|_| ToolGroupView::new(group, unavailable_reviews()));
             Root::new(view, window, cx)
         });
         let root = handle.root(cx).unwrap();
@@ -416,7 +448,8 @@ mod tests {
         );
         visual.simulate_click(review.center(), gpui::Modifiers::none());
         visual.run_until_parked();
-        assert_eq!(reviewed.borrow().as_deref(), Some("fixture-task"));
+        assert!(visual.debug_bounds("ai-step-0").is_some());
+        assert!(visual.debug_bounds("ai-review-unavailable").is_some());
     }
 
     struct ConversationHost {
@@ -457,7 +490,7 @@ mod tests {
         };
         let initial = group.clone();
         let handle = cx.open_window(gpui::size(px(420.), px(260.)), |window, cx| {
-            let trace = cx.new(|_| ToolGroupView::new(initial, Rc::new(|_, _, _| {})));
+            let trace = cx.new(|_| ToolGroupView::new(initial, unavailable_reviews()));
             let host = cx.new(|_| ConversationHost {
                 trace,
                 show_answer: false,

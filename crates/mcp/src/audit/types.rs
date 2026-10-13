@@ -222,6 +222,18 @@ pub struct Summary {
     pub requests: usize,
     pub confirmed: usize,
     pub unknown: usize,
+    #[serde(default)]
+    pub pending: usize,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RequestPurpose {
+    #[default]
+    Chat,
+    Title,
+    Followup,
+    ProviderTest,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -229,6 +241,8 @@ pub struct ModelRequest {
     pub id: String,
     pub conversation_id: Option<String>,
     pub turn_id: String,
+    #[serde(default)]
+    pub purpose: RequestPurpose,
     pub provider_id: String,
     pub provider_name: String,
     pub model: String,
@@ -246,7 +260,9 @@ pub struct ModelRequest {
 }
 
 impl Summary {
-    pub fn add(&mut self, usage: Option<&Usage>) {
+    /// An unfinished request may still receive its usage tail. Only settled requests with
+    /// missing fields are unknown; received numbers remain visible in either state.
+    pub fn add(&mut self, usage: Option<&Usage>, awaiting_usage: bool) {
         self.requests += 1;
         if let Some(u) = usage {
             self.input = self.input.saturating_add(u.input.unwrap_or_default());
@@ -258,11 +274,11 @@ impl Summary {
             self.reasoning_output = self
                 .reasoning_output
                 .saturating_add(u.reasoning_output.unwrap_or_default());
-            if u.complete() {
-                self.confirmed += 1;
-            } else {
-                self.unknown += 1;
-            }
+        }
+        if usage.is_some_and(Usage::complete) {
+            self.confirmed += 1;
+        } else if awaiting_usage {
+            self.pending += 1;
         } else {
             self.unknown += 1;
         }
@@ -336,6 +352,37 @@ mod tests {
     use super::*;
     use serde_json::json;
     #[test]
+    fn incomplete_usage_waits_until_settled_and_observed_numbers_remain_visible() {
+        let partial = Usage::parse(&json!({"input_tokens":8})).unwrap();
+        let mut pending = Summary::default();
+        pending.add(Some(&partial), true);
+        assert_eq!((pending.input, pending.pending, pending.unknown), (8, 1, 0));
+        let mut settled = Summary::default();
+        settled.add(Some(&partial), false);
+        assert_eq!((settled.input, settled.pending, settled.unknown), (8, 0, 1));
+        let zero = Usage::parse(&json!({"prompt_tokens":0,"completion_tokens":0})).unwrap();
+        settled.add(Some(&zero), false);
+        assert_eq!(
+            (
+                settled.requests,
+                settled.confirmed,
+                settled.unknown,
+                settled.total
+            ),
+            (2, 1, 1, 0)
+        );
+        let mut reported_before_completion = Summary::default();
+        reported_before_completion.add(Some(&zero), true);
+        assert_eq!(
+            (
+                reported_before_completion.confirmed,
+                reported_before_completion.pending,
+                reported_before_completion.unknown
+            ),
+            (1, 0, 0)
+        );
+    }
+    #[test]
     fn partial_updates_keep_observed_fields_and_recompute_derived_total() {
         let mut usage = Usage::parse(&json!({"input_tokens":8,"output_tokens":1})).unwrap();
         usage.merge(Usage::parse(&json!({"output_tokens":4})).unwrap());
@@ -349,8 +396,8 @@ mod tests {
         assert!(Usage::parse(&json!({})).is_none());
         let u = Usage::parse(&json!({"prompt_tokens":10,"completion_tokens":3,"total_tokens":13,"prompt_tokens_details":{"cached_tokens":8},"completion_tokens_details":{"reasoning_tokens":2}})).unwrap();
         let mut sum = Summary::default();
-        sum.add(Some(&u));
-        sum.add(None);
+        sum.add(Some(&u), false);
+        sum.add(None, false);
         assert_eq!(sum.total, 13);
         assert_eq!(sum.unknown, 1);
         assert_eq!(sum.cached_input, 8);

@@ -57,7 +57,11 @@ impl Conversation {
     pub fn usage_summary(&self) -> Summary {
         let mut summary = Summary::default();
         for request in &self.requests {
-            summary.add(request.usage.as_ref());
+            summary.add(
+                request.usage.as_ref(),
+                request.finished_ms.is_none()
+                    && matches!(request.state.as_str(), "pending" | "running"),
+            );
         }
         summary
     }
@@ -82,6 +86,7 @@ mod tests {
             id: "one".into(),
             conversation_id: Some(c.id.clone()),
             turn_id: "turn".into(),
+            purpose: tiny_shell_mcp::audit::RequestPurpose::Chat,
             provider_id: "provider".into(),
             provider_name: "Provider".into(),
             model: "model".into(),

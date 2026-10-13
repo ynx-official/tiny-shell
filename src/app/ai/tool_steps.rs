@@ -2,6 +2,8 @@
 use crate::ai::Conversation;
 use serde_json::Value;
 
+#[path = "tool_steps/review.rs"]
+pub(super) mod review;
 #[path = "tool_steps/view.rs"]
 pub(super) mod view;
 

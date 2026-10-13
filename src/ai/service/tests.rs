@@ -44,7 +44,12 @@ pub(super) fn fixture(
     let settings = Settings {
         providers: vec![p.clone()],
         default_provider: Some(p.id.clone()),
-        ..Settings::default()
+        // Chat/title fixtures exercise those requests in isolation. Followup tests enable
+        // the real setting explicitly and cover the additional provider round trip.
+        execution: ExecutionSettings {
+            followup_suggestions: false,
+            ..ExecutionSettings::default()
+        },
     };
     let audit = engine
         .as_ref()
@@ -59,6 +64,8 @@ pub(super) fn fixture(
                 ..Snapshot::default()
             },
             cancel: HashMap::new(),
+            title_cancel: HashMap::new(),
+            followup_cancel: HashMap::new(),
             continuations: HashMap::new(),
         }),
         store: Mutex::new(Some(Arc::new(store))),
@@ -137,6 +144,12 @@ pub(super) async fn settled(service: &Arc<Service>) -> Result<()> {
         }
     })
     .await?;
+    Ok(())
+}
+
+pub(super) async fn title_response(socket: &mut tokio::net::TcpStream, title: &str) -> Result<()> {
+    let body = json!({"choices":[{"message":{"role":"assistant","content":title},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}).to_string();
+    socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await?;
     Ok(())
 }
 

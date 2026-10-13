@@ -119,7 +119,7 @@ async fn batch_with_choice(
         .map_err(|e| anyhow!(e.code))?;
     let server = tokio::spawn(async move {
         let mut bodies = Vec::new();
-        for _ in 0..turns {
+        for turn in 0..turns {
             let (mut socket, _) = listener.accept().await?;
             bodies.push(request(&mut socket).await?);
             response(&mut socket, json!({"tool_calls":calls}), "tool_calls").await?;
@@ -129,6 +129,13 @@ async fn batch_with_choice(
             let (mut socket, _) = listener.accept().await?;
             bodies.push(request(&mut socket).await?);
             response(&mut socket, json!({"content":"fixture summary"}), "stop").await?;
+            if turn == 0 {
+                let (mut title, _) = listener.accept().await?;
+                let body = request(&mut title).await?;
+                assert_eq!(body["stream"], false);
+                assert!(body.get("tools").is_none());
+                super::tests::title_response(&mut title, "检查测试配置").await?;
+            }
         }
         Ok::<_, anyhow::Error>(bodies)
     });
@@ -139,7 +146,10 @@ async fn batch_with_choice(
         .map_err(|_| anyhow!("fixture lock"))?
         .snapshot
         .settings
-        .execution = execution;
+        .execution = ExecutionSettings {
+        followup_suggestions: false,
+        ..execution
+    };
     let id = service.create(Some(bound))?;
     for _ in 0..turns {
         service.send(id.clone(), "检查 fixture".into())?;

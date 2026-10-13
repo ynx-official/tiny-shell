@@ -1,8 +1,11 @@
 mod attention;
 mod composer;
+mod followups;
 mod markdown;
 pub(crate) mod notifications;
 mod panel;
+mod permissions;
+mod review;
 mod scroll;
 mod tool_steps;
 use crate::{
@@ -159,6 +162,7 @@ pub(crate) fn error_text(code: &str) -> String {
         "AI_RESPONSE_TOOL_LIMIT" => "ai_response_tool_limit",
         "AI_INVALID_BUDGET" => "ai_invalid_budget",
         "AI_CONTINUATION_EXPIRED" => "ai_continuation_expired",
+        "AI_FOLLOWUP_EXPIRED" => "ai_followup_expired",
         "AI_TOOLS_HALTED" => "ai_tools_halted",
         "AI_NETWORK_ERROR" | "AI_TIMEOUT" | "AI_STREAM_INTERRUPTED" => "ai_network_error",
         "AI_INVALID_NAME" => "ai_invalid_name",

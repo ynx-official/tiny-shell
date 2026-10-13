@@ -108,7 +108,7 @@ pub(super) fn surface(
         .border_color(cx.theme().input)
         .rounded(px(12.))
         .bg(cx.theme().background)
-        .child(div().px_2().pt_2().child(context))
+        .child(div().min_w_0().px_3().pt_3().child(context))
         .child(
             Input::new(input)
                 .small()
@@ -121,11 +121,52 @@ pub(super) fn surface(
             h_flex()
                 .w_full()
                 .gap_2()
-                .px_2()
+                .px_3()
                 .pb_2()
                 .child(div().flex_1().min_w_0().child(model))
                 .child(send.flex_none()),
         )
+}
+
+pub(super) fn context(target: impl IntoElement, hint: String, cx: &App) -> gpui::Div {
+    h_flex()
+        .w_full()
+        .min_w_0()
+        .items_start()
+        .gap_2()
+        .child(div().flex_1().min_w_0().child(target))
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .max_w(px(180.))
+                .text_xs()
+                .text_right()
+                .text_color(cx.theme().muted_foreground)
+                .whitespace_normal()
+                .line_height(gpui::relative(1.35))
+                .child(hint),
+        )
+}
+
+pub(super) fn toolbar(
+    model: impl IntoElement,
+    permissions: impl IntoElement,
+    cx: &App,
+) -> gpui::Div {
+    h_flex()
+        .w_full()
+        .min_w_0()
+        .gap_1()
+        .child(div().flex_1().min_w_0().child(model))
+        .child(
+            div()
+                .flex_shrink_0()
+                .w(px(1.))
+                .h(px(14.))
+                .bg(cx.theme().border),
+        )
+        .child(permissions)
 }
 
 #[cfg(test)]
@@ -315,9 +356,11 @@ mod tests {
         fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
             let stopped = self.stopped.clone();
             v_flex().size_full().p_3().child(surface(&self.input,true,
-                div().child("Example SSH"),
+                context(div().min_w_0().overflow_hidden().text_ellipsis().child("Example SSH with a long target name"), "Controlled · Approve commands and writes".into(), cx),
+                toolbar(
                 Button::new("fixture-model").ghost().xsmall().w_full().min_w_0()
                     .child(div().min_w_0().w_full().overflow_hidden().text_ellipsis().child("Provider · a-very-long-model-name-that-must-not-cover-the-stop-button")),
+                Button::new("fixture-permissions").debug_selector(|| "composer-permissions".to_owned()).ghost().xsmall().flex_shrink_0().label("Use global"), cx),
                 Button::new("fixture-stop").debug_selector(||"composer-stop".to_owned())
                     .small().ghost().icon(IconName::Pause).on_click(move |_,_,_|stopped.set(true)),cx))
         }
@@ -348,10 +391,15 @@ mod tests {
         );
         let card = visual.debug_bounds("ai-composer").unwrap();
         let stop = visual.debug_bounds("composer-stop").unwrap();
+        let permissions = visual.debug_bounds("composer-permissions").unwrap();
         assert!(card.size.height > px(100.));
         assert!(
             stop.right() <= card.right() && stop.bottom() <= card.bottom(),
             "stop control must be inside the input card: {card:?} {stop:?}"
+        );
+        assert!(
+            permissions.origin.x >= card.origin.x && permissions.right() <= stop.origin.x,
+            "a long model must leave room for both permissions and stop: {permissions:?} {stop:?}"
         );
         visual.simulate_click(stop.center(), gpui::Modifiers::none());
         visual.run_until_parked();

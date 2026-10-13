@@ -4,12 +4,21 @@ use super::*;
 use serde_json::{Value, json};
 use tiny_shell_mcp::engine::InternalClient;
 
+enum TurnInput {
+    Text(String),
+    Followup { turn: String, index: usize },
+}
+
 impl Service {
     pub fn send(self: &Arc<Self>, id: String, text: String) -> Result<()> {
-        ensure!(
-            !text.trim().is_empty() && text.len() <= 64 * 1024,
-            "AI_INVALID_MESSAGE"
-        );
+        self.start_turn(id, TurnInput::Text(text))
+    }
+
+    pub fn send_followup(self: &Arc<Self>, id: String, turn: String, index: usize) -> Result<()> {
+        self.start_turn(id, TurnInput::Followup { turn, index })
+    }
+
+    fn start_turn(self: &Arc<Self>, id: String, input: TurnInput) -> Result<()> {
         let (conversation, provider, execution, cancel) = {
             let mut state = self.state.lock().map_err(|_| anyhow!("AI_STORAGE_ERROR"))?;
             ensure!(!state.cancel.contains_key(&id), "AI_BUSY");
@@ -20,6 +29,22 @@ impl Service {
                 .find(|c| c.id == id)
                 .ok_or_else(|| anyhow!("AI_CONVERSATION_MISSING"))?;
             ensure!(!c.state.active(), "AI_BUSY");
+            // Validate and consume a candidate in the same critical section that starts
+            // the turn. A double click or an old view cannot send an expired candidate.
+            let text = match input {
+                TurnInput::Text(text) => text,
+                TurnInput::Followup { turn, index } => {
+                    ensure!(
+                        state.snapshot.settings.execution.followup_suggestions,
+                        "AI_FOLLOWUP_EXPIRED"
+                    );
+                    super::followups::selected(c, &turn, index)?
+                }
+            };
+            ensure!(
+                !text.trim().is_empty() && text.len() <= 64 * 1024,
+                "AI_INVALID_MESSAGE"
+            );
             let p = state
                 .snapshot
                 .settings
@@ -39,7 +64,7 @@ impl Service {
                 .find(|c| c.id == id)
                 .ok_or_else(|| anyhow!("AI_CONVERSATION_MISSING"))?;
             if c.title.is_empty() {
-                c.title = text.trim().chars().take(40).collect();
+                c.title = super::title::fallback_title(&text);
             }
             c.messages.push(Message::text("user", text));
             c.turns.push(TurnRecord {
@@ -52,8 +77,12 @@ impl Service {
             c.state = TurnState::Generating;
             c.error = None;
             c.continuation = None;
+            c.followups = None;
             c.updated = chrono::Utc::now().timestamp();
             let c = c.clone();
+            if let Some((_, cancel)) = state.followup_cancel.remove(&id) {
+                cancel.send_replace(true);
+            }
             let (tx, rx) = watch::channel(false);
             state.cancel.insert(id.clone(), tx);
             (c, p, execution, rx)
@@ -76,7 +105,11 @@ impl Service {
                 .any(|m| m.id == conversation.model && m.supports_tools);
             let capability = match (&conversation.target, &service.engine, supports_tools) {
                 (Some(target), Some(engine), true) => engine
-                    .checked_internal_client(&id, target.remote())
+                    .checked_internal_client_with_mode(
+                        &id,
+                        target.remote(),
+                        conversation.mode_override,
+                    )
                     .await
                     .ok(),
                 _ => None,
@@ -138,6 +171,10 @@ impl Service {
                 },
                 json!({"error":result.as_ref().err().map(ToString::to_string)}),
             ));
+            if result.is_ok() {
+                service.schedule_title(&conversation, &provider);
+                service.schedule_followups(&conversation, &provider);
+            }
             if let Ok(mut state) = service.state.lock() {
                 state.cancel.remove(&id);
                 state.continuations.remove(&id);
@@ -233,6 +270,7 @@ impl Service {
                 id: request_id.clone(),
                 conversation_id: Some(c.id.clone()),
                 turn_id: c.turn_id(),
+                purpose: RequestPurpose::Chat,
                 provider_id: p.id.clone(),
                 provider_name: p.name.clone(),
                 model: c.model.clone(),

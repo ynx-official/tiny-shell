@@ -1,14 +1,14 @@
 # TinyShell 文档索引
 
 > 状态：Approved
-> 最后更新：2026-10-12
+> 最后更新：2026-10-13
 
 ## 设计
 
 - [AI 会话用量与操作审计设计](02-design/ai-usage-and-audit.md)：Approved；对话 Token、AI/MCP 操作详情、审批时间线及加密留存方案。
 
-- [内置 AI 会话](02-design/ai-conversations.md)：原生聊天、工具步骤、本机加密历史、模型配置及按来源独立的 SSH 权限。
-- [内置 AI 需求与验收](01-requirements/ai-conversations.md)：已确认范围及 AI-01 至 AI-23 验收行为。
+- [内置 AI 会话](02-design/ai-conversations.md)：原生聊天、首轮自动标题、回复下方续聊建议、工具步骤与聊天内审阅、本机加密历史及独立 SSH 权限。
+- [内置 AI 需求与验收](01-requirements/ai-conversations.md)：已确认范围及 AI-01 至 AI-29 验收行为。
 
 - [应用图标与平台导出](02-design/application-icons.md)：已选定的 A 圆润终端图标、平台适配与验证。
 
@@ -50,7 +50,7 @@
 
 - [AI/MCP 云同步验证](04-quality/ai-mcp-sync.md)：回归代码、未执行的编译/运行项及双设备手动验收清单。
 
-- [AI 用量与审计质量记录](04-quality/ai-usage-and-audit.md)：Windows 全目标测试、凭据库、构建和隔离原生窗口验证，以及剩余真实服务验收范围。
+- [AI 用量与审计质量记录](04-quality/ai-usage-and-audit.md)：跨轮次用量状态回归、Windows 测试与构建、凭据库和隔离原生窗口验证，以及剩余真实服务验收范围。
 - [AI 执行预算与系统通知](04-quality/ai-execution-budget.md)：可配置预算、可恢复暂停、通知回归及尚未原生验证的通知按钮范围。
 
 - [AI 与 MCP 调用链优化](04-quality/ai-tool-call-optimization.md)：工具裁剪、通知等待、应用管理会话、预算和重复控制的实际证据及手动验收。
