@@ -1,7 +1,8 @@
 # TinyShell v2.1.0
 
 > 发布日期：2026-10-13
-> 状态：Review（准备发布，尚未创建标签和正式 Release；上述日期为计划发布日期）
+> 状态：Approved（本地测试跳过，云端发布工具测试、四个平台构建打包及正式发布成功）
+> 正式发布时间：2026-10-13 15:55（Asia/Shanghai）
 > 最后更新：2026-10-13
 > 本地测试策略：skip
 > 云端发布测试策略：沿用默认流程，保留发布工具测试
@@ -66,7 +67,14 @@ Windows 继续提供安装包与便携包；Linux 提供 AppImage 与压缩包�
 - 开发历史中自动标题和用量有已执行的 Windows 验证；其后新增改动尚未运行相关回归，不能把此前通过结果当作本标签证据。
 - `cargo fmt --all -- --check`、版本资料、锁文件一致性、文档链接与差异检查：通过。
 - `cargo build --workspace --locked --release --no-default-features`：Windows 本地 release 构建通过，耗时 2 分 30 秒；EXE `ProductVersion` 为 `2.1.0`，未运行测试或应用。
-- 四个平台标签构建、打包、更新清单及正式 Release：尚未触发，完成后回填。
+- [v2.1.0 标签流水线](https://github.com/ynx-official/tiny-shell/actions/runs/38363188539)：全部成功；发布资料校验通过，`Test release tooling` 实际运行 8 项发布工具测试，全部通过。
+- Windows x86_64：release 构建、安装包、便携包与上传成功。
+- Linux x86_64：FreeRDP release 构建、AppImage、压缩包与上传成功。
+- macOS Apple Silicon 与 Intel：各自基础版、RDP 版 release 构建、安装包、便携包与上传成功。
+- `Publish Release`：更新清单生成及正式 Release 创建成功；Release 为非草稿、非预发布，GitHub 最新正式版本为 `v2.1.0`，发布时间为 2026-10-13 15:55（Asia/Shanghai）。
+- 正式 Release 共 14 个文件：12 个平台产物、更新清单和发布说明。下载的清单版本为 `v2.1.0`，12 个文件的名称、大小、下载地址及 SHA-256 均与 GitHub Release 记录一致，清单自身 SHA-256 也一致。
+- 已下载正式 Windows 便携包并核对 SHA-256；解包后 EXE `ProductVersion` 为 `2.1.0`，包含 `tiny-shell-mcp.exe`；没有运行包内程序。
+- 未运行新增 Rust 功能回归、各平台原生应用或真实 AI/SSH/WebDAV/S3 服务。云端测试范围为现有发布工具，不将其等同于功能验收。
 
 ## 重点手动验收
 
@@ -82,7 +90,7 @@ Windows 继续提供安装包与便携包；Linux 提供 AppImage 与压缩包�
 
 ## 变更依据
 
-- 目标标签：[`v2.1.0`](https://github.com/ynx-official/tiny-shell/releases/tag/v2.1.0)，尚未创建，不复用已发布标签。
+- 正式标签：[`v2.1.0`](https://github.com/ynx-official/tiny-shell/releases/tag/v2.1.0)，应用源码提交为 `d2d6022b644a26bd8fefa79ca9fff013a39b9641`；已创建并推送，没有复用已发布标签。
 - 最近祖先发布标签与最近成功版本：[`v2.0.0`](https://github.com/ynx-official/tiny-shell/releases/tag/v2.0.0)，源码提交 `b41c26d71ae19ce97608c8ab64bcda0ff61a933b`。
 - 代码差异：[v2.0.0...v2.1.0](https://github.com/ynx-official/tiny-shell/compare/v2.0.0...v2.1.0)。
 - 功能依据为 `509571d`、`c07edd4`、`98d2126`、`3f28e34` 的实际代码及关联文档；`7b4e4d3` 仅补记上次发布结果与既有密钥说明。
