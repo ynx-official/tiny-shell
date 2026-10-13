@@ -1,7 +1,8 @@
 # TinyShell v2.1.1
 
 > 发布日期：2026-10-13
-> 状态：Approved（发布准备中；上述日期为计划发布日期，尚未创建标签或发布 Release）
+> 状态：Approved（本地与云端发布工具测试跳过，四个平台构建打包及正式发布成功）
+> 正式发布时间：2026-10-13 19:02:48（Asia/Shanghai）
 > 最后更新：2026-10-13
 > 本地测试策略：skip
 > 发布测试策略：skip
@@ -61,7 +62,13 @@ Windows 提供 x86_64 安装包与便携包；Linux 提供 x86_64 AppImage 与�
 - 版本详情包含精确标记 `> 发布测试策略：skip`；现有发布工作流据此跳过 `Test release tooling`，不影响版本校验、多平台构建、打包和上传。
 - `cargo fmt --all -- --check`、`python scripts/release_notes.py --check-current`、版本与锁文件一致性、版本详情本地链接及 `git diff --check`：通过。
 - `cargo build --workspace --locked --release --no-default-features`：Windows 本地构建失败，Rust LLVM 报告 `no space on device`，未生成 v2.1.1 本地产物；日志为忽略目录内的 `target/v2.1.1-windows-build.log`。后续由 GitHub Actions 完成平台构建。
-- GitHub 标签流水线、Windows / Linux / macOS 四个平台构建打包和 Release 创建：尚未启动。
+- [v2.1.1 标签流水线](https://github.com/ynx-official/tiny-shell/actions/runs/38382877204)：全部成功；发布资料校验通过，`Test release tooling` 的实际结论为 `skipped`。
+- Windows x86_64：release 构建、安装包、便携包与上传成功。
+- Linux x86_64：FreeRDP release 构建、AppImage、压缩包与上传成功。
+- macOS Apple Silicon / Intel：各自基础版与 RDP 版 release 构建、安装包、便携包与上传成功。
+- `Publish Release`：更新清单生成及正式 Release 创建成功；非草稿、非预发布，GitHub 最新正式版本为 `v2.1.1`，发布时间为 2026-10-13 19:02:48（Asia/Shanghai）。
+- 正式 Release 共 14 个文件：12 个平台产物、更新清单和发布说明。已下载清单并核对版本 `v2.1.1`；12 个产物的文件名、大小、下载地址及 SHA-256 与 GitHub Release 记录逐项一致，清单自身 SHA-256 和发布说明链接也一致。核对文件保存在本机发布暂存目录，没有运行安装包或应用。
+- 未运行 Rust / Python 测试、Clippy、各平台原生应用或真实 AI / SSH / WebDAV / S3 服务；构建与发布成功不等同于功能验收。
 - 图标素材和旧审计实现已有开发阶段验证记录；不将旧测试结果视为本标签的功能验收证据。
 
 ## 重点手动验收
@@ -76,9 +83,9 @@ Windows 提供 x86_64 安装包与便携包；Linux 提供 x86_64 AppImage 与�
 
 ## 变更依据
 
-- 目标标签：`v2.1.1`，本文件创建时尚未创建或推送；正式地址预定为 [v2.1.1 Release](https://github.com/ynx-official/tiny-shell/releases/tag/v2.1.1)。
+- 正式标签：[v2.1.1](https://github.com/ynx-official/tiny-shell/releases/tag/v2.1.1)，已创建并推送，应用源码提交 `ac6cc23d4de33e52177f3d51c17405c7273559fb`；没有复用公开标签。
 - 最近祖先发布标签及最近成功版本：[v2.1.0](https://github.com/ynx-official/tiny-shell/releases/tag/v2.1.0)，应用源码提交 `d2d6022b644a26bd8fefa79ca9fff013a39b9641`。
-- 比较区间：[v2.1.0...v2.1.1](https://github.com/ynx-official/tiny-shell/compare/v2.1.0...v2.1.1)，链接在目标标签推送后生效。
+- 比较区间：[v2.1.0...v2.1.1](https://github.com/ynx-official/tiny-shell/compare/v2.1.0...v2.1.1)。
 - 应用改动依据为 `866ac2f` 的实际图标资源和 `2c50a9a` 的设置导航及审计代码；`02e2927` 仅补记 v2.1.0 发布验证结果。本次版本与发布文档单独提交。
 
 [返回版本总览](../README.md)
