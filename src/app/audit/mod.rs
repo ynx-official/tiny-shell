@@ -6,14 +6,19 @@ use gpui_component::{
 use rust_i18n::t;
 use std::sync::Arc;
 use tiny_shell_mcp::audit::{Filter, Page, Source, Status, Store, Summary};
+mod presentation;
 mod view;
-pub(crate) use view::compact_usage_label;
-pub(crate) use view::usage_label;
+pub(crate) use presentation::compact_usage_label;
+pub(crate) use presentation::usage_label;
 mod actions;
+mod components;
 mod details;
 mod filters;
+mod inspector;
 #[cfg(debug_assertions)]
 pub(crate) mod preview;
+mod records;
+mod retention;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Tab {
@@ -123,6 +128,7 @@ impl AuditPanel {
         let subscription = cx.subscribe(&search, |this, _, event: &InputEvent, cx| {
             if matches!(event, InputEvent::PressEnter { .. }) {
                 this.filter.before_sequence = None;
+                this.selection = None;
                 this.load(cx);
             }
             cx.notify();
@@ -281,9 +287,6 @@ impl AuditPanel {
                 if this.selection.as_ref() == Some(&id) {
                     match result {
                         Ok(page) => {
-                            if let Some(event) = page.events.first() {
-                                this.expanded.insert(event.id.clone());
-                            }
                             if append {
                                 this.detail.events.extend(page.events);
                                 if this.detail.events.len() > 200 {

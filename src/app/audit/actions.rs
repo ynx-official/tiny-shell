@@ -4,6 +4,13 @@ use serde_json::json;
 use tiny_shell_mcp::audit::{Context as AuditContext, Event, Settings};
 
 impl AuditPanel {
+    pub(super) fn reset_filters(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.filter = super::presentation::reset_record_filter(&self.filter);
+        self.search
+            .update(cx, |input, cx| input.set_value("", window, cx));
+        self.selection = None;
+        self.load(cx);
+    }
     pub(super) fn retry(&mut self, cx: &mut Context<Self>) {
         self.loading = true;
         let store = self.store.clone();

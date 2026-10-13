@@ -131,6 +131,7 @@ impl TinyShell {
             self.mcp_settings_navigation = self.mcp_settings_navigation.wrapping_add(1);
         }
         self.settings_entry = Some(index);
+        self.settings_navigation = self.settings_navigation.wrapping_add(1);
         self.show_settings_window(window, cx);
         cx.notify();
     }

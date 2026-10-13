@@ -6,11 +6,14 @@ use gpui_component::{
     Sizable,
     button::{Button, ButtonVariants},
     kbd::Kbd,
-    setting::{SettingField, SettingGroup, SettingItem},
 };
 use rust_i18n::t;
 
-use crate::{TinyShell, session::config::ConfigStore};
+use crate::{
+    TinyShell,
+    app::settings::page::{SettingField, SettingGroup, SettingItem},
+    session::config::ConfigStore,
+};
 
 gpui::actions!(
     tiny_shell_workspace,

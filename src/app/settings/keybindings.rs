@@ -1,8 +1,10 @@
 use gpui::{Entity, FocusHandle};
-use gpui_component::{IconName, setting::SettingPage};
+use gpui_component::IconName;
 use rust_i18n::t;
 
 use crate::TinyShell;
+
+use super::page::SettingPage;
 
 pub(crate) fn page(
     shell: &TinyShell,

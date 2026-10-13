@@ -43,6 +43,9 @@ pub(crate) fn run() {
                 None,
                 cx,
             );
+            // Match the production UI default so the isolated preview uses the same layout breakpoints.
+            Theme::global_mut(cx).font_size =
+                px(crate::session::config_file::default_ui_font_size());
             let dimensions = if compact {
                 size(px(760.), px(600.))
             } else {

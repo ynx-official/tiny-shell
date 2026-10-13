@@ -2,14 +2,14 @@ use gpui::{FontWeight, ParentElement as _, Styled as _, div, px, rems};
 use gpui_component::{
     ActiveTheme as _, Icon, IconName, Sizable as _, Size,
     button::{Button, ButtonVariants as _},
-    h_flex,
-    setting::SettingPage,
-    v_flex,
+    h_flex, v_flex,
 };
 use rust_i18n::t;
 
+use super::page::SettingPage;
+
 pub(crate) fn page() -> SettingPage {
-    use gpui_component::setting::{SettingField, SettingGroup, SettingItem};
+    use super::page::{SettingField, SettingGroup, SettingItem};
 
     let version = env!("CARGO_PKG_VERSION");
     let installation_label = match crate::app::updater::installation_kind() {

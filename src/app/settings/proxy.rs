@@ -3,7 +3,6 @@ use gpui_component::{
     Disableable as _, IconName, Sizable as _,
     button::{Button, ButtonVariants as _},
     h_flex,
-    setting::{SettingField, SettingGroup, SettingItem, SettingPage},
     switch::Switch,
     v_flex,
 };
@@ -14,6 +13,7 @@ use crate::{TinyShell, app::settings::form::ProxySettingsInputs};
 use super::{
     actions::{ProxyFormValues, ProxyKind},
     controls::labeled_input,
+    page::{SettingField, SettingGroup, SettingItem, SettingPage},
 };
 
 pub(crate) fn page(view: &Entity<TinyShell>, inputs: ProxySettingsInputs) -> SettingPage {

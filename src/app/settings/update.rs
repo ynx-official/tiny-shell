@@ -9,11 +9,12 @@ use gpui_component::{
     input::{Input, InputState},
     menu::{DropdownMenu as _, PopupMenuItem},
     progress::Progress,
-    setting::{SettingField, SettingGroup, SettingItem, SettingPage},
     switch::Switch,
     v_flex,
 };
 use rust_i18n::t;
+
+use super::page::{SettingField, SettingGroup, SettingItem, SettingPage};
 
 use crate::{TinyShell, app::updater::UpdateStatus, session::config::UpdateCheckMode};
 

@@ -3,14 +3,15 @@ use gpui_component::{
     IconName, Sizable as _,
     button::Button,
     menu::{DropdownMenu as _, PopupMenuItem},
-    setting::SettingPage,
 };
 use rust_i18n::t;
+
+use super::page::SettingPage;
 
 use crate::TinyShell;
 
 pub(crate) fn page(settings_view: &Entity<TinyShell>) -> SettingPage {
-    use gpui_component::setting::{SettingField, SettingGroup, SettingItem};
+    use super::page::{SettingField, SettingGroup, SettingItem};
 
     SettingPage::new(t!("settings_appearance").to_string())
         .icon(IconName::Sun)

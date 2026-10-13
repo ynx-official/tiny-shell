@@ -7,7 +7,6 @@ use gpui_component::{
     checkbox::Checkbox,
     h_flex,
     input::Input,
-    setting::{SettingGroup, SettingItem, SettingPage},
     switch::Switch,
     v_flex,
 };
@@ -19,7 +18,10 @@ use crate::{
     sync::{ConflictResolution, SyncConflict, SyncEntityKind},
 };
 
-use super::controls::{labeled_input, labeled_input_with_hint, split_inputs};
+use super::{
+    controls::{labeled_input, labeled_input_with_hint, split_inputs},
+    page::{SettingGroup, SettingItem, SettingPage},
+};
 
 pub(crate) fn page(view: &Entity<TinyShell>, inputs: SyncSettingsInputs) -> SettingPage {
     SettingPage::new(t!("settings_sync").to_string())

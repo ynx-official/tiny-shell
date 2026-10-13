@@ -7,6 +7,8 @@ pub(crate) mod form;
 pub(crate) mod highlighting;
 pub(crate) mod keybindings;
 pub(crate) mod mcp;
+mod navigation;
+pub(crate) mod page;
 pub(crate) mod proxy;
 pub(crate) mod sync;
 pub(crate) mod terminal;

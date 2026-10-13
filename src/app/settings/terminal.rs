@@ -4,10 +4,11 @@ use gpui_component::{
     button::{Button, ButtonVariants as _},
     h_flex,
     menu::{DropdownMenu as _, PopupMenuItem},
-    setting::SettingPage,
     switch::Switch,
 };
 use rust_i18n::t;
+
+use super::page::SettingPage;
 
 use crate::{
     TinyShell,
@@ -16,7 +17,7 @@ use crate::{
 };
 
 pub(crate) fn page(settings_view: &Entity<TinyShell>) -> SettingPage {
-    use gpui_component::setting::{SettingField, SettingGroup, SettingItem};
+    use super::page::{SettingField, SettingGroup, SettingItem};
 
     SettingPage::new(t!("settings_terminal").to_string())
         .icon(IconName::SquareTerminal)

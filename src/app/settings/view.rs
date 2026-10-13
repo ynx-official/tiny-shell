@@ -3,12 +3,10 @@ use std::time::Duration;
 use crate::{TinyShell, app::settings::form::SettingsInputs};
 use gpui::{
     Animation, AnimationExt as _, ElementId, InteractiveElement as _, IntoElement,
-    ParentElement as _, Styled as _, div, px,
+    ParentElement as _, Styled as _, div,
 };
-use gpui_component::{
-    ActiveTheme as _,
-    setting::{SelectIndex, Settings},
-};
+
+use super::navigation::Settings;
 
 impl TinyShell {
     pub(crate) fn render_settings_content(
@@ -17,7 +15,7 @@ impl TinyShell {
         settings_id: &'static str,
         focus_handle: &gpui::FocusHandle,
         inputs: &SettingsInputs,
-        cx: &gpui::App,
+        _cx: &gpui::App,
     ) -> gpui::AnyElement {
         let settings_view = view.clone();
         let focus_handle = focus_handle.clone();
@@ -52,29 +50,32 @@ impl TinyShell {
                         }
                     })
                     .child(
-                        Settings::new(format!(
-                            "{settings_id}-{}",
-                            self.settings_entry.unwrap_or(0)
-                        ))
-                        .default_selected_index(SelectIndex {
-                            page_ix: self.settings_entry.unwrap_or(0),
-                            group_ix: None,
-                        })
-                        .sidebar_width(px(180.))
-                        .sidebar_style(div().bg(cx.theme().background).style())
-                        .page(super::appearance::page(&settings_view))
-                        .page(super::terminal::page(&settings_view))
-                        .page(super::workspace::page(&settings_view))
-                        .page(super::sync::page(&settings_view, inputs.sync.clone()))
-                        .page(super::ai::page(&settings_view))
-                        .page(super::mcp::page(&settings_view))
-                        .page(super::proxy::page(&settings_view, inputs.proxy.clone()))
-                        .page(super::keybindings::page(self, view, &focus_handle))
-                        .page(super::update::page(
-                            &settings_view,
-                            inputs.update.interval_hours.clone(),
-                        ))
-                        .page(super::about::page()),
+                        Settings::new(settings_id)
+                            .requested_page(
+                                self.settings_entry.unwrap_or(0),
+                                self.settings_navigation,
+                            )
+                            .on_navigate({
+                                let view = view.clone();
+                                move |cx| {
+                                    view.update(cx, |this, cx| {
+                                        this.cancel_settings_keybinding_recording(cx)
+                                    });
+                                }
+                            })
+                            .page(super::appearance::page(&settings_view))
+                            .page(super::terminal::page(&settings_view))
+                            .page(super::workspace::page(&settings_view))
+                            .page(super::sync::page(&settings_view, inputs.sync.clone()))
+                            .page(super::ai::page(&settings_view))
+                            .page(super::mcp::page(&settings_view))
+                            .page(super::proxy::page(&settings_view, inputs.proxy.clone()))
+                            .page(super::keybindings::page(self, view, &focus_handle))
+                            .page(super::update::page(
+                                &settings_view,
+                                inputs.update.interval_hours.clone(),
+                            ))
+                            .page(super::about::page()),
                     ),
             )
             .with_animation(

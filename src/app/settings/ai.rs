@@ -1,4 +1,5 @@
 //! Provider form owns drafts; background service owns secrets and persistence.
+use super::page::{SettingGroup, SettingItem, SettingPage};
 use crate::{
     TinyShell,
     ai::{Model, Provider},
@@ -19,7 +20,6 @@ use gpui_component::{
     input::{Input, InputEvent, InputState},
     menu::{DropdownMenu as _, PopupMenuItem},
     select::{SearchableVec, Select, SelectEvent, SelectState},
-    setting::{SettingGroup, SettingItem, SettingPage},
     v_flex,
 };
 use rust_i18n::t;
@@ -84,30 +84,13 @@ pub(crate) fn page(owner: &Entity<TinyShell>) -> SettingPage {
         .group(
             SettingGroup::new()
                 .title(t!("audit_title").to_string())
-                .item(SettingItem::render(move |_, _, _| {
-                    let audit_owner = audit_owner.clone();
-                    v_flex()
-                        .gap_2()
-                        .child(
-                            div()
-                                .text_sm()
-                                .child(t!("audit_settings_entry_note").to_string()),
-                        )
-                        .child(
-                            Button::new("ai-open-audit")
-                                .small()
-                                .outline()
-                                .label(t!("audit_open").to_string())
-                                .on_click(move |_, _, cx| {
-                                    crate::app::audit::open(
-                                        tiny_shell_mcp::audit::Filter::default(),
-                                        audit_owner.clone(),
-                                        cx,
-                                    )
-                                }),
-                        )
-                        .into_any_element()
-                })),
+                .on_open(move |_, cx| {
+                    crate::app::audit::open(
+                        tiny_shell_mcp::audit::Filter::default(),
+                        audit_owner.clone(),
+                        cx,
+                    );
+                }),
         )
         .group(
             SettingGroup::new()

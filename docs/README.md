@@ -5,6 +5,10 @@
 
 ## 设计
 
+- [设置子菜单独立页面](02-design/settings-navigation.md)：Approved；独立内容与滚动、审计直接打开、搜索和设置跳转；原生运行待验证。
+
+- [统计与审计视觉重设计](02-design/audit-redesign-concepts.md)：Approved；三张生图、实际提示词及四页签与详情的统一布局；原生运行待验证。
+
 - [AI 会话用量与操作审计设计](02-design/ai-usage-and-audit.md)：Approved；对话 Token、AI/MCP 操作详情、审批时间线及加密留存方案。
 
 - [内置 AI 会话](02-design/ai-conversations.md)：原生聊天、首轮自动标题、回复下方续聊建议、工具步骤与聊天内审阅、本机加密历史及独立 SSH 权限。

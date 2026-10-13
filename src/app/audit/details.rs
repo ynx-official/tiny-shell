@@ -69,7 +69,7 @@ impl AuditPanel {
                         .child(
                             TextView::markdown(
                                 format!("audit-section-text-{}-{key}", event.id),
-                                super::view::code(&text),
+                                super::presentation::code(&text),
                             )
                             .selectable(true),
                         ),

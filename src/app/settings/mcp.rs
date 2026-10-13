@@ -6,6 +6,7 @@ mod model;
 mod permissions;
 mod tasks;
 
+use super::page::{SettingGroup, SettingItem, SettingPage};
 use crate::{
     TinyShell,
     app::{confirmation_dialog::ConfirmationDialog, mcp},
@@ -21,7 +22,6 @@ use gpui_component::{
     button::{Button, ButtonVariants as _},
     h_flex,
     input::{InputEvent, InputState},
-    setting::{SettingGroup, SettingItem, SettingPage},
     switch::Switch,
     tab::{Tab, TabBar},
     v_flex,
