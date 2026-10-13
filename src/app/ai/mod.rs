@@ -1,6 +1,7 @@
 mod composer;
 mod markdown;
 mod panel;
+mod scroll;
 mod tool_steps;
 use crate::{
     TinyShell,

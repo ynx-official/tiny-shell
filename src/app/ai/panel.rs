@@ -29,7 +29,7 @@ pub(crate) struct AiPanel {
     rename: Entity<InputState>,
     rename_id: Option<String>,
     scroll: ScrollHandle,
-    scroll_stamp: Option<(String, usize, usize)>,
+    scroll_stamp: Option<super::scroll::ScrollStamp>,
     error: Option<String>,
     pub width: f32,
     drag: Option<(f32, f32)>,
@@ -354,18 +354,7 @@ impl AiPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
-        let stamp = (
-            c.id.clone(),
-            c.messages.len(),
-            c.messages.last().map_or(0, |m| m.content.len()),
-        );
-        if self.scroll_stamp.as_ref() != Some(&stamp) {
-            let new_conversation = self.scroll_stamp.as_ref().is_none_or(|old| old.0 != c.id);
-            if new_conversation || self.scroll.max_offset().y + self.scroll.offset().y <= px(32.) {
-                self.scroll.scroll_to_bottom();
-            }
-            self.scroll_stamp = Some(stamp);
-        }
+        super::scroll::follow(&self.scroll, &mut self.scroll_stamp, c);
         let mut messages = v_flex()
             .id("ai-messages")
             .flex_1()
