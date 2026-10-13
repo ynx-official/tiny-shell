@@ -4,7 +4,7 @@ use gpui::{
     Window, div, px,
 };
 use gpui_component::{
-    ActiveTheme as _, Icon, IconName, Sizable as _,
+    ActiveTheme as _, Colorize as _, Icon, IconName, Sizable as _,
     button::{Button, ButtonVariants as _},
     h_flex, v_flex,
 };
@@ -54,12 +54,13 @@ impl FollowupView {
             .gap_1()
             .px_1()
             .rounded(px(6.))
-            .bg(cx.theme().muted.opacity(0.35))
-            .hover(|row| row.bg(cx.theme().muted.opacity(0.6)))
+            .bg(cx.theme().muted)
+            .hover(|row| row.bg(cx.theme().muted.mix_oklab(cx.theme().foreground, 0.96)))
+            // Keep both button backgrounds transparent so feedback spans the entire row.
             .child(
                 Button::new(format!("ai-followup-text-{index}"))
                     .debug_selector(move || format!("ai-followup-text-{index}"))
-                    .ghost()
+                    .text()
                     .small()
                     .flex_1()
                     .min_w_0()
@@ -80,7 +81,7 @@ impl FollowupView {
             .child(
                 Button::new(format!("ai-followup-add-{index}"))
                     .debug_selector(move || format!("ai-followup-add-{index}"))
-                    .ghost()
+                    .text()
                     .xsmall()
                     .w(px(28.))
                     .h(px(32.))
