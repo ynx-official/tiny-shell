@@ -67,6 +67,8 @@ Provider 与历史保存在独立目录，连接归档不包含它们；AI/MCP �
 
 `app/ai/followups.rs` 是独立轻量 GPUI 组件；`panel/followups.rs` 将点击转给服务。添加文本先校验候选仍属于当前会话和轮次；直接发送在 `runner::start_turn` 同一锁内验证候选并开始下一轮，复用原 Provider/权限入口、活动轮互斥和审计。仅添加操作编辑 InputState；直接发送不清空原草稿。输入框服务器与候选操作 SVG 通过 `app/assets.rs` 静态嵌入，不需要网络资源。
 
+2026-10-13 用户确认“两条直显”整理：`FollowupView` 的展开更多只控制当前轮可见项，默认两条，不修改候选存储、发送文本或请求次数；整组折叠独立保存当前视图选择。Provider 提示按有用程度排序，优先单一动作的完整短请求，保留必要标识，硬校验仍为 120 字符。`app/ai/usage.rs` 仅负责输入框里的 k/M/B 展示及不完整标记，精确统计和点击审计路径复用原实现。`composer::context` 接收目标与用量元素，权限状态集中于底部 selector，并保留不可用原因和原有授权逻辑；无数据迁移。
+
 ## 轮次、取消与恢复
 
 状态：Idle → Generating → RunningTool/AwaitingApproval → Generating → Idle；预算边界可进入 AwaitingContinuation，选择继续后恢复同一 runner；取消为 Interrupted，异常为 Failed。单对话取消通道在整个轮次完成后移除；面板隐藏不改变通道。显式停止、紧急停止和最后一个工作区窗口关闭请求取消。

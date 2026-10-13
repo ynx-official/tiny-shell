@@ -128,44 +128,23 @@ pub(super) fn surface(
         )
 }
 
-pub(super) fn context(target: impl IntoElement, hint: String, cx: &App) -> gpui::Div {
+pub(super) fn context(target: impl IntoElement, usage: impl IntoElement) -> gpui::Div {
     h_flex()
+        .debug_selector(|| "ai-composer-context".to_owned())
         .w_full()
         .min_w_0()
-        .items_start()
+        .items_center()
         .gap_2()
         .child(div().flex_1().min_w_0().child(target))
-        .child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .max_w(px(180.))
-                .text_xs()
-                .text_right()
-                .text_color(cx.theme().muted_foreground)
-                .whitespace_normal()
-                .line_height(gpui::relative(1.35))
-                .child(hint),
-        )
+        .child(div().flex_shrink_0().min_w_0().child(usage))
 }
 
-pub(super) fn toolbar(
-    model: impl IntoElement,
-    permissions: impl IntoElement,
-    cx: &App,
-) -> gpui::Div {
+pub(super) fn toolbar(model: impl IntoElement, permissions: impl IntoElement) -> gpui::Div {
     h_flex()
         .w_full()
         .min_w_0()
         .gap_1()
         .child(div().flex_1().min_w_0().child(model))
-        .child(
-            div()
-                .flex_shrink_0()
-                .w(px(1.))
-                .h(px(14.))
-                .bg(cx.theme().border),
-        )
         .child(permissions)
 }
 
@@ -356,11 +335,12 @@ mod tests {
         fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
             let stopped = self.stopped.clone();
             v_flex().size_full().p_3().child(surface(&self.input,true,
-                context(div().min_w_0().overflow_hidden().text_ellipsis().child("Example SSH with a long target name"), "Controlled · Approve commands and writes".into(), cx),
+                context(div().debug_selector(|| "composer-target".to_owned()).min_w_0().overflow_hidden().text_ellipsis().child("Example SSH with a long target name"),
+                    Button::new("fixture-usage").debug_selector(|| "composer-usage".to_owned()).ghost().xsmall().label("75.3k tokens · 13")),
                 toolbar(
                 Button::new("fixture-model").ghost().xsmall().w_full().min_w_0()
                     .child(div().min_w_0().w_full().overflow_hidden().text_ellipsis().child("Provider · a-very-long-model-name-that-must-not-cover-the-stop-button")),
-                Button::new("fixture-permissions").debug_selector(|| "composer-permissions".to_owned()).ghost().xsmall().flex_shrink_0().label("Use global"), cx),
+                Button::new("fixture-permissions").debug_selector(|| "composer-permissions".to_owned()).ghost().xsmall().flex_shrink_0().label("Global · Full access")),
                 Button::new("fixture-stop").debug_selector(||"composer-stop".to_owned())
                     .small().ghost().icon(IconName::Pause).on_click(move |_,_,_|stopped.set(true)),cx))
         }
@@ -392,6 +372,10 @@ mod tests {
         let card = visual.debug_bounds("ai-composer").unwrap();
         let stop = visual.debug_bounds("composer-stop").unwrap();
         let permissions = visual.debug_bounds("composer-permissions").unwrap();
+        let usage = visual.debug_bounds("composer-usage").unwrap();
+        let target = visual.debug_bounds("composer-target").unwrap();
+        assert!(target.right() <= usage.origin.x && usage.right() <= card.right());
+        assert!(usage.origin.y >= card.origin.y && usage.bottom() <= stop.origin.y);
         assert!(card.size.height > px(100.));
         assert!(
             stop.right() <= card.right() && stop.bottom() <= card.bottom(),

@@ -11,6 +11,8 @@ use gpui_component::{
 use rust_i18n::t;
 use std::rc::Rc;
 
+const INITIAL_VISIBLE: usize = 2;
+
 #[derive(Clone, Copy)]
 pub(super) enum Action {
     Add,
@@ -21,6 +23,7 @@ type Select = Rc<dyn Fn(usize, Action, &mut Window, &mut App)>;
 pub(super) struct FollowupView {
     items: Vec<String>,
     expanded: bool,
+    show_more: bool,
     select: Select,
 }
 
@@ -32,6 +35,7 @@ impl FollowupView {
         Self {
             items,
             expanded: true,
+            show_more: false,
             select: Rc::new(select),
         }
     }
@@ -45,12 +49,13 @@ impl FollowupView {
             .debug_selector(move || format!("ai-followup-row-{index}"))
             .w_full()
             .min_w_0()
-            .min_h(px(36.))
+            .min_h(px(40.))
             .flex_shrink_0()
             .gap_1()
             .px_1()
             .rounded(px(6.))
-            .hover(|row| row.bg(cx.theme().muted.opacity(0.45)))
+            .bg(cx.theme().muted.opacity(0.35))
+            .hover(|row| row.bg(cx.theme().muted.opacity(0.6)))
             .child(
                 Button::new(format!("ai-followup-text-{index}"))
                     .debug_selector(move || format!("ai-followup-text-{index}"))
@@ -59,7 +64,7 @@ impl FollowupView {
                     .flex_1()
                     .min_w_0()
                     .h_auto()
-                    .px_1()
+                    .px_2()
                     .py_2()
                     .tooltip(t!("ai_followup_send").to_string())
                     .child(
@@ -77,7 +82,10 @@ impl FollowupView {
                     .debug_selector(move || format!("ai-followup-add-{index}"))
                     .ghost()
                     .xsmall()
+                    .w(px(28.))
+                    .h(px(32.))
                     .flex_shrink_0()
+                    .text_color(cx.theme().muted_foreground)
                     .icon(Icon::default().path("icons/followup-add.svg"))
                     .tooltip(t!("ai_followup_add").to_string())
                     .on_click(move |_, window, cx| select_add(index, Action::Add, window, cx)),
@@ -93,7 +101,8 @@ impl Render for FollowupView {
             .w_full()
             .min_w_0()
             .flex_shrink_0()
-            .pt_2()
+            .mt_2()
+            .pt_3()
             .gap_1()
             .border_t_1()
             .border_color(cx.theme().border)
@@ -106,7 +115,7 @@ impl Render for FollowupView {
                         div()
                             .text_xs()
                             .text_color(cx.theme().muted_foreground)
-                            .child(t!("ai_followup_next").to_string()),
+                            .child(format!("{}  {}", t!("ai_followup_next"), self.items.len())),
                     )
                     .child(
                         Button::new("ai-followup-toggle")
@@ -133,8 +142,36 @@ impl Render for FollowupView {
                     ),
             );
         if self.expanded {
-            for (index, text) in self.items.iter().enumerate() {
+            let visible = if self.show_more {
+                self.items.len()
+            } else {
+                INITIAL_VISIBLE
+            };
+            for (index, text) in self.items.iter().take(visible).enumerate() {
                 content = content.child(self.row(index, text, cx));
+            }
+            if self.items.len() > INITIAL_VISIBLE {
+                content = content.child(
+                    Button::new("ai-followup-more")
+                        .debug_selector(|| "ai-followup-more".to_owned())
+                        .ghost()
+                        .xsmall()
+                        .self_start()
+                        .text_color(cx.theme().muted_foreground)
+                        .label(if self.show_more {
+                            t!("ai_followup_less").to_string()
+                        } else {
+                            t!(
+                                "ai_followup_more",
+                                count = self.items.len() - INITIAL_VISIBLE
+                            )
+                            .to_string()
+                        })
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.show_more = !this.show_more;
+                            cx.notify();
+                        })),
+                );
             }
         }
         content

@@ -98,7 +98,11 @@ fn draw_full_panel() {
         });
         let composer = visual.debug_bounds("ai-composer").unwrap();
         let permissions = visual.debug_bounds("ai-mode-selector").unwrap();
+        let usage = visual.debug_bounds("ai-conversation-usage").unwrap();
+        let target = visual.debug_bounds("ai-target").unwrap();
         assert!(composer.size.height > px(100.));
+        assert!(usage.origin.y >= composer.origin.y && usage.bottom() <= composer.bottom());
+        assert!(target.right() <= usage.origin.x && usage.right() <= composer.right());
         assert!(permissions.origin.x >= composer.origin.x);
         assert!(permissions.right() <= composer.right());
         assert!(permissions.bottom() <= composer.bottom());
@@ -218,8 +222,8 @@ fn tool_waiting_tail_stays_visible_above_usage_and_composer(cx: &mut TestAppCont
         let usage = visual.debug_bounds("ai-conversation-usage").unwrap();
         let composer = visual.debug_bounds("ai-composer").unwrap();
         let tail = visual.debug_bounds("ai-typing-dots").unwrap();
-        assert!(transcript.bottom() <= usage.origin.y + px(1.));
-        assert!(usage.bottom() <= composer.origin.y + px(1.));
+        assert!(transcript.bottom() <= composer.origin.y + px(1.));
+        assert!(usage.origin.y >= composer.origin.y && usage.bottom() <= composer.bottom());
         assert!(composer.bottom() <= size.height);
         assert!(tail.bottom() <= transcript.bottom() + px(1.));
         assert!(tail.origin.y >= transcript.origin.y);

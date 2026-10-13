@@ -14,12 +14,56 @@ use rust_i18n::t;
 use std::rc::Rc;
 use tiny_shell_mcp::policy::Mode;
 
-pub(super) fn summary_key(mode: Mode) -> &'static str {
+fn summary_key(mode: Mode) -> &'static str {
     match mode {
         Mode::ReadOnly => "ai_mode_read_only_summary",
         Mode::Controlled => "ai_mode_controlled_summary",
         Mode::Full => "ai_mode_full_summary",
     }
+}
+
+fn presentation(
+    current: Option<Mode>,
+    global: Option<Mode>,
+    unavailable: Option<&str>,
+) -> (String, String) {
+    let source = if current.is_none() {
+        t!(
+            "ai_mode_global_hint",
+            mode = global
+                .map(|mode| t!(title_key(Some(mode))).to_string())
+                .unwrap_or_else(|| t!("ai_ssh_unavailable").to_string())
+        )
+        .to_string()
+    } else {
+        t!("ai_mode_override_hint").to_string()
+    };
+    if let Some(reason) = unavailable {
+        let compact_key = match reason {
+            "ai_ssh_disabled" => "ai_access_disabled_compact",
+            "ai_no_ssh_target" => "ai_access_text_compact",
+            "ai_ssh_target_changed" => "ai_access_target_compact",
+            "ai_model_no_tools" => "ai_access_model_compact",
+            _ => "ai_access_unavailable_compact",
+        };
+        return (
+            t!(compact_key).to_string(),
+            format!("{}\n{source}", t!(reason)),
+        );
+    }
+    let mode = current.or(global);
+    let mode_label = mode.map(|mode| t!(title_key(Some(mode))).to_string());
+    let label = if current.is_none() {
+        mode_label
+            .map(|mode| t!("ai_mode_follow_compact", mode = mode).to_string())
+            .unwrap_or_else(|| t!("ai_mode_follow_global").to_string())
+    } else {
+        t!(title_key(current)).to_string()
+    };
+    let hint = mode
+        .map(|mode| format!("{}\n{source}", t!(summary_key(mode))))
+        .unwrap_or(source);
+    (label, hint)
 }
 
 fn title_key(mode: Option<Mode>) -> &'static str {
@@ -43,35 +87,48 @@ fn icon(mode: Option<Mode>) -> IconName {
 pub(super) fn selector(
     current: Option<Mode>,
     global: Option<Mode>,
+    unavailable: Option<&str>,
     active: bool,
     cx: &App,
     on_change: impl Fn(Option<Mode>, &mut Window, &mut App) + 'static,
 ) -> gpui::AnyElement {
     let on_change = Rc::new(on_change);
-    let label = t!(title_key(current)).to_string();
+    let (label, tooltip) = presentation(current, global, unavailable);
     let global_label = global
         .map(|mode| t!(title_key(Some(mode))).to_string())
         .unwrap_or_else(|| t!("ai_ssh_unavailable").to_string());
-    let tooltip = if current.is_none() {
-        t!("ai_mode_global_hint", mode = global_label.clone()).to_string()
-    } else {
-        t!("ai_mode_override_hint").to_string()
-    };
     Button::new("ai-permissions")
         .debug_selector(|| "ai-mode-selector".to_owned())
         .ghost()
         .xsmall()
         .flex_shrink_0()
+        .max_w(px(164.))
+        .min_w_0()
         .tooltip(tooltip)
         .disabled(active)
         .child(
             h_flex()
+                .min_w_0()
                 .gap_1()
-                .child(Icon::new(icon(current)).size(px(12.)))
-                .child(label)
+                .child(
+                    Icon::new(if unavailable.is_some() {
+                        IconName::EyeOff
+                    } else {
+                        icon(current)
+                    })
+                    .size(px(12.)),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .overflow_hidden()
+                        .text_ellipsis()
+                        .child(label),
+                )
                 .child(Icon::new(IconName::ChevronDown).size(px(12.))),
         )
-        .text_color(if current.is_some() {
+        .text_color(if current.is_some() && unavailable.is_none() {
             cx.theme().primary
         } else {
             cx.theme().foreground
@@ -148,6 +205,7 @@ mod tests {
             v_flex().size_full().justify_end().p_3().child(selector(
                 self.mode,
                 Some(Mode::Full),
+                None,
                 self.active,
                 cx,
                 move |mode, _, cx| {
@@ -157,6 +215,30 @@ mod tests {
                     })
                 },
             ))
+        }
+    }
+
+    #[test]
+    fn compact_selector_shows_effective_mode_and_unavailable_reason() {
+        let (label, hint) = presentation(None, Some(Mode::Full), None);
+        assert_eq!(
+            label,
+            t!("ai_mode_follow_compact", mode = t!("mcp_full")).to_string()
+        );
+        assert!(hint.contains(t!("ai_mode_full_summary").as_ref()));
+        let (label, hint) = presentation(Some(Mode::Controlled), Some(Mode::ReadOnly), None);
+        assert_eq!(label, t!("mcp_controlled").to_string());
+        assert!(hint.contains(t!("ai_mode_override_hint").as_ref()));
+        for (reason, expected) in [
+            ("ai_ssh_disabled", "ai_access_disabled_compact"),
+            ("ai_no_ssh_target", "ai_access_text_compact"),
+            ("ai_ssh_target_changed", "ai_access_target_compact"),
+            ("ai_model_no_tools", "ai_access_model_compact"),
+            ("ai_ssh_unavailable", "ai_access_unavailable_compact"),
+        ] {
+            let (label, hint) = presentation(Some(Mode::Full), Some(Mode::Full), Some(reason));
+            assert_eq!(label, t!(expected).to_string());
+            assert!(hint.contains(t!(reason).as_ref()));
         }
     }
 

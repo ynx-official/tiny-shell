@@ -8,6 +8,7 @@ mod permissions;
 mod review;
 mod scroll;
 mod tool_steps;
+mod usage;
 use crate::{
     TinyShell,
     ai::{BoundTarget, Service},

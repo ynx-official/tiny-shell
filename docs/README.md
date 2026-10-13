@@ -8,7 +8,7 @@
 - [AI 会话用量与操作审计设计](02-design/ai-usage-and-audit.md)：Approved；对话 Token、AI/MCP 操作详情、审批时间线及加密留存方案。
 
 - [内置 AI 会话](02-design/ai-conversations.md)：原生聊天、首轮自动标题、回复下方续聊建议、工具步骤与聊天内审阅、本机加密历史及独立 SSH 权限。
-- [内置 AI 需求与验收](01-requirements/ai-conversations.md)：已确认范围及 AI-01 至 AI-29 验收行为。
+- [内置 AI 需求与验收](01-requirements/ai-conversations.md)：已确认范围及 AI-01 至 AI-29 验收行为，含续聊建议两条直显与紧凑输入区。
 
 - [应用图标与平台导出](02-design/application-icons.md)：已选定的 A 圆润终端图标、平台适配与验证。
 

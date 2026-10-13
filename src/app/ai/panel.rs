@@ -5,7 +5,7 @@ use crate::{
     app::confirmation_dialog::ConfirmationDialog,
 };
 use gpui::{
-    AppContext as _, Context, Entity, InteractiveElement as _, IntoElement as _, MouseButton,
+    App, AppContext as _, Context, Entity, InteractiveElement as _, IntoElement as _, MouseButton,
     ParentElement as _, Render, ScrollHandle, StatefulInteractiveElement as _, Styled as _,
     Subscription, WeakEntity, Window, div, prelude::FluentBuilder as _, px,
 };
@@ -418,14 +418,12 @@ impl AiPanel {
     ) -> gpui::AnyElement {
         let header = self.render_conversation_header(c, cx);
         let messages = self.render_transcript(c, snapshot, window, cx);
-        let usage = self.render_conversation_usage(c);
         let composer = self.render_composer(c, snapshot, cx);
         v_flex()
             .size_full()
             .min_h_0()
             .child(header)
             .child(messages)
-            .child(usage)
             .child(composer)
             .into_any_element()
     }
@@ -641,14 +639,12 @@ impl AiPanel {
             .map(|t| t.name.clone())
             .unwrap_or_else(|| t!("ai_plain_chat").to_string());
         let target_button = Button::new("ai-target")
+            .debug_selector(|| "ai-target".to_owned())
             .ghost()
             .xsmall()
             .w_full()
             .min_w_0()
-            .border_1()
-            .border_color(cx.theme().border)
-            .rounded(px(6.))
-            .tooltip(t!("ai_target_scope_hint").to_string())
+            .tooltip(format!("{target_label}\n{}", t!("ai_target_scope_hint")))
             .child(
                 h_flex()
                     .w_full()
@@ -751,17 +747,22 @@ impl AiPanel {
         let id = c.id.clone();
         let target = c.target.clone();
         let providers = snapshot.settings.providers.clone();
-        let model_label = snapshot
+        let model_hint = snapshot
             .settings
             .providers
             .iter()
             .find(|p| Some(&p.id) == c.provider_id.as_ref())
             .map(|p| format!("{} · {}", p.name, c.model))
             .unwrap_or_else(|| t!("ai_choose_model").to_string());
+        let model_label = if c.model.is_empty() {
+            t!("ai_choose_model").to_string()
+        } else {
+            c.model.clone()
+        };
         let model_button = Button::new("ai-model")
             .ghost()
             .xsmall()
-            .tooltip(model_label.clone())
+            .tooltip(model_hint)
             .w_full()
             .min_w_0()
             .child(
@@ -839,14 +840,35 @@ impl AiPanel {
             .into_any_element()
     }
 
-    fn render_conversation_usage(&self, c: &Conversation) -> gpui::AnyElement {
+    #[inline(never)]
+    fn render_conversation_usage(&self, c: &Conversation, cx: &App) -> gpui::AnyElement {
         Button::new("ai-conversation-usage")
             .debug_selector(|| "ai-conversation-usage".to_owned())
             .flex_none()
             .ghost()
             .xsmall()
-            .label(crate::app::audit::usage_label(c))
-            .tooltip(t!("audit_open").to_string())
+            .max_w(px(176.))
+            .min_w_0()
+            .text_color(cx.theme().muted_foreground)
+            .child(
+                h_flex()
+                    .min_w_0()
+                    .gap_1()
+                    .child(
+                        div()
+                            .min_w_0()
+                            .flex_1()
+                            .overflow_hidden()
+                            .text_ellipsis()
+                            .child(super::usage::label(c)),
+                    )
+                    .child(Icon::new(IconName::Info).size(px(12.))),
+            )
+            .tooltip(format!(
+                "{}\n{}",
+                crate::app::audit::usage_label(c),
+                t!("audit_open")
+            ))
             .on_click({
                 let conversation = c.id.clone();
                 let owner = self.owner.clone();
@@ -874,6 +896,7 @@ impl AiPanel {
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let target_button = self.render_target_selector(c, cx);
+        let usage_button = self.render_conversation_usage(c, cx);
         let model_button = self.render_model_selector(c, snapshot, cx);
         let policy = super::super::mcp::service()
             .ok()
@@ -905,18 +928,15 @@ impl AiPanel {
             target_current,
             supports_tools,
         );
-        let permission_hint = if let Some(policy) = effective_policy
-            .filter(|p| p.enabled && c.target.is_some() && target_current && supports_tools)
-        {
-            t!(super::permissions::summary_key(policy.mode)).to_string()
-        } else {
-            t!(status_key).to_string()
-        };
+        let unavailable = effective_policy
+            .is_none_or(|p| !p.enabled || c.target.is_none() || !target_current || !supports_tools)
+            .then_some(status_key);
         let view = cx.entity();
         let permission_id = c.id.clone();
         let permission_button = super::permissions::selector(
             c.mode_override,
             policy.map(|p| p.mode),
+            unavailable,
             c.state.active(),
             cx,
             move |mode, window, cx| {
@@ -931,13 +951,11 @@ impl AiPanel {
             .flex_shrink_0()
             .gap_2()
             .p_3()
-            .border_t_1()
-            .border_color(cx.theme().border)
             .child(super::composer::surface(
                 &self.input,
                 active,
-                super::composer::context(target_button, permission_hint, cx),
-                super::composer::toolbar(model_button, permission_button, cx),
+                super::composer::context(target_button, usage_button),
+                super::composer::toolbar(model_button, permission_button),
                 Button::new("ai-send")
                     .small()
                     .ghost()

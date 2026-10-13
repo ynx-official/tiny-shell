@@ -42,7 +42,8 @@ fn suggestion_text_sends_while_the_only_icon_adds_and_narrow_layout_stays_usable
         root.into_any_element()
     });
     let list = visual.debug_bounds("ai-followups").unwrap();
-    for index in 0..3 {
+    assert!(visual.debug_bounds("ai-followup-row-2").is_none());
+    for index in 0..2 {
         let text = visual
             .debug_bounds(&format!("ai-followup-text-{index}"))
             .unwrap();
@@ -61,6 +62,10 @@ fn suggestion_text_sends_while_the_only_icon_adds_and_narrow_layout_stays_usable
     visual.simulate_click(text.center(), gpui::Modifiers::none());
     let add = visual.debug_bounds("ai-followup-add-1").unwrap();
     visual.simulate_click(add.center(), gpui::Modifiers::none());
+    let more = visual.debug_bounds("ai-followup-more").unwrap();
+    visual.simulate_click(more.center(), gpui::Modifiers::none());
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("ai-followup-row-2").is_some());
     let text = visual.debug_bounds("ai-followup-text-2").unwrap();
     visual.simulate_click(text.center(), gpui::Modifiers::none());
     visual.run_until_parked();
@@ -72,4 +77,10 @@ fn suggestion_text_sends_while_the_only_icon_adds_and_narrow_layout_stays_usable
     visual.simulate_click(toggle.center(), gpui::Modifiers::none());
     visual.run_until_parked();
     assert!(visual.debug_bounds("ai-followup-row-2").is_some());
+    let more = visual.debug_bounds("ai-followup-more").unwrap();
+    visual.simulate_click(more.center(), gpui::Modifiers::none());
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("ai-followup-row-0").is_some());
+    assert!(visual.debug_bounds("ai-followup-row-1").is_some());
+    assert!(visual.debug_bounds("ai-followup-row-2").is_none());
 }
