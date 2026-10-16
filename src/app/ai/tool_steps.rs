@@ -121,17 +121,16 @@ pub(super) fn project(conversation: &Conversation) -> Vec<ChatItem> {
             steps: Vec::new(),
         });
         for (ordinal, call) in message.tool_calls.iter().enumerate() {
-            let name = call["function"]["name"]
-                .as_str()
-                .unwrap_or_default()
-                .to_owned();
-            let call_id = call["id"].as_str().map(str::to_owned);
+            // Borrow lookup keys from the conversation, like the activity index.
+            // Owned step strings are allocated only after the mutable lookup.
+            let name = call["function"]["name"].as_str().unwrap_or_default();
+            let call_id = call["id"].as_str();
             let activity = exact
-                .get_mut(&(index, call_id.as_deref(), name.as_str()))
+                .get_mut(&(index, call_id, name))
                 .and_then(std::collections::VecDeque::pop_front)
                 .or_else(|| {
                     legacy
-                        .get_mut(name.as_str())
+                        .get_mut(name)
                         .and_then(std::collections::VecDeque::pop_front)
                 })
                 .map(|index| &conversation.activities[index]);
@@ -153,8 +152,8 @@ pub(super) fn project(conversation: &Conversation) -> Vec<ChatItem> {
                     message: index,
                     call: ordinal,
                 },
-                call_id,
-                name,
+                call_id: call_id.map(str::to_owned),
+                name: name.to_owned(),
                 arguments: call["function"]["arguments"].as_str().map(|args| {
                     serde_json::from_str(args).unwrap_or_else(|_| Value::String(args.into()))
                 }),
