@@ -19,6 +19,7 @@ mod followup_tests;
 mod followups;
 #[cfg(test)]
 mod optimization_tests;
+mod panel_snapshot;
 #[cfg(test)]
 mod permission_tests;
 mod permissions;

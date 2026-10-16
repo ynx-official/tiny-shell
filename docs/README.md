@@ -1,7 +1,7 @@
 # TinyShell 文档索引
 
 > 状态：Approved
-> 最后更新：2026-10-13
+> 最后更新：2026-10-16
 
 ## 设计
 
@@ -11,7 +11,7 @@
 
 - [AI 会话用量与操作审计设计](02-design/ai-usage-and-audit.md)：Approved；对话 Token、AI/MCP 操作详情、审批时间线及加密留存方案。
 
-- [内置 AI 会话](02-design/ai-conversations.md)：原生聊天、首轮自动标题、回复下方续聊建议、工具步骤与聊天内审阅、本机加密历史及独立 SSH 权限。
+- [内置 AI 会话](02-design/ai-conversations.md)：原生聊天、长记录按可见范围渲染、首轮自动标题、续聊建议、工具步骤与聊天内审阅、本机加密历史及独立 SSH 权限。
 - [内置 AI 需求与验收](01-requirements/ai-conversations.md)：已确认范围及 AI-01 至 AI-29 验收行为，含续聊建议两条直显与紧凑输入区。
 
 - [应用图标与平台导出](02-design/application-icons.md)：已选定的 03 TS 字母图标、跨平台导出、实际验证范围与手动验收。
@@ -60,7 +60,7 @@
 
 - [AI 与 MCP 调用链优化](04-quality/ai-tool-call-optimization.md)：工具裁剪、通知等待、应用管理会话、预算和重复控制的实际证据及手动验收。
 
-- [内置 AI 实施与验证](04-quality/ai-conversations.md)：回归、模型/SSH替身闭环、系统凭据和原生验收状态。
+- [内置 AI 实施与验证](04-quality/ai-conversations.md)：回归、长记录性能优化的静态检查与待运行验收、模型/SSH替身闭环及原生验收状态。
 
 - [Rust 1.96.1 升级验证](04-quality/rust-1-96-1-validation.md)：固定工具链、全目标测试、实际覆盖率与平台验证范围。
 

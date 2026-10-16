@@ -6,8 +6,8 @@ use crate::{
 };
 use gpui::{
     App, AppContext as _, Context, Entity, InteractiveElement as _, IntoElement as _, MouseButton,
-    ParentElement as _, Render, ScrollHandle, StatefulInteractiveElement as _, Styled as _,
-    Subscription, WeakEntity, Window, div, prelude::FluentBuilder as _, px,
+    ParentElement as _, Render, StatefulInteractiveElement as _, Styled as _, Subscription,
+    WeakEntity, Window, div, prelude::FluentBuilder as _, px,
 };
 use gpui_component::{
     ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _,
@@ -15,11 +15,20 @@ use gpui_component::{
     h_flex,
     input::{Input, InputEvent, InputState},
     menu::{DropdownMenu as _, PopupMenuItem},
-    text::TextView,
     v_flex,
 };
 use rust_i18n::t;
+use std::rc::Rc;
 mod followups;
+mod transcript;
+use transcript::Transcript;
+
+struct PanelSnapshot {
+    stamp: u64,
+    current: Option<String>,
+    history: bool,
+    data: Rc<crate::ai::Snapshot>,
+}
 
 pub(crate) struct AiPanel {
     owner: WeakEntity<TinyShell>,
@@ -29,8 +38,9 @@ pub(crate) struct AiPanel {
     search: Entity<InputState>,
     rename: Entity<InputState>,
     rename_id: Option<String>,
-    scroll: ScrollHandle,
-    scroll_stamp: Option<super::scroll::ScrollStamp>,
+    transcript: Transcript,
+    snapshot: Option<PanelSnapshot>,
+    followup_view: Option<followups::CachedFollowups>,
     error: Option<String>,
     pub width: f32,
     drag: Option<(f32, f32)>,
@@ -71,8 +81,9 @@ impl AiPanel {
             search,
             rename,
             rename_id: None,
-            scroll: ScrollHandle::new(),
-            scroll_stamp: None,
+            transcript: Transcript::default(),
+            snapshot: None,
+            followup_view: None,
             error: None,
             width: 420.,
             drag: None,
@@ -112,7 +123,7 @@ impl AiPanel {
             Ok(()) => {
                 super::attention::bind(id, window.window_handle());
                 self.input.update(cx, |i, cx| i.set_value("", window, cx));
-                self.scroll.scroll_to_bottom();
+                self.transcript.list.set_follow_mode(gpui::FollowMode::Tail);
                 self.error = None;
             }
             Err(e) => self.error = Some(e),
@@ -411,14 +422,15 @@ impl AiPanel {
     #[inline(never)]
     fn render_conversation(
         &mut self,
-        c: &Conversation,
-        snapshot: &crate::ai::Snapshot,
+        snapshot: Rc<crate::ai::Snapshot>,
+        conversation_index: usize,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
+        let c = &snapshot.conversations[conversation_index];
         let header = self.render_conversation_header(c, cx);
-        let messages = self.render_transcript(c, snapshot, window, cx);
-        let composer = self.render_composer(c, snapshot, cx);
+        let messages = self.render_transcript(snapshot.clone(), conversation_index, window, cx);
+        let composer = self.render_composer(c, &snapshot, cx);
         v_flex()
             .size_full()
             .min_h_0()
@@ -426,210 +438,6 @@ impl AiPanel {
             .child(messages)
             .child(composer)
             .into_any_element()
-    }
-
-    #[inline(never)]
-    fn render_transcript(
-        &mut self,
-        c: &Conversation,
-        snapshot: &crate::ai::Snapshot,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> gpui::AnyElement {
-        super::scroll::follow(&self.scroll, &mut self.scroll_stamp, c);
-        let mut messages = v_flex()
-            .id("ai-messages")
-            .debug_selector(|| "ai-messages".to_owned())
-            .flex_1()
-            .min_h_0()
-            .overflow_y_scroll()
-            .track_scroll(&self.scroll)
-            .gap_3()
-            .p_3();
-        if c.messages.is_empty() {
-            messages = messages.child(
-                v_flex()
-                    .w_full()
-                    .items_center()
-                    .gap_3()
-                    .pt_6()
-                    .child(super::icon().size_8())
-                    .child(div().child(t!("ai_start").to_string()))
-                    .child(note(t!("ai_privacy_empty").to_string(), cx)),
-            );
-            if snapshot.settings.providers.is_empty() {
-                messages = messages.child(
-                    Button::new("ai-configure")
-                        .small()
-                        .label(t!("ai_open_settings").to_string())
-                        .on_click(
-                            cx.listener(|this, _, window, cx| this.settings(4, None, window, cx)),
-                        ),
-                );
-            }
-        }
-        let items = super::tool_steps::project(c);
-        let feedback = super::composer::feedback_state(c);
-        let dots_message = if feedback == super::composer::TurnFeedback::Dots
-            && c.error.as_ref().or(self.error.as_ref()).is_none()
-        {
-            items.last().and_then(|item| match item {
-                super::tool_steps::ChatItem::Message(index)
-                    if c.messages[*index].role == "assistant" =>
-                {
-                    Some(*index)
-                }
-                _ => None,
-            })
-        } else {
-            None
-        };
-        for item in items {
-            let ix = match item {
-                super::tool_steps::ChatItem::Message(index) => index,
-                super::tool_steps::ChatItem::Tools(group) => {
-                    let review = super::review::actions(c, self.owner.clone());
-                    let initial = group.clone();
-                    let trace = window.use_keyed_state(
-                        format!("ai-steps-{}-{}", c.id, group.key),
-                        cx,
-                        |_, _| super::tool_steps::view::ToolGroupView::new(initial, review),
-                    );
-                    trace.update(cx, |view, cx| view.update_group(group, cx));
-                    messages = messages.child(trace);
-                    continue;
-                }
-            };
-            let message = &c.messages[ix];
-            if message.content.is_empty() {
-                continue;
-            }
-            let text = message.content.clone();
-            let copy = text.clone();
-            messages = messages.child(
-                v_flex()
-                    .w_full()
-                    .min_w_0()
-                    .gap_1()
-                    .when(message.role == "user", |row| {
-                        row.p_2()
-                            .rounded(px(6.))
-                            .bg(cx.theme().primary.opacity(0.08))
-                    })
-                    .child(
-                        h_flex()
-                            .justify_between()
-                            .child(note(
-                                t!(if message.role == "user" {
-                                    "ai_you"
-                                } else if message.role == "tool" {
-                                    "ai_tool_result"
-                                } else {
-                                    "ai_assistant"
-                                })
-                                .to_string(),
-                                cx,
-                            ))
-                            .child(
-                                Button::new(format!("ai-copy-{ix}"))
-                                    .ghost()
-                                    .xsmall()
-                                    .icon(IconName::Copy)
-                                    .tooltip(t!("ai_copy").to_string())
-                                    .on_click(move |_, _, cx| {
-                                        cx.write_to_clipboard(gpui::ClipboardItem::new_string(
-                                            copy.clone(),
-                                        ))
-                                    }),
-                            ),
-                    )
-                    .child(
-                        TextView::markdown(
-                            format!("ai-message-{}-{ix}", c.id),
-                            super::markdown::renderable(&text),
-                        )
-                        .selectable(true)
-                        .code_block_actions(|block, _, _| {
-                            let code = block.code().to_string();
-                            Button::new("ai-copy-code")
-                                .ghost()
-                                .xsmall()
-                                .icon(IconName::Copy)
-                                .on_click(move |_, _, cx| {
-                                    cx.write_to_clipboard(gpui::ClipboardItem::new_string(
-                                        code.clone(),
-                                    ))
-                                })
-                        }),
-                    )
-                    .when(dots_message == Some(ix), |reply| {
-                        reply.child(super::composer::animated_dots(cx))
-                    }),
-            );
-        }
-        if let Some(error) = c.error.as_ref().or(self.error.as_ref()) {
-            messages = messages.child(
-                div()
-                    .text_sm()
-                    .text_color(cx.theme().danger)
-                    .child(error_text(error)),
-            );
-        } else if matches!(c.state, TurnState::Failed | TurnState::Interrupted) {
-            messages = messages.child(note(t!(state_key(c.state)).to_string(), cx));
-        }
-        if let Some(pause) = &c.continuation {
-            let id = c.id.clone();
-            let token = pause.token.clone();
-            let stop_id = id.clone();
-            let stop_token = token.clone();
-            messages = messages.child(
-                v_flex()
-                    .gap_2()
-                    .border_t_1()
-                    .border_color(cx.theme().border)
-                    .pt_3()
-                    .child(div().child(t!("ai_waiting_continuation").to_string()))
-                    .child(note(super::attention::description(pause), cx))
-                    .child(
-                        h_flex()
-                            .gap_2()
-                            .flex_wrap()
-                            .child(
-                                Button::new("ai-resume-paused")
-                                    .small()
-                                    .primary()
-                                    .label(t!("ai_continue_turn").to_string())
-                                    .on_click(move |_, _, _| {
-                                        if let Ok(s) = service() {
-                                            let _ = s.resume(&id, &token);
-                                        }
-                                    }),
-                            )
-                            .child(
-                                Button::new("ai-stop-paused")
-                                    .small()
-                                    .outline()
-                                    .label(t!("ai_terminate_turn").to_string())
-                                    .on_click(move |_, _, _| {
-                                        if let Ok(s) = service() {
-                                            let _ = s.terminate_continuation(&stop_id, &stop_token);
-                                        }
-                                    }),
-                            ),
-                    ),
-            );
-        }
-        if dots_message.is_none()
-            && let Some(indicator) = super::composer::render_feedback(feedback, cx)
-        {
-            messages = messages.child(indicator);
-        }
-        if snapshot.settings.execution.followup_suggestions
-            && let Some(suggestions) = self.render_followups(c, window, cx)
-        {
-            messages = messages.child(suggestions);
-        }
-        messages.into_any_element()
     }
 
     fn render_target_selector(&self, c: &Conversation, cx: &mut Context<Self>) -> gpui::AnyElement {
@@ -982,10 +790,10 @@ impl AiPanel {
 }
 impl Render for AiPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl gpui::IntoElement {
-        let mut snapshot = service().map(|s| s.snapshot()).unwrap_or_default();
+        let mut snapshot = self.read_snapshot();
         if self.current.is_none() && !self.history && snapshot.ready {
             self.create(cx);
-            snapshot = service().map(|s| s.snapshot()).unwrap_or_default();
+            snapshot = self.read_snapshot();
         }
         if self
             .current
@@ -995,29 +803,57 @@ impl Render for AiPanel {
         {
             self.current = None;
             self.history = true;
+            snapshot = self.read_snapshot();
         }
-        self.render_snapshot(&snapshot, window, cx)
+        self.render_snapshot(snapshot, window, cx)
     }
 }
 impl AiPanel {
+    fn read_snapshot(&mut self) -> Rc<crate::ai::Snapshot> {
+        let Ok(service) = service() else {
+            self.snapshot = None;
+            return Rc::default();
+        };
+        let stamp = service.stamp();
+        if let Some(cached) = &self.snapshot
+            && cached.stamp == stamp
+            && cached.current == self.current
+            && cached.history == self.history
+        {
+            return cached.data.clone();
+        }
+        let data = Rc::new(if self.history {
+            service.snapshot()
+        } else {
+            service.panel_snapshot(self.current.as_deref())
+        });
+        self.snapshot = Some(PanelSnapshot {
+            stamp,
+            current: self.current.clone(),
+            history: self.history,
+            data: data.clone(),
+        });
+        data
+    }
+
     fn render_snapshot(
         &mut self,
-        snapshot: &crate::ai::Snapshot,
+        snapshot: Rc<crate::ai::Snapshot>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let body = if self.history {
-            self.render_history(snapshot, window, cx)
-        } else if let Some(c) = snapshot
+            self.render_history(&snapshot, window, cx)
+        } else if let Some(index) = snapshot
             .conversations
             .iter()
-            .find(|c| Some(&c.id) == self.current.as_ref())
+            .position(|c| Some(&c.id) == self.current.as_ref())
         {
-            self.render_conversation(c, snapshot, window, cx)
+            self.render_conversation(snapshot.clone(), index, window, cx)
         } else {
             note(t!("loading").to_string(), cx).into_any_element()
         };
-        self.render_frame(body, snapshot, cx)
+        self.render_frame(body, &snapshot, cx)
     }
 
     #[inline(never)]

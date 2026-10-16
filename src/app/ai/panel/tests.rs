@@ -11,7 +11,7 @@ struct SnapshotHost {
 impl Render for SnapshotHost {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl gpui::IntoElement {
         self.panel.update(cx, |panel, cx| {
-            panel.render_snapshot(&self.snapshot, window, cx)
+            panel.render_snapshot(Rc::new(self.snapshot.clone()), window, cx)
         })
     }
 }
@@ -60,8 +60,9 @@ fn draw_full_panel() {
             search,
             rename,
             rename_id: None,
-            scroll: ScrollHandle::new(),
-            scroll_stamp: None,
+            transcript: Transcript::default(),
+            snapshot: None,
+            followup_view: None,
             error: None,
             width: 360.,
             drag: None,
@@ -176,8 +177,9 @@ fn tool_waiting_tail_stays_visible_above_usage_and_composer(cx: &mut TestAppCont
             search,
             rename,
             rename_id: None,
-            scroll: ScrollHandle::new(),
-            scroll_stamp: None,
+            transcript: Transcript::default(),
+            snapshot: None,
+            followup_view: None,
             error: None,
             width: 360.,
             drag: None,
@@ -213,7 +215,7 @@ fn tool_waiting_tail_stays_visible_above_usage_and_composer(cx: &mut TestAppCont
             conversation.state = state;
             conversation.activities[0].state = activity.into();
             host.panel.update(cx, |panel, _| {
-                panel.scroll.set_offset(gpui::point(px(0.), px(0.)));
+                panel.transcript.list.scroll_to(gpui::ListOffset::default());
             });
             cx.notify();
         });
@@ -228,8 +230,9 @@ fn tool_waiting_tail_stays_visible_above_usage_and_composer(cx: &mut TestAppCont
         assert!(tail.bottom() <= transcript.bottom() + px(1.));
         assert!(tail.origin.y >= transcript.origin.y);
         panel.read_with(&visual, |panel, _| {
-            let remaining = panel.scroll.max_offset().y + panel.scroll.offset().y;
-            assert!(panel.scroll.max_offset().y > px(0.));
+            let remaining = panel.transcript.list.max_offset_for_scrollbar().y
+                + panel.transcript.list.scroll_px_offset_for_scrollbar().y;
+            assert!(panel.transcript.list.max_offset_for_scrollbar().y > px(0.));
             assert!(
                 remaining.abs() < px(1.),
                 "tool output must reach the bottom"

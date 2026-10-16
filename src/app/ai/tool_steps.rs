@@ -50,7 +50,31 @@ pub(super) enum ChatItem {
 pub(super) fn project(conversation: &Conversation) -> Vec<ChatItem> {
     let mut items = Vec::new();
     let mut pending: Option<ToolGroup> = None;
-    let mut used = std::collections::HashSet::new();
+    // Index activity links once; scanning the complete activity history for every
+    // call makes a long tool-heavy transcript quadratic on each streamed update.
+    let mut exact = std::collections::HashMap::<_, std::collections::VecDeque<usize>>::new();
+    let mut legacy = std::collections::HashMap::<_, std::collections::VecDeque<usize>>::new();
+    for (index, activity) in conversation.activities.iter().enumerate() {
+        if let Some(message) = activity.message_index {
+            exact
+                .entry((
+                    message,
+                    activity.tool_call_id.as_deref(),
+                    activity.name.as_str(),
+                ))
+                .or_default()
+                .push_back(index);
+        } else {
+            legacy
+                .entry(activity.name.as_str())
+                .or_default()
+                .push_back(index);
+        }
+    }
+    let last_user = conversation
+        .messages
+        .iter()
+        .rposition(|message| message.role == "user");
     for (index, message) in conversation.messages.iter().enumerate() {
         if message.role == "tool" {
             let group = pending.get_or_insert_with(|| ToolGroup {
@@ -102,35 +126,17 @@ pub(super) fn project(conversation: &Conversation) -> Vec<ChatItem> {
                 .unwrap_or_default()
                 .to_owned();
             let call_id = call["id"].as_str().map(str::to_owned);
-            let exact = conversation
-                .activities
-                .iter()
-                .enumerate()
-                .find(|(i, activity)| {
-                    !used.contains(i)
-                        && activity.message_index == Some(index)
-                        && activity.tool_call_id == call_id
-                        && activity.name == name
-                });
-            let activity = exact.or_else(|| {
-                conversation
-                    .activities
-                    .iter()
-                    .enumerate()
-                    .find(|(i, activity)| {
-                        !used.contains(i)
-                            && activity.message_index.is_none()
-                            && activity.name == name
-                    })
-            });
-            if let Some((i, _)) = activity {
-                used.insert(i);
-            }
-            let activity = activity.map(|(_, a)| a);
-            // Calls from an earlier stopped turn must not inherit the latest turn's running state.
-            let in_current_turn = !conversation.messages[index + 1..]
-                .iter()
-                .any(|m| m.role == "user");
+            let activity = exact
+                .get_mut(&(index, call_id.as_deref(), name.as_str()))
+                .and_then(std::collections::VecDeque::pop_front)
+                .or_else(|| {
+                    legacy
+                        .get_mut(name.as_str())
+                        .and_then(std::collections::VecDeque::pop_front)
+                })
+                .map(|index| &conversation.activities[index]);
+            // Old stopped turns must not inherit the latest turn's running state.
+            let in_current_turn = last_user.is_none_or(|last| index >= last);
             let active = conversation.state.active() && in_current_turn;
             let mut state = activity.map(|a| task_state(&a.state)).unwrap_or_else(|| {
                 if active {
@@ -435,6 +441,50 @@ mod tests {
         assert_eq!(group.steps.len(), 1);
         assert_eq!(group.state(), ToolState::Succeeded);
         assert_eq!(group.steps[0].task_id.as_deref(), Some("legacy"));
+    }
+    #[test]
+    fn indexed_activity_matching_prefers_exact_links_and_consumes_legacy_in_order() {
+        let mut c = Conversation::new(None, &Settings::default());
+        c.state = TurnState::RunningTool;
+        c.messages = vec![
+            call("same", "run_command", json!({}), ""),
+            call("same", "run_command", json!({}), ""),
+            call("same", "run_command", json!({}), ""),
+        ];
+        c.activities = vec![
+            Activity {
+                name: "run_command".into(),
+                task_id: Some("legacy-first".into()),
+                state: "succeeded".into(),
+                message_index: None,
+                tool_call_id: None,
+            },
+            Activity {
+                name: "run_command".into(),
+                task_id: Some("exact".into()),
+                state: "succeeded".into(),
+                message_index: Some(0),
+                tool_call_id: Some("same".into()),
+            },
+            Activity {
+                name: "run_command".into(),
+                task_id: Some("legacy-last".into()),
+                state: "running".into(),
+                message_index: None,
+                tool_call_id: None,
+            },
+        ];
+        let group = trace(&c);
+        let tasks: Vec<_> = group
+            .steps
+            .iter()
+            .map(|step| step.task_id.as_deref())
+            .collect();
+        assert_eq!(
+            tasks,
+            vec![Some("exact"), Some("legacy-first"), Some("legacy-last")]
+        );
+        assert_eq!(group.steps[2].state, ToolState::Running);
     }
     #[test]
     fn interrupted_calls_do_not_become_running_when_a_new_turn_starts() {
