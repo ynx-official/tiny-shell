@@ -1,7 +1,7 @@
 # TinyShell v2.1.2
 
 > 发布日期：2026-10-16
-> 状态：Approved（发布准备中；上述日期为计划发布日期，尚未创建标签或发布 Release）
+> 状态：Approved（已正式发布；北京时间 2026-10-16 18:22:39）
 > 最后更新：2026-10-16
 > 本地测试策略：skip
 > 关联文档：[AI 交互设计](../../02-design/ai-conversations.md)、[AI 实现契约](../../03-architecture/ai-conversations.md)、[AI 质量记录](../../04-quality/ai-conversations.md)、[构建与打包](../../05-operations/build-and-package.md)
@@ -71,8 +71,10 @@ TinyShell v2.1.2
 - 前一开发阶段完成格式、差异和文档链接静态检查；这些结果不代表本次标签已通过构建或功能验收。
 - 本次版本资料校验、纯文本说明生成、锁文件版本一致性、文档链接及 git diff --check：通过。cargo fmt --all -- --check：通过。
 - 首次本地 release 构建复现工具索引查询的 4 条 E0597/E0505 编译错误；修正借用来源后，cargo build --workspace --locked --release --no-default-features 于 2026-10-16 成功完成（Windows x86_64，release 优化构建，耗时 1 分 20 秒）。
-- 旧提交的云端预检 38881697221 已通过发布资料校验和发布工具测试；发现编译问题后请求取消，不能作为修正后提交的多平台验证。正式标签的多平台构建、打包和上传待执行。
-- 正式标签、GitHub Release、更新清单与下载文件：尚未发布，完成后记录实际结果。
+- 旧提交的云端预检 38881697221 已通过发布资料校验和发布工具测试；Linux 构建复现相同的 E0597/E0505，随后取消旧预检。它不作为修正后提交的多平台验证。
+- 正式标签 v2.1.2 已推送至 fcbfd185929a313a39f48aa37aba32dc22243f45。[正式发布流水线 38883181860](https://github.com/ynx-official/tiny-shell/actions/runs/38883181860) 的资料校验、纯文本说明生成和发布工具测试通过；Windows、Linux、macOS Apple Silicon、macOS Intel 的 release 构建、打包、上传及最终发布任务全部成功。两种 macOS 架构均完成基础版与 RDP 版。
+- [GitHub Release](https://github.com/ynx-official/tiny-shell/releases/tag/v2.1.2) 已于 2026-10-16 10:22:39 UTC 发布，latest 指向 v2.1.2，draft=false、prerelease=false。共上传 12 个安装/便携产物、update-manifest.json 与 release-notes.txt，合计 14 个附件。
+- 已下载更新清单与纯文本说明，核对两者 SHA-256 与 GitHub 附件摘要一致；清单中 12 个产物的名称、非零大小、下载地址和摘要均与 GitHub 附件元数据一致，未下载或运行全部平台安装包。notes_url 指向 release-notes.txt，附件正文、GitHub Release 正文与本版本“线上更新说明”完全一致，无 Markdown 标记或内部文档引用。
 - 本地 Rust/Python 测试：按用户要求跳过；Clippy、原生应用及真实 Provider/SSH 验收未执行。本地构建已获后续明确授权并通过。
 
 ## 重点手动验收
@@ -85,9 +87,9 @@ TinyShell v2.1.2
 
 ## 变更依据
 
-- 目标标签：v2.1.2，准备阶段尚未创建；发布后以实际标签提交为准。
+- 当前标签：[v2.1.2](https://github.com/ynx-official/tiny-shell/tree/v2.1.2)，提交 fcbfd185929a313a39f48aa37aba32dc22243f45。
 - 最近祖先发布标签：[v2.1.1](https://github.com/ynx-official/tiny-shell/releases/tag/v2.1.1)，提交 ac6cc23d4de33e52177f3d51c17405c7273559fb。
-- 比较区间：[v2.1.1...v2.1.2](https://github.com/ynx-official/tiny-shell/compare/v2.1.1...v2.1.2)，待目标标签发布后可用。
-- 应用性能改动依据为 e43545e 的实际代码；6868639 仅补记 v2.1.1 的发布验证。在线说明及发布链路改动单独提交，版本号和发布资料另行提交。
+- 比较区间：[v2.1.1...v2.1.2](https://github.com/ynx-official/tiny-shell/compare/v2.1.1...v2.1.2)。
+- 应用性能改动依据为 e43545e，工具索引编译修正为 9dfe109；6868639 仅补记 v2.1.1 的发布验证。7f2eaa4 调整在线说明及发布链路，29ef4b3 升级版本与发布资料，fcbfd18 记录通过的本地构建。
 
 [返回版本总览](../README.md)
