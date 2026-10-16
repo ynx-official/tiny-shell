@@ -1,7 +1,7 @@
 # 构建与打包
 
 > 状态：Review
-> 最后更新：2026-10-12
+> 最后更新：2026-10-16
 > 关联：[项目 README](../../README.md)、[文档索引](../README.md)、[FreeRDP 对接说明](../02-design/remote-desktop-freerdp.md)
 
 本文集中说明 TinyShell 的源码运行、平台依赖、质量检查与打包方式。除获取代码的步骤外，命令均在项目根目录执行。
@@ -136,3 +136,11 @@ cargo deb
 首版不提供 PTY、stdin、sudo 密码、二进制上传下载或结构化删除；`cwd` 因缺少已确认的远程 Shell 类型返回 `UNSUPPORTED_SHELL`，可将明确的目录切换写进完整命令并审阅。取消或超时无法保证远端进程停止，先检查结果再重试。
 
 实现与实际验证见 [MCP 实施与验收](../04-quality/mcp-implementation.md)。
+
+## 线上更新说明
+
+从 v2.1.2 开始，每份版本详情需要包含“## 线上更新说明”，其正文直接编写面向用户的独立纯文本，不包含 Markdown 标记、文档链接、内部路径或发布验证记录。Markdown 详情仍可保存完整工程记录及相互引用。
+
+发布工作流使用 `python scripts/release_notes.py --tag vX.Y.Z --plain-text --output dist/release-notes.txt` 导出，缺少说明或混入 Markdown/文档引用时阻止发布。`release-notes.txt` 同时作为 GitHub Release 正文和更新清单 notes_url 的目标；更新器 HTML 回退也优先读取该附件。清单 schema_version 和原版本比较/产物校验规则不变。
+
+仅跳过本地测试时，不添加“发布测试策略：skip”标记，云端发布工具测试继续执行。

@@ -25,8 +25,8 @@ class UpdateManifestTest(unittest.TestCase):
             platform_dir = self.dist / f"artifact-{index}"
             platform_dir.mkdir()
             (platform_dir / name).write_bytes(f"asset-{index}".encode())
-        (self.dist / "release-notes.md").write_text(
-            "## 版本概述\n\n本次更新。\n", encoding="utf-8"
+        (self.dist / "release-notes.txt").write_text(
+            "版本概述\n\n本次更新。\n", encoding="utf-8"
         )
 
     def tearDown(self) -> None:
@@ -40,7 +40,7 @@ class UpdateManifestTest(unittest.TestCase):
         self.assertEqual(
             manifest["notes_url"],
             "https://github.com/ynx-official/tiny-shell/releases/download/"
-            f"{self.tag}/release-notes.md",
+            f"{self.tag}/release-notes.txt",
         )
         self.assertEqual(len(manifest["assets"]), 12)
         names = [asset["name"] for asset in manifest["assets"]]

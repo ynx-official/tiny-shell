@@ -134,10 +134,23 @@ def extract_release_notes(detail: str) -> str:
     return f"{notes}\n"
 
 
-def generate_release_notes(root: Path, tag: str) -> str:
+def extract_plain_text_notes(detail: str) -> str:
+    """Publish only the deliberately authored, standalone online summary."""
+    match = re.search(r"(?ms)^## 线上更新说明\s*\n(.*?)(?=^## |\Z)", detail)
+    if match is None or not match.group(1).strip():
+        raise ReleaseNotesError("版本详情文档缺少非空的“## 线上更新说明”")
+    notes = match.group(1).strip()
+    if re.search(r"(?m)^\s*(?:#{1,6}\s|>\s|[-+*]\s|\d+[.)]\s|\|)", notes) or any(
+        marker in notes for marker in ("`", "**", "](", "docs/", "README.md", "<!--")
+    ):
+        raise ReleaseNotesError("线上更新说明必须为独立纯文本，不得包含 Markdown 标记或文档引用")
+    return f"{notes}\n"
+
+
+def generate_release_notes(root: Path, tag: str, *, plain_text: bool = False) -> str:
     metadata, detail = load_metadata(root, tag)
     validate_indexes(root, metadata)
-    return extract_release_notes(detail)
+    return extract_plain_text_notes(detail) if plain_text else extract_release_notes(detail)
 
 
 def parse_args() -> argparse.Namespace:
@@ -149,6 +162,7 @@ def parse_args() -> argparse.Namespace:
         help="使用 Cargo.toml 当前版本执行校验",
     )
     parser.add_argument("--output", type=Path, help="将 Release Notes 写入指定文件")
+    parser.add_argument("--plain-text", action="store_true", help="仅导出无 Markdown 和文档引用的线上更新说明")
     parser.add_argument(
         "--root",
         type=Path,
@@ -173,7 +187,7 @@ def main() -> int:
             tag = args.tag
         else:
             raise ReleaseNotesError("缺少发布标签")
-        notes = generate_release_notes(root, tag)
+        notes = generate_release_notes(root, tag, plain_text=args.plain_text)
         if args.output:
             args.output.parent.mkdir(parents=True, exist_ok=True)
             args.output.write_text(notes, encoding="utf-8", newline="\n")

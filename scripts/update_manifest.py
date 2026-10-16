@@ -14,7 +14,7 @@ from urllib.parse import quote
 TAG_PATTERN = re.compile(r"^v\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$")
 SCHEMA_VERSION = 1
 DEFAULT_REPOSITORY = "ynx-official/tiny-shell"
-RELEASE_NOTES_ASSET = "release-notes.md"
+RELEASE_NOTES_ASSET = "release-notes.txt"
 
 
 class UpdateManifestError(ValueError):

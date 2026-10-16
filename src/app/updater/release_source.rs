@@ -268,9 +268,7 @@ async fn fetch_github_html(client: &Client) -> anyhow::Result<ReleaseMetadata> {
         .context("failed to read GitHub release assets page")?;
     let assets = parse_expanded_assets(&html, &version)?;
 
-    let notes_url = format!(
-        "https://raw.githubusercontent.com/{REPO_OWNER}/{REPO_NAME}/{version}/docs/upgrade/{version}/README.md"
-    );
+    let notes_url = release_notes_url(&version, &assets);
     let notes = fetch_optional_notes(client, &notes_url).await;
 
     Ok(ReleaseMetadata {
@@ -278,6 +276,18 @@ async fn fetch_github_html(client: &Client) -> anyhow::Result<ReleaseMetadata> {
         notes,
         assets,
     })
+}
+
+fn release_notes_url(version: &str, assets: &[ReleaseAssetMetadata]) -> String {
+    // The HTML fallback must display the same standalone notes as the manifest/API.
+    // Older releases only supplied their version document.
+    assets
+        .iter()
+        .find(|asset| asset.name == "release-notes.txt")
+        .map(|asset| asset.download_url.clone())
+        .unwrap_or_else(|| format!(
+            "https://raw.githubusercontent.com/{REPO_OWNER}/{REPO_NAME}/{version}/docs/upgrade/{version}/README.md"
+        ))
 }
 
 async fn fetch_optional_notes(client: &Client, url: &str) -> String {
@@ -454,11 +464,29 @@ mod tests {
 
     use super::{
         ManifestAsset, UpdateManifest, github_status_error, is_availability_status,
-        manifest_into_release, parse_expanded_assets, user_facing_release_notes,
+        manifest_into_release, parse_expanded_assets, release_notes_url, user_facing_release_notes,
         version_from_release_url,
     };
 
     const DIGEST: &str = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+    #[test]
+    fn html_fallback_prefers_plain_text_notes_and_retains_legacy_release_support() {
+        let url =
+            "https://github.com/ynx-official/tiny-shell/releases/download/v2.1.2/release-notes.txt";
+        let assets = vec![super::ReleaseAssetMetadata {
+            name: "release-notes.txt".into(),
+            download_url: url.into(),
+            size: 100,
+            digest: DIGEST.into(),
+        }];
+        assert_eq!(release_notes_url("v2.1.2", &assets), url);
+        assert!(
+            release_notes_url("v2.1.1", &[]).ends_with("/v2.1.1/docs/upgrade/v2.1.1/README.md")
+        );
+        let notes = "TinyShell v2.1.2\n\n优化长对话滚动。";
+        assert_eq!(user_facing_release_notes(notes), notes);
+    }
 
     #[test]
     fn keeps_only_user_facing_release_note_sections() {
