@@ -1,13 +1,3 @@
-use chrono::{DateTime, TimeZone, Utc};
-
-pub fn format_mtime(ts: u32) -> String {
-    let dt: DateTime<Utc> = Utc
-        .timestamp_opt(ts as i64, 0)
-        .single()
-        .unwrap_or_else(Utc::now);
-    dt.format("%Y-%m-%d %H:%M").to_string()
-}
-
 pub fn format_permissions(mode: u32) -> String {
     let mut result = String::with_capacity(9);
     for (read, write, execute, special, special_exec, special_no_exec) in [

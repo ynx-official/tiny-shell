@@ -520,6 +520,7 @@ fn event_route_id(event: &BackendEventEnvelope) -> Option<&str> {
         | BackendEvent::SftpDirectoryEntries { tab_id, .. }
         | BackendEvent::SftpStatus { tab_id, .. }
         | BackendEvent::SftpLatency { tab_id, .. }
+        | BackendEvent::SftpTimeZone { tab_id, .. }
         | BackendEvent::SftpFileContent { tab_id, .. }
         | BackendEvent::SftpContentUploaded { tab_id, .. }
         | BackendEvent::SftpContentConflict { tab_id, .. }

@@ -223,6 +223,11 @@ pub(crate) enum BackendEvent {
         tab_id: String,
         latency_ms: Option<u64>,
     },
+    SftpTimeZone {
+        tab_id: String,
+        connection_id: uuid::Uuid,
+        timezone: crate::sftp::timezone::SftpTimeZone,
+    },
     /// 文件内容与远程版本信息已下载，供内置编辑器使用。
     SftpFileContent {
         tab_id: String,
@@ -302,6 +307,7 @@ impl BackendEvent {
             | Self::SftpDirectoryEntries { tab_id, .. }
             | Self::SftpStatus { tab_id, .. }
             | Self::SftpLatency { tab_id, .. }
+            | Self::SftpTimeZone { tab_id, .. }
             | Self::SftpFileContent { tab_id, .. }
             | Self::SftpContentUploaded { tab_id, .. }
             | Self::SftpContentConflict { tab_id, .. }
@@ -335,6 +341,7 @@ impl BackendEvent {
                 | Self::SftpContentConflict { .. }
                 | Self::SftpContentUploadFailed { .. }
                 | Self::SftpHome { .. }
+                | Self::SftpTimeZone { .. }
                 | Self::RemoteSystem { .. }
                 | Self::RemoteSystemUnavailable { .. }
                 | Self::DockerResult { .. }
@@ -1068,6 +1075,7 @@ pub(crate) struct SftpUiState {
     pub follow_terminal_cwd: bool,
     pub initial_terminal_cwd_synced: bool,
     pub latency_ms: Option<u64>,
+    pub timezone: crate::sftp::timezone::SftpTimeZone,
 }
 
 impl TerminalTab {

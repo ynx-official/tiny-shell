@@ -10,6 +10,7 @@ pub(crate) mod handle;
 pub(crate) mod handler;
 mod remote_command;
 mod temp;
+pub(crate) mod timezone;
 mod transfer;
 pub(crate) mod utils;
 
@@ -88,12 +89,14 @@ pub fn spawn_sftp(
     proxy_config: ConfigStore,
     events: BackendEventSender,
 ) -> SftpHandle {
+    let connection_id = Uuid::new_v4();
     let (cmd_tx, cmd_rx) = mpsc::channel(COMMAND_QUEUE_CAPACITY);
     let control_queue = Arc::new(SftpControlQueue::new());
     let cmd_tx_clone = cmd_tx.clone();
     let control_queue_clone = control_queue.clone();
     let _join = runtime.spawn(async move {
         if let Err(err) = run_sftp(
+            connection_id,
             tab_id.clone(),
             session,
             proxy_config,
@@ -105,6 +108,11 @@ pub fn spawn_sftp(
         )
         .await
         {
+            let _ = events.send(BackendEvent::SftpTimeZone {
+                tab_id: tab_id.clone(),
+                connection_id,
+                timezone: timezone::SftpTimeZone::Local,
+            });
             let _ = events.send(BackendEvent::SftpStatus {
                 tab_id: tab_id.clone(),
                 text: t!("sftp_error", error = format!("{err:#}")).to_string(),
@@ -115,7 +123,7 @@ pub fn spawn_sftp(
             });
         }
     });
-    SftpHandle::new(cmd_tx, control_queue)
+    SftpHandle::new(connection_id, cmd_tx, control_queue)
 }
 
 struct SftpRuntime<'a> {
@@ -1293,6 +1301,7 @@ impl SftpRuntime<'_> {
 
 #[allow(clippy::too_many_arguments)]
 async fn run_sftp(
+    connection_id: Uuid,
     tab_id: String,
     session: Session,
     proxy_config: ConfigStore,
@@ -1338,6 +1347,21 @@ async fn run_sftp(
     let sftp = SftpSession::new(channel.into_stream())
         .await
         .context("sftp handshake")?;
+
+    // This task belongs to this connection. Dropping the set on any exit
+    // cancels it; directory refreshes and transfer channels never start probes.
+    let mut timezone_probe = tokio::task::JoinSet::new();
+    let probe_handle = handle.clone();
+    let probe_events = events.clone();
+    let probe_tab_id = tab_id.clone();
+    timezone_probe.spawn(async move {
+        let timezone = timezone::detect_server_timezone(&probe_handle).await;
+        let _ = probe_events.send(BackendEvent::SftpTimeZone {
+            tab_id: probe_tab_id,
+            connection_id,
+            timezone,
+        });
+    });
 
     let latency_started = Instant::now();
     let home_result = sftp.canonicalize(".").await;
@@ -1420,6 +1444,7 @@ async fn run_sftp(
         }
     }
 
+    timezone_probe.abort_all();
     let _ = handle
         .disconnect(Disconnect::ByApplication, "bye", "")
         .await;

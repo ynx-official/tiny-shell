@@ -6,6 +6,7 @@ use super::{SftpCommand, SftpControl};
 use crate::sftp::text_file::RemoteTextSave;
 
 pub struct SftpHandle {
+    pub(crate) connection_id: uuid::Uuid,
     commands: Sender<SftpCommand>,
     controls: Arc<super::SftpControlQueue>,
 }
@@ -13,6 +14,7 @@ pub struct SftpHandle {
 impl Clone for SftpHandle {
     fn clone(&self) -> Self {
         Self {
+            connection_id: self.connection_id,
             commands: self.commands.clone(),
             controls: self.controls.clone(),
         }
@@ -21,10 +23,15 @@ impl Clone for SftpHandle {
 
 impl SftpHandle {
     pub(crate) fn new(
+        connection_id: uuid::Uuid,
         commands: Sender<SftpCommand>,
         controls: Arc<super::SftpControlQueue>,
     ) -> Self {
-        Self { commands, controls }
+        Self {
+            connection_id,
+            commands,
+            controls,
+        }
     }
 
     pub(crate) fn send_command(&self, command: SftpCommand) -> bool {

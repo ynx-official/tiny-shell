@@ -2075,6 +2075,20 @@ impl TinyShell {
         let selected_entries = entries_snapshot.selected_entries;
         let selected_path = entries_snapshot.selected_path;
         let all_selected = entries_snapshot.all_selected;
+        let timezone = sftp.timezone;
+        let zone = timezone.zone_label(chrono::Utc::now());
+        let timezone_label = match timezone {
+            crate::sftp::timezone::SftpTimeZone::Server(_) => {
+                t!("sftp_timezone_server", zone = zone).to_string()
+            }
+            crate::sftp::timezone::SftpTimeZone::Detecting => {
+                t!("sftp_timezone_detecting", zone = zone).to_string()
+            }
+            crate::sftp::timezone::SftpTimeZone::Local => {
+                t!("sftp_timezone_local", zone = zone).to_string()
+            }
+        };
+        let timezone_tooltip = format!("{}\n{}", timezone_label, t!("sftp_timezone_hint"));
         let parent_path = Self::sftp_parent_path(&sftp.current_path);
         let view = cx.entity();
         let icon_col_width = px(14.);
@@ -2152,6 +2166,31 @@ impl TinyShell {
                                     .h_full()
                                     .min_w(px(0.))
                                     .min_h(px(0.))
+                                    .child(
+                                        h_flex()
+                                            .id("sftp-timezone")
+                                            .h(px(24.))
+                                            .flex_none()
+                                            .min_w(px(0.))
+                                            .px_3()
+                                            .items_center()
+                                            .border_b_1()
+                                            .border_color(cx.theme().border)
+                                            .text_size(rems(0.917))
+                                            .text_color(cx.theme().muted_foreground)
+                                            .tooltip(move |window, cx| {
+                                                gpui_component::tooltip::Tooltip::new(
+                                                    timezone_tooltip.clone(),
+                                                )
+                                                .build(window, cx)
+                                            })
+                                            .child(
+                                                div()
+                                                    .min_w(px(0.))
+                                                    .truncate()
+                                                    .child(timezone_label),
+                                            ),
+                                    )
                                     .child(
                                         h_flex()
                                             .h(px(26.))
@@ -2460,7 +2499,7 @@ impl TinyShell {
                                                         .flex_shrink_1()
                                                         .text_size(rems(0.917))
                                                         .text_color(theme.muted_foreground)
-                                                        .child(format_mtime(entry.modified)),
+                                                        .child(timezone.format_mtime(entry.modified)),
                                                 )
                                                 .child(div().w(px(12.)).flex_none())
                                                 .into_any_element(),
@@ -2556,6 +2595,7 @@ mod sftp_tree_tests {
             follow_terminal_cwd: false,
             initial_terminal_cwd_synced: false,
             latency_ms: None,
+            timezone: Default::default(),
         }
     }
 

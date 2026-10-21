@@ -283,6 +283,7 @@ impl TinyShell {
                 follow_terminal_cwd: self.config.sftp_follow_terminal_cwd(),
                 initial_terminal_cwd_synced: false,
                 latency_ms: None,
+                timezone: Default::default(),
             }),
         };
         self.install_terminal_tab(tab, group);
@@ -567,6 +568,7 @@ impl TinyShell {
                         && let Some(sftp) = group.sftp.as_mut()
                     {
                         sftp.status = rust_i18n::t!("sftp_connecting").to_string();
+                        sftp.timezone = Default::default();
                     }
                 }
             }

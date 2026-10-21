@@ -1645,6 +1645,23 @@ impl TinyShell {
                 BackendEvent::SftpLatency { tab_id, latency_ms } => {
                     self.handle_sftp_latency(tab_id, latency_ms, cx);
                 }
+                BackendEvent::SftpTimeZone {
+                    tab_id,
+                    connection_id,
+                    timezone,
+                } => {
+                    // A completed probe from a previous connection can still
+                    // be queued while a reconnect replaces the SFTP handle.
+                    if self
+                        .sftp_handles
+                        .get(&tab_id)
+                        .is_some_and(|handle| handle.connection_id == connection_id)
+                        && let Some(group) = self.tab_group_mut(&tab_id)
+                        && let Some(sftp) = group.sftp.as_mut()
+                    {
+                        sftp.timezone = timezone;
+                    }
+                }
                 BackendEvent::SftpHome { tab_id, home } => {
                     self.handle_sftp_home(tab_id, home, cx);
                 }
