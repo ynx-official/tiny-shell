@@ -83,7 +83,7 @@ fn draw_full_panel() {
     let host = root.read_with(&cx, |root, _| {
         root.view().clone().downcast::<SnapshotHost>().unwrap()
     });
-    let mut visual = VisualTestContext::from_window(handle.into(), &mut cx);
+    let mut visual = VisualTestContext::from_window(handle.into(), &cx);
     for has_messages in [false, true] {
         if has_messages {
             host.update_in(&mut visual, |host, _, cx| {

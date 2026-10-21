@@ -19,9 +19,12 @@ fn unchanged_snapshot_reuses_projection_and_markdown() {
     let snapshot = snapshot("one", 2_000);
     transcript.prepare(snapshot.clone(), 0);
     let items = transcript.items.as_ptr();
-    let (_, first) = transcript.markdown.get(1, "**message**");
+    // Short SharedStrings are stored inline; only heap-backed text has a
+    // stable shared allocation whose pointer can prove cache reuse.
+    let markdown = "**A sufficiently long message to verify shared Markdown storage.**";
+    let (_, first) = transcript.markdown.get(1, markdown);
     transcript.prepare(snapshot, 0);
-    let (_, second) = transcript.markdown.get(1, "**message**");
+    let (_, second) = transcript.markdown.get(1, markdown);
     assert_eq!(items, transcript.items.as_ptr());
     assert_eq!(first.as_ptr(), second.as_ptr());
     assert_eq!(transcript.list.item_count(), 2_001);

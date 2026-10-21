@@ -43,20 +43,23 @@ fn suggestion_text_sends_while_the_only_icon_adds_and_narrow_layout_stays_usable
     });
     let list = visual.debug_bounds("ai-followups").unwrap();
     assert!(visual.debug_bounds("ai-followup-row-2").is_none());
-    for index in 0..2 {
-        let text = visual
-            .debug_bounds(&format!("ai-followup-text-{index}"))
-            .unwrap();
-        let add = visual
-            .debug_bounds(&format!("ai-followup-add-{index}"))
-            .unwrap();
+    for (text_id, add_id, send_id) in [
+        (
+            "ai-followup-text-0",
+            "ai-followup-add-0",
+            "ai-followup-send-0",
+        ),
+        (
+            "ai-followup-text-1",
+            "ai-followup-add-1",
+            "ai-followup-send-1",
+        ),
+    ] {
+        let text = visual.debug_bounds(text_id).unwrap();
+        let add = visual.debug_bounds(add_id).unwrap();
         assert!(text.right() <= add.origin.x);
         assert!(add.right() <= list.right());
-        assert!(
-            visual
-                .debug_bounds(&format!("ai-followup-send-{index}"))
-                .is_none()
-        );
+        assert!(visual.debug_bounds(send_id).is_none());
     }
     let text = visual.debug_bounds("ai-followup-text-0").unwrap();
     visual.simulate_click(text.center(), gpui::Modifiers::none());

@@ -65,10 +65,10 @@ pub(super) fn actions(conversation: &Conversation, owner: WeakEntity<TinyShell>)
               cx: &mut gpui::App| {
             let result = reload(&displayed.id).and_then(|current| {
                 if !same_operation(displayed, &current)
-                    || !current
+                    || current
                         .error
                         .as_ref()
-                        .is_some_and(|e| e.code == "AUTH_REQUIRED")
+                        .is_none_or(|e| e.code != "AUTH_REQUIRED")
                 {
                     return Err("APPROVAL_CHANGED".into());
                 }

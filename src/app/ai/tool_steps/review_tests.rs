@@ -99,6 +99,9 @@ fn inline_write_review_shows_both_contents_and_submits_only_once(cx: &mut TestAp
         gpui::size(px(360.), px(900.)),
         |_, _| root.into_any_element(),
     );
+    // Markdown parsing schedules another layout before the previews and
+    // buttons reach their final positions.
+    visual.run_until_parked();
     for id in [
         "ai-review-old-pending-write",
         "ai-review-new-pending-write",
@@ -106,7 +109,10 @@ fn inline_write_review_shows_both_contents_and_submits_only_once(cx: &mut TestAp
         "ai-review-deny",
     ] {
         let bounds = visual.debug_bounds(id).unwrap();
-        assert!(bounds.size.height > px(0.) && bounds.right() <= px(360.));
+        assert!(
+            bounds.size.height > px(0.) && bounds.right() <= px(360.),
+            "{id}: {bounds:?}"
+        );
     }
     let approve = visual.debug_bounds("ai-review-approve").unwrap();
     visual.simulate_click(approve.center(), gpui::Modifiers::none());
@@ -206,6 +212,7 @@ fn command_review_keeps_full_command_and_can_retry_a_failed_rejection(cx: &mut T
         gpui::size(px(360.), px(900.)),
         |_, _| root.into_any_element(),
     );
+    visual.run_until_parked();
     assert!(
         visual
             .debug_bounds("ai-review-command-pending-write")
@@ -215,6 +222,11 @@ fn command_review_keeps_full_command_and_can_retry_a_failed_rejection(cx: &mut T
     let deny = visual.debug_bounds("ai-review-deny").unwrap();
     visual.simulate_click(deny.center(), gpui::Modifiers::none());
     visual.run_until_parked();
+    assert_eq!(
+        decisions.borrow().len(),
+        1,
+        "the rejection button must receive the click: {deny:?}"
+    );
     assert!(visual.debug_bounds("ai-review-error").is_some());
     let deny = visual.debug_bounds("ai-review-deny").unwrap();
     visual.simulate_click(deny.center(), gpui::Modifiers::none());
