@@ -1,8 +1,7 @@
 # TinyShell v2.1.4
 
 > 发布日期：2026-10-21
-> 状态：Review（发布准备中，尚未创建正式标签）
-> 日期为计划发布日期，实际发布时间将在发布成功后回填。
+> 状态：Approved（已正式发布；北京时间 2026-10-21 15:10:06）
 > 最后更新：2026-10-21
 > 关联文档：[SFTP 文件时间与时区](../../02-design/sftp-timezone.md)、[构建与打包](../../05-operations/build-and-package.md)
 
@@ -61,7 +60,10 @@ SFTP 时区信息改为按需显示，默认隐藏，不再占用文件表头上
 - Clippy 和 Rust 测试验证的是版本号升级前的同一业务代码；随后仅调整版本与发布文档。
 - `cargo build --workspace --locked --release --no-default-features` 通过（2 分钟），生成 Windows 主程序及 MCP helper；主程序文件版本和产品版本均为 2.1.4。
 - 版本与锁文件一致性、`python scripts/release_notes.py --check-current`、纯文本线上说明导出及相关文档相对链接校验通过。
-- 云端多平台构建、正式发布与附件校验尚未执行。
+- [正式发布流水线](https://github.com/ynx-official/tiny-shell/actions/runs/39556512567) 全部成功：资料校验、发布工具测试、Windows x86_64、Linux x86_64、macOS Apple Silicon、macOS Intel 构建打包及 Publish Release。
+- [v2.1.4 正式 Release](https://github.com/ynx-official/tiny-shell/releases/tag/v2.1.4) 于 2026-10-21 07:10:06 UTC 发布，为 latest，非草稿、非预发布。
+- 14 个附件齐全：12 个安装或便携产物，以及 update-manifest.json、release-notes.txt。清单中的 12 个产物名称、大小、下载地址和 SHA-256 均与 GitHub 附件记录一致；下载后的两个元数据附件大小及 SHA-256 校验通过。
+- 下载的纯文本更新说明与版本文档导出内容、GitHub Release 正文一致。
 - 未启动原生应用或连接真实远程服务器；其他平台的原生交互也未手测。
 
 ## 重点手动验收
@@ -73,9 +75,9 @@ SFTP 时区信息改为按需显示，默认隐藏，不再占用文件表头上
 
 ## 变更依据
 
-- 目标标签：v2.1.4，当前处于发布准备阶段。
+- 当前标签：[v2.1.4](https://github.com/ynx-official/tiny-shell/releases/tag/v2.1.4)，对应提交 82f2e14330ae1f02158a89ae987395d1b17ddb11。
 - 最近祖先发布标签：[v2.1.3](https://github.com/ynx-official/tiny-shell/releases/tag/v2.1.3)，提交 9ef091182b4042f4f8f386873c2bbeec7b0d9d9e。
-- 发布后比较区间：[v2.1.3...v2.1.4](https://github.com/ynx-official/tiny-shell/compare/v2.1.3...v2.1.4)。
+- 比较区间：[v2.1.3...v2.1.4](https://github.com/ynx-official/tiny-shell/compare/v2.1.3...v2.1.4)。
 - 范围为底栏时区显示、偏好默认值、中英文文案及发布资料；908e6da 仅补记上一版本的发布结果。
 
 [返回版本总览](../README.md)
