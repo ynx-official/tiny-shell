@@ -1,7 +1,7 @@
 # TinyShell v2.1.3
 
 > 发布日期：2026-10-21
-> 状态：Review（本地验证通过，待标签发布与云端构建完成）
+> 状态：Approved（已正式发布；北京时间 2026-10-21 11:57:08）
 > 最后更新：2026-10-21
 > 关联文档：[SFTP 文件时间与时区](../../02-design/sftp-timezone.md)、[构建与打包](../../05-operations/build-and-package.md)
 
@@ -60,10 +60,12 @@ TinyShell v2.1.3
 - 发布工具 Python 测试：11 项通过。
 - 首轮 Rust 全量测试的 3 项失败来自 AI 测试对短字符串存储及异步排版时机的错误假设；修正后 AI 界面相关的 49 项测试通过。新增 SFTP 时区 7 项测试也已通过，包含真实本机 SSH 传输上的成功、拒绝、超时和回退场景。
 - `cargo test --workspace --locked --all-targets` 通过：782 项成功，3 项保持原有忽略标记（两个 Windows 凭据库实机测试、一个手动性能基准），未新增跳过项。测试通过后仅升级版本号和发布文档，业务代码未再改变。
-- `cargo build --workspace --locked --release --no-default-features` 通过，生成 Windows x86_64 优化主程序及 MCP helper；耗时 1 分 50 秒，与 Windows 发布特性一致。
+- `cargo build --workspace --locked --release --no-default-features` 通过，生成 Windows x86_64 优化主程序及 MCP helper；耗时 1 分 50 秒，与 Windows 发布特性一致。主程序文件版本及产品版本均核对为 2.1.3。
 - 版本资料校验、独立纯文本说明生成、Cargo 锁文件版本一致性和 115 个文档相对链接检查通过。
 - 未启动原生应用或连接真实远程服务器；macOS/Linux 的原生交互与本机 Windows 界面仍属手动验收范围。
-- 云端多平台构建与正式发布尚未执行。
+- 正式标签 v2.1.3 指向 9ef091182b4042f4f8f386873c2bbeec7b0d9d9e。[正式发布流水线 39538558143](https://github.com/ynx-official/tiny-shell/actions/runs/39538558143) 的资料校验、发布工具测试、四个平台 release 构建、打包、上传和发布任务全部成功；两种 macOS 架构均完成基础版和 RDP 版。
+- [GitHub Release](https://github.com/ynx-official/tiny-shell/releases/tag/v2.1.3) 已于 2026-10-21 03:57:08 UTC 发布，latest 指向 v2.1.3，draft=false、prerelease=false。共包含 12 个安装/便携产物、update-manifest.json 和 release-notes.txt，合计 14 个附件。
+- 已下载更新清单与纯文本说明，两者 SHA-256 均与 GitHub 附件摘要一致。清单中 12 个产物的名称、非零大小、下载地址与摘要逐一匹配 GitHub 附件元数据；notes_url 指向 release-notes.txt，说明附件、Release 正文与本版本“线上更新说明”完全一致。未下载或运行全部平台安装包。
 
 ## 重点手动验收
 
@@ -76,9 +78,9 @@ TinyShell v2.1.3
 
 ## 变更依据
 
-- 目标标签：v2.1.3，当前处于发布准备阶段。
+- 当前标签：[v2.1.3](https://github.com/ynx-official/tiny-shell/tree/v2.1.3)，提交 9ef091182b4042f4f8f386873c2bbeec7b0d9d9e。
 - 最近祖先发布标签：[v2.1.2](https://github.com/ynx-official/tiny-shell/releases/tag/v2.1.2)，提交 fcbfd185929a313a39f48aa37aba32dc22243f45。
-- 发布后比较区间：[v2.1.2...v2.1.3](https://github.com/ynx-official/tiny-shell/compare/v2.1.2...v2.1.3)。
-- 范围为 SFTP 时区修正、必要的全目标检查修复和发布资料；不包含配置或数据迁移。
+- 比较区间：[v2.1.2...v2.1.3](https://github.com/ynx-official/tiny-shell/compare/v2.1.2...v2.1.3)。
+- a223d23 实现 SFTP 时区修正，2cdf863 修复既有 AI 全目标检查，9ef0911 升级版本并记录本地验证；f687994 仅补记上一版本的发布结果。不包含配置或数据迁移。
 
 [返回版本总览](../README.md)
