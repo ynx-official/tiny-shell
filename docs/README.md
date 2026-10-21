@@ -1,9 +1,11 @@
 # TinyShell 文档索引
 
 > 状态：Approved
-> 最后更新：2026-10-16
+> 最后更新：2026-10-21
 
 ## 设计
+
+- [SFTP 文件时间与时区](02-design/sftp-timezone.md)：Review；连接时自动检测一次服务器时区、失败回退本地、界面标识与手动验收；Rust 测试通过，真实服务器与原生界面待手动验收。
 
 - [设置子菜单独立页面](02-design/settings-navigation.md)：Approved；独立内容与滚动、审计直接打开、搜索和设置跳转；原生运行待验证。
 
