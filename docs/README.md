@@ -5,7 +5,7 @@
 
 ## 设计
 
-- [SFTP 文件时间与时区](02-design/sftp-timezone.md)：Review；连接时自动检测一次服务器时区、失败回退本地、界面标识与手动验收；Rust 测试通过，真实服务器与原生界面待手动验收。
+- [SFTP 文件时间与时区](02-design/sftp-timezone.md)：Review；连接时检测一次、失败回退本地；时区标签改为默认隐藏，在底栏右键菜单勾选显示并保存偏好。本次 UI 调整已通过本地测试与 Clippy，准备随 v2.1.4 发布。
 
 - [设置子菜单独立页面](02-design/settings-navigation.md)：Approved；独立内容与滚动、审计直接打开、搜索和设置跳转；原生运行待验证。
 

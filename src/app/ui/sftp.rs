@@ -646,6 +646,7 @@ impl TinyShell {
         match item {
             SftpFooterItem::SyncStatus => visibility.webdav = !visibility.webdav,
             SftpFooterItem::Latency => visibility.latency = !visibility.latency,
+            SftpFooterItem::TimeZone => visibility.timezone = !visibility.timezone,
             SftpFooterItem::Transfers => visibility.transfers = !visibility.transfers,
             SftpFooterItem::PanelToggle => visibility.panel_toggle = !visibility.panel_toggle,
         }
@@ -730,6 +731,11 @@ impl TinyShell {
                 SftpFooterItem::Latency,
                 t!("sftp_latency").to_string(),
                 visibility.latency,
+            ),
+            (
+                SftpFooterItem::TimeZone,
+                t!("sftp_footer_timezone").to_string(),
+                visibility.timezone,
             ),
             (
                 SftpFooterItem::Transfers,
@@ -1644,6 +1650,23 @@ impl TinyShell {
     pub(super) fn render_sftp_footer(&self, cx: &mut Context<Self>) -> AnyElement {
         let visibility = self.config.sftp_footer_visibility();
         let latency = self.active_sftp().and_then(|sftp| sftp.latency_ms);
+        let timezone_label = self
+            .active_sftp()
+            .filter(|_| visibility.timezone)
+            .map(|sftp| {
+                let zone = sftp.timezone.zone_label(chrono::Utc::now());
+                match sftp.timezone {
+                    crate::sftp::timezone::SftpTimeZone::Server(_) => {
+                        t!("sftp_timezone_server", zone = zone).to_string()
+                    }
+                    crate::sftp::timezone::SftpTimeZone::Detecting => {
+                        t!("sftp_timezone_detecting", zone = zone).to_string()
+                    }
+                    crate::sftp::timezone::SftpTimeZone::Local => {
+                        t!("sftp_timezone_local", zone = zone).to_string()
+                    }
+                }
+            });
         let dl_summary = self.sftp_transfer_summary(crate::terminal::TransferType::Download);
         let ul_summary = self.sftp_transfer_summary(crate::terminal::TransferType::Upload);
         let has_transfers = dl_summary.is_some() || ul_summary.is_some();
@@ -1662,7 +1685,27 @@ impl TinyShell {
             .border_color(cx.theme().border)
             .bg(cx.theme().tab_bar)
             .occlude()
-            .child(div().flex_1())
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .when_some(timezone_label, |this, label| {
+                        let tooltip = format!("{}\n{}", label, t!("sftp_timezone_hint"));
+                        this.pr_3().child(
+                            div()
+                                .id("sftp-timezone")
+                                .min_w_0()
+                                .truncate()
+                                .text_size(rems(0.833))
+                                .text_color(cx.theme().muted_foreground)
+                                .tooltip(move |window, cx| {
+                                    gpui_component::tooltip::Tooltip::new(tooltip.clone())
+                                        .build(window, cx)
+                                })
+                                .child(label),
+                        )
+                    }),
+            )
             .when(visibility.webdav && webdav_enabled, |this| {
                 this.child(
                     h_flex()
@@ -2076,19 +2119,6 @@ impl TinyShell {
         let selected_path = entries_snapshot.selected_path;
         let all_selected = entries_snapshot.all_selected;
         let timezone = sftp.timezone;
-        let zone = timezone.zone_label(chrono::Utc::now());
-        let timezone_label = match timezone {
-            crate::sftp::timezone::SftpTimeZone::Server(_) => {
-                t!("sftp_timezone_server", zone = zone).to_string()
-            }
-            crate::sftp::timezone::SftpTimeZone::Detecting => {
-                t!("sftp_timezone_detecting", zone = zone).to_string()
-            }
-            crate::sftp::timezone::SftpTimeZone::Local => {
-                t!("sftp_timezone_local", zone = zone).to_string()
-            }
-        };
-        let timezone_tooltip = format!("{}\n{}", timezone_label, t!("sftp_timezone_hint"));
         let parent_path = Self::sftp_parent_path(&sftp.current_path);
         let view = cx.entity();
         let icon_col_width = px(14.);
@@ -2166,31 +2196,6 @@ impl TinyShell {
                                     .h_full()
                                     .min_w(px(0.))
                                     .min_h(px(0.))
-                                    .child(
-                                        h_flex()
-                                            .id("sftp-timezone")
-                                            .h(px(24.))
-                                            .flex_none()
-                                            .min_w(px(0.))
-                                            .px_3()
-                                            .items_center()
-                                            .border_b_1()
-                                            .border_color(cx.theme().border)
-                                            .text_size(rems(0.917))
-                                            .text_color(cx.theme().muted_foreground)
-                                            .tooltip(move |window, cx| {
-                                                gpui_component::tooltip::Tooltip::new(
-                                                    timezone_tooltip.clone(),
-                                                )
-                                                .build(window, cx)
-                                            })
-                                            .child(
-                                                div()
-                                                    .min_w(px(0.))
-                                                    .truncate()
-                                                    .child(timezone_label),
-                                            ),
-                                    )
                                     .child(
                                         h_flex()
                                             .h(px(26.))

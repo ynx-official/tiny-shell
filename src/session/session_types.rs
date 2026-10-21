@@ -36,6 +36,7 @@ impl Default for SftpToolbarVisibility {
 pub struct SftpFooterVisibility {
     pub webdav: bool,
     pub latency: bool,
+    pub timezone: bool,
     pub transfers: bool,
     pub panel_toggle: bool,
 }
@@ -45,6 +46,7 @@ impl Default for SftpFooterVisibility {
         Self {
             webdav: true,
             latency: true,
+            timezone: false,
             transfers: true,
             panel_toggle: true,
         }

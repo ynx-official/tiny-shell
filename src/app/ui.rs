@@ -60,6 +60,7 @@ enum SftpToolbarItem {
 enum SftpFooterItem {
     SyncStatus,
     Latency,
+    TimeZone,
     Transfers,
     PanelToggle,
 }
