@@ -45,8 +45,12 @@ async fn application_serves_stdio_without_a_sibling_helper_or_gui() -> Result<()
     let fixture = Fixture::new()?;
     let executable = fixture.executable()?;
     let config_directory = fixture.0.join("configuration");
-    let registration =
-        tiny_shell_mcp::storage::Store::new(&config_directory)?.register("stdio-test")?;
+    let store = tiny_shell_mcp::storage::Store::new(&config_directory)?;
+    store.save_policy(&tiny_shell_mcp::policy::Policy {
+        enabled: true,
+        ..Default::default()
+    })?;
+    let registration = store.register("stdio-test")?;
     let mut child = Command::new(&executable)
         .args(["--mcp", "--client", &registration.id, "--config-dir"])
         .arg(&config_directory)
@@ -94,6 +98,90 @@ async fn application_serves_stdio_without_a_sibling_helper_or_gui() -> Result<()
     let output = tokio::time::timeout(Duration::from_secs(5), child.wait_with_output()).await??;
     assert!(output.status.success());
     assert!(output.stderr.is_empty());
+    Ok(())
+}
+
+#[tokio::test]
+async fn application_stdio_exits_without_starting_transport_when_mcp_is_disabled() -> Result<()> {
+    let fixture = Fixture::new()?;
+    let executable = fixture.executable()?;
+    let config_directory = fixture.0.join("configuration");
+    let store = tiny_shell_mcp::storage::Store::new(&config_directory)?;
+    let registration = store.register("disabled-test")?;
+    let mut child = Command::new(executable)
+        .args(["--mcp", "--client", &registration.id, "--config-dir"])
+        .arg(config_directory)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()?;
+    let input = child.stdin.take().context("stdin unavailable")?;
+    let output = tokio::time::timeout(Duration::from_secs(5), child.wait_with_output()).await??;
+    drop(input);
+    assert!(output.status.success());
+    assert!(output.stdout.is_empty());
+    assert!(output.stderr.is_empty());
+    Ok(())
+}
+
+#[tokio::test]
+async fn application_stdio_exits_on_disable_while_client_keeps_stdin_open() -> Result<()> {
+    for initialized in [false, true] {
+        let fixture = Fixture::new()?;
+        let executable = fixture.executable()?;
+        let config_directory = fixture.0.join("configuration");
+        let store = tiny_shell_mcp::storage::Store::new(&config_directory)?;
+        let mut policy = tiny_shell_mcp::policy::Policy {
+            enabled: true,
+            ..Default::default()
+        };
+        store.save_policy(&policy)?;
+        let registration = store.register("disable-test")?;
+        let mut child = Command::new(executable)
+            .args(["--mcp", "--client", &registration.id, "--config-dir"])
+            .arg(config_directory)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()?;
+        let mut input = child.stdin.take().context("stdin unavailable")?;
+        let mut output = BufReader::new(child.stdout.take().context("stdout unavailable")?).lines();
+        let request = json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test","version":"1"}}});
+        input.write_all(format!("{request}\n").as_bytes()).await?;
+        input.flush().await?;
+        let line = tokio::time::timeout(Duration::from_secs(10), output.next_line())
+            .await??
+            .context("embedded bridge closed stdout before initialization")?;
+        let response: Value = serde_json::from_str(&line)?;
+        assert!(response["result"]["capabilities"]["tools"].is_object());
+        if initialized {
+            let notification = json!({"jsonrpc":"2.0","method":"notifications/initialized"});
+            let request = json!({"jsonrpc":"2.0","id":2,"method":"tools/list"});
+            input
+                .write_all(format!("{notification}\n{request}\n").as_bytes())
+                .await?;
+            input.flush().await?;
+            let line = tokio::time::timeout(Duration::from_secs(10), output.next_line())
+                .await??
+                .context("embedded bridge closed stdout before tools/list")?;
+            let response: Value = serde_json::from_str(&line)?;
+            assert_eq!(
+                response["result"]["tools"].as_array().map(Vec::len),
+                Some(10)
+            );
+        }
+        policy.enabled = false;
+        store.save_policy(&policy)?;
+        // Do not send another request or close stdin to trigger the shutdown.
+        let result =
+            tokio::time::timeout(Duration::from_secs(5), child.wait_with_output()).await??;
+        drop(input);
+        assert!(result.status.success());
+        assert!(result.stderr.is_empty());
+        assert!(output.next_line().await?.is_none());
+    }
     Ok(())
 }
 
