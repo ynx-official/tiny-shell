@@ -36,7 +36,7 @@ impl BudgetForm {
             _subscriptions,
         }
     }
-    fn save(&mut self, cx: &mut Context<Self>) {
+    fn save(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let result = (|| {
             let service = service()?;
             let mut execution = service.snapshot().settings.execution;
@@ -56,7 +56,7 @@ impl BudgetForm {
                 .map_err(|_| "AI_INVALID_BUDGET".to_owned())?;
             service.save_execution(execution).map_err(|e| e.to_string())
         })();
-        self.error = result.err();
+        self.error = super::feedback::report(result, "feedback_saved", window, cx);
         cx.notify();
     }
 }
@@ -102,7 +102,7 @@ impl Render for BudgetForm {
                         .primary()
                         .label(t!("save").to_string())
                         .disabled(!self.loaded || snapshot.busy)
-                        .on_click(cx.listener(|this, _, _, cx| this.save(cx))),
+                        .on_click(cx.listener(|this, _, window, cx| this.save(window, cx))),
                 ),
             );
         if let Some(error) = &self.error {

@@ -143,6 +143,8 @@ pub(crate) fn error_text(code: &str) -> String {
         "AI_TEST_OK" => "ai_test_ok",
         "AI_NO_PROVIDER" => "ai_unconfigured",
         "AI_NO_MODEL" => "ai_no_model",
+        "AI_DEFAULT_REQUIRED" => "ai_default_required",
+        "AI_DEFAULT_REPLACE" => "ai_default_replace",
         "AI_KEY_REQUIRED" => "ai_key_required",
         "AI_LOADING" => "loading",
         "AI_BUSY" => "ai_busy",

@@ -24,16 +24,16 @@ impl FollowupForm {
         }
     }
 
-    fn save(&mut self, cx: &mut Context<Self>) {
-        self.error = (|| {
+    fn save(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let result = (|| {
             let service = service()?;
             let mut execution = service.snapshot().settings.execution;
             execution.followup_suggestions = self.enabled;
             service
                 .save_execution(execution)
                 .map_err(|error| error.to_string())
-        })()
-        .err();
+        })();
+        self.error = super::feedback::report(result, "feedback_saved", window, cx);
         cx.notify();
     }
 }
@@ -66,7 +66,7 @@ impl Render for FollowupForm {
                     .primary()
                     .label(t!("save").to_string())
                     .disabled(!self.loaded || snapshot.busy)
-                    .on_click(cx.listener(|this, _, _, cx| this.save(cx))),
+                    .on_click(cx.listener(|this, _, window, cx| this.save(window, cx))),
             );
         if let Some(error) = &self.error {
             content = content.child(note(error_text(error), cx).text_color(cx.theme().danger));

@@ -17,12 +17,16 @@ mod continuation_tests;
 #[cfg(test)]
 mod followup_tests;
 mod followups;
+mod operation;
+pub(crate) use operation::OperationReceipt;
 #[cfg(test)]
 mod optimization_tests;
 mod panel_snapshot;
 #[cfg(test)]
 mod permission_tests;
 mod permissions;
+#[cfg(test)]
+mod provider_settings_tests;
 mod runner;
 mod sync;
 #[cfg(test)]
@@ -308,17 +312,24 @@ impl Service {
         }
         self.changed();
     }
-    fn notice(&self, result: Result<()>) {
+    fn notice(&self, result: Result<()>, success: &str) {
         if let Ok(mut state) = self.state.lock() {
             state.snapshot.busy = false;
             state.snapshot.notice = Some(
                 result
                     .err()
                     .map(|e| e.to_string())
-                    .unwrap_or_else(|| "AI_SAVED".into()),
+                    .unwrap_or_else(|| success.into()),
             );
         }
         self.changed();
+    }
+
+    fn finish_operation(&self, result: Result<()>, completed: operation::Completion) {
+        let outcome = result.as_ref().map(|_| ()).map_err(ToString::to_string);
+        self.notice(result, "AI_SAVED");
+        // Dropping a view's receipt does not cancel a requested write.
+        let _ = completed.send(outcome);
     }
     fn history_notice(&self, result: Result<()>) {
         // History jobs must not release a provider request or replace its completion result.
@@ -384,26 +395,14 @@ impl Service {
         self: &Arc<Self>,
         provider: Provider,
         key: Option<String>,
-        default: bool,
-    ) -> Result<()> {
-        provider.validate()?;
+        selection: Option<ModelSelection>,
+    ) -> Result<OperationReceipt> {
         self.check_endpoint(&provider, key.is_some())?;
-        ensure!(
-            !provider.name.trim().is_empty() && provider.name.chars().count() <= 100,
-            "AI_INVALID_NAME"
-        );
-        ensure!(
-            provider
-                .models
-                .iter()
-                .any(|m| m.id == provider.default_model)
-                && provider
-                    .models
-                    .iter()
-                    .all(|m| !m.id.is_empty() && m.id.len() <= 256),
-            "AI_NO_MODEL"
-        );
+        self.snapshot()
+            .settings
+            .with_provider_default(provider.clone(), selection.as_ref())?;
         self.begin_operation()?;
+        let (completed, receipt) = OperationReceipt::channel();
         let service = self.clone();
         self.runtime.spawn_blocking(move || {
             let result = (|| {
@@ -423,7 +422,10 @@ impl Service {
                     .iter()
                     .find(|p| p.id == provider.id);
                 let old_url = old.map(|p| p.base_url.clone());
-                let mut settings = state.snapshot.settings.clone();
+                let settings = state
+                    .snapshot
+                    .settings
+                    .with_provider_default(provider.clone(), selection.as_ref())?;
                 drop(state);
                 if old_url
                     .as_ref()
@@ -431,18 +433,6 @@ impl Service {
                     && key.is_none()
                 {
                     anyhow::bail!("AI_ENDPOINT_KEY_REQUIRED");
-                }
-                if let Some(old) = settings.providers.iter_mut().find(|p| p.id == provider.id) {
-                    *old = provider.clone();
-                } else {
-                    settings.providers.push(provider.clone());
-                }
-                if default {
-                    ensure!(provider.enabled, "AI_PROVIDER_DISABLED");
-                    settings.default_provider = Some(provider.id.clone());
-                }
-                if !provider.enabled && settings.default_provider.as_deref() == Some(&provider.id) {
-                    settings.default_provider = None;
                 }
                 if let Some(key) = key {
                     store.set_key(&provider.id, &provider.base_url, &key)?;
@@ -469,12 +459,14 @@ impl Service {
                 }
                 Ok(())
             })();
-            service.notice(result);
+            service.finish_operation(result, completed);
         });
-        Ok(())
+        Ok(receipt)
     }
-    pub fn remove_provider(self: &Arc<Self>, id: String) -> Result<()> {
+    pub fn remove_provider(self: &Arc<Self>, id: String) -> Result<OperationReceipt> {
+        self.snapshot().settings.without_provider(&id)?;
         self.begin_operation()?;
+        let (completed, receipt) = OperationReceipt::channel();
         let service = self.clone();
         self.runtime.spawn_blocking(move || {
             let result = (|| {
@@ -495,13 +487,9 @@ impl Service {
                         .any(|c| c.provider_id.as_deref() == Some(&id) && c.state.active()),
                     "AI_BUSY"
                 );
-                let mut settings = state.snapshot.settings.clone();
+                let settings = state.snapshot.settings.without_provider(&id)?;
                 drop(state);
                 store.delete_key(&id)?;
-                settings.providers.retain(|p| p.id != id);
-                if settings.default_provider.as_deref() == Some(&id) {
-                    settings.default_provider = None;
-                }
                 store.save_settings(&settings)?;
                 let mut state = service
                     .state
@@ -513,12 +501,13 @@ impl Service {
                 state.snapshot.temporary_keys.remove(&id);
                 Ok(())
             })();
-            service.notice(result);
+            service.finish_operation(result, completed);
         });
-        Ok(())
+        Ok(receipt)
     }
-    pub fn clear_key(self: &Arc<Self>, id: String) -> Result<()> {
+    pub fn clear_key(self: &Arc<Self>, id: String) -> Result<OperationReceipt> {
         self.begin_operation()?;
+        let (completed, receipt) = OperationReceipt::channel();
         let service = self.clone();
         self.runtime.spawn_blocking(move || {
             let result = (|| {
@@ -535,34 +524,37 @@ impl Service {
                 state.snapshot.keys_saved.remove(&id);
                 state.snapshot.temporary_keys.remove(&id);
             }
-            service.notice(result);
+            service.finish_operation(result, completed);
         });
-        Ok(())
+        Ok(receipt)
     }
-    pub fn test_provider(self: &Arc<Self>, provider: Provider, key: Option<String>) -> Result<()> {
+    pub fn test_provider(
+        self: &Arc<Self>,
+        provider: Provider,
+        key: Option<String>,
+    ) -> Result<OperationReceipt> {
         provider.validate()?;
         self.check_endpoint(&provider, key.is_some())?;
         self.begin_operation()?;
+        let (completed, receipt) = OperationReceipt::channel();
         let service = self.clone();
         self.runtime.spawn(async move {
             let result = service.test_provider_request(&provider, key).await;
-            match result {
-                Ok(()) => {
-                    service.notice(Ok(()));
-                    if let Ok(mut state) = service.state.lock() {
-                        state.snapshot.notice = Some("AI_TEST_OK".into());
-                    }
-                    service.changed();
-                }
-                Err(e) => service.notice(Err(e)),
-            }
+            let outcome = result.as_ref().map(|_| ()).map_err(ToString::to_string);
+            service.notice(result, "AI_TEST_OK");
+            let _ = completed.send(outcome);
         });
-        Ok(())
+        Ok(receipt)
     }
-    pub fn list_models(self: &Arc<Self>, provider: Provider, key: Option<String>) -> Result<()> {
+    pub fn list_models(
+        self: &Arc<Self>,
+        provider: Provider,
+        key: Option<String>,
+    ) -> Result<OperationReceipt> {
         provider.validate()?;
         self.check_endpoint(&provider, key.is_some())?;
         self.begin_operation()?;
+        let (completed, receipt) = OperationReceipt::channel();
         let service = self.clone();
         self.runtime.spawn(async move {
             let result = async {
@@ -570,6 +562,7 @@ impl Service {
                 super::provider::models(&provider, &key).await
             }
             .await;
+            let outcome = result.as_ref().map(|_| ()).map_err(ToString::to_string);
             match result {
                 Ok(models) => {
                     if let Ok(mut state) = service.state.lock() {
@@ -580,9 +573,10 @@ impl Service {
                     }
                     service.changed();
                 }
-                Err(e) => service.notice(Err(e)),
+                Err(e) => service.notice(Err(e), "AI_SAVED"),
             }
+            let _ = completed.send(outcome);
         });
-        Ok(())
+        Ok(receipt)
     }
 }

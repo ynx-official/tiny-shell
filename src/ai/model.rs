@@ -1,6 +1,9 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
+#[path = "model/defaults.rs"]
+mod defaults;
+pub(crate) use defaults::ModelSelection;
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Model {
@@ -290,20 +293,15 @@ impl Conversation {
     }
 
     pub fn new(target: Option<BoundTarget>, settings: &Settings) -> Self {
-        let provider = settings
-            .providers
-            .iter()
-            .find(|p| Some(&p.id) == settings.default_provider.as_ref() && p.enabled);
+        let selection: Option<ModelSelection> = settings.default_selection();
         Self {
             id: Uuid::new_v4().to_string(),
             title: String::new(),
             title_state: TitleState::AwaitingFirstTurn,
             followups: None,
             target,
-            provider_id: provider.map(|p| p.id.clone()),
-            model: provider
-                .map(|p| p.default_model.clone())
-                .unwrap_or_default(),
+            provider_id: selection.as_ref().map(|s| s.provider_id.clone()),
+            model: selection.map(|s| s.model_id).unwrap_or_default(),
             messages: Vec::new(),
             mode_override: None,
             activities: Vec::new(),

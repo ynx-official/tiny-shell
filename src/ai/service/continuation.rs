@@ -195,9 +195,13 @@ impl Service {
         Ok(())
     }
 
-    pub fn save_execution(self: &Arc<Self>, execution: ExecutionSettings) -> Result<()> {
+    pub fn save_execution(
+        self: &Arc<Self>,
+        execution: ExecutionSettings,
+    ) -> Result<super::OperationReceipt> {
         execution.validate()?;
         self.begin_operation()?;
+        let (completed, receipt) = super::OperationReceipt::channel();
         let service = self.clone();
         self.runtime.spawn_blocking(move || {
             let result = (|| {
@@ -225,8 +229,8 @@ impl Service {
                 service.configuration_changed();
                 Ok(())
             })();
-            service.notice(result);
+            service.finish_operation(result, completed);
         });
-        Ok(())
+        Ok(receipt)
     }
 }

@@ -1,16 +1,18 @@
 # 内置 AI 实现契约
 
 > 状态：Review
-> 最后更新：2026-10-16
+> 最后更新：2026-10-22
 > 关联：[需求](../01-requirements/ai-conversations.md)、[交互](../02-design/ai-conversations.md)、[MCP 契约](mcp-contracts.md)、[安全边界](ai-threat-model.md)、[验证](../04-quality/ai-conversations.md)
 
 ## 职责与请求路径
 
 - `src/ai/model.rs`：Provider、模型能力、绑定目标、消息及轮次状态。
+- `src/ai/model/defaults.rs`：唯一 `ModelSelection`、厂商与默认组合校验、删除默认厂商保护；保留既有序列化结构。`Conversation::new` 只从有效组合继承默认，已有会话不重新绑定。
 - `src/ai/provider.rs`：OpenAI 兼容 HTTP/SSE、模型发现及固定消息测试。不开启重定向，不发送内部凭据。
 - `src/ai/storage.rs` 与 `key_vault.rs`：隐私密码保护的 API Key、系统凭据保护的历史主密钥、本机认证加密、受限读取、原子保存和临时模式。配置同步、旧凭据迁移与身份绑定见[同步契约](../sync/ai-mcp-sync.md)。
 - `src/ai/service.rs` 与 `service/runner.rs`：后台运行、取消、快照、消息上下文与工具闭环。`service/toolset.rs` 定义内置工具边界，`service/tools.rs` 管理会话和任务等待，`service/budget.rs` 负责预算与结果复用。UI 线程不等待网络或凭据存储。
 - `src/app/ai/`、`src/app/settings/ai.rs`：原生右栏、历史和 Provider 草稿；UI 只读取快照、发出操作。
+- `src/app/settings/ai/providers.rs` 与 `providers/`：厂商编辑、全局选择草稿、联动选择器和分栏渲染。`Service::save_provider` 接收一个默认组合，并在持久化锁内复核最新设置后将厂商与默认配置一同写入。2026-10-22 已确认的规则与兼容边界见[厂商设置设计](../02-design/ai-provider-settings.md)，未运行验证见[质量记录](../04-quality/ai-provider-settings.md)。
 - `crates/mcp/src/engine/internal.rs`：不可通过 IPC 构造的内部能力；共享引擎继续负责 SSH、文件、审批、取消和审计。
 
 新对话从当前终端的连接 ID 查找已保存的 SSH；主机、用户、端口及代理身份必须一致，绑定保存态的授权摘要，不把终端展开的托管私钥或仅本次登录的口令计入新的身份。主机/代理已修改、临时或 RDP 连接不隐式绑定。旧版已记录错误摘要的对话需新建，不能静默改绑历史目标。发送时固定 Provider/模型和目标快照。具备工具能力且内置开关已开、绑定目标与当前已保存连接的摘要一致时才取得 `InternalClient`、附带目标信息和工具 Schema。模型调用 → 累积完整参数 → 内置工具参数校验 → 应用建立/复用会话并填入 ID → 原有 Engine → 通知等待任务终态 → 工具结果回送模型。`request_id` 由应用生成 UUID，防止模型复用请求造成意外幂等匹配。
