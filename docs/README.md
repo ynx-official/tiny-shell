@@ -1,9 +1,13 @@
 # TinyShell 文档索引
 
 > 状态：Approved
-> 最后更新：2026-10-21
+> 最后更新：2026-10-22
 
 ## 设计
+
+- [通用操作反馈](02-design/operation-feedback.md)：Review；统一四类浮动提示，补齐 AI 设置、主动复制和 SFTP 文件操作结果；原生交互待验收。
+
+- [AI 厂商与全局默认模型](02-design/ai-provider-settings.md)：Approved；厂商列表、联动默认组合、保存和删除边界，原生运行待验收。
 
 - [SFTP 文件时间与时区](02-design/sftp-timezone.md)：Review；连接时检测一次、失败回退本地；时区标签默认隐藏，在底栏右键菜单勾选显示并保存偏好。已通过本地测试、Clippy 与构建，随 v2.1.4 正式发布；原生交互仍待手动验收。
 
@@ -14,7 +18,7 @@
 - [AI 会话用量与操作审计设计](02-design/ai-usage-and-audit.md)：Approved；对话 Token、AI/MCP 操作详情、审批时间线及加密留存方案。
 
 - [内置 AI 会话](02-design/ai-conversations.md)：原生聊天、长记录按可见范围渲染、首轮自动标题、续聊建议、工具步骤与聊天内审阅、本机加密历史及独立 SSH 权限。
-- [内置 AI 需求与验收](01-requirements/ai-conversations.md)：已确认范围及 AI-01 至 AI-29 验收行为，含续聊建议两条直显与紧凑输入区。
+- [内置 AI 需求与验收](01-requirements/ai-conversations.md)：已确认范围及 AI-01 至 AI-33 验收行为，含续聊建议两条直显、紧凑输入区与唯一全局默认模型。
 
 - [应用图标与平台导出](02-design/application-icons.md)：已选定的 03 TS 字母图标、跨平台导出、实际验证范围与手动验收。
 
@@ -25,7 +29,7 @@
 
 - [快速连接浮层](02-design/quick-connect-popover.md)
 
-- [统一确认弹窗与接入方式](02-design/confirmation-dialogs.md)
+- [统一确认弹窗与接入方式](02-design/confirmation-dialogs.md)：Approved；均衡比例与中性等待态，分别预留标题、正文及操作区以保持切换稳定；原生视觉与交互待验收。
 
 - [标签栏连接编辑](02-design/tab-connection-edit.md)
 
@@ -54,6 +58,8 @@
 - [构建与打包](05-operations/build-and-package.md)：源码运行、平台依赖、FreeRDP 选项、质量检查与安装包生成。
 
 ## 质量验证
+
+- [AI 厂商设置验证](04-quality/ai-provider-settings.md)：Windows 全目标 Clippy 与测试通过，保留首次交付记录和多厂商原生手动验收清单。
 
 - [AI/MCP 云同步验证](04-quality/ai-mcp-sync.md)：回归代码、未执行的编译/运行项及双设备手动验收清单。
 

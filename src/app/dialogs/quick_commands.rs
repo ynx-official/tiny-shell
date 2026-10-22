@@ -51,6 +51,12 @@ impl TinyShell {
                             if name.is_empty() {
                                 view.update(cx, |this, cx| {
                                     this.status = t!("quick_command_category_name_required").into();
+                                    crate::feedback::Feedback::show_for_workspace(
+                                        &cx.entity(),
+                                        cx,
+                                        crate::feedback::FeedbackKind::Warning,
+                                        this.status.clone(),
+                                    );
                                     cx.notify();
                                 });
                                 return false;
@@ -101,11 +107,23 @@ impl TinyShell {
         let command_text = inputs.command.read(cx).value().trim().to_string();
         if name.is_empty() || command_text.is_empty() {
             self.status = t!("quick_command_fields_required").into();
+            crate::feedback::Feedback::show_for_workspace(
+                &cx.entity(),
+                cx,
+                crate::feedback::FeedbackKind::Warning,
+                self.status.clone(),
+            );
             cx.notify();
             return false;
         }
         let Some(category_id) = self.editing_quick_command_category.clone() else {
             self.status = t!("quick_command_category_name_required").into();
+            crate::feedback::Feedback::show_for_workspace(
+                &cx.entity(),
+                cx,
+                crate::feedback::FeedbackKind::Warning,
+                self.status.clone(),
+            );
             cx.notify();
             return false;
         };

@@ -2,8 +2,8 @@ use super::components::{hint, metadata, status_badge, status_color};
 use super::presentation::{code, kind, record_text, source, target, time};
 use super::*;
 use gpui::{
-    ClipboardItem, InteractiveElement as _, IntoElement as _, ParentElement as _,
-    StatefulInteractiveElement as _, Styled as _, div, prelude::FluentBuilder as _,
+    InteractiveElement as _, IntoElement as _, ParentElement as _, StatefulInteractiveElement as _,
+    Styled as _, div, prelude::FluentBuilder as _,
 };
 use gpui_component::{
     ActiveTheme as _, Disableable as _, IconName, Sizable as _,
@@ -107,10 +107,12 @@ impl AuditPanel {
                                         .xsmall()
                                         .icon(IconName::Copy)
                                         .tooltip(t!("audit_copy").to_string())
-                                        .on_click(move |_, _, cx| {
-                                            cx.write_to_clipboard(ClipboardItem::new_string(
+                                        .on_click(move |_, window, cx| {
+                                            crate::feedback::Feedback::copy(
+                                                window,
+                                                cx,
                                                 copy.clone(),
-                                            ))
+                                            );
                                         }),
                                 ),
                         )
@@ -191,10 +193,12 @@ impl AuditPanel {
                                 .xsmall()
                                 .icon(IconName::Copy)
                                 .tooltip(t!("audit_copy").to_string())
-                                .on_click(move |_, _, cx| {
-                                    cx.write_to_clipboard(ClipboardItem::new_string(
+                                .on_click(move |_, window, cx| {
+                                    crate::feedback::Feedback::copy(
+                                        window,
+                                        cx,
                                         copy.as_ref().clone(),
-                                    ))
+                                    );
                                 }),
                         ),
                 )

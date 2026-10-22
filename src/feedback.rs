@@ -1,61 +1,11 @@
-use gpui::{App, Entity, SharedString, Window};
-use gpui_component::{WindowExt as _, notification::Notification};
+use gpui::{App, Entity, SharedString};
 
 use crate::TinyShell;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum FeedbackKind {
-    Info,
-    Success,
-    Warning,
-    Error,
-}
-
-/// Unified transient feedback for user-triggered actions.
-///
-/// Policy:
-/// - `Success`: a requested mutation completed successfully.
-/// - `Info`: a neutral, completed event that is useful to surface.
-/// - `Warning`: the action cannot proceed or completed with a recoverable caveat.
-/// - `Error`: the requested action failed.
-///
-/// Long-running states such as connecting, syncing, or downloading should stay in the
-/// owning view's status/progress UI. Only the final outcome should be sent here.
-pub(crate) struct Feedback;
+mod presentation;
+pub(crate) use presentation::{Feedback, FeedbackKind};
 
 impl Feedback {
-    pub(crate) fn show(
-        window: &mut Window,
-        cx: &mut App,
-        kind: FeedbackKind,
-        message: impl Into<SharedString>,
-    ) {
-        let message = message.into();
-        let notification = match kind {
-            FeedbackKind::Info => Notification::info(message),
-            FeedbackKind::Success => Notification::success(message),
-            FeedbackKind::Warning => Notification::warning(message),
-            FeedbackKind::Error => Notification::error(message),
-        };
-        window.push_notification(notification, cx);
-    }
-
-    pub(crate) fn success(window: &mut Window, cx: &mut App, message: impl Into<SharedString>) {
-        Self::show(window, cx, FeedbackKind::Success, message);
-    }
-
-    pub(crate) fn info(window: &mut Window, cx: &mut App, message: impl Into<SharedString>) {
-        Self::show(window, cx, FeedbackKind::Info, message);
-    }
-
-    pub(crate) fn warning(window: &mut Window, cx: &mut App, message: impl Into<SharedString>) {
-        Self::show(window, cx, FeedbackKind::Warning, message);
-    }
-
-    pub(crate) fn error(window: &mut Window, cx: &mut App, message: impl Into<SharedString>) {
-        Self::show(window, cx, FeedbackKind::Error, message);
-    }
-
     pub(crate) fn success_for_owner(
         owner: &Entity<TinyShell>,
         cx: &mut App,
@@ -83,7 +33,19 @@ impl Feedback {
     ) {
         let message = message.into();
         let owner = owner.clone();
-        cx.defer(move |cx| Self::show_for_owner_now(&owner, cx, kind, message));
+        cx.defer(move |cx| Self::show_for_owner_now(&owner, cx, kind, message, true));
+    }
+
+    /// Backend events follow a session's workspace, never an unrelated auxiliary window.
+    pub(crate) fn show_for_workspace(
+        owner: &Entity<TinyShell>,
+        cx: &mut App,
+        kind: FeedbackKind,
+        message: impl Into<SharedString>,
+    ) {
+        let owner = owner.clone();
+        let message = message.into();
+        cx.defer(move |cx| Self::show_for_owner_now(&owner, cx, kind, message, false));
     }
 
     /// Resolve the target after the current entity update has completed. GPUI forbids reading an
@@ -93,11 +55,13 @@ impl Feedback {
         cx: &mut App,
         kind: FeedbackKind,
         message: SharedString,
+        prefer_connection_manager: bool,
     ) {
         let owner_state = owner.read(cx);
         let owner_id = owner_state.session_owner_id;
         let connection_manager = owner_state.auxiliary_windows.connection_manager.handle;
-        if let Some(target) = connection_manager
+        if prefer_connection_manager
+            && let Some(target) = connection_manager
             && cx.windows().contains(&target)
             && target
                 .update(cx, |_, window, cx| {

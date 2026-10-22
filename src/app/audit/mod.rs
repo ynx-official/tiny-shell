@@ -327,6 +327,7 @@ impl Render for AuditPanel {
             .size_full()
             .child(self.view(window, cx))
             .children(Root::render_dialog_layer(window, cx))
+            .children(Root::render_notification_layer(window, cx))
     }
 }
 

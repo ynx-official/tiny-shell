@@ -1642,6 +1642,16 @@ impl TinyShell {
                 BackendEvent::SftpStatus { tab_id, text } => {
                     self.handle_sftp_status(tab_id, text, cx);
                 }
+                BackendEvent::SftpOperationFinished { tab_id, result } => {
+                    if self.tab_group_mut(&tab_id).is_some() {
+                        let (kind, text) = match result {
+                            Ok(text) => (crate::feedback::FeedbackKind::Success, text),
+                            Err(text) => (crate::feedback::FeedbackKind::Error, text),
+                        };
+                        self.handle_sftp_status(tab_id, text.clone(), cx);
+                        crate::feedback::Feedback::show_for_workspace(&cx.entity(), cx, kind, text);
+                    }
+                }
                 BackendEvent::SftpLatency { tab_id, latency_ms } => {
                     self.handle_sftp_latency(tab_id, latency_ms, cx);
                 }

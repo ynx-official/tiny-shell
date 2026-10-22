@@ -240,10 +240,8 @@ impl AiPanel {
                             .xsmall()
                             .icon(IconName::Copy)
                             .tooltip(t!("ai_copy").to_string())
-                            .on_click(move |_, _, cx| {
-                                cx.write_to_clipboard(gpui::ClipboardItem::new_string(
-                                    copy.to_string(),
-                                ))
+                            .on_click(move |_, window, cx| {
+                                crate::feedback::Feedback::copy(window, cx, copy.to_string());
                             }),
                     ),
             )
@@ -256,8 +254,8 @@ impl AiPanel {
                             .ghost()
                             .xsmall()
                             .icon(IconName::Copy)
-                            .on_click(move |_, _, cx| {
-                                cx.write_to_clipboard(gpui::ClipboardItem::new_string(code.clone()))
+                            .on_click(move |_, window, cx| {
+                                crate::feedback::Feedback::copy(window, cx, code.clone());
                             })
                     }),
             )

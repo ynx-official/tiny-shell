@@ -356,8 +356,8 @@ pub(super) fn raw_block(id: String, title: String, text: String, cx: &App) -> gp
                         .xsmall()
                         .icon(IconName::Copy)
                         .tooltip(t!("ai_copy").to_string())
-                        .on_click(move |_, _, cx| {
-                            cx.write_to_clipboard(gpui::ClipboardItem::new_string(copy.clone()));
+                        .on_click(move |_, window, cx| {
+                            crate::feedback::Feedback::copy(window, cx, copy.clone());
                         }),
                 ),
         )

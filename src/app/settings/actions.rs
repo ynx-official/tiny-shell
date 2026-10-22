@@ -211,7 +211,44 @@ impl TinyShell {
         self.config.set_global_proxy_user(values.user);
         self.config.set_global_proxy_password(values.password);
         self.mark_config_preferences_dirty();
-        crate::feedback::Feedback::success(window, cx, rust_i18n::t!("save_proxy"));
+        let generation = self.config_persistence.generation();
+        let receipt = match self.config_repository.persist_async(self.config.clone()) {
+            Ok(receipt) => receipt,
+            Err(error) => {
+                crate::feedback::Feedback::error(
+                    window,
+                    cx,
+                    rust_i18n::t!("config_save_failed", error = format!("{error:#}")).to_string(),
+                );
+                return false;
+            }
+        };
+        let target = window.window_handle();
+        let save = cx
+            .background_executor()
+            .spawn(async move { receipt.wait() });
+        cx.spawn(async move |this, cx| {
+            let result = save.await;
+            if result.is_ok() {
+                let _ = this.update(cx, |this, cx| {
+                    this.config_persistence.mark_saved(generation, false);
+                    this.note_local_config_saved(cx);
+                });
+            }
+            let _ = target.update(cx, |_, window, cx| match result {
+                Ok(()) => crate::feedback::Feedback::success(
+                    window,
+                    cx,
+                    rust_i18n::t!("feedback_proxy_saved").to_string(),
+                ),
+                Err(error) => crate::feedback::Feedback::error(
+                    window,
+                    cx,
+                    rust_i18n::t!("config_save_failed", error = format!("{error:#}")).to_string(),
+                ),
+            });
+        })
+        .detach();
         cx.notify();
         true
     }

@@ -519,6 +519,7 @@ fn event_route_id(event: &BackendEventEnvelope) -> Option<&str> {
         | BackendEvent::SftpEntries { tab_id, .. }
         | BackendEvent::SftpDirectoryEntries { tab_id, .. }
         | BackendEvent::SftpStatus { tab_id, .. }
+        | BackendEvent::SftpOperationFinished { tab_id, .. }
         | BackendEvent::SftpLatency { tab_id, .. }
         | BackendEvent::SftpTimeZone { tab_id, .. }
         | BackendEvent::SftpFileContent { tab_id, .. }
@@ -551,6 +552,43 @@ mod tests {
             event,
             generation: 1,
             sequence,
+        }
+    }
+
+    #[test]
+    fn file_operation_feedback_uses_the_session_route_for_both_outcomes() {
+        for result in [
+            Ok("created".to_owned()),
+            Err("permission denied".to_owned()),
+        ] {
+            let event = envelope(
+                BackendEvent::SftpOperationFinished {
+                    tab_id: "sftp-origin".into(),
+                    result,
+                },
+                1,
+            );
+            assert_eq!(event.event.tab_id(), Some("sftp-origin"));
+            assert_eq!(super::event_route_id(&event), Some("sftp-origin"));
+            let mut queue = EventQueue::default();
+            queue
+                .push_bounded(
+                    envelope(
+                        BackendEvent::Status {
+                            tab_id: "sftp-origin".into(),
+                            text: "progress".into(),
+                        },
+                        0,
+                    ),
+                    1,
+                    usize::MAX,
+                )
+                .unwrap();
+            queue.push_bounded(event, 1, usize::MAX).unwrap();
+            assert!(matches!(
+                queue.pop_front().unwrap().event,
+                BackendEvent::SftpOperationFinished { .. }
+            ));
         }
     }
 

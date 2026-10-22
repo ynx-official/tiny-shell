@@ -1012,9 +1012,11 @@ impl SftpRuntime<'_> {
 
         match self.sftp.create_dir(&actual_path).await {
             Ok(_) => {
-                let _ = self.events.send(BackendEvent::SftpStatus {
+                let _ = self.events.send(BackendEvent::SftpOperationFinished {
                     tab_id: self.tab_id.to_string(),
-                    text: t!("create_folder_success", name = base_name(&actual_path)).to_string(),
+                    result: Ok(
+                        t!("create_folder_success", name = base_name(&actual_path)).to_string()
+                    ),
                 });
 
                 // Refresh directly. Re-enqueuing onto the queue currently being
@@ -1023,9 +1025,9 @@ impl SftpRuntime<'_> {
                     .await;
             }
             Err(err) => {
-                let _ = self.events.send(BackendEvent::SftpStatus {
+                let _ = self.events.send(BackendEvent::SftpOperationFinished {
                     tab_id: self.tab_id.to_string(),
-                    text: t!("create_folder_failed", err = format!("{err:#}")).to_string(),
+                    result: Err(t!("create_folder_failed", err = format!("{err:#}")).to_string()),
                 });
             }
         }
@@ -1048,18 +1050,22 @@ impl SftpRuntime<'_> {
         .await;
         match result {
             Ok(()) => {
-                let _ = self.events.send(BackendEvent::SftpStatus {
+                let _ = self.events.send(BackendEvent::SftpOperationFinished {
                     tab_id: self.tab_id.to_string(),
-                    text: t!("sftp_create_file_success", name = base_name(&actual_path))
-                        .to_string(),
+                    result: Ok(
+                        t!("sftp_create_file_success", name = base_name(&actual_path)).to_string(),
+                    ),
                 });
                 self.refresh_directory(remote_parent(&actual_path)).await;
             }
             Err(err) => {
-                let _ = self.events.send(BackendEvent::SftpStatus {
-                    tab_id: self.tab_id.to_string(),
-                    text: t!("sftp_create_file_failed", err = format!("{err:#}")).to_string(),
-                });
+                let _ =
+                    self.events.send(BackendEvent::SftpOperationFinished {
+                        tab_id: self.tab_id.to_string(),
+                        result: Err(
+                            t!("sftp_create_file_failed", err = format!("{err:#}")).to_string()
+                        ),
+                    });
             }
         }
         true
@@ -1070,16 +1076,16 @@ impl SftpRuntime<'_> {
         let new_path = resolve_remote_path(&new_path, self.home);
         match self.sftp.rename(&old_path, &new_path).await {
             Ok(()) => {
-                let _ = self.events.send(BackendEvent::SftpStatus {
+                let _ = self.events.send(BackendEvent::SftpOperationFinished {
                     tab_id: self.tab_id.to_string(),
-                    text: t!("sftp_rename_success", name = base_name(&new_path)).to_string(),
+                    result: Ok(t!("sftp_rename_success", name = base_name(&new_path)).to_string()),
                 });
                 self.refresh_directory(remote_parent(&new_path)).await;
             }
             Err(err) => {
-                let _ = self.events.send(BackendEvent::SftpStatus {
+                let _ = self.events.send(BackendEvent::SftpOperationFinished {
                     tab_id: self.tab_id.to_string(),
-                    text: t!("sftp_rename_failed", err = format!("{err:#}")).to_string(),
+                    result: Err(t!("sftp_rename_failed", err = format!("{err:#}")).to_string()),
                 });
             }
         }
@@ -1101,22 +1107,25 @@ impl SftpRuntime<'_> {
         };
         match result {
             Ok(()) => {
-                let _ = self.events.send(BackendEvent::SftpStatus {
+                let _ = self.events.send(BackendEvent::SftpOperationFinished {
                     tab_id: self.tab_id.to_string(),
-                    text: t!(
+                    result: Ok(t!(
                         "sftp_permissions_success",
                         mode = format!("{mode:o}"),
                         name = base_name(&remote_path)
                     )
-                    .to_string(),
+                    .to_string()),
                 });
                 self.refresh_directory(remote_parent(&remote_path)).await;
             }
             Err(err) => {
-                let _ = self.events.send(BackendEvent::SftpStatus {
-                    tab_id: self.tab_id.to_string(),
-                    text: t!("sftp_permissions_failed", err = format!("{err:#}")).to_string(),
-                });
+                let _ =
+                    self.events.send(BackendEvent::SftpOperationFinished {
+                        tab_id: self.tab_id.to_string(),
+                        result: Err(
+                            t!("sftp_permissions_failed", err = format!("{err:#}")).to_string()
+                        ),
+                    });
             }
         }
         true
@@ -1139,14 +1148,14 @@ impl SftpRuntime<'_> {
         }
 
         if errors.is_empty() {
-            let _ = self.events.send(BackendEvent::SftpStatus {
+            let _ = self.events.send(BackendEvent::SftpOperationFinished {
                 tab_id: self.tab_id.to_string(),
-                text: t!("delete_success", count = paths.len()).to_string(),
+                result: Ok(t!("delete_success", count = paths.len()).to_string()),
             });
         } else {
-            let _ = self.events.send(BackendEvent::SftpStatus {
+            let _ = self.events.send(BackendEvent::SftpOperationFinished {
                 tab_id: self.tab_id.to_string(),
-                text: t!("delete_failed", err = errors.join(", ")).to_string(),
+                result: Err(t!("delete_failed", err = errors.join(", ")).to_string()),
             });
         }
 
@@ -1173,15 +1182,15 @@ impl SftpRuntime<'_> {
         );
         match exec_remote_command(self.handle, &command).await {
             Ok(()) => {
-                let _ = self.events.send(BackendEvent::SftpStatus {
+                let _ = self.events.send(BackendEvent::SftpOperationFinished {
                     tab_id: self.tab_id.to_string(),
-                    text: t!("delete_success", count = paths.len()).to_string(),
+                    result: Ok(t!("delete_success", count = paths.len()).to_string()),
                 });
             }
             Err(err) => {
-                let _ = self.events.send(BackendEvent::SftpStatus {
+                let _ = self.events.send(BackendEvent::SftpOperationFinished {
                     tab_id: self.tab_id.to_string(),
-                    text: t!("delete_failed", err = format!("{err:#}")).to_string(),
+                    result: Err(t!("delete_failed", err = format!("{err:#}")).to_string()),
                 });
             }
         }

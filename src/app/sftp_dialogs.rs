@@ -299,6 +299,12 @@ impl TinyShell {
         let name = input.read(cx).value().trim().to_string();
         if name.is_empty() || name.contains('/') || name.contains('\\') {
             self.status = t!("sftp_invalid_name").into();
+            crate::feedback::Feedback::show_for_workspace(
+                &cx.entity(),
+                cx,
+                crate::feedback::FeedbackKind::Warning,
+                self.status.clone(),
+            );
             cx.notify();
             return false;
         }
@@ -422,6 +428,12 @@ impl TinyShell {
         let name = input.read(cx).value().trim().to_string();
         if name.is_empty() || name.contains('/') || name.contains('\\') {
             self.status = t!("sftp_invalid_name").into();
+            crate::feedback::Feedback::show_for_workspace(
+                &cx.entity(),
+                cx,
+                crate::feedback::FeedbackKind::Warning,
+                self.status.clone(),
+            );
             cx.notify();
             return false;
         }
@@ -546,11 +558,23 @@ impl TinyShell {
         };
         let Ok(mode) = u32::from_str_radix(&value, 8) else {
             self.status = t!("sftp_invalid_permissions").into();
+            crate::feedback::Feedback::show_for_workspace(
+                &cx.entity(),
+                cx,
+                crate::feedback::FeedbackKind::Warning,
+                self.status.clone(),
+            );
             cx.notify();
             return false;
         };
         if value.len() < 3 || value.len() > 4 || mode > 0o7777 {
             self.status = t!("sftp_invalid_permissions").into();
+            crate::feedback::Feedback::show_for_workspace(
+                &cx.entity(),
+                cx,
+                crate::feedback::FeedbackKind::Warning,
+                self.status.clone(),
+            );
             cx.notify();
             return false;
         }

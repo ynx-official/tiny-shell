@@ -219,6 +219,11 @@ pub(crate) enum BackendEvent {
         tab_id: String,
         text: String,
     },
+    /// Final outcome of an explicit file operation; progress remains in SftpStatus.
+    SftpOperationFinished {
+        tab_id: String,
+        result: Result<String, String>,
+    },
     SftpLatency {
         tab_id: String,
         latency_ms: Option<u64>,
@@ -306,6 +311,7 @@ impl BackendEvent {
             | Self::SftpEntries { tab_id, .. }
             | Self::SftpDirectoryEntries { tab_id, .. }
             | Self::SftpStatus { tab_id, .. }
+            | Self::SftpOperationFinished { tab_id, .. }
             | Self::SftpLatency { tab_id, .. }
             | Self::SftpTimeZone { tab_id, .. }
             | Self::SftpFileContent { tab_id, .. }
@@ -340,6 +346,7 @@ impl BackendEvent {
                 | Self::SftpContentUploaded { .. }
                 | Self::SftpContentConflict { .. }
                 | Self::SftpContentUploadFailed { .. }
+                | Self::SftpOperationFinished { .. }
                 | Self::SftpHome { .. }
                 | Self::SftpTimeZone { .. }
                 | Self::RemoteSystem { .. }

@@ -103,7 +103,7 @@ impl ConnectionOperationWindow {
         };
         let name = input.read(cx).value().trim().to_string();
         if name.is_empty() {
-            crate::feedback::Feedback::warning(window, cx, t!("connection_group_name"));
+            crate::feedback::Feedback::warning(window, cx, t!("connection_group_name_required"));
             return;
         }
         let ConnectionOperation::EditGroup { original, parent } = &self.operation else {

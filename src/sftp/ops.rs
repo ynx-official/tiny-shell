@@ -527,6 +527,12 @@ impl TinyShell {
         };
         if let Some(remote_path) = menu.remote_path {
             cx.write_to_clipboard(gpui::ClipboardItem::new_string(remote_path));
+            crate::feedback::Feedback::show_for_workspace(
+                &cx.entity(),
+                cx,
+                crate::feedback::FeedbackKind::Success,
+                t!("feedback_copied").to_string(),
+            );
         }
         cx.notify();
     }

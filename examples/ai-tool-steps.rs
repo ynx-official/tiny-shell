@@ -17,6 +17,10 @@ use serde_json::json;
 use std::rc::Rc;
 
 #[allow(dead_code)]
+#[path = "../src/feedback/presentation.rs"]
+mod feedback;
+
+#[allow(dead_code)]
 #[path = "../src/ai/model.rs"]
 mod model;
 #[allow(dead_code)]
@@ -163,8 +167,9 @@ impl Preview {
     }
 }
 impl Render for Preview {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         v_flex()
+            .relative()
             .size_full()
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
@@ -289,6 +294,7 @@ impl Render for Preview {
                             })),
                     ),
             )
+            .children(Root::render_notification_layer(window, cx))
     }
 }
 fn main() {

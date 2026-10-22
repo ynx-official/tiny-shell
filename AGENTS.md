@@ -26,6 +26,12 @@
 - 独立确认使用 `.open(window, cx)`；业务模态队列使用 `.build(dialog, window, cx)`，保留窗口归属与 token 关闭回调。
 - 调用方式和场景边界见 [统一确认弹窗](docs/02-design/confirmation-dialogs.md)；原生预览命令为 `cargo run --locked --example confirmation-dialog`。
 
+### 操作反馈复用
+
+- 成功、失败、警告和信息提示统一使用 `src/feedback.rs` 的 `Feedback`，不要重新拼装通知组件；具体结果同时维护中英文。
+- 异步操作必须等待实际完成后提示成功，不能将排队或提交成功当作保存/执行完成；提示属于发起窗口或原会话工作区。
+- 连接与传输进度保留在业务状态界面，输入错误保留页内反馈。接入范围和手动验收见 [通用操作反馈](docs/02-design/operation-feedback.md)。
+
 ## 2. 基本开发规范
 
 ### 2.1 修改原则
