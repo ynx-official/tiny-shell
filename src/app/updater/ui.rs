@@ -330,6 +330,7 @@ impl TinyShell {
             return;
         };
 
+        let copy = super::install_presentation(info.installation_kind);
         let view = cx.entity();
         self.replace_modal_dialog(
             crate::app::DialogKind::Updater,
@@ -337,14 +338,14 @@ impl TinyShell {
             cx,
             move |dialog: Dialog, token, window, cx| {
                 crate::app::confirmation_dialog::ConfirmationDialog::new(
-                    t!("update_restart_confirm_title").to_string(),
+                    t!(copy.confirmation_title).to_string(),
                     t!(
-                        "update_restart_confirm_desc",
+                        copy.confirmation_description,
                         version = info.version.clone()
                     )
                     .to_string(),
                 )
-                .confirm_label(t!("update_restart_now").to_string())
+                .confirm_label(t!(copy.action).to_string())
                 .on_close({
                     let view = view.clone();
                     move |_, window, cx| {
@@ -355,23 +356,23 @@ impl TinyShell {
                     }
                 })
                 .on_ok({
-                    let view = view.clone();
                     let path = path.clone();
                     let expected_version = info.version.clone();
                     let installation_kind = info.installation_kind;
-                    move |_, _, cx| {
+                    move |_, window, cx| {
                         if let Err(error) = crate::app::updater::install_and_restart(
                             &path,
                             &expected_version,
                             installation_kind,
                         ) {
                             tracing::error!("failed to install update: {error:#}");
-                            view.update(cx, |this, cx| {
-                                this.update_runtime.status = Some(
-                                    crate::app::updater::UpdateStatus::Error(format!("{error:#}")),
-                                );
-                                cx.notify();
-                            });
+                            // Keep the verified payload available so this confirmation can retry.
+                            crate::feedback::Feedback::error(
+                                window,
+                                cx,
+                                t!("update_install_start_failed", error = format!("{error:#}"))
+                                    .to_string(),
+                            );
                             return false;
                         }
                         true
@@ -420,6 +421,11 @@ impl TinyShell {
                             &status,
                             Some(crate::app::updater::UpdateStatus::ReadyToRestart(_, _))
                         );
+                        let install_action = match &status {
+                            Some(crate::app::updater::UpdateStatus::ReadyToRestart(info, _)) =>
+                                super::install_presentation(info.installation_kind).action,
+                            _ => "update_restart_now",
+                        };
                         let is_downloading = matches!(
                             &status,
                             Some(crate::app::updater::UpdateStatus::Downloading(_, _, _))
@@ -498,8 +504,8 @@ impl TinyShell {
                                 true,
                             ),
                             Some(crate::app::updater::UpdateStatus::ReadyToRestart(info, _)) => (
-                                t!("update_install_complete").to_string(),
-                                t!("update_restart_hint").to_string(),
+                                t!("update_download_ready").to_string(),
+                                t!(super::install_presentation(info.installation_kind).hint).to_string(),
                                 info.notes,
                                 false,
                                 false,
@@ -742,7 +748,7 @@ impl TinyShell {
                                             this.child(
                                                 Button::new("update-restart")
                                                     .primary()
-                                                    .label(t!("update_restart_now").to_string())
+                                                    .label(t!(install_action).to_string())
                                                     .on_click(window.listener_for(
                                                         &view,
                                                         |this, _, window, cx| {

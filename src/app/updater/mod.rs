@@ -10,9 +10,11 @@ use futures::StreamExt;
 use semver::Version;
 
 mod indicator;
+mod presentation;
 mod release_source;
 
 pub(crate) use indicator::compact_pulse_icon;
+pub(crate) use presentation::install_presentation;
 
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
@@ -393,6 +395,7 @@ pub(crate) enum UpdateStatus {
     Downloading(UpdateInfo, u64, u64),
     DownloadCancelled(UpdateInfo),
     DownloadFailed(UpdateInfo, String),
+    // The payload is downloaded and verified; installation has not started yet.
     ReadyToRestart(UpdateInfo, PathBuf),
     Error(String),
 }
@@ -720,7 +723,7 @@ fn stage_windows_portable_binary_at(
     Ok(staged_binary)
 }
 
-/// Install a prepared update, then close this process while the new version starts.
+/// Hand off a prepared update. Windows installers own the wizard and launch choice.
 pub(crate) fn install_and_restart(
     new_path: &std::path::Path,
     expected_version: &str,
@@ -1227,8 +1230,10 @@ fn install_windows_setup(
     }
 
     tracing::info!(
-        "setup update helper launched for process {process_id}; installer: {}",
-        installer.display()
+        "setup update helper launched for process {process_id}; installer: {}; helper log: {}; setup log: {}",
+        installer.display(),
+        log_path.display(),
+        log_path.with_extension("setup.log").display()
     );
     Ok(())
 }
@@ -1331,44 +1336,32 @@ fn build_windows_setup_update_script(plan: &WindowsSetupUpdateScriptPlan<'_>) ->
     let installer = powershell_path_literal(plan.installer);
     let script_path = powershell_path_literal(plan.script_path);
     let log_path = powershell_path_literal(plan.log_path);
+    let setup_log_path = plan.log_path.with_extension("setup.log");
+    let setup_log = powershell_path_literal(&setup_log_path);
+    let failure_title = powershell_string_literal(&rust_i18n::t!("update_install_failed"));
+    let failure_description = powershell_string_literal(&rust_i18n::t!(
+        "update_setup_failure_desc",
+        log = plan.log_path.display().to_string(),
+        setup_log = setup_log_path.display().to_string(),
+        installer = plan.installer.display().to_string()
+    ));
     let expected_version = powershell_string_literal(plan.expected_version);
     let process_id = plan.process_id;
+    let body = include_str!("windows_setup_update.ps1");
 
+    // Windows PowerShell 5.1 needs a BOM to read localized messages and Unicode paths.
     format!(
-        "$ErrorActionPreference = 'Stop'\r\n\
+        "\u{feff}$ErrorActionPreference = 'Stop'\r\n\
          $current = {current_exe}\r\n\
          $installer = {installer}\r\n\
          $script = {script_path}\r\n\
          $log = {log_path}\r\n\
+         $setupLog = {setup_log}\r\n\
+         $failureTitle = {failure_title}\r\n\
+         $failureDescription = {failure_description}\r\n\
          $expectedVersion = {expected_version}\r\n\
-         function Write-UpdateLog([string]$message) {{\r\n\
-             try {{\r\n\
-                 Add-Content -LiteralPath $log -Value \"$(Get-Date -Format o) $message\" -Encoding UTF8\r\n\
-             }} catch {{}}\r\n\
-         }}\r\n\
-         try {{\r\n\
-             Write-UpdateLog 'waiting for application process {process_id} before setup update'\r\n\
-             Wait-Process -Id {process_id} -ErrorAction SilentlyContinue\r\n\
-             $arguments = @('/SP-', '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/CURRENTUSER')\r\n\
-             $setup = Start-Process -FilePath $installer -ArgumentList $arguments -Wait -PassThru\r\n\
-             if ($setup.ExitCode -ne 0) {{\r\n\
-                 throw \"setup exited with code $($setup.ExitCode)\"\r\n\
-             }}\r\n\
-             $installedVersion = (Get-Item -LiteralPath $current).VersionInfo.ProductVersion\r\n\
-             if ($installedVersion -ne $expectedVersion) {{\r\n\
-                 throw \"installed setup version mismatch: expected $expectedVersion, got $installedVersion\"\r\n\
-             }}\r\n\
-             Start-Process -FilePath $current -WorkingDirectory (Split-Path -Parent $current)\r\n\
-             Write-UpdateLog 'setup update installed and application restarted successfully'\r\n\
-             Remove-Item -LiteralPath $installer -Force -ErrorAction SilentlyContinue\r\n\
-             Remove-Item -LiteralPath $script -Force -ErrorAction SilentlyContinue\r\n\
-         }} catch {{\r\n\
-             Write-UpdateLog \"setup update failed: $($_.Exception.Message)\"\r\n\
-             if (Test-Path -LiteralPath $current) {{\r\n\
-                 Start-Process -FilePath $current -WorkingDirectory (Split-Path -Parent $current)\r\n\
-             }}\r\n\
-             exit 1\r\n\
-         }}\r\n"
+         $applicationProcessId = {process_id}\r\n\
+         {body}"
     )
 }
 
@@ -1981,10 +1974,10 @@ mod tests {
 
     #[cfg(target_os = "windows")]
     #[test]
-    fn windows_setup_update_script_runs_installer_and_checks_version() {
+    fn windows_setup_update_script_opens_wizard_and_checks_version() {
         let plan = WindowsSetupUpdateScriptPlan {
             process_id: 4242,
-            current_exe: std::path::Path::new(r"C:\TinyShell\tiny-shell.exe"),
+            current_exe: std::path::Path::new(r"C:\安装 O'Brien [test]\tiny-shell.exe"),
             installer: std::path::Path::new(r"C:\Temp\tiny-shell-v1.0.7-setup.exe"),
             script_path: std::path::Path::new(r"C:\Temp\tiny-shell-setup-update-4242.ps1"),
             log_path: std::path::Path::new(r"C:\Temp\tiny-shell-update.log"),
@@ -1992,12 +1985,18 @@ mod tests {
         };
         let script = build_windows_setup_update_script(&plan);
 
-        assert!(script.contains("Wait-Process -Id 4242"));
-        assert!(script.contains("'/VERYSILENT'"));
+        assert!(script.starts_with('\u{feff}'));
+        assert!(script.contains("$applicationProcessId = 4242"));
+        assert!(script.contains("Wait-Process -Id $applicationProcessId"));
+        assert!(script.contains(r"$current = 'C:\安装 O''Brien [test]\tiny-shell.exe'"));
+        assert!(script.contains(r"$setupLog = 'C:\Temp\tiny-shell-update.setup.log'"));
+        assert!(!script.contains("/VERYSILENT"));
+        assert!(!script.contains("/SUPPRESSMSGBOXES"));
         assert!(script.contains("'/CURRENTUSER'"));
-        assert!(script.contains("$setup.ExitCode -ne 0"));
+        assert!(script.contains("-WindowStyle Normal -PassThru"));
+        assert!(script.contains("$setup.WaitForExit()"));
         assert!(script.contains("$installedVersion -ne $expectedVersion"));
-        assert!(script.contains("Start-Process -FilePath $current"));
+        assert!(!script.contains("Start-Process -FilePath $current"));
         assert_powershell_script_parses(&script, "setup-update-script-test");
     }
 }

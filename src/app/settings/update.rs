@@ -25,6 +25,7 @@ struct UpdateStatusPresentation {
     has_update: bool,
     can_retry: bool,
     can_restart: bool,
+    install_action: &'static str,
 }
 
 fn progress_percent(done: u64, total: u64) -> u64 {
@@ -65,9 +66,7 @@ fn present_status(status: Option<&UpdateStatus>) -> UpdateStatusPresentation {
             t!("update_download_error", error = error.clone()).to_string(),
             None,
         ),
-        Some(UpdateStatus::ReadyToRestart(_, _)) => {
-            (t!("update_install_complete").to_string(), None)
-        }
+        Some(UpdateStatus::ReadyToRestart(_, _)) => (t!("update_download_ready").to_string(), None),
         Some(UpdateStatus::Error(message)) => (
             t!("update_error", error = message.clone()).to_string(),
             None,
@@ -91,6 +90,12 @@ fn present_status(status: Option<&UpdateStatus>) -> UpdateStatusPresentation {
             Some(UpdateStatus::DownloadCancelled(_) | UpdateStatus::DownloadFailed(_, _))
         ),
         can_restart: matches!(status, Some(UpdateStatus::ReadyToRestart(_, _))),
+        install_action: match status {
+            Some(UpdateStatus::ReadyToRestart(info, _)) => {
+                crate::app::updater::install_presentation(info.installation_kind).action
+            }
+            _ => "update_restart_now",
+        },
     }
 }
 
@@ -279,7 +284,9 @@ pub(crate) fn page(
                                                 this.child(
                                                     Button::new("restart-update")
                                                         .primary()
-                                                        .label(t!("update_restart_now").to_string())
+                                                        .label(
+                                                            t!(status.install_action).to_string(),
+                                                        )
                                                         .on_click(window.listener_for(
                                                             &view,
                                                             |this, _, window, cx| {
@@ -309,7 +316,31 @@ pub(crate) fn page(
 #[cfg(test)]
 mod tests {
     use super::{present_status, progress_percent, progress_value};
-    use crate::app::updater::UpdateStatus;
+    use crate::app::updater::{InstallationKind, UpdateInfo, UpdateStatus};
+
+    #[test]
+    fn downloaded_windows_setup_is_ready_to_install_not_already_installed() {
+        let status = UpdateStatus::ReadyToRestart(
+            UpdateInfo {
+                version: "2.2.0".to_string(),
+                notes: String::new(),
+                download_url: String::new(),
+                size: 1,
+                digest: String::new(),
+                installation_kind: InstallationKind::WindowsInstaller,
+            },
+            "setup.exe".into(),
+        );
+        let presentation = present_status(Some(&status));
+        assert_eq!(
+            presentation.text,
+            rust_i18n::t!("update_download_ready").to_string()
+        );
+        assert_eq!(presentation.install_action, "update_install_now");
+        assert!(presentation.can_restart);
+        assert!(!presentation.has_update);
+        assert!(!presentation.can_retry);
+    }
 
     #[test]
     fn update_status_presentation_exposes_available_actions() {
