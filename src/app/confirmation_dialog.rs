@@ -19,6 +19,13 @@ use rust_i18n::t;
 type Action = Rc<dyn Fn(&ClickEvent, &mut Window, &mut App) -> bool>;
 type OnClose = Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)>;
 
+const DIALOG_PADDING: Pixels = px(20.);
+const TITLE_FONT_SIZE: Pixels = px(16.);
+const TEXT_FONT_SIZE: Pixels = px(13.);
+const BUTTON_HEIGHT: Pixels = px(32.);
+const BUTTON_PADDING_X: Pixels = px(16.);
+const FOOTER_GAP: Pixels = px(24.);
+
 #[derive(Clone)]
 struct PendingConfirmation {
     title: SharedString,
@@ -149,12 +156,12 @@ impl ConfirmationDialog {
             window.viewport_size().width - paddings.left - paddings.right,
             scale,
         );
-        let inner_width = (width - px(50.) * scale).max(px(1.));
+        let inner_width = (width - DIALOG_PADDING * 2. * scale - px(2.)).max(px(1.));
         let measure_content = |title, description| {
-            content_height(
+            (
                 measure_text(
                     title,
-                    px(17.) * scale,
+                    TITLE_FONT_SIZE * scale,
                     px(24.) * scale,
                     inner_width,
                     true,
@@ -162,40 +169,47 @@ impl ConfirmationDialog {
                 ),
                 measure_text(
                     description,
-                    px(13.) * scale,
+                    TEXT_FONT_SIZE * scale,
                     px(20.) * scale,
                     (inner_width - px(12.) * scale).max(px(1.)),
                     false,
                     window,
                 ),
-                scale,
             )
         };
-        let mut preferred_height = measure_content(&self.title, &self.description);
-        let measure_button = |label: &SharedString| {
+        let (mut title_height, mut description_height) =
+            measure_content(&self.title, &self.description);
+        let measure_button = |(label, confirm): (&SharedString, bool)| {
             let style = window.text_style();
-            window
+            let label_width = window
                 .text_system()
                 .shape_line(
                     label.clone(),
-                    px(14.) * scale,
+                    TEXT_FONT_SIZE * scale,
                     &[style.to_run(label.len())],
                     None,
                 )
-                .width
-                + px(32.) * scale
+                .width;
+            confirmation_button_width(label_width, confirm, scale)
         };
-        let mut button_widths = [&self.cancel_label, &self.confirm_label].map(measure_button);
+        let button_widths =
+            [(&self.cancel_label, false), (&self.confirm_label, true)].map(measure_button);
+        let mut status_height = px(0.);
         if let Some(status) = &self.pending {
-            // Reserve both presentations so a confirmed close does not move or resize the modal.
-            preferred_height =
-                preferred_height.max(measure_content(&status.title, &status.description));
-            button_widths[1] =
-                button_widths[1].max(measure_button(&status.label) + px(22.) * scale);
-            // Leave room for both the native border and keyboard focus border.
-            for width in &mut button_widths {
-                *width += px(4.);
-            }
+            // Reserve each region independently: equal total heights alone do not stop the body
+            // from shifting when the ready and pending titles occupy different numbers of lines.
+            let (pending_title_height, pending_description_height) =
+                measure_content(&status.title, &status.description);
+            title_height = title_height.max(pending_title_height);
+            description_height = description_height.max(pending_description_height);
+            status_height = measure_text(
+                &status.label,
+                TEXT_FONT_SIZE * scale,
+                px(20.) * scale,
+                (inner_width - px(22.) * scale).max(px(1.)),
+                false,
+                window,
+            );
             if pending {
                 self.title = status.title.clone();
                 self.description = status.description.clone();
@@ -203,7 +217,15 @@ impl ConfirmationDialog {
             }
         }
         let stacked = button_widths[0] + button_widths[1] + px(8.) * scale > inner_width;
-        preferred_height += if stacked { px(40.) * scale } else { px(0.) };
+        let footer_height = ((if stacked {
+            BUTTON_HEIGHT * 2. + px(8.)
+        } else {
+            BUTTON_HEIGHT
+        }) * scale)
+            .max(status_height);
+        let preferred_height = content_height(title_height, description_height, scale)
+            + footer_height
+            - BUTTON_HEIGHT * scale;
         let layout =
             super::dialog_layout::centered_dialog_layout(window, preferred_height, self.layer_ix);
         let body = self.description.clone();
@@ -219,8 +241,43 @@ impl ConfirmationDialog {
             reset_scroll.set_offset(gpui::point(px(0.), px(0.)));
             on_close(event, window, cx);
         });
-        let cancel = self.button(false, scale, button_widths[0], window, cx);
-        let confirm = self.button(true, scale, button_widths[1], window, cx);
+        let footer = h_flex()
+            .debug_selector(|| "confirmation-footer".to_owned())
+            .w_full()
+            .h(footer_height)
+            .flex_none()
+            .gap(px(8.) * scale);
+        let footer = if pending {
+            // Shutdown is already accepted. Show progress without suggesting another action.
+            footer
+                .child(
+                    div()
+                        .debug_selector(|| "confirmation-pending-spinner".to_owned())
+                        .flex_none()
+                        .size(px(14.) * scale)
+                        .child(
+                            Spinner::new()
+                                .with_size(px(14.) * scale)
+                                .color(cx.theme().muted_foreground),
+                        ),
+                )
+                .child(
+                    div()
+                        .debug_selector(|| "confirmation-pending-label".to_owned())
+                        .flex_1()
+                        .min_w_0()
+                        .text_size(TEXT_FONT_SIZE * scale)
+                        .line_height(px(20.) * scale)
+                        .text_color(cx.theme().muted_foreground)
+                        .child(self.confirm_label.clone()),
+                )
+        } else {
+            footer
+                .justify_end()
+                .when(stacked, |row| row.flex_col().items_end())
+                .child(self.button(false, scale, button_widths[0], window, cx))
+                .child(self.button(true, scale, button_widths[1], window, cx))
+        };
         let ok = self.clone();
         let cancel_action = self.clone();
 
@@ -228,8 +285,8 @@ impl ConfirmationDialog {
             .w(width)
             .h(layout.height)
             .margin_top(layout.margin_top)
-            .p(px(24.) * scale)
-            .gap(px(24.) * scale)
+            .p(DIALOG_PADDING * scale)
+            .gap(FOOTER_GAP * scale)
             .rounded(px(8.))
             .close_button(false)
             .overlay_closable(false)
@@ -237,7 +294,8 @@ impl ConfirmationDialog {
             .title(
                 div()
                     .debug_selector(|| "confirmation-title".to_owned())
-                    .text_size(px(17.) * scale)
+                    .h(title_height)
+                    .text_size(TITLE_FONT_SIZE * scale)
                     .line_height(px(24.) * scale)
                     .font_weight(FontWeight::SEMIBOLD)
                     .child(self.title),
@@ -246,27 +304,21 @@ impl ConfirmationDialog {
                 content.min_h_0().child(
                     div()
                         .id("confirmation-description")
+                        .debug_selector(|| "confirmation-description".to_owned())
                         .relative()
+                        .flex_1()
                         .min_h_0()
                         .overflow_y_scroll()
                         .track_scroll(&scroll_handle)
                         .pr(px(12.) * scale)
-                        .text_size(px(13.) * scale)
+                        .text_size(TEXT_FONT_SIZE * scale)
                         .line_height(px(20.) * scale)
                         .text_color(cx.theme().muted_foreground)
                         .child(body.clone())
                         .vertical_scrollbar(&scroll_handle),
                 )
             })
-            .footer(
-                h_flex()
-                    .w_full()
-                    .justify_end()
-                    .gap(px(8.) * scale)
-                    .when(stacked, |row| row.flex_col().items_end())
-                    .child(cancel)
-                    .child(confirm),
-            )
+            .footer(footer)
             // Keyboard and mouse share the deferred path, including vetoes and modal replacement.
             .on_ok(move |_, window, cx| {
                 ok.click(true, window, cx);
@@ -320,7 +372,6 @@ impl ConfirmationDialog {
             .read(cx)
             .clone();
         let focused = focus.is_focused(window);
-        let pending = self.phase.get() == ConfirmationPhase::Pending;
         let background = if confirm {
             if self.danger {
                 rgb(0xc93737).into()
@@ -337,11 +388,7 @@ impl ConfirmationDialog {
                 cx.theme().button_primary_foreground
             }
         } else {
-            if pending {
-                cx.theme().muted_foreground.opacity(0.5)
-            } else {
-                cx.theme().foreground
-            }
+            cx.theme().foreground
         };
         let hover = if confirm {
             background.darken(0.06)
@@ -356,22 +403,15 @@ impl ConfirmationDialog {
         div()
             .id(id)
             .debug_selector(|| id.to_owned())
-            .track_focus(
-                &focus
-                    .tab_index(if confirm { 1 } else { 0 })
-                    .tab_stop(!pending),
-            )
+            .track_focus(&focus.tab_index(if confirm { 1 } else { 0 }).tab_stop(true))
             .flex()
             .flex_none()
             .items_center()
             .justify_center()
-            .when(!pending, |button| button.cursor_pointer())
-            .min_w(width.max(px(68.) * scale))
-            .when(self.pending.is_some(), |button| {
-                button.w(width.max(px(68.) * scale))
-            })
-            .h(px(32.) * scale)
-            .px(px(16.) * scale)
+            .cursor_pointer()
+            .w(width)
+            .h(BUTTON_HEIGHT * scale)
+            .px(BUTTON_PADDING_X * scale)
             .rounded(px(5.))
             .border_1()
             .border_color(if confirm {
@@ -379,20 +419,13 @@ impl ConfirmationDialog {
             } else {
                 cx.theme().border
             })
-            .bg(if pending && !confirm {
-                cx.theme().secondary
-            } else {
-                background
-            })
+            .bg(background)
             .text_color(foreground)
-            .text_size(px(14.) * scale)
+            .text_size(TEXT_FONT_SIZE * scale)
             .line_height(px(20.) * scale)
-            .when(!pending, |button| {
-                button
-                    .hover(move |style| style.bg(hover))
-                    .active(move |style| style.bg(hover.darken(0.04)))
-            })
-            .when(focused && !pending, |button| {
+            .hover(move |style| style.bg(hover))
+            .active(move |style| style.bg(hover.darken(0.04)))
+            .when(focused, |button| {
                 button.border_2().border_color(cx.theme().ring)
             })
             .on_click(move |_, window, cx| click.click(confirm, window, cx))
@@ -407,13 +440,6 @@ impl ConfirmationDialog {
                     cx.stop_propagation();
                     key.click(confirm, window, cx);
                 }
-            })
-            .when(pending && confirm, |button| {
-                button.gap(px(8.) * scale).child(
-                    div()
-                        .debug_selector(|| "confirmation-pending-spinner".to_owned())
-                        .child(Spinner::new().with_size(px(14.) * scale).color(foreground)),
-                )
             })
             .child(if confirm {
                 self.confirm_label.clone()
@@ -458,7 +484,13 @@ fn measure_text(
 }
 
 fn confirmation_width(viewport: Pixels, scale: f32) -> Pixels {
-    (px(380.) * scale).min((viewport - px(32.)).max(px(1.)))
+    (px(360.) * scale).min((viewport - px(32.)).max(px(1.)))
+}
+
+fn confirmation_button_width(label_width: Pixels, confirm: bool, scale: f32) -> Pixels {
+    // The focused border remains 2px per side even when the application's font size changes.
+    (label_width + BUTTON_PADDING_X * 2. * scale + px(4.))
+        .max(px(if confirm { 88. } else { 76. }) * scale)
 }
 
 fn complete_once(
@@ -483,7 +515,10 @@ fn complete_once(
 
 fn content_height(title: Pixels, description: Pixels, scale: f32) -> Pixels {
     // Padding + title/body gap + footer gap + control, with the native border accounted for.
-    title + description + px(48. + 8. + 24. + 32. + 2.) * scale
+    title
+        + description
+        + (DIALOG_PADDING * 2. + px(8.) + FOOTER_GAP + BUTTON_HEIGHT) * scale
+        + px(2.)
 }
 
 #[cfg(test)]
@@ -510,6 +545,20 @@ mod tests {
     }
 
     fn open_confirmation(cx: &mut TestAppContext, pending: bool) -> (VisualTestContext, Actions) {
+        let mut dialog = ConfirmationDialog::new("Close window?", "End this window's sessions.")
+            .danger(true)
+            .confirm_label("Close window")
+            .cancel_label("Cancel");
+        if pending {
+            dialog = dialog.pending_on_confirm("Closing window", "Please wait.", "Closing…");
+        }
+        open_confirmation_with_dialog(cx, dialog)
+    }
+
+    fn open_confirmation_with_dialog(
+        cx: &mut TestAppContext,
+        dialog: ConfirmationDialog,
+    ) -> (VisualTestContext, Actions) {
         cx.update(gpui_component::init);
         let handle = cx.open_window(gpui::size(px(800.), px(600.)), |window, cx| {
             let host = cx.new(|_| ConfirmationHost);
@@ -520,14 +569,6 @@ mod tests {
         let root = handle.root(cx).unwrap();
         let mut visual = VisualTestContext::from_window(handle.into(), cx);
         visual.update(|window, cx| {
-            let mut dialog =
-                ConfirmationDialog::new("Close window?", "End this window's sessions.")
-                    .danger(true)
-                    .confirm_label("Close window")
-                    .cancel_label("Cancel");
-            if pending {
-                dialog = dialog.pending_on_confirm("Closing window", "Please wait.", "Closing…");
-            }
             dialog
                 .on_ok(move |_, _, _| {
                     callbacks.confirmed.set(callbacks.confirmed.get() + 1);
@@ -556,8 +597,8 @@ mod tests {
     fn confirmed_close_keeps_the_modal_until_the_window_is_removed(cx: &mut TestAppContext) {
         let (mut visual, actions) = open_confirmation(cx, true);
         let submit = visual.debug_bounds("confirmation-submit").unwrap();
-        let submit_before = submit;
         let cancel_before = visual.debug_bounds("confirmation-cancel").unwrap();
+        let footer_before = visual.debug_bounds("confirmation-footer").unwrap();
         let title_before = visual.debug_bounds("confirmation-title").unwrap();
         visual.simulate_click(submit.center(), gpui::Modifiers::none());
         visual.run_until_parked();
@@ -573,15 +614,19 @@ mod tests {
                 .is_some()
         );
 
-        let cancel = visual.debug_bounds("confirmation-cancel").unwrap();
-        let submit = visual.debug_bounds("confirmation-submit").unwrap();
-        assert_eq!(cancel, cancel_before, "the pending footer must not move");
-        assert_eq!(submit, submit_before, "the loading button must not resize");
+        assert!(visual.debug_bounds("confirmation-cancel").is_none());
+        assert!(visual.debug_bounds("confirmation-submit").is_none());
+        assert!(visual.debug_bounds("confirmation-pending-label").is_some());
+        assert_eq!(
+            visual.debug_bounds("confirmation-footer").unwrap(),
+            footer_before,
+            "the status row must preserve the action area's geometry"
+        );
         assert_eq!(
             visual.debug_bounds("confirmation-title").unwrap(),
             title_before
         );
-        visual.simulate_click(cancel.center(), gpui::Modifiers::none());
+        visual.simulate_click(cancel_before.center(), gpui::Modifiers::none());
         visual.simulate_click(submit.center(), gpui::Modifiers::none());
         visual.simulate_keystrokes("escape enter space");
         visual.run_until_parked();
@@ -626,9 +671,35 @@ mod tests {
     }
 
     #[gpui::test]
-    fn narrow_large_font_closing_keeps_the_spinner_and_buttons_inside_the_window(
-        cx: &mut TestAppContext,
-    ) {
+    fn closing_preserves_each_content_region_when_text_line_counts_change(cx: &mut TestAppContext) {
+        let dialog = ConfirmationDialog::new(
+            "Close window?",
+            "End this window's sessions.\nActive connections will disconnect.\nSettings will be saved.",
+        )
+        .confirm_label("Close window")
+        .cancel_label("Cancel")
+        .pending_on_confirm("Closing window\nEnding sessions", "Please wait.", "Closing…");
+        let (mut visual, actions) = open_confirmation_with_dialog(cx, dialog);
+        let title = visual.debug_bounds("confirmation-title").unwrap();
+        let body = visual.debug_bounds("confirmation-description").unwrap();
+        let footer = visual.debug_bounds("confirmation-footer").unwrap();
+        let submit = visual.debug_bounds("confirmation-submit").unwrap();
+        assert!(title.size.height >= px(48.));
+        assert!(body.size.height >= px(60.));
+        visual.simulate_click(submit.center(), gpui::Modifiers::none());
+        visual.run_until_parked();
+        assert_eq!(actions.confirmed.get(), 1);
+        assert_eq!(visual.debug_bounds("confirmation-title").unwrap(), title);
+        assert_eq!(
+            visual.debug_bounds("confirmation-description").unwrap(),
+            body
+        );
+        assert_eq!(visual.debug_bounds("confirmation-footer").unwrap(), footer);
+        visual.update(|window, _| window.remove_window());
+    }
+
+    #[gpui::test]
+    fn narrow_large_font_closing_keeps_the_status_inside_the_window(cx: &mut TestAppContext) {
         let (mut visual, actions) = open_confirmation(cx, true);
         visual.update(|window, cx| {
             gpui_component::Theme::global_mut(cx).font_size = px(21.);
@@ -642,20 +713,27 @@ mod tests {
             submit.origin.y >= cancel.bottom(),
             "narrow controls must stack"
         );
+        let footer_before = visual.debug_bounds("confirmation-footer").unwrap();
         visual.simulate_click(submit.center(), gpui::Modifiers::none());
         visual.run_until_parked();
         assert_eq!(actions.confirmed.get(), 1);
-        let submit = visual.debug_bounds("confirmation-submit").unwrap();
+        let footer = visual.debug_bounds("confirmation-footer").unwrap();
         let spinner = visual.debug_bounds("confirmation-pending-spinner").unwrap();
-        assert!(submit.right() <= px(320.) && submit.bottom() <= px(600.));
-        assert!(spinner.origin.x >= submit.origin.x && spinner.right() <= submit.right());
-        assert!(spinner.origin.y >= submit.origin.y && spinner.bottom() <= submit.bottom());
+        let label = visual.debug_bounds("confirmation-pending-label").unwrap();
+        assert_eq!(footer, footer_before);
+        assert!(visual.debug_bounds("confirmation-cancel").is_none());
+        assert!(visual.debug_bounds("confirmation-submit").is_none());
+        assert!(footer.right() <= px(320.) && footer.bottom() <= px(600.));
+        assert_eq!(spinner.origin.x, footer.origin.x);
+        assert!(spinner.right() <= label.origin.x && label.right() <= footer.right());
+        assert!(spinner.origin.y >= footer.origin.y && spinner.bottom() <= footer.bottom());
+        assert!(label.origin.y >= footer.origin.y && label.bottom() <= footer.bottom());
         assert!(visual.update(|window, cx| window.has_active_dialog(cx)));
     }
 
     #[test]
     fn short_confirmation_has_no_unused_body_space() {
-        assert_eq!(content_height(px(24.), px(20.), 1.), px(158.));
+        assert_eq!(content_height(px(24.), px(20.), 1.), px(150.));
     }
 
     #[test]
@@ -667,13 +745,22 @@ mod tests {
 
     #[test]
     fn larger_fonts_scale_spacing_and_controls_together() {
-        assert_eq!(content_height(px(36.), px(60.), 1.5), px(267.));
+        assert_eq!(content_height(px(36.), px(60.), 1.5), px(254.));
     }
 
     #[test]
     fn narrow_windows_keep_horizontal_gutters_even_with_large_fonts() {
         assert_eq!(confirmation_width(px(320.), 1.5), px(288.));
-        assert_eq!(confirmation_width(px(1000.), 1.), px(380.));
+        assert_eq!(confirmation_width(px(1000.), 1.), px(360.));
+    }
+
+    #[test]
+    fn balanced_buttons_keep_minimum_widths_and_expand_for_long_labels() {
+        assert_eq!(confirmation_button_width(px(26.), false, 1.), px(76.));
+        assert_eq!(confirmation_button_width(px(52.), true, 1.), px(88.));
+        assert_eq!(confirmation_button_width(px(120.), true, 1.), px(156.));
+        assert_eq!(confirmation_button_width(px(39.), false, 1.5), px(114.));
+        assert_eq!(confirmation_button_width(px(78.), true, 1.5), px(132.));
     }
 
     #[test]
