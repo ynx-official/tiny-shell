@@ -40,6 +40,10 @@
 
 实现依据包括锁定的 rmcp 3.4.0 本地源码，以及 Tokio 的 [stdin 阻塞读取说明](https://docs.rs/tokio/latest/tokio/io/fn.stdin.html)和[运行时限时退出说明](https://docs.rs/tokio/latest/tokio/runtime/struct.Runtime.html#method.shutdown_timeout)。限时关闭运行时只解除调用线程的等待；两个二进制入口随后结束进程，由操作系统释放剩余线程。
 
+## 正式发布补记
+
+2026-10-22 用户授权正式发版并跳过测试。本实现已随 [v2.2.1](../upgrade/v2.2.1/README.md) 发布，Windows、Linux、macOS Intel 与 Apple Silicon 的云端 release 构建和打包均成功。本地没有新增编译、测试或应用运行；MCP 子进程回归和真实客户端退出行为仍未运行验收。上文保留首次交付时的验证范围，构建通过不代表进程行为已验证。
+
 ## 更新程序后的手动验收
 
 1. 在设置 → MCP / CLI → 外部 MCP 中启用 MCP，让客户端连接并成功列出工具；记录对应桥接 PID。保持客户端打开，关闭 MCP，预期这些新版本桥接在五秒内退出。

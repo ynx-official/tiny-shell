@@ -1,7 +1,7 @@
 # TinyShell v2.2.1
 
 > 发布日期：2026-10-22
-> 状态：Approved（用户已授权正式发版；上述日期为计划日期，尚待云端构建与发布）
+> 状态：Approved（已正式发布；北京时间 2026-10-22 17:19:29）
 > 最后更新：2026-10-22
 > 本地测试策略：skip
 > 发布测试策略：skip
@@ -60,7 +60,10 @@ Windows 提供 x86_64 安装包与便携包；Linux 提供 x86_64 AppImage 与�
 - 已执行：`python scripts/release_notes.py --check-current` 与 `--tag v2.2.1 --plain-text` 导出通过；额外核对 `Cargo.toml` / `Cargo.lock` 均为 2.2.1，版本详情包含独立的跳过测试标记。
 - 未执行：本地 `cargo test`、Python 回归与云端发布工具测试，原因是用户明确要求跳过测试；本版本设置独立跳过标记，后续版本默认策略不变。
 - 未执行：本地 `cargo check`、Clippy、release 构建、应用启动及真实安装；本次采用云端正式发布构建。
-- 云端四个平台构建、打包、正式发布及附件核对：待标签推送后执行。
+- 云端发布：[Release #39746605349](https://github.com/ynx-official/tiny-shell/actions/runs/39746605349) 第 2 次尝试成功；Windows x86_64、Linux x86_64、macOS Intel 与 Apple Silicon 均构建、打包和上传成功，正式 Release 已发布并成为最新稳定版。
+- 首轮 Apple Silicon 任务因 GitHub 托管执行器容量不足，排队 15 分钟后取消，未进入编译。其他三平台成功后仅重试该任务，重试成功并继续发布；标签始终指向同一提交。
+- 云端 `Test release tooling` 的实际结论为 `skipped`；没有把构建成功记录为测试通过。
+- 发布附件核对通过：12 个平台安装产物、`release-notes.txt` 和 `update-manifest.json` 共 14 项均已上传。清单中每个产物的 URL、大小及 SHA-256 与 GitHub 附件元数据一致；下载的两份文本附件大小及摘要匹配，线上说明和 Release 正文与本地纯文本导出一致。未运行安装包或应用。
 
 ## 重点手动验收
 
@@ -86,9 +89,9 @@ Windows 安装版在线更新改用可见安装向导，沿用当前安装目录
 
 ## 变更依据
 
-- 目标标签：[v2.2.1](https://github.com/ynx-official/tiny-shell/releases/tag/v2.2.1)，准备阶段尚未创建或发布。
+- 当前标签：[v2.2.1](https://github.com/ynx-official/tiny-shell/releases/tag/v2.2.1)，对应提交 13ea43595cb485c9e66960af6c73a6d9d9ed8794。
 - 最近祖先发布标签：[v2.2.0](https://github.com/ynx-official/tiny-shell/releases/tag/v2.2.0)，提交 f40c532d2fc936f6df95e551c26b086c8d1a3944。
 - 比较区间：[v2.2.0...v2.2.1](https://github.com/ynx-official/tiny-shell/compare/v2.2.0...v2.2.1)。
-- 变更依据：本次 Windows 更新器、共用安装文案、MCP stdio 生命周期、对应回归代码与常规 CI 接入的实际差异；3727b2e 仅补记上一版本发布结果。
+- 业务提交：8453782（MCP 桥接退出）、bd642e1（Windows 安装向导与准确安装状态）；13ea435 为独立发布资料提交，3727b2e 仅补记上一版本发布结果。
 
 [返回版本总览](../README.md)
