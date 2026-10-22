@@ -1,7 +1,7 @@
 # TinyShell v2.2.0
 
 > 发布日期：2026-10-22
-> 状态：Review（本地验证通过，计划于上述日期正式发布；标签与云端产物待验证）
+> 状态：Approved（已正式发布；北京时间 2026-10-22 14:07:59）
 > 最后更新：2026-10-22
 > 关联文档：[AI 厂商设置](../../02-design/ai-provider-settings.md)、[通用操作反馈](../../02-design/operation-feedback.md)、[统一确认弹窗](../../02-design/confirmation-dialogs.md)
 
@@ -81,7 +81,11 @@ AI 模型服务设置升级为可搜索的厂商列表与独立配置区，顶�
 - 上述 Clippy 与测试验证的是版本号升级前的同一业务代码；随后仅调整版本与发布文档。
 - `cargo build --workspace --locked --release --no-default-features` 在新版本下通过，用时 1 分 42 秒；生成 Windows 主程序并确认 MCP helper 可用。主程序文件版本、产品版本均为 2.2.0。
 - Cargo.toml 与 Cargo.lock 版本一致，锁文件仅更新应用包版本；发布资料、纯文本更新说明导出及版本文档相对链接校验通过。
-- 云端四个平台构建打包、正式 Release、附件和更新清单待发布后验证；尚未运行原生应用或连接真实服务器手测。
+- [正式发布流水线](https://github.com/ynx-official/tiny-shell/actions/runs/39729221697) 全部成功：资料校验、发布工具测试、Windows x86_64、Linux x86_64、macOS Apple Silicon、macOS Intel 构建打包及 Publish Release。
+- [v2.2.0 正式 Release](https://github.com/ynx-official/tiny-shell/releases/tag/v2.2.0) 于北京时间 2026-10-22 14:07:59 发布，为 latest，非草稿、非预发布；远端标签对应本地验证的发布提交。
+- 14 个附件齐全：12 个安装或便携产物，以及 update-manifest.json、release-notes.txt。清单中的 12 个产物名称、大小、下载地址和 SHA-256 均与 GitHub 附件记录一致。
+- 下载后的两个元数据附件大小及 SHA-256 校验通过；纯文本更新说明与版本文档导出内容及 GitHub Release 正文一致。
+- 未启动原生应用或连接真实服务器手测，其他平台原生交互也未手动验证。
 
 ## 重点手动验收
 
@@ -93,9 +97,9 @@ AI 模型服务设置升级为可搜索的厂商列表与独立配置区，顶�
 
 ## 变更依据
 
-- 计划标签：[v2.2.0](https://github.com/ynx-official/tiny-shell/releases/tag/v2.2.0)，发布前尚未创建。
+- 当前标签：[v2.2.0](https://github.com/ynx-official/tiny-shell/releases/tag/v2.2.0)，对应提交 f40c532d2fc936f6df95e551c26b086c8d1a3944。
 - 最近祖先发布标签：[v2.1.4](https://github.com/ynx-official/tiny-shell/releases/tag/v2.1.4)，提交 82f2e14330ae1f02158a89ae987395d1b17ddb11。
-- 计划比较区间：[v2.1.4...v2.2.0](https://github.com/ynx-official/tiny-shell/compare/v2.1.4...v2.2.0)。
+- 比较区间：[v2.1.4...v2.2.0](https://github.com/ynx-official/tiny-shell/compare/v2.1.4...v2.2.0)。
 - 业务提交：856af6f（确认弹窗比例与稳定等待态）、6384118（厂商设置与默认组合）、62a6915（操作完成反馈）。467f000 仅补记上一版本发布结果。
 
 [返回版本总览](../README.md)
