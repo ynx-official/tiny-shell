@@ -5,6 +5,8 @@
 
 ## 设计
 
+- [Windows 安装版在线更新](02-design/windows-installer-update.md)：Review；可见安装向导、原目录覆盖升级、准确阶段文案与完整安装日志；脚本回归通过，原生安装待验收。
+
 - [通用操作反馈](02-design/operation-feedback.md)：Review；统一四类浮动提示，补齐 AI 设置、主动复制和 SFTP 文件操作结果；原生交互待验收。
 
 - [AI 厂商与全局默认模型](02-design/ai-provider-settings.md)：Approved；厂商列表、联动默认组合、保存和删除边界，原生运行待验收。
@@ -58,6 +60,8 @@
 - [构建与打包](05-operations/build-and-package.md)：源码运行、平台依赖、FreeRDP 选项、质量检查与安装包生成。
 
 ## 质量验证
+
+- [MCP 桥接进程退出验证](04-quality/mcp-bridge-lifecycle.md)：Review；关闭后退出、禁用启动拦截、阻塞输入与双入口回归；按要求暂未编译运行。
 
 - [AI 厂商设置验证](04-quality/ai-provider-settings.md)：Windows 全目标 Clippy 与测试通过，保留首次交付记录和多厂商原生手动验收清单。
 
