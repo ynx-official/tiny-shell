@@ -41,11 +41,13 @@ python scripts/sign_update_manifest.py --generate <仓库外的私有目录>
 
 ## 当前生产配置
 
-2026-10-30 已按用户授权生成 TinyShell 专用密钥，保存在项目根目录 `.private/update-signing/`。`.gitignore` 排除整个 `.private/`，并额外保留私钥文件名忽略规则；目录关闭权限继承，仅当前账户和 Windows SYSTEM 可访问。生成脚本的临时密钥文件也在该受限目录内处理。
+2026-10-30 已按用户授权生成 TinyShell 专用密钥，保存在项目根目录 `.private/update-signing/`。`.gitignore` 排除整个 `.private/`，并额外保留私钥文件名忽略规则；父目录、密钥目录及两份密钥文件均关闭权限继承并逐项核对，仅当前账户和 Windows SYSTEM 可访问。生成脚本的临时密钥文件也在该受限目录内处理。
 
 GitHub 仓库已配置 `TINY_SHELL_UPDATE_PUBLIC_KEY` 变量及 `TINY_SHELL_UPDATE_SIGNING_SEED` Secret，远端公钥与本地文件匹配。私钥通过标准输入传给 GitHub CLI，没有作为命令行参数、日志或提交内容输出。公私钥文件均不纳入 Git，克隆项目不会带回这些本地文件，应按现有凭据保管流程备份整个密钥目录。
 
 后续发版复用当前密钥，不能因重复执行发布准备而重新生成或覆盖。公钥与 Secret 在同次工作流运行期间保持稳定。
+
+公钥原始 32 字节的 SHA-256 指纹为 `b6bac8083a8f0db61aef6518d403713cd5a777cac98b39681e4a264c7023da4a`。v2.3.0 已用该密钥签名并正式发布，线上清单的 Ed25519 验签、附件摘要及内嵌说明核对通过；此指纹不包含私钥。
 
 ## 运行边界
 

@@ -5,7 +5,7 @@
 
 ## 设计
 
-- [在线更新线路选择](02-design/update-routes.md)：Review；自动择优、固定线路、多条自定义线路及保存反馈、手动测速、可信清单与下载切换，运行待验收。
+- [在线更新线路选择](02-design/update-routes.md)：Review；自动择优、固定线路、多条自定义线路及保存反馈、手动测速、可信清单与下载切换；已随 v2.3.0 构建发布，功能交互待手动验收。
 
 - [Windows 安装版在线更新](02-design/windows-installer-update.md)：Review；可见安装向导、原目录覆盖升级、准确阶段文案与完整安装日志；已随 v2.2.1 发布，本次跳过测试，原生安装待验收。
 
@@ -61,7 +61,7 @@
 
 ## 开发与运维
 
-- [更新清单签名配置](05-operations/update-signing.md)：Review；TinyShell 独立公钥、发布 Secret、签名附件与旧版本兼容；生产密钥已按用户要求在项目内受限目录保存并完成远端配置。
+- [更新清单签名配置](05-operations/update-signing.md)：Review；TinyShell 独立公钥、发布 Secret、签名附件与旧版本兼容；生产密钥按用户要求在项目内受限目录保存，v2.3.0 签名发布及线上验签成功。
 
 - [构建与打包](05-operations/build-and-package.md)：源码运行、平台依赖、FreeRDP 选项、质量检查与安装包生成。
 
@@ -95,6 +95,6 @@
 ## 其他现有文档
 
 - [优化路线图](optimization-roadmap.md)
-- [版本升级记录](upgrade/README.md)：含 [v2.3.0 发布准备记录](upgrade/v2.3.0/README.md)。
+- [版本升级记录](upgrade/README.md)：含 [v2.3.0 发布记录](upgrade/v2.3.0/README.md)。
 - `bug/`：问题分析与修复记录
 - `sync/`：同步功能设计与说明

@@ -1,7 +1,7 @@
 # TinyShell v2.3.0
 
 > 发布日期：2026-10-30
-> 状态：Approved（用户已授权正式发版及生产签名配置；上述日期为计划日期，尚待云端构建发布）
+> 状态：Approved（已正式发布；北京时间 2026-10-30 15:41:46）
 > 最后更新：2026-10-30
 > 本地测试策略：skip
 > 发布测试策略：skip
@@ -69,7 +69,10 @@ Windows 继续提供安装包与便携包；Linux 提供 AppImage 与压缩包�
 - 已执行：密钥生成使用 OpenSSL，Git 忽略规则生效，私有目录 ACL 已限制为当前账户与 SYSTEM；私钥没有进入 Git 跟踪、命令行参数或输出日志。
 - 未执行：本地 Rust / Python 测试及云端发布工具测试，原因是用户要求跳过测试，本版本使用独立跳过标记。
 - 未执行：本地 Cargo check、Clippy、release 构建、应用启动和真实安装；本次采用云端正式发布构建。
-- 云端四平台构建、签名发布及附件核对：待标签推送后执行。
+- 云端发布：[Release #41019488316](https://github.com/ynx-official/tiny-shell/actions/runs/41019488316) 首次尝试成功。Windows x86_64、Linux x86_64、macOS Apple Silicon 与 Intel 的构建、打包和产物上传均成功；正式 Release 已发布并成为最新稳定版。
+- 云端 `Test release tooling` 的实际结论为 `skipped`，`Sign update manifest` 成功。未运行本地 Rust / Python 功能测试、Clippy 或真实应用，构建成功不等于行为验收通过。
+- 附件核对通过：12 个平台安装产物，以及 `release-notes.txt`、`update-manifest.json`、`update-manifest.json.sig` 共 15 项已上传。清单中各产物 URL、大小及 SHA-256 与 GitHub 附件元数据匹配；下载的三份元数据附件大小和摘要匹配。
+- 使用本地公钥对线上原始清单字节执行 OpenSSL Ed25519 验签通过；本地公钥与仓库变量一致。清单内嵌说明、独立纯文本说明和 Release 正文均与本地导出一致。只读请求曾因 TLS 超时失败，重试后完成核对；没有修改线上附件。
 
 ## 重点手动验收
 
@@ -95,9 +98,9 @@ TinyShell v2.3.0
 
 ## 变更依据
 
-- 目标标签：[v2.3.0](https://github.com/ynx-official/tiny-shell/releases/tag/v2.3.0)，准备阶段尚未创建或发布。
+- 当前标签：[v2.3.0](https://github.com/ynx-official/tiny-shell/releases/tag/v2.3.0)，对应提交 20cf8a898145d6735536990eeed5acd61ddb16c1。
 - 最近祖先发布标签：[v2.2.1](https://github.com/ynx-official/tiny-shell/releases/tag/v2.2.1)，提交 13ea43595cb485c9e66960af6c73a6d9d9ed8794。
 - 比较区间：[v2.2.1...v2.3.0](https://github.com/ynx-official/tiny-shell/compare/v2.2.1...v2.3.0)。
-- 业务提交：07ddab1（更新线路管理、可信核验与签名发布）；1dd7886 为上一版本的发布结果补记。
+- 业务提交：07ddab1（更新线路管理、可信核验与签名发布）；a69460d 为独立版本资料提交，20cf8a8 记录用户授权的受限签名配置及忽略规则，1dd7886 为上一版本发布结果补记。
 
 [返回版本总览](../README.md)
