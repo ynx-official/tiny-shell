@@ -13,6 +13,7 @@ pub(crate) mod proxy;
 pub(crate) mod sync;
 pub(crate) mod terminal;
 pub(crate) mod update;
+mod update_routes;
 pub(crate) mod view;
 pub(crate) mod workspace;
 

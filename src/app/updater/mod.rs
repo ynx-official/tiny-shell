@@ -12,6 +12,10 @@ use semver::Version;
 mod indicator;
 mod presentation;
 mod release_source;
+pub(crate) mod route_preferences_ui;
+pub(crate) mod route_ui;
+pub(crate) mod routes;
+mod signing;
 
 pub(crate) use indicator::compact_pulse_icon;
 pub(crate) use presentation::install_presentation;
@@ -379,6 +383,7 @@ pub(crate) struct UpdateInfo {
     pub size: u64,
     pub digest: String,
     pub installation_kind: InstallationKind,
+    pub download_routes: Vec<routes::Route>,
 }
 
 #[derive(Debug, Clone)]
@@ -429,15 +434,14 @@ impl DownloadCancellation {
     }
 }
 
-/// Check the latest release and return both availability and release notes.
-pub(crate) async fn check_for_update() -> anyhow::Result<UpdateCheckResult> {
-    let client = reqwest::Client::builder()
-        .user_agent(format!("{}/{}", REPO_NAME, CURRENT_VERSION))
-        .connect_timeout(HTTP_CONNECT_TIMEOUT)
-        .read_timeout(HTTP_READ_TIMEOUT)
-        .build()
-        .context("failed to build HTTP client")?;
-    let release = release_source::fetch_latest_release(&client).await?;
+/// Convert a validated probe result into a platform-specific immutable download plan.
+pub(super) fn check_probed_release(
+    report: &routes::ProbeReport,
+) -> anyhow::Result<UpdateCheckResult> {
+    let release = report
+        .release
+        .clone()
+        .context(rust_i18n::t!("update_route_no_available").to_string())?;
     let latest_version = release.version.trim();
 
     if !is_newer_version(CURRENT_VERSION, latest_version)? {
@@ -467,6 +471,7 @@ pub(crate) async fn check_for_update() -> anyhow::Result<UpdateCheckResult> {
         size: asset.size,
         digest: asset.digest.clone(),
         installation_kind,
+        download_routes: report.routes.clone(),
     }))
 }
 
@@ -490,27 +495,23 @@ fn verify_download_digest(bytes: &[u8], expected_digest: &str) -> anyhow::Result
 /// Download the update archive and extract the binary to a temp directory.
 /// Returns the path to the extracted binary.
 async fn download_and_extract<F>(
-    url: &str,
-    version: &str,
-    expected_size: u64,
-    expected_digest: &str,
-    installation_kind: InstallationKind,
+    route: &routes::Route,
+    info: &UpdateInfo,
     cancellation: &DownloadCancellation,
     mut on_progress: F,
 ) -> anyhow::Result<PathBuf>
 where
     F: FnMut(u64, u64),
 {
-    let client = reqwest::Client::builder()
-        .user_agent(format!("{}/{}", REPO_NAME, CURRENT_VERSION))
-        .connect_timeout(HTTP_CONNECT_TIMEOUT)
-        .read_timeout(HTTP_READ_TIMEOUT)
-        .build()
-        .context("failed to build HTTP client")?;
-
+    let client = route.client()?;
+    let url = route.url(&info.download_url)?;
+    let version = &info.version;
+    let expected_size = info.size;
+    let expected_digest = &info.digest;
+    let installation_kind = info.installation_kind;
     let response = tokio::select! {
         _ = cancellation.cancelled() => anyhow::bail!("update download cancelled"),
-        response = client.get(url).send() => response.context("failed to download update")?,
+        response = client.get(&url).send() => response.context("failed to download update")?,
     }
     .error_for_status()
     .context("update download returned an error status")?;
@@ -643,29 +644,44 @@ where
 pub(crate) async fn download_update<F>(
     info: &UpdateInfo,
     cancellation: &DownloadCancellation,
-    on_progress: F,
+    mut on_progress: F,
 ) -> anyhow::Result<PathBuf>
 where
-    F: FnMut(u64, u64),
+    F: FnMut(&routes::Route, u64, u64),
 {
-    tracing::info!("downloading update from {}", info.download_url);
-    let prepared_path = download_and_extract(
-        &info.download_url,
-        &info.version,
-        info.size,
-        &info.digest,
-        info.installation_kind,
-        cancellation,
-        on_progress,
-    )
-    .await?;
-
-    #[cfg(target_os = "windows")]
-    if info.installation_kind == InstallationKind::Portable {
-        return stage_windows_portable_binary(&prepared_path);
+    anyhow::ensure!(
+        !info.download_routes.is_empty(),
+        "update has no verified download route"
+    );
+    for (index, route) in info.download_routes.iter().enumerate() {
+        if cancellation.is_cancelled() {
+            anyhow::bail!("update download cancelled");
+        }
+        on_progress(route, 0, info.size);
+        let result = download_and_extract(route, info, cancellation, |done, total| {
+            on_progress(route, done, total)
+        })
+        .await;
+        match result {
+            Ok(prepared_path) => {
+                #[cfg(target_os = "windows")]
+                if info.installation_kind == InstallationKind::Portable {
+                    return stage_windows_portable_binary(&prepared_path);
+                }
+                return Ok(prepared_path);
+            }
+            Err(error)
+                if !cancellation.is_cancelled()
+                    && index + 1 < info.download_routes.len()
+                    && routes::retryable_download_error(&error) =>
+            {
+                // Restart from byte zero; every attempt retains the same version and digest.
+                tracing::warn!("update route failed; trying the next verified route: {error:#}");
+            }
+            Err(error) => return Err(error),
+        }
     }
-
-    Ok(prepared_path)
+    anyhow::bail!("all update routes failed")
 }
 
 #[cfg(target_os = "windows")]

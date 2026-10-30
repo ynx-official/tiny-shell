@@ -1,9 +1,11 @@
 # TinyShell 文档索引
 
 > 状态：Approved
-> 最后更新：2026-10-22
+> 最后更新：2026-10-30
 
 ## 设计
+
+- [在线更新线路选择](02-design/update-routes.md)：Review；自动择优、固定线路、多条自定义线路及保存反馈、手动测速、可信清单与下载切换，运行待验收。
 
 - [Windows 安装版在线更新](02-design/windows-installer-update.md)：Review；可见安装向导、原目录覆盖升级、准确阶段文案与完整安装日志；已随 v2.2.1 发布，本次跳过测试，原生安装待验收。
 
@@ -47,6 +49,8 @@
 
 ## 架构
 
+- [版本更新机制与复用指南](03-architecture/application-update.md)：Review；基于 2.2.1 源码梳理检查调度、更新源回退、清单协议、下载校验、各平台安装、发布流程及复用边界。
+
 - [AI 与 MCP 配置云同步](sync/ai-mcp-sync.md)：Approved；协议 v4、隐私密码密钥库、跨设备配置、冲突和旧凭据迁移。
 
 - [AI 用量与审计实现契约](03-architecture/ai-usage-and-audit.md)：请求结算、事件关联、SQLite 密文、留存和失败保护。
@@ -57,9 +61,13 @@
 
 ## 开发与运维
 
+- [更新清单签名配置](05-operations/update-signing.md)：Review；TinyShell 独立公钥、发布 Secret、签名附件与旧版本兼容；远端配置未执行。
+
 - [构建与打包](05-operations/build-and-package.md)：源码运行、平台依赖、FreeRDP 选项、质量检查与安装包生成。
 
 ## 质量验证
+
+- [更新线路验证与手动验收](04-quality/update-routes.md)：静态检查、真实清单只读核对、未运行的回归代码与平台验收清单。
 
 - [MCP 桥接进程退出验证](04-quality/mcp-bridge-lifecycle.md)：Review；关闭后退出、禁用启动拦截、阻塞输入与双入口回归；已随 v2.2.1 四平台构建发布，本次跳过测试，实际进程行为待验收。
 

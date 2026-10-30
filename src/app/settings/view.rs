@@ -74,6 +74,7 @@ impl TinyShell {
                             .page(super::update::page(
                                 &settings_view,
                                 inputs.update.interval_hours.clone(),
+                                inputs.update.custom_route.clone(),
                             ))
                             .page(super::about::page()),
                     ),

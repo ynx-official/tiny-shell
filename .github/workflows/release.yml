@@ -19,6 +19,10 @@ concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
 
+env:
+  # Public trust anchor only; the seed is restricted to the publishing step.
+  TINY_SHELL_UPDATE_PUBLIC_KEY: ${{ vars.TINY_SHELL_UPDATE_PUBLIC_KEY }}
+
 jobs:
   validate:
     name: Validate release metadata
@@ -30,6 +34,10 @@ jobs:
         uses: actions/setup-python@v6
         with:
           python-version: "3.13"
+
+      - name: Require release verification key
+        if: startsWith(github.ref, 'refs/tags/')
+        run: python scripts/sign_update_manifest.py --check-key
 
       - name: Validate release documents
         id: metadata
@@ -53,7 +61,7 @@ jobs:
 
       - name: Test release tooling
         if: steps.metadata.outputs.skip_tests != 'true'
-        run: python -m unittest scripts/test_release_notes.py scripts/test_update_manifest.py
+        run: python -m unittest scripts/test_release_notes.py scripts/test_update_manifest.py scripts/test_sign_update_manifest.py
 
   build:
     name: ${{ matrix.name }}
@@ -326,6 +334,11 @@ jobs:
             --tag "${GITHUB_REF_NAME}" \
             --repository "${GITHUB_REPOSITORY}" \
             --output dist/update-manifest.json
+
+      - name: Sign update manifest
+        env:
+          TINY_SHELL_UPDATE_SIGNING_SEED: ${{ secrets.TINY_SHELL_UPDATE_SIGNING_SEED }}
+        run: python scripts/sign_update_manifest.py --manifest dist/update-manifest.json --output dist/update-manifest.json.sig
 
       - name: Attach to GitHub Release
         uses: softprops/action-gh-release@v2

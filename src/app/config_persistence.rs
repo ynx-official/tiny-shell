@@ -528,6 +528,50 @@ mod tests {
     }
 
     #[test]
+    fn route_list_receipts_preserve_saved_entries_and_report_failed_removal() {
+        use crate::session::update_preferences::RouteMode;
+        let (repository, io) = repository();
+        let mut config = ConfigStore::in_memory();
+        let prefs = config
+            .update_routes()
+            .with_added_custom("https://one.example/proxy")
+            .unwrap()
+            .with_added_custom("https://two.example/proxy")
+            .unwrap()
+            .with_selected_custom("https://two.example/proxy/")
+            .unwrap();
+        config.set_update_routes(prefs.clone());
+        repository
+            .persist_async(config.clone())
+            .unwrap()
+            .wait()
+            .unwrap();
+        assert_eq!(io.load().unwrap().update_routes(), &prefs);
+
+        config.set_update_routes(prefs.without_custom("https://two.example/proxy/"));
+        io.fail_save.store(true, Ordering::SeqCst);
+        assert!(
+            repository
+                .persist_async(config.clone())
+                .unwrap()
+                .wait()
+                .is_err()
+        );
+        assert_eq!(io.load().unwrap().update_routes(), &prefs);
+        assert!(repository.flush().is_err());
+
+        io.fail_save.store(false, Ordering::SeqCst);
+        repository.persist_async(config).unwrap().wait().unwrap();
+        let restored = io.load().unwrap();
+        assert_eq!(
+            restored.update_routes().custom_prefixes,
+            ["https://one.example/proxy/"]
+        );
+        assert_eq!(restored.update_routes().mode, RouteMode::Auto);
+        repository.shutdown().unwrap();
+    }
+
+    #[test]
     fn close_error_report_preserves_all_failure_stages() {
         let mut report = CloseErrorReport::default();
         report.record("preferences", "preference save failed");

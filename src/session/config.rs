@@ -1082,6 +1082,14 @@ impl ConfigStore {
         self.cache.global_proxy_password = val;
     }
 
+    pub fn update_routes(&self) -> &super::update_preferences::RoutePreferences {
+        &self.cache.update_routes
+    }
+
+    pub fn set_update_routes(&mut self, routes: super::update_preferences::RoutePreferences) {
+        self.cache.update_routes = routes;
+    }
+
     pub fn update_check_mode(&self) -> UpdateCheckMode {
         self.cache.update_check_mode
     }
@@ -1375,6 +1383,7 @@ impl ConfigStore {
         self.cache.update_check_mode = source.cache.update_check_mode;
         self.cache.update_interval_hours = source.cache.update_interval_hours;
         self.cache.update_notify = source.cache.update_notify;
+        self.cache.update_routes = source.cache.update_routes.clone();
         self.cache.update_last_checked_at = source.cache.update_last_checked_at;
         self.cache.download_directory = source.cache.download_directory.clone();
     }
@@ -1559,6 +1568,11 @@ mod tests {
         source.set_update_check_mode(UpdateCheckMode::Interval);
         source.set_update_interval_hours(12);
         source.set_update_notify(false);
+        source.set_update_routes(crate::session::update_preferences::RoutePreferences {
+            mode: crate::session::update_preferences::RouteMode::Custom,
+            custom_prefixes: vec!["https://example.com/".into()],
+            selected_custom_prefix: Some("https://example.com/".into()),
+        });
         source.set_download_directory(Some(Path::new("downloads")));
         source.replace_highlight_rules(vec![HighlightRule {
             id: "custom".to_string(),
@@ -1587,6 +1601,7 @@ mod tests {
         assert_eq!(latest.update_check_mode(), UpdateCheckMode::Interval);
         assert_eq!(latest.update_interval_hours(), 12);
         assert!(!latest.update_notify());
+        assert_eq!(latest.update_routes(), source.update_routes());
         assert_eq!(
             latest.download_directory(),
             Some(PathBuf::from("downloads"))

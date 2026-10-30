@@ -215,6 +215,8 @@ pub struct ConfigFile {
     #[serde(default)]
     pub update_last_checked_at: i64,
     #[serde(default)]
+    pub update_routes: super::update_preferences::RoutePreferences,
+    #[serde(default)]
     pub download_directory: String,
 }
 
@@ -361,6 +363,7 @@ impl Default for ConfigFile {
             update_interval_hours: default_update_interval_hours(),
             update_notify: default_update_notify(),
             update_last_checked_at: 0,
+            update_routes: Default::default(),
             download_directory: String::new(),
         }
     }

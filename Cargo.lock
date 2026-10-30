@@ -8140,6 +8140,7 @@ dependencies = [
  "regex",
  "reqwest",
  "rfd",
+ "ring",
  "russh",
  "russh-keys",
  "russh-sftp",

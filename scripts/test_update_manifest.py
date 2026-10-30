@@ -37,6 +37,7 @@ class UpdateManifestTest(unittest.TestCase):
 
         self.assertEqual(manifest["schema_version"], 1)
         self.assertEqual(manifest["version"], self.tag)
+        self.assertEqual(manifest["notes"], "版本概述\n\n本次更新。\n")
         self.assertEqual(
             manifest["notes_url"],
             "https://github.com/ynx-official/tiny-shell/releases/download/"

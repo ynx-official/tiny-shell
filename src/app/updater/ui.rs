@@ -47,90 +47,10 @@ impl TinyShell {
         notification_window: Option<AnyWindowHandle>,
         cx: &mut Context<Self>,
     ) {
-        if matches!(
-            self.update_runtime.status,
-            Some(crate::app::updater::UpdateStatus::Checking)
-                | Some(crate::app::updater::UpdateStatus::Downloading(_, _, _))
-        ) {
-            return;
-        }
-
-        self.update_runtime.status = Some(crate::app::updater::UpdateStatus::Checking);
-        cx.notify();
-        let view = cx.entity();
-        cx.spawn({
-            let view = view.clone();
-            move |_, cx: &mut gpui::AsyncApp| {
-                let cx = cx.clone();
-                async move {
-                    let (tx, rx) = futures::channel::oneshot::channel();
-                    match crate::app::shared_runtime() {
-                        Ok(runtime) => {
-                            runtime.spawn(async move {
-                                let result = crate::app::updater::check_for_update().await;
-                                let _ = tx.send(result);
-                            });
-                        }
-                        Err(error) => {
-                            let _ = tx.send(Err(anyhow::anyhow!(error)));
-                        }
-                    }
-                    let result = rx
-                        .await
-                        .unwrap_or_else(|_| Err(anyhow::anyhow!("update check cancelled")));
-                    cx.update(|cx| {
-                        let update_available = matches!(
-                            result,
-                            Ok(crate::app::updater::UpdateCheckResult::UpdateAvailable(_))
-                        );
-                        match result {
-                            Ok(crate::app::updater::UpdateCheckResult::UpdateAvailable(info)) => {
-                                view.update(cx, |this, cx| {
-                                    this.update_runtime.status = Some(
-                                        crate::app::updater::UpdateStatus::UpdateAvailable(info),
-                                    );
-                                    this.record_update_check_completed();
-                                    cx.notify();
-                                });
-                            }
-                            Ok(crate::app::updater::UpdateCheckResult::UpToDate(info)) => {
-                                view.update(cx, |this, cx| {
-                                    this.update_runtime.status =
-                                        Some(crate::app::updater::UpdateStatus::UpToDate(info));
-                                    this.record_update_check_completed();
-                                    cx.notify();
-                                });
-                            }
-                            Err(err) => {
-                                view.update(cx, |this, cx| {
-                                    this.update_runtime.status =
-                                        Some(crate::app::updater::UpdateStatus::Error(format!(
-                                            "{err:#}"
-                                        )));
-                                    cx.notify();
-                                });
-                            }
-                        }
-
-                        if update_available
-                            && let Some(window_handle) = notification_window
-                            && view.read(cx).config.update_notify()
-                        {
-                            let view = view.clone();
-                            let _ = window_handle.update(cx, move |_, window, cx| {
-                                view.update(cx, |this, cx| {
-                                    this.show_update_dialog(window, cx);
-                                });
-                            });
-                        }
-                    });
-                }
-            }
-        })
-        .detach();
+        self.start_update_route_probe(true, notification_window, cx);
     }
 
-    fn record_update_check_completed(&mut self) {
+    pub(super) fn record_update_check_completed(&mut self) {
         self.config
             .set_update_last_checked_at(chrono::Utc::now().timestamp());
         self.mark_config_preferences_dirty();
@@ -202,6 +122,9 @@ impl TinyShell {
     }
 
     pub(crate) fn download_available_update(&mut self, cx: &mut Context<Self>) {
+        if super::route_ui::routes_locked(&self.update_runtime) {
+            return;
+        }
         let info = match self.update_runtime.status.clone() {
             Some(crate::app::updater::UpdateStatus::UpdateAvailable(info))
             | Some(crate::app::updater::UpdateStatus::DownloadCancelled(info))
@@ -237,8 +160,12 @@ impl TinyShell {
                                 let result = crate::app::updater::download_update(
                                     &update_info,
                                     &download_cancellation,
-                                    |done, total| {
-                                        let _ = progress_tx.unbounded_send((done, total));
+                                    |route, done, total| {
+                                        let _ = progress_tx.unbounded_send((
+                                            route.clone(),
+                                            done,
+                                            total,
+                                        ));
                                     },
                                 )
                                 .await;
@@ -250,7 +177,7 @@ impl TinyShell {
                         }
                     }
                     use futures::StreamExt as _;
-                    while let Some((done, total)) = progress_rx.next().await {
+                    while let Some((route, done, total)) = progress_rx.next().await {
                         if task_cancellation.is_cancelled() {
                             break;
                         }
@@ -259,6 +186,7 @@ impl TinyShell {
                                 if !this.update_runtime.is_current_download(generation) {
                                     return;
                                 }
+                                this.update_runtime.active_route = Some(route);
                                 this.update_runtime.status =
                                     Some(crate::app::updater::UpdateStatus::Downloading(
                                         info.clone(),
@@ -563,6 +491,7 @@ impl TinyShell {
                             v_flex()
                                 .size_full()
                                 .gap_3()
+                                .child(super::route_ui::route_summary(&view.read(cx).update_runtime, cx))
                                 .child(
                                     h_flex()
                                         .flex_none()
@@ -707,7 +636,7 @@ impl TinyShell {
                                         .child(
                                             Button::new("update-check-again")
                                                 .secondary()
-                                                .disabled(is_busy)
+                                                .disabled(is_busy || can_restart || super::route_ui::routes_locked(&view.read(cx).update_runtime))
                                                 .label(t!("check_update").to_string())
                                                 .on_click(window.listener_for(
                                                     &view,
@@ -730,6 +659,7 @@ impl TinyShell {
                                         .when(has_update, |this| {
                                             this.child(
                                                 Button::new("update-download")
+                                                    .disabled(super::route_ui::routes_locked(&view.read(cx).update_runtime))
                                                     .primary()
                                                     .label(if can_retry {
                                                         t!("update_download_again").to_string()

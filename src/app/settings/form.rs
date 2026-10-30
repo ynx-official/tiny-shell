@@ -31,6 +31,7 @@ pub(crate) struct SyncSettingsInputs {
 #[derive(Clone)]
 pub(crate) struct UpdateSettingsInputs {
     pub(crate) interval_hours: Entity<InputState>,
+    pub(crate) custom_route: Entity<InputState>,
 }
 
 #[derive(Clone)]
@@ -168,6 +169,11 @@ impl SettingsInputs {
             }),
         };
         let update = UpdateSettingsInputs {
+            custom_route: cx.new(|cx| {
+                crate::app::localization::localized_input(window, cx, || {
+                    t!("update_route_custom_placeholder").to_string()
+                })
+            }),
             interval_hours: cx.new(|cx| {
                 crate::app::localization::localized_input(window, cx, || {
                     t!("sync_interval_placeholder").to_string()
@@ -201,6 +207,7 @@ impl SettingsInputs {
             self.sync.privacy_password.clone(),
             self.sync.interval_minutes.clone(),
             self.update.interval_hours.clone(),
+            self.update.custom_route.clone(),
         ]
         .into_iter()
     }

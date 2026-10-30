@@ -17,6 +17,7 @@ struct FreeRdpPaths {
 }
 
 fn main() {
+    println!("cargo:rerun-if-env-changed=TINY_SHELL_UPDATE_PUBLIC_KEY");
     println!("cargo:rerun-if-changed=native/freerdp/tiny_shell_freerdp.c");
     println!("cargo:rerun-if-changed=native/freerdp/tiny_shell_freerdp.h");
     println!("cargo:rerun-if-env-changed=TINY_SHELL_FREERDP_INCLUDE_DIR");

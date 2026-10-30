@@ -61,6 +61,8 @@ struct UpdateManifest {
     version: String,
     #[serde(default)]
     notes_url: Option<String>,
+    #[serde(default)]
+    notes: String,
     assets: Vec<ManifestAsset>,
 }
 
@@ -148,6 +150,10 @@ async fn fetch_manifest(client: &Client) -> anyhow::Result<SourceAttempt<Release
     Ok(SourceAttempt::Found(release))
 }
 
+pub(super) fn parse_manifest_bytes(bytes: &[u8]) -> anyhow::Result<ReleaseMetadata> {
+    manifest_into_release(serde_json::from_slice(bytes).context("invalid update manifest JSON")?)
+}
+
 fn manifest_into_release(manifest: UpdateManifest) -> anyhow::Result<ReleaseMetadata> {
     if manifest.schema_version != MANIFEST_SCHEMA_VERSION {
         anyhow::bail!(
@@ -160,6 +166,13 @@ fn manifest_into_release(manifest: UpdateManifest) -> anyhow::Result<ReleaseMeta
         anyhow::bail!("update manifest does not contain release assets");
     }
 
+    let mut names = std::collections::HashSet::new();
+    for asset in &manifest.assets {
+        anyhow::ensure!(
+            names.insert(asset.name.clone()),
+            "duplicate release asset name"
+        );
+    }
     let version = manifest.version.clone();
     let assets = manifest
         .assets
@@ -177,7 +190,7 @@ fn manifest_into_release(manifest: UpdateManifest) -> anyhow::Result<ReleaseMeta
 
     Ok(ReleaseMetadata {
         version: manifest.version,
-        notes: String::new(),
+        notes: user_facing_release_notes(&manifest.notes),
         assets,
     })
 }
@@ -290,7 +303,7 @@ fn release_notes_url(version: &str, assets: &[ReleaseAssetMetadata]) -> String {
         ))
 }
 
-async fn fetch_optional_notes(client: &Client, url: &str) -> String {
+pub(super) async fn fetch_optional_notes(client: &Client, url: &str) -> String {
     let result = async {
         client
             .get(url)
@@ -516,6 +529,7 @@ mod tests {
             schema_version: 1,
             version: "v1.1.9".to_string(),
             notes_url: None,
+            notes: String::new(),
             assets: vec![ManifestAsset {
                 name: "tiny-shell-v1.1.9-windows-x86_64-portable.zip".to_string(),
                 url: "https://github.com/ynx-official/tiny-shell/releases/download/v1.1.9/tiny-shell-v1.1.9-windows-x86_64-portable.zip".to_string(),
@@ -536,6 +550,7 @@ mod tests {
             schema_version: 1,
             version: "v1.1.9".to_string(),
             notes_url: None,
+            notes: String::new(),
             assets: vec![ManifestAsset {
                 name: "tiny-shell.zip".to_string(),
                 url: "https://github.com/ynx-official/tiny-shell/releases/download/v1.1.9/tiny-shell.zip".to_string(),
@@ -554,6 +569,7 @@ mod tests {
             schema_version: 1,
             version: "v1.1.9".to_string(),
             notes_url: None,
+            notes: String::new(),
             assets: vec![ManifestAsset {
                 name: "tiny-shell.zip".to_string(),
                 url: "https://github.com/ynx-official/tiny-shell/releases/download/v1.1.8/tiny-shell.zip".to_string(),

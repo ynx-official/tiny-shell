@@ -6,3 +6,6 @@
 # Local Superpowers rules and working files
 /.superpowers/
 /.cursor/
+
+# Update signing secrets must never enter source control.
+update-signing-seed.hex

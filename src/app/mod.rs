@@ -1235,6 +1235,8 @@ impl TinyShell {
                 .value()
                 .to_string();
             self.key_import.revalidate(&passphrase, &self.managed_keys);
+        } else if input == &self.settings_inputs.update.custom_route {
+            self.on_custom_update_route_input(input, event, window, cx);
         } else if input == &self.settings_inputs.update.interval_hours {
             match event {
                 InputEvent::Change => {
@@ -2689,6 +2691,10 @@ impl TinyShell {
             }
         }
 
+        // Route edits have their own receipt; do not enqueue duplicate optimistic snapshots.
+        if self.update_runtime.pending_route_save.is_some() {
+            return;
+        }
         let Some(generation) = self
             .config_persistence
             .ready_generation(now, PREFERENCE_SAVE_DEBOUNCE)

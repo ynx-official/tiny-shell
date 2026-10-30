@@ -102,6 +102,7 @@ fn present_status(status: Option<&UpdateStatus>) -> UpdateStatusPresentation {
 pub(crate) fn page(
     view: &Entity<TinyShell>,
     update_interval_hours: Entity<InputState>,
+    custom_route: Entity<InputState>,
 ) -> SettingPage {
     SettingPage::new(t!("settings_online_update").to_string())
         .icon(IconName::ArrowDown)
@@ -204,6 +205,7 @@ pub(crate) fn page(
                     .description(t!("update_notify_desc").to_string()),
                 ),
         )
+        .group(super::update_routes::group(view, custom_route))
         .group(
             SettingGroup::new()
                 .title(t!("update_status").to_string())
@@ -212,6 +214,9 @@ pub(crate) fn page(
                     move |_, window, cx| {
                         let status = present_status(view.read(cx).update_runtime.status.as_ref());
                         let is_downloading = status.progress.is_some();
+                        let routes_locked = crate::app::updater::route_ui::routes_locked(
+                            &view.read(cx).update_runtime,
+                        );
 
                         v_flex()
                             .w_full()
@@ -230,7 +235,7 @@ pub(crate) fn page(
                                             .items_center()
                                             .child(
                                                 Button::new("check-update")
-                                                    .disabled(is_downloading)
+                                                    .disabled(routes_locked)
                                                     .label(t!("check_update").to_string())
                                                     .on_click({
                                                         let view = view.clone();
@@ -262,6 +267,7 @@ pub(crate) fn page(
                                             .when(status.has_update, |this| {
                                                 this.child(
                                                     Button::new("download-update")
+                                                        .disabled(routes_locked)
                                                         .primary()
                                                         .label(if status.can_retry {
                                                             t!("update_download_again").to_string()
@@ -328,6 +334,7 @@ mod tests {
                 size: 1,
                 digest: String::new(),
                 installation_kind: InstallationKind::WindowsInstaller,
+                download_routes: vec![crate::app::updater::routes::Route::github()],
             },
             "setup.exe".into(),
         );

@@ -13,5 +13,6 @@ pub mod session_types;
 pub(crate) mod ssh_config;
 pub(crate) mod ssh_keys;
 pub(crate) mod store;
+pub mod update_preferences;
 
 pub(crate) mod terminal_preferences;

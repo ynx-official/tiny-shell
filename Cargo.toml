@@ -72,6 +72,7 @@ keyring = { version = "=4.2.0", default-features = false, features = ["v1"] }
 rand = "0.8"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
 regex = "1"
+ring = "0.17.14"
 semver = "1"
 sha1 = "0.10"
 sha2 = "0.10"

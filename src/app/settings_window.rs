@@ -91,6 +91,17 @@ impl SettingsWindow {
                 _ => {}
             },
         );
+        let owner_for_route = owner.clone();
+        let custom_route_subscription = cx.subscribe_in(
+            &inputs.update.custom_route,
+            window,
+            move |_, input, event, window, cx| {
+                owner_for_route.update(cx, |this, cx| {
+                    this.on_custom_update_route_input(input, event, window, cx);
+                });
+                cx.notify();
+            },
+        );
         let mut input_subscriptions: Vec<_> = [
             inputs.sync.endpoint.clone(),
             inputs.sync.username.clone(),
@@ -109,6 +120,7 @@ impl SettingsWindow {
         .collect();
         input_subscriptions.push(sync_interval_subscription);
         input_subscriptions.push(interval_subscription);
+        input_subscriptions.push(custom_route_subscription);
         Self {
             owner,
             inputs,

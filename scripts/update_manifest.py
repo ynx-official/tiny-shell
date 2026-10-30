@@ -57,7 +57,7 @@ def collect_assets(dist: Path, tag: str, repository: str) -> list[dict[str, obje
     expected = expected_asset_names(tag)
     files_by_name: dict[str, Path] = {}
     for path in sorted(candidate for candidate in dist.rglob("*") if candidate.is_file()):
-        if path.name in {"update-manifest.json", RELEASE_NOTES_ASSET}:
+        if path.name in {"update-manifest.json", "update-manifest.json.sig", RELEASE_NOTES_ASSET}:
             continue
         if path.name in files_by_name:
             raise UpdateManifestError(f"存在重名发布产物：{path.name}")
@@ -97,6 +97,7 @@ def build_manifest(dist: Path, tag: str, repository: str) -> dict[str, object]:
             f"https://github.com/{repository}/releases/download/"
             f"{quote(tag, safe='')}/{RELEASE_NOTES_ASSET}"
         ),
+        "notes": (dist / RELEASE_NOTES_ASSET).read_text(encoding="utf-8") if (dist / RELEASE_NOTES_ASSET).is_file() else "",
         "assets": assets,
     }
 

@@ -410,6 +410,13 @@ impl ConfigPersistenceState {
 #[derive(Default)]
 pub(crate) struct UpdateRuntimeState {
     pub(crate) status: Option<updater::UpdateStatus>,
+    pub(crate) route_probing: bool,
+    pub(crate) route_report: Option<updater::routes::ProbeReport>,
+    pub(crate) route_checked_at: Option<i64>,
+    pub(crate) route_error: Option<String>,
+    pub(crate) route_form_error: Option<String>,
+    pub(crate) pending_route_save: Option<updater::route_preferences_ui::PendingRouteSave>,
+    pub(crate) active_route: Option<updater::routes::Route>,
     download_cancellation: Option<updater::DownloadCancellation>,
     download_generation: TaskGeneration,
     schedule_generation: TaskGeneration,
