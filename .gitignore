@@ -8,4 +8,5 @@
 /.cursor/
 
 # Update signing secrets must never enter source control.
+/.private/
 update-signing-seed.hex

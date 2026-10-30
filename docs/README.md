@@ -61,7 +61,7 @@
 
 ## 开发与运维
 
-- [更新清单签名配置](05-operations/update-signing.md)：Review；TinyShell 独立公钥、发布 Secret、签名附件与旧版本兼容；远端配置未执行。
+- [更新清单签名配置](05-operations/update-signing.md)：Review；TinyShell 独立公钥、发布 Secret、签名附件与旧版本兼容；生产密钥已按用户要求在项目内受限目录保存并完成远端配置。
 
 - [构建与打包](05-operations/build-and-package.md)：源码运行、平台依赖、FreeRDP 选项、质量检查与安装包生成。
 
