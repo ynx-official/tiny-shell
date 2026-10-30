@@ -95,6 +95,6 @@
 ## 其他现有文档
 
 - [优化路线图](optimization-roadmap.md)
-- [版本升级记录](upgrade/README.md)
+- [版本升级记录](upgrade/README.md)：含 [v2.3.0 发布准备记录](upgrade/v2.3.0/README.md)。
 - `bug/`：问题分析与修复记录
 - `sync/`：同步功能设计与说明
